@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+mod install;
 use std::{
     env, fs,
     io::{self, Read, Write},
@@ -10,7 +11,7 @@ use std::{
 
 const ADDRESS: &str = "127.0.0.1:4311";
 const DASHBOARD: &str = include_str!("dashboard.html");
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory2 dashboard\n  factory2 run start <title>\n  factory2 run update <id> <define|build|check|finish> <running|blocked|done>\n  factory2 --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory2 install --agent <codex|claude|copilot>\n  factory2 dashboard\n  factory2 run start <title>\n  factory2 run update <id> <define|build|check|finish> <running|blocked|done>\n  factory2 --help | --version";
 const LIMIT: usize = 65536;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -68,6 +69,7 @@ fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
     {
         [] | ["--help" | "-h"] => println!("{HELP}"),
         ["--version" | "-V"] => println!("factory2 {}", env!("CARGO_PKG_VERSION")),
+        ["install", "--agent", agent] => install::install(agent)?,
         ["dashboard"] => serve(&data_path()?)?,
         ["run", "start", title] => {
             let body = serde_json::to_vec(&NewRun {
@@ -98,15 +100,18 @@ fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn data_path() -> io::Result<PathBuf> {
+    #[cfg(windows)]
+    let base = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
     let base = env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "set XDG_DATA_HOME or HOME to store runs",
-            )
-        })?;
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
+    let base = base.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "cannot determine the user data directory",
+        )
+    })?;
     Ok(base.join("tds-factory2/runs.json"))
 }
 
