@@ -1,6 +1,6 @@
-# Releasing Factory 2
+# Releasing TDS Factory
 
-The [old project](https://github.com/TDSchreur/tds-factory) uses `develop` for daily work and its release branch for published code. Factory 2 follows the same flow, with `master` as its release branch.
+The [old project](https://github.com/TDSchreur/tds-factory) uses `develop` for daily work and its release branch for published code. This project follows the same flow, with `master` as its release branch.
 
 1. Open ordinary pull requests against `develop` and squash-merge them after `ci-ok` passes.
 2. When ready to release, update the version in `Cargo.toml` and `Cargo.lock` on `develop`, through a pull request. Choose a version whose `v<version>` tag does not already exist.

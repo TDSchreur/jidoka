@@ -1,11 +1,11 @@
 [package]
-name = "factory2"
+name = "factory"
 version = "0.1.0"
 edition = "2021"
 description = "A small software factory"
 
 [[bin]]
-name = "factory2"
+name = "factory"
 path = "src/main.rs"
 
 [dependencies]

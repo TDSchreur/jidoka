@@ -7,6 +7,9 @@ use std::{
 
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
+/// Skill directories from releases before the rename to TDS Factory.
+const LEGACY_SKILLS: [&str; 2] = ["factory2", "factory2-fast"];
+
 pub fn install(agent: &str) -> io::Result<()> {
     let root = skills_root(agent, &home_dir()?, |name| env::var_os(name))?;
     install_to(&root)
@@ -71,6 +74,18 @@ fn install_to(root: &Path) -> io::Result<()> {
         }
         println!("Installed: {}", dir.display());
     }
+    for name in LEGACY_SKILLS {
+        let dir = root.join(name);
+        if dir.exists() {
+            fs::remove_dir_all(&dir).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("cannot remove legacy skill {}: {error}", dir.display()),
+                )
+            })?;
+            println!("Removed: {}", dir.display());
+        }
+    }
     Ok(())
 }
 
@@ -115,7 +130,7 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
         "licenses/awesome-copilot-LICENSE"
     } else if name == "rust-best-practices" {
         "licenses/beautiful-rust-LICENSE"
-    } else if name != "factory2" && name != "factory2-fast" {
+    } else if name != "factory" && name != "factory-fast" {
         "licenses/mattpocock-skills-LICENSE"
     } else {
         ""
@@ -153,16 +168,22 @@ mod tests {
     fn installs_bundled_skills_and_replaces_existing_ones() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
-        fs::create_dir_all(root.join("factory2")).unwrap();
-        fs::write(root.join("factory2/SKILL.md"), "old content").unwrap();
-        fs::write(root.join("factory2/stale.md"), "removed upstream").unwrap();
+        fs::create_dir_all(root.join("factory")).unwrap();
+        fs::write(root.join("factory/SKILL.md"), "old content").unwrap();
+        fs::write(root.join("factory/stale.md"), "removed upstream").unwrap();
+        for legacy in ["factory2", "factory2-fast"] {
+            fs::create_dir_all(root.join(legacy)).unwrap();
+            fs::write(root.join(legacy).join("SKILL.md"), "legacy").unwrap();
+        }
         fs::create_dir_all(root.join("my-skill")).unwrap();
         fs::write(root.join("my-skill/SKILL.md"), "user skill").unwrap();
         install_to(root).unwrap();
-        assert!(fs::read_to_string(root.join("factory2/SKILL.md"))
+        assert!(fs::read_to_string(root.join("factory/SKILL.md"))
             .unwrap()
-            .contains("name: factory2"));
-        assert!(!root.join("factory2/stale.md").exists());
+            .contains("name: factory"));
+        assert!(!root.join("factory/stale.md").exists());
+        assert!(!root.join("factory2").exists());
+        assert!(!root.join("factory2-fast").exists());
         assert_eq!(
             fs::read_to_string(root.join("my-skill/SKILL.md")).unwrap(),
             "user skill"
@@ -172,10 +193,10 @@ mod tests {
             .is_file());
         assert!(root.join("security-review/LICENSE").is_file());
         assert!(root.join("to-spec/SKILL.md").is_file());
-        assert!(root.join("factory2-fast/SKILL.md").is_file());
+        assert!(root.join("factory-fast/SKILL.md").is_file());
         assert!(root.join("implement-spec-fast/SKILL.md").is_file());
         assert!(root.join("tdd/mocking.md").is_file());
-        assert!(!root.join("factory2-fast/LICENSE").exists());
+        assert!(!root.join("factory-fast/LICENSE").exists());
         assert!(root.join("triage/AGENT-BRIEF.md").is_file());
         assert!(root.join("triage/LICENSE").is_file());
         assert!(root.join("rust-best-practices/SKILL.md").is_file());
