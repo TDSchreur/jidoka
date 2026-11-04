@@ -1,19 +1,33 @@
 use std::{
-    env, fs, io,
+    env,
+    ffi::OsString,
+    fs, io,
     path::{Path, PathBuf},
 };
 
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
 pub fn install(agent: &str) -> io::Result<()> {
-    let home = home_dir()?;
-    let root = match agent {
-        "codex" => env::var_os("CODEX_HOME")
+    let root = skills_root(agent, &home_dir()?, |name| env::var_os(name))?;
+    install_to(&root)
+}
+
+/// Resolves an agent's skills folder, honoring its config directory variable.
+fn skills_root(
+    agent: &str,
+    home: &Path,
+    var: impl Fn(&str) -> Option<OsString>,
+) -> io::Result<PathBuf> {
+    let config_dir = |name: &str, default: &str| {
+        var(name)
+            .filter(|value| !value.is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".codex"))
-            .join("skills"),
-        "claude" => home.join(".claude/skills"),
-        "copilot" => home.join(".copilot/skills"),
+            .unwrap_or_else(|| home.join(default))
+    };
+    let root = match agent {
+        "codex" => config_dir("CODEX_HOME", ".codex"),
+        "claude" => config_dir("CLAUDE_CONFIG_DIR", ".claude"),
+        "copilot" => home.join(".copilot"),
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -21,7 +35,7 @@ pub fn install(agent: &str) -> io::Result<()> {
             ))
         }
     };
-    install_to(&root)
+    Ok(root.join("skills"))
 }
 
 fn home_dir() -> io::Result<PathBuf> {
@@ -45,21 +59,44 @@ fn install_to(root: &Path) -> io::Result<()> {
     names.dedup();
     for name in names {
         let dir = root.join(name);
-        match fs::create_dir(&dir) {
-            Ok(()) => (),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                println!("Skipped existing skill: {}", dir.display());
-                continue;
-            }
-            Err(e) => return Err(e),
-        }
-        if let Err(error) = write_skill(name, &dir) {
-            let _ = fs::remove_dir_all(&dir);
-            return Err(error);
+        let staging = root.join(format!(".{name}.installing"));
+        remove_if_exists(&staging)?;
+        fs::create_dir(&staging)?;
+        if let Err(error) = write_skill(name, &staging).and_then(|()| replace_dir(&staging, &dir)) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(io::Error::new(
+                error.kind(),
+                format!("cannot install skill {}: {error}", dir.display()),
+            ));
         }
         println!("Installed: {}", dir.display());
     }
     Ok(())
+}
+
+/// Replaces `dir` with `staging`, so the skill matches the bundle exactly.
+fn replace_dir(staging: &Path, dir: &Path) -> io::Result<()> {
+    if !dir.exists() {
+        return fs::rename(staging, dir);
+    }
+    let previous = dir.with_file_name(format!(
+        ".{}.previous",
+        dir.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    remove_if_exists(&previous)?;
+    fs::rename(dir, &previous)?;
+    if let Err(error) = fs::rename(staging, dir) {
+        let _ = fs::rename(&previous, dir);
+        return Err(error);
+    }
+    fs::remove_dir_all(previous)
+}
+
+fn remove_if_exists(path: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(path) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
 }
 
 fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
@@ -92,16 +129,43 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn installs_bundled_skills_without_overwriting_existing_files() {
+    fn skills_root_honors_agent_config_directories() {
+        let home = Path::new("/home/user");
+        let unset = |_: &str| None;
+        let set = |name: &str| Some(OsString::from(format!("/custom/{name}")));
+        let empty = |_: &str| Some(OsString::new());
+        let root =
+            |agent, var: &dyn Fn(&str) -> Option<OsString>| skills_root(agent, home, var).unwrap();
+        assert_eq!(root("claude", &unset), home.join(".claude/skills"));
+        assert_eq!(root("claude", &empty), home.join(".claude/skills"));
+        assert_eq!(
+            root("claude", &set),
+            Path::new("/custom/CLAUDE_CONFIG_DIR/skills")
+        );
+        assert_eq!(root("codex", &unset), home.join(".codex/skills"));
+        assert_eq!(root("codex", &set), Path::new("/custom/CODEX_HOME/skills"));
+        assert_eq!(root("copilot", &set), home.join(".copilot/skills"));
+        assert!(skills_root("other", home, unset).is_err());
+    }
+    #[test]
+    fn installs_bundled_skills_and_replaces_existing_ones() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
         fs::create_dir_all(root.join("factory2")).unwrap();
-        fs::write(root.join("factory2/SKILL.md"), "user content").unwrap();
+        fs::write(root.join("factory2/SKILL.md"), "old content").unwrap();
+        fs::write(root.join("factory2/stale.md"), "removed upstream").unwrap();
+        fs::create_dir_all(root.join("my-skill")).unwrap();
+        fs::write(root.join("my-skill/SKILL.md"), "user skill").unwrap();
         install_to(root).unwrap();
+        assert!(fs::read_to_string(root.join("factory2/SKILL.md"))
+            .unwrap()
+            .contains("name: factory2"));
+        assert!(!root.join("factory2/stale.md").exists());
         assert_eq!(
-            fs::read_to_string(root.join("factory2/SKILL.md")).unwrap(),
-            "user content"
+            fs::read_to_string(root.join("my-skill/SKILL.md")).unwrap(),
+            "user skill"
         );
         assert!(root
             .join("security-review/references/language-patterns.md")
@@ -118,5 +182,11 @@ mod tests {
             .unwrap()
             .contains("Morgan Linton"));
         install_to(root).unwrap();
+        let leftovers: Vec<_> = fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with('.'))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover staging dirs: {leftovers:?}");
     }
 }
