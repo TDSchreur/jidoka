@@ -18,6 +18,10 @@
     article p { font-size: .9rem; margin: 0; }
     .notice { margin-top: 2rem; }
     .notice h2 { margin-top: 0; }
+    .runs { display: grid; gap: .75rem; }
+    .run { border: 1px solid #e1e6ef; border-radius: 8px; padding: 1rem; }
+    .run h3 { margin: 0; overflow-wrap: anywhere; }
+    .run p { margin: .3rem 0 0; overflow-wrap: anywhere; }
     code { background: #edf0f7; border-radius: 4px; padding: .15rem .3rem; }
   </style>
 </head>
@@ -35,9 +39,39 @@
       <article><span class="number">04</span><h2>Finish</h2><p>Create a pull request for the completed work.</p></article>
     </section>
     <section class="notice">
-      <h2>Getting started</h2>
-      <p>Ask your coding agent to use <code>skills/factory2/SKILL.md</code> on a task. Run tracking is not connected yet.</p>
+      <h2>Runs</h2>
+      <p id="message" role="status">Loading runs…</p>
+      <div id="runs" class="runs"></div>
     </section>
   </main>
+<script>
+  const runs = document.querySelector('#runs');
+  const message = document.querySelector('#message');
+  async function refresh() {
+    try {
+      const response = await fetch('/api/runs', { cache: 'no-store' });
+      if (!response.ok) throw new Error('Failed to load runs');
+      const data = await response.json();
+      const cards = data.slice().reverse().map(run => {
+        const card = document.createElement('article');
+        card.className = 'run';
+        const title = document.createElement('h3');
+        title.textContent = run.title;
+        const project = document.createElement('p');
+        project.textContent = run.project;
+        const state = document.createElement('p');
+        state.textContent = `${run.stage} · ${run.status}`;
+        card.append(title, project, state);
+        return card;
+      });
+      runs.replaceChildren(...cards);
+      message.textContent = data.length ? '' : 'No runs yet. Start one with the factory2 skill.';
+    } catch {
+      message.textContent = 'Unable to load runs. Check that the factory server is running.';
+    }
+  }
+  refresh();
+  setInterval(refresh, 3000);
+</script>
 </body>
 </html>

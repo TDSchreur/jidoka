@@ -14,7 +14,11 @@ cargo run -- --version
 cargo run -- dashboard
 ```
 
-The dashboard is available at <http://127.0.0.1:4311>; press Ctrl+C to stop it. It shows the factory stages, but does not track runs yet. There are no runtime dependencies or automated runs yet.
+The dashboard is available at <http://127.0.0.1:4311>; press Ctrl+C to stop it. The Rust server stores run progress under `$XDG_DATA_HOME/tds-factory2/` (or `~/.local/share/tds-factory2/` when unset). Keep it running while using factory2. Install the CLI with `cargo install --path . --root ~/.local` so the skill can call `factory2` from any project (ensure `~/.local/bin` is on PATH). Restart a previously running dashboard after upgrading.
+
+For manual tracking, `factory2 run start "Task title"` prints a run ID, and `factory2 run update <id> build running` updates it. Stages are `define`, `build`, `check`, and `finish`; statuses are `running`, `blocked`, and `done`.
+
+The server listens only on localhost but has no user authentication. Other users on the same machine can read and change run titles and project paths; use it only on a trusted machine.
 
 ## Skills
 
