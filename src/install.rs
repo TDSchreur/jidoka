@@ -1,19 +1,33 @@
 use std::{
-    env, fs, io,
+    env,
+    ffi::OsString,
+    fs, io,
     path::{Path, PathBuf},
 };
 
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
 pub fn install(agent: &str) -> io::Result<()> {
-    let home = home_dir()?;
-    let root = match agent {
-        "codex" => env::var_os("CODEX_HOME")
+    let root = skills_root(agent, &home_dir()?, |name| env::var_os(name))?;
+    install_to(&root)
+}
+
+/// Resolves an agent's skills folder, honoring its config directory variable.
+fn skills_root(
+    agent: &str,
+    home: &Path,
+    var: impl Fn(&str) -> Option<OsString>,
+) -> io::Result<PathBuf> {
+    let config_dir = |name: &str, default: &str| {
+        var(name)
+            .filter(|value| !value.is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".codex"))
-            .join("skills"),
-        "claude" => home.join(".claude/skills"),
-        "copilot" => home.join(".copilot/skills"),
+            .unwrap_or_else(|| home.join(default))
+    };
+    let root = match agent {
+        "codex" => config_dir("CODEX_HOME", ".codex"),
+        "claude" => config_dir("CLAUDE_CONFIG_DIR", ".claude"),
+        "copilot" => home.join(".copilot"),
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -21,7 +35,7 @@ pub fn install(agent: &str) -> io::Result<()> {
             ))
         }
     };
-    install_to(&root)
+    Ok(root.join("skills"))
 }
 
 fn home_dir() -> io::Result<PathBuf> {
@@ -92,6 +106,26 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skills_root_honors_agent_config_directories() {
+        let home = Path::new("/home/user");
+        let unset = |_: &str| None;
+        let set = |name: &str| Some(OsString::from(format!("/custom/{name}")));
+        let empty = |_: &str| Some(OsString::new());
+        let root =
+            |agent, var: &dyn Fn(&str) -> Option<OsString>| skills_root(agent, home, var).unwrap();
+        assert_eq!(root("claude", &unset), home.join(".claude/skills"));
+        assert_eq!(root("claude", &empty), home.join(".claude/skills"));
+        assert_eq!(
+            root("claude", &set),
+            Path::new("/custom/CLAUDE_CONFIG_DIR/skills")
+        );
+        assert_eq!(root("codex", &unset), home.join(".codex/skills"));
+        assert_eq!(root("codex", &set), Path::new("/custom/CODEX_HOME/skills"));
+        assert_eq!(root("copilot", &set), home.join(".copilot/skills"));
+        assert!(skills_root("other", home, unset).is_err());
+    }
     #[test]
     fn installs_bundled_skills_without_overwriting_existing_files() {
         let root = tempfile::tempdir().unwrap();
