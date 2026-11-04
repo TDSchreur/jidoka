@@ -61,7 +61,39 @@ The server listens only on localhost but has no user authentication. Other users
 
 The [`factory2` skill](.agents/skills/factory2/SKILL.md) coordinates the flow using skills from [mattpocock/skills](https://github.com/mattpocock/skills) and [github/awesome-copilot](https://github.com/github/awesome-copilot). After installing the skills, ask your coding agent to run factory2 on your task. See [skills/README.md](skills/README.md) for the upstream origins.
 
-Both workflows report progress to the dashboard and use these skills in each stage. The skills in parentheses are loaded by the skill before them.
+Both workflows report progress to the dashboard. The diagram shows the skills each workflow runs; `/factory2-fast` uses the Define skills only when a request needs them. Dotted lines show skills that `grill-with-docs` loads.
+
+```mermaid
+flowchart LR
+    start([factory2 run start]) --> define
+
+    subgraph define [Define]
+        grill[grill-with-docs] --> spec[to-spec] --> tickets[to-tickets]
+        grill -.-> grilling[grilling]
+        grill -.-> domain[domain-modeling]
+    end
+
+    subgraph build [Build]
+        impl[implement-spec]
+        implfast[implement-spec-fast]
+    end
+
+    subgraph check [Check]
+        review[code-review] --> security[security-review]
+    end
+
+    subgraph finish [Finish]
+        pr[pr] --> pull([Pull request to develop])
+    end
+
+    define -->|/factory2| impl
+    define -->|/factory2-fast| implfast
+    impl --> review
+    security --> pr
+    implfast -->|/factory2-fast skips Check| pr
+```
+
+The table lists the same skills by stage; the skills in parentheses are loaded by the skill before them.
 
 | Stage | `/factory2` | `/factory2-fast` |
 | --- | --- | --- |
