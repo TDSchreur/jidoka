@@ -6,7 +6,25 @@ The core flow is **define → build → check → finish**, implemented as an ag
 
 ## Getting started
 
-Install a Rust toolchain with Cargo, then run:
+Install the latest release with one command:
+
+Linux x86-64:
+
+```sh
+curl -fsSL https://github.com/TDSchreur/tds-factory2/releases/latest/download/install.sh | sh
+```
+
+Windows x86-64 (PowerShell):
+
+```powershell
+irm https://github.com/TDSchreur/tds-factory2/releases/latest/download/install.ps1 | iex
+```
+
+Both installers download the prebuilt CLI, verify its release checksum, and install the factory2 skills for Codex. Set `FACTORY2_AGENT` to `claude` or `copilot` before running the installer to choose another agent. Existing skill directories are skipped, so edited or separately installed skills are not overwritten. To install skills for another agent later, run `factory2 install --agent claude` (or `codex` / `copilot`). To update a skill, first move its existing directory aside, then run the install command again. Re-running the one-line installer updates the CLI but also skips existing skills.
+
+Stop the dashboard before upgrading, especially on Windows where a running executable cannot be replaced. The Windows CLI cross-compiles, but the installer has not yet been run on Windows; the release workflow tests the build on a Windows runner.
+
+For development, install a Rust toolchain with Cargo, then run:
 
 ```sh
 cargo run -- --help
@@ -14,7 +32,7 @@ cargo run -- --version
 cargo run -- dashboard
 ```
 
-The dashboard is available at <http://127.0.0.1:4311>; press Ctrl+C to stop it. The Rust server stores run progress under `$XDG_DATA_HOME/tds-factory2/` (or `~/.local/share/tds-factory2/` when unset). Keep it running while using factory2. Install the CLI with `cargo install --path . --root ~/.local` so the skill can call `factory2` from any project (ensure `~/.local/bin` is on PATH). Restart a previously running dashboard after upgrading.
+The Rocket server binds to localhost at <http://127.0.0.1:4311>; press Ctrl+C to stop it. It stores run progress under `$XDG_DATA_HOME/tds-factory2/` (or `~/.local/share/tds-factory2/` when unset) on Linux, and `%LOCALAPPDATA%\tds-factory2\` on Windows. Keep it running while using factory2. To install from a checkout, use `cargo install --path . --locked`, ensure Cargo's bin directory is on PATH, and run `factory2 install --agent codex`. Restart a previously running dashboard after upgrading.
 
 For manual tracking, `factory2 run start "Task title"` prints a run ID, and `factory2 run update <id> build running` updates it. Stages are `define`, `build`, `check`, and `finish`; statuses are `running`, `blocked`, and `done`.
 
@@ -22,11 +40,13 @@ The server listens only on localhost but has no user authentication. Other users
 
 ## Skills
 
-The [`factory2` skill](skills/factory2/SKILL.md) coordinates the flow using skills from [mattpocock/skills](https://github.com/mattpocock/skills) and [github/awesome-copilot](https://github.com/github/awesome-copilot). To start using it, point your coding agent to `skills/factory2/SKILL.md` in this checkout and ask it to run factory2 on your task. The CLI does not install or invoke skills yet. See [skills/README.md](skills/README.md) for the upstream origins.
+The [`factory2` skill](.agents/skills/factory2/SKILL.md) coordinates the flow using skills from [mattpocock/skills](https://github.com/mattpocock/skills) and [github/awesome-copilot](https://github.com/github/awesome-copilot). After installing the skills, ask your coding agent to run factory2 on your task. See [skills/README.md](skills/README.md) for the upstream origins.
 
 The [Rust skill](skills/rust/SKILL.md) and [project instructions](AGENTS.md) guide Rust development in this repository.
 
 ## Development
+
+Day-to-day work targets `develop`; releases merge `develop` into `master`. See [the release guide](docs/releasing.md) for the release and branch-protection setup.
 
 ```sh
 cargo fmt --check
