@@ -63,7 +63,7 @@ The server listens only on localhost but has no user authentication. Other users
 
 The [`factory2` skill](.agents/skills/factory2/SKILL.md) coordinates the flow using skills from [mattpocock/skills](https://github.com/mattpocock/skills) and [github/awesome-copilot](https://github.com/github/awesome-copilot). After installing the skills, ask your coding agent to run factory2 on your task. See [skills/README.md](skills/README.md) for the upstream origins.
 
-Both workflows report progress to the dashboard. The diagram shows the skills each workflow runs; `/factory2-fast` uses the Define skills only when a request needs them. Dotted lines show skills that `grill-with-docs` and `implement-spec` load.
+Both workflows report progress to the dashboard. The diagram shows the skills each workflow runs; `/factory2-fast` uses the Define skills only when a request needs them. Dotted lines show skills that `grill-with-docs` and `implement-spec` load. Each run starts by creating a fresh git worktree from `origin/<base branch>` next to the repository and does all its work there, so several runs can proceed at once; the original checkout is never touched, and the worktree is kept after the pull request opens until you remove it with `git worktree remove`.
 
 ```mermaid
 flowchart TB

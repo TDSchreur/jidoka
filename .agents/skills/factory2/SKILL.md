@@ -9,7 +9,7 @@ Take the user's request through these stages in order. Tell the user what each s
 
 ## Run reporting
 
-Report progress to the factory dashboard with the `factory2` CLI from the project directory. Update only at the points below; do not send periodic updates.
+Report progress to the factory dashboard with the `factory2` CLI from the run's worktree (see Workspace). Update only at the points below; do not send periodic updates.
 
 - **Start:** before Define, run `factory2 run start "<short task title>"` and keep the printed run ID. If the server is not running, start `factory2 dashboard` as a background process, then retry once. If a different or outdated server occupies the port, or the CLI rejects an option below, report that it needs to be stopped or upgraded.
 - **Stage:** at the start of each later stage, run `factory2 run update <id> <build|check|finish> running --activity "<what the stage is doing>"`.
@@ -19,6 +19,17 @@ Report progress to the factory dashboard with the `factory2` CLI from the projec
 - **Done:** run `factory2 run update <id> finish done --activity "Opened <pull request URL>" --clear-current-ticket`.
 
 Options that are left out keep their current value. If the server or an update fails, report the failure rather than claiming progress is tracked.
+
+## Workspace
+
+After `factory2 run start`, give the run its own git worktree so several runs can share one repository without switching branches under each other. Never reuse or modify the original checkout, even if it is on the base branch or has uncommitted changes.
+
+1. Determine the PR base branch: the project's documented base branch, otherwise the remote default from `git symbolic-ref refs/remotes/origin/HEAD`.
+2. Run `git fetch origin <base>` so the run starts from the remote tip, not the local base branch.
+3. Choose a short feature branch name for the task, then run `git worktree add -b <branch> <repo-parent>/<repo-name>.worktrees/<branch-with-slashes-as-dashes> origin/<base>`. If the branch or path already exists, choose a new name instead of reusing it.
+4. If the worktree cannot be created, mark the run blocked with the reason and stop.
+
+Run every later stage from this worktree: Define files, Build, checks, `factory2 run update` commands, commit, push, and the pull request.
 
 ## Define
 
@@ -30,7 +41,7 @@ Keep the spec and tickets as local Markdown files when no tracker is configured;
 
 ## Build
 
-Use `implement-spec` to implement the tickets on a feature branch, building each ticket test-first with `tdd`. Work sequentially in the current checkout; do not require subagents, extra worktrees, a draft PR, or a second code review here. Run the project's relevant checks and fix failures before Check.
+Use `implement-spec` to implement the tickets on the run's feature branch, building each ticket test-first with `tdd`. Work sequentially in the run's worktree; do not require subagents, extra worktrees beyond it, a draft PR, or a second code review here. Run the project's relevant checks and fix failures before Check.
 
 ## Check
 
@@ -38,4 +49,4 @@ Use `code-review` against the branch's starting point and the spec, then use `se
 
 ## Finish
 
-Use `pr` to write the pull request description. Commit the work, push the branch, and create a pull request targeting the project's default branch (`develop` for this project). Report its link and the checks performed. If a required tool, permission, or repository configuration is unavailable, report what remains, mark the run blocked with that as the reason, and stop.
+Use `pr` to write the pull request description. Commit the work, push the branch, and create a pull request targeting the project's default branch (`develop` for this project). Keep the worktree for review follow-ups. Report its link, the worktree path (removable with `git worktree remove <path>` after merge), and the checks performed. If a required tool, permission, or repository configuration is unavailable, report what remains, mark the run blocked with that as the reason, and stop.
