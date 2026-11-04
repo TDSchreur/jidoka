@@ -21,7 +21,8 @@ use std::{
 
 const ADDRESS: &str = "127.0.0.1:4311";
 const DASHBOARD: &str = include_str!("dashboard.html");
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory2 install --agent <codex|claude|copilot>\n  factory2 dashboard\n  factory2 run start <title>\n  factory2 run update <id> <define|build|check|finish> <running|blocked|done>\n  factory2 --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory2 install --agent <codex|claude|copilot>\n  factory2 dashboard\n  factory2 run start <title>\n  factory2 run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory2 --help | --version";
+const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\nOmitted fields are preserved; clear flags remove them.";
 const BODY_LIMIT: u64 = 64 * 1024;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -31,6 +32,14 @@ struct Run {
     project: String,
     stage: Stage,
     status: RunStatus,
+    #[serde(default)]
+    activity: Option<String>,
+    #[serde(default)]
+    current_ticket: Option<String>,
+    #[serde(default)]
+    blocking_reason: Option<String>,
+    #[serde(default)]
+    updated_at: Option<u64>,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -57,9 +66,125 @@ struct NewRun {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct UpdateRun {
     stage: Stage,
     status: RunStatus,
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    activity: FieldUpdate,
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    current_ticket: FieldUpdate,
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    blocking_reason: FieldUpdate,
+}
+
+// Missing fields preserve stored values; null clears them; strings replace them.
+#[derive(Default, Serialize)]
+#[serde(untagged)]
+enum FieldUpdate {
+    #[default]
+    Keep,
+    Clear,
+    Set(String),
+}
+
+impl<'de> Deserialize<'de> for FieldUpdate {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match Option::<String>::deserialize(deserializer)? {
+            Some(value) => Self::Set(value),
+            None => Self::Clear,
+        })
+    }
+}
+
+impl FieldUpdate {
+    fn is_keep(&self) -> bool {
+        matches!(self, Self::Keep)
+    }
+
+    fn apply(self, target: &mut Option<String>) {
+        match self {
+            Self::Keep => {}
+            Self::Clear => *target = None,
+            Self::Set(value) => *target = Some(value),
+        }
+    }
+
+    fn validate(&self, limit: usize) -> Result<(), &'static str> {
+        if let Self::Set(value) = self {
+            if value.trim().is_empty() || value.len() > limit {
+                return Err("Run metadata must be nonblank and within its size limit");
+            }
+        }
+        Ok(())
+    }
+}
+
+impl UpdateRun {
+    fn validate(&self) -> Result<(), &'static str> {
+        self.activity.validate(2000)?;
+        self.blocking_reason.validate(2000)?;
+        self.current_ticket.validate(4096)?;
+        if let FieldUpdate::Set(value) = &self.current_ticket {
+            let valid = rocket::http::uri::Absolute::parse(value)
+                .ok()
+                .is_some_and(|uri| {
+                    matches!(uri.scheme(), "http" | "https")
+                        && uri
+                            .authority()
+                            .is_some_and(|authority| !authority.host().is_empty())
+                });
+            if !valid {
+                return Err("Current ticket must be an absolute HTTP(S) URL");
+            }
+        }
+        Ok(())
+    }
+}
+
+fn parse_update(
+    stage: &str,
+    status: &str,
+    options: &[&str],
+) -> Result<UpdateRun, Box<dyn std::error::Error>> {
+    let mut update = UpdateRun {
+        stage: serde_json::from_value(stage.into())?,
+        status: serde_json::from_value(status.into())?,
+        activity: FieldUpdate::Keep,
+        current_ticket: FieldUpdate::Keep,
+        blocking_reason: FieldUpdate::Keep,
+    };
+    let mut args = options.iter();
+    while let Some(flag) = args.next() {
+        let field = match *flag {
+            "--activity" | "--clear-activity" => &mut update.activity,
+            "--current-ticket" | "--clear-current-ticket" => &mut update.current_ticket,
+            "--blocking-reason" | "--clear-blocking-reason" => &mut update.blocking_reason,
+            _ => return Err(format!("Unknown run update option: {flag}\n{UPDATE_HELP}").into()),
+        };
+        if !field.is_keep() {
+            return Err(format!("Repeated or conflicting run update option: {flag}").into());
+        }
+        *field = if flag.starts_with("--clear-") {
+            FieldUpdate::Clear
+        } else {
+            let value = args
+                .next()
+                .filter(|value| !value.starts_with("--"))
+                .ok_or_else(|| format!("Missing value for {flag}\n{UPDATE_HELP}"))?;
+            FieldUpdate::Set((*value).to_string())
+        };
+    }
+    update.validate()?;
+    Ok(update)
+}
+
+fn updated_now() -> io::Result<u64> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_millis();
+    u64::try_from(millis).map_err(io::Error::other)
 }
 
 struct RunStore {
@@ -94,6 +219,10 @@ impl RunStore {
             project: new.project,
             stage: Stage::Define,
             status: RunStatus::Running,
+            activity: None,
+            current_ticket: None,
+            blocking_reason: None,
+            updated_at: Some(updated_now()?),
         };
         runs.push(run.clone());
         if let Err(error) = save_runs(&self.path, &runs) {
@@ -108,9 +237,16 @@ impl RunStore {
         let Some(index) = runs.iter().position(|run| run.id == id) else {
             return Ok(None);
         };
+        let updated_at = updated_now()?;
         let old = runs[index].clone();
         runs[index].stage = update.stage;
         runs[index].status = update.status;
+        update.activity.apply(&mut runs[index].activity);
+        update.current_ticket.apply(&mut runs[index].current_ticket);
+        update
+            .blocking_reason
+            .apply(&mut runs[index].blocking_reason);
+        runs[index].updated_at = Some(updated_at);
         if let Err(error) = save_runs(&self.path, &runs) {
             runs[index] = old;
             return Err(error);
@@ -139,7 +275,7 @@ fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        [] | ["--help" | "-h"] => println!("{HELP}"),
+        [] | ["--help" | "-h"] => println!("{HELP}\n\n{UPDATE_HELP}"),
         ["--version" | "-V"] => println!("factory2 {}", env!("CARGO_PKG_VERSION")),
         ["install", "--agent", agent] => install::install(agent)?,
         ["dashboard"] => serve(&data_path()?)?,
@@ -152,18 +288,12 @@ fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
             let run: Run = serde_json::from_slice(&response)?;
             println!("{}", run.id);
         }
-        ["run", "update", id, stage, status] => {
+        ["run", "update", id, stage, status, options @ ..] => {
             if !id.bytes().all(|b| b.is_ascii_digit()) || id.is_empty() {
                 return Err("Invalid run id".into());
             }
-            let stage: Stage =
-                serde_json::from_value(serde_json::Value::String(stage.to_string()))?;
-            let status: RunStatus =
-                serde_json::from_value(serde_json::Value::String(status.to_string()))?;
-            api_post(
-                &format!("/api/runs/{id}"),
-                &serde_json::to_vec(&UpdateRun { stage, status })?,
-            )?;
+            let update = parse_update(stage, status, options)?;
+            api_post(&format!("/api/runs/{id}"), &serde_json::to_vec(&update)?)?;
             println!("Updated run {id}");
         }
         _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
@@ -290,6 +420,7 @@ fn update_run(
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(HttpStatus::BadRequest);
     }
+    update.validate().map_err(|_| HttpStatus::BadRequest)?;
     store
         .update(id, update.into_inner())
         .map_err(|error| {
@@ -421,6 +552,7 @@ mod tests {
         assert_eq!(response.status(), HttpStatus::Created);
         let created: Run = response.into_json().await.unwrap();
         assert_eq!(created.stage as u8, Stage::Define as u8);
+        assert!(created.updated_at.is_some());
         let response = api
             .post(format!("/api/runs/{}", created.id))
             .header(Header::new("Host", "127.0.0.1:4311"))
@@ -598,6 +730,9 @@ mod tests {
                             UpdateRun {
                                 stage,
                                 status: RunStatus::Done,
+                                activity: FieldUpdate::Keep,
+                                current_ticket: FieldUpdate::Keep,
+                                blocking_reason: FieldUpdate::Keep,
                             },
                         )
                         .unwrap()
@@ -629,5 +764,206 @@ mod tests {
                 .stage,
             Stage::Check
         ));
+    }
+    async fn report<'a>(
+        api: &'a Client,
+        id: &str,
+        body: &str,
+    ) -> rocket::local::asynchronous::LocalResponse<'a> {
+        api.post(format!("/api/runs/{id}"))
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .header(ContentType::JSON)
+            .body(body)
+            .dispatch()
+            .await
+    }
+
+    #[rocket::async_test]
+    async fn old_records_report_preserve_clear_and_persist_metadata() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        fs::write(
+            &path,
+            r#"[{"id":"42","title":"old","project":"/work","stage":"define","status":"running"}]"#,
+        )
+        .unwrap();
+        let api = client(&dir).await;
+        let original = api
+            .rocket()
+            .state::<RunStore>()
+            .unwrap()
+            .list()
+            .unwrap()
+            .remove(0);
+        assert!(original.activity.is_none());
+        assert!(original.current_ticket.is_none());
+        assert!(original.blocking_reason.is_none());
+        assert!(
+            original.updated_at.is_none(),
+            "legacy records have no invented time"
+        );
+
+        let before = updated_now().unwrap();
+        let response = report(&api, "42", r#"{"stage":"build","status":"blocked","activity":"Implementing #42","current_ticket":"https://github.com/example/repo/issues/42","blocking_reason":"Need credentials"}"#).await;
+        assert_eq!(response.status(), HttpStatus::Ok);
+        let run: Run = response.into_json().await.unwrap();
+        assert!((before..=updated_now().unwrap()).contains(&run.updated_at.unwrap()));
+        assert_eq!(run.activity.as_deref(), Some("Implementing #42"));
+        assert_eq!(run.blocking_reason.as_deref(), Some("Need credentials"));
+        assert_eq!(
+            run.current_ticket.as_deref(),
+            Some("https://github.com/example/repo/issues/42")
+        );
+
+        let restarted = client(&dir).await;
+        let response = report(
+            &restarted,
+            "42",
+            r#"{"stage":"build","status":"running","blocking_reason":null}"#,
+        )
+        .await;
+        assert_eq!(response.status(), HttpStatus::Ok);
+        let resumed: Run = response.into_json().await.unwrap();
+        assert_eq!(
+            resumed.activity, run.activity,
+            "omitted fields stay unchanged"
+        );
+        assert_eq!(resumed.current_ticket, run.current_ticket);
+        assert!(resumed.blocking_reason.is_none());
+        assert!(resumed.updated_at.unwrap() >= run.updated_at.unwrap());
+        let response = report(
+            &restarted,
+            "42",
+            r#"{"stage":"finish","status":"done","activity":null,"current_ticket":null}"#,
+        )
+        .await;
+        assert_eq!(response.status(), HttpStatus::Ok);
+        let persisted = load_runs(&path).unwrap().remove(0);
+        assert!(persisted.activity.is_none());
+        assert!(persisted.current_ticket.is_none());
+        assert!(persisted.blocking_reason.is_none());
+        assert!(persisted.updated_at.is_some());
+        assert!(matches!(persisted.status, RunStatus::Done));
+    }
+
+    #[rocket::async_test]
+    async fn invalid_metadata_and_caller_timestamps_do_not_mutate_runs() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let store = api.rocket().state::<RunStore>().unwrap();
+        let run = store
+            .create(NewRun {
+                title: "task".into(),
+                project: "/work".into(),
+            })
+            .unwrap();
+        let path = dir.0.path().join("runs.json");
+        let original = fs::read(&path).unwrap();
+        for field in [
+            serde_json::json!({"activity": " "}),
+            serde_json::json!({"activity": "x".repeat(2001)}),
+            serde_json::json!({"blocking_reason": "x".repeat(2001)}),
+            serde_json::json!({"current_ticket": "https://example.com/".to_string() + &"x".repeat(4096)}),
+            serde_json::json!({"current_ticket": "javascript:alert(1)"}),
+            serde_json::json!({"current_ticket": "/relative"}),
+            serde_json::json!({"current_ticket": "https:///missing-host"}),
+            serde_json::json!({"activity": 42}),
+            serde_json::json!({"updated_at": 1}),
+        ] {
+            let mut body = serde_json::json!({"stage":"build","status":"blocked"});
+            body.as_object_mut()
+                .unwrap()
+                .extend(field.as_object().unwrap().clone());
+            let response = report(&api, &run.id, &body.to_string()).await;
+            assert_eq!(response.status(), HttpStatus::BadRequest, "input: {body}");
+            assert_eq!(fs::read(&path).unwrap(), original);
+            assert_eq!(
+                serde_json::to_vec(&store.list().unwrap()).unwrap(),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn cli_update_options_preserve_set_clear_and_reject_conflicts() {
+        let update = parse_update("build", "running", &[]).unwrap();
+        assert_eq!(
+            serde_json::to_value(update).unwrap(),
+            serde_json::json!({"stage":"build","status":"running"})
+        );
+        let update = parse_update(
+            "build",
+            "blocked",
+            &[
+                "--activity",
+                "Implementing ticket",
+                "--current-ticket",
+                "https://example.com/42",
+                "--blocking-reason",
+                "Need input",
+            ],
+        )
+        .unwrap();
+        let value = serde_json::to_value(update).unwrap();
+        assert_eq!(value["activity"], "Implementing ticket");
+        assert_eq!(value["current_ticket"], "https://example.com/42");
+        assert_eq!(value["blocking_reason"], "Need input");
+        let update = parse_update(
+            "finish",
+            "done",
+            &[
+                "--clear-activity",
+                "--clear-current-ticket",
+                "--clear-blocking-reason",
+            ],
+        )
+        .unwrap();
+        let value = serde_json::to_value(update).unwrap();
+        for field in ["activity", "current_ticket", "blocking_reason"] {
+            assert_eq!(value.get(field), Some(&serde_json::Value::Null));
+        }
+        for options in [
+            vec!["--activity"],
+            vec!["--activity", "--clear-activity"],
+            vec!["--clear-activity", "--activity", "x"],
+            vec!["--clear-current-ticket", "--clear-current-ticket"],
+            vec!["--unknown"],
+            vec!["--current-ticket", "file:///tmp/ticket"],
+            vec!["--blocking-reason", ""],
+        ] {
+            assert!(
+                parse_update("build", "running", &options).is_err(),
+                "options: {options:?}"
+            );
+        }
+        assert!(parse_update("unknown", "running", &[]).is_err());
+        assert!(parse_update("build", "unknown", &[]).is_err());
+    }
+
+    #[test]
+    fn failed_save_rolls_back_metadata_and_timestamp() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let run = store
+            .create(NewRun {
+                title: "task".into(),
+                project: "/work".into(),
+            })
+            .unwrap();
+        let original = fs::read(&path).unwrap();
+        fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        let update = parse_update(
+            "build",
+            "blocked",
+            &["--activity", "Working", "--blocking-reason", "Need input"],
+        )
+        .unwrap();
+        assert!(store.update(&run.id, update).is_err());
+        assert_eq!(
+            serde_json::to_vec(&store.list().unwrap()).unwrap(),
+            original
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
     }
 }
