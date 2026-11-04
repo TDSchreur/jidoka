@@ -64,10 +64,11 @@ The [`factory2` skill](.agents/skills/factory2/SKILL.md) coordinates the flow us
 Both workflows report progress to the dashboard. The diagram shows the skills each workflow runs; `/factory2-fast` uses the Define skills only when a request needs them. Dotted lines show skills that `grill-with-docs` loads.
 
 ```mermaid
-flowchart LR
+flowchart TB
     start([factory2 run start]) --> define
 
     subgraph define [Define]
+        direction TB
         grill[grill-with-docs] --> spec[to-spec] --> tickets[to-tickets]
         grill -.-> grilling[grilling]
         grill -.-> domain[domain-modeling]
