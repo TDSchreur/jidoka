@@ -6,7 +6,7 @@ The core flow is **define → build → check → finish**, implemented as an ag
 
 ## Getting started
 
-Once a release is published and accessible, install it with one command. The repository is currently private and no Factory 2 release has been published yet, so these commands are not available until then.
+Once a release is published, install it with one command. No Factory 2 release has been published yet, so these commands are not available until then.
 
 Linux x86-64:
 
@@ -45,6 +45,8 @@ The [`factory2` skill](skills/factory2/SKILL.md) coordinates the flow using skil
 The [Rust skill](skills/rust/SKILL.md) and [project instructions](AGENTS.md) guide Rust development in this repository.
 
 ## Development
+
+Day-to-day work targets `develop`; releases merge `develop` into `master`. See [the release guide](docs/releasing.md) for the release and branch-protection setup.
 
 ```sh
 cargo fmt --check

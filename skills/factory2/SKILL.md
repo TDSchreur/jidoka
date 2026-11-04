@@ -27,4 +27,4 @@ Use `code-review` against the branch's starting point and the spec, then use `se
 
 ## Finish
 
-Use `pr` to write the pull request description. Commit the work, push the branch, and create a pull request. Report its link and the checks performed. If a required tool, permission, or repository configuration is unavailable, report what remains and stop.
+Use `pr` to write the pull request description. Commit the work, push the branch, and create a pull request targeting the project's default branch (`develop` for this project). Report its link and the checks performed. If a required tool, permission, or repository configuration is unavailable, report what remains and stop.

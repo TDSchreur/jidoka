@@ -2,7 +2,8 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -46,7 +47,21 @@ jobs:
           pattern: factory2-*
           merge-multiple: true
           path: dist
+      - name: Read release version
+        id: version
+        run: echo "tag=v$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tds-factory") | .version')" >> "$GITHUB_OUTPUT"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* scripts/install.sh scripts/install.ps1 --generate-notes
+        run: |
+          test "$GITHUB_REF" = refs/heads/master || { echo 'Release from master only' >&2; exit 1; }
+          status=0
+          git ls-remote --exit-code --tags origin "refs/tags/${{ steps.version.outputs.tag }}" >/dev/null || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo 'Version tag already exists; investigate before releasing.' >&2
+            exit 1
+          elif [ "$status" -ne 2 ]; then
+            echo 'Could not check release tags.' >&2
+            exit "$status"
+          fi
+          gh release create '${{ steps.version.outputs.tag }}' --target "$GITHUB_SHA" dist/* scripts/install.sh scripts/install.ps1 --generate-notes
