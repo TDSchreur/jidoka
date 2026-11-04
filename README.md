@@ -4,7 +4,9 @@ An early Rust foundation for a small software factory, inspired by the original 
 
 The core flow is **define → build → check → finish**, implemented as an agent skill. Start small and add steps only when they are useful.
 
-## Getting started
+## Install
+
+Prerequisites: Linux x86-64 or Windows x86-64, `git`, and a supported coding agent (Codex, Claude Code, or GitHub Copilot). The `gh` CLI is needed for the workflows to open pull requests. Building from source also needs a Rust toolchain with Cargo.
 
 Install the latest release with one command:
 
@@ -26,7 +28,7 @@ Claude Code skills go to `$CLAUDE_CONFIG_DIR/skills` when `CLAUDE_CONFIG_DIR` is
 
 Stop the dashboard before upgrading, especially on Windows where a running executable cannot be replaced. The Windows CLI cross-compiles, but the installer has not yet been run on Windows; the release workflow tests the build on a Windows runner.
 
-For development, install a Rust toolchain with Cargo, then run:
+To build from source instead, run:
 
 ```sh
 cargo run -- --help
@@ -35,6 +37,14 @@ cargo run -- dashboard
 ```
 
 The Rocket server binds to localhost at <http://127.0.0.1:4311>; press Ctrl+C to stop it. It stores run progress under `$XDG_DATA_HOME/tds-factory/` (or `~/.local/share/tds-factory/` when unset) on Linux, and `%LOCALAPPDATA%\tds-factory\` on Windows. Keep it running while using TDS Factory. To install from a checkout, use `cargo install --path . --locked`, ensure Cargo's bin directory is on PATH, and run `factory install --agent codex`. Restart a previously running dashboard after upgrading.
+
+## Use
+
+1. Start the dashboard and keep it running in a separate terminal: `factory dashboard`. Open <http://127.0.0.1:4311> to follow your runs.
+2. In your project, ask your coding agent to run `/factory` (or `/factory-fast` for small, clear requests) with your task. The agent reports progress to the dashboard with `factory run start` and `factory run update`, and ends by opening a pull request.
+3. Review the pull request. See [Skills](#skills) for what each workflow does.
+
+### Reporting runs manually
 
 For manual tracking, `factory run start "Task title"` prints a run ID, and `factory run update <id> build running` updates it. Stages are `define`, `build`, `check`, and `finish`; statuses are `running`, `blocked`, and `done`.
 
