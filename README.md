@@ -36,6 +36,25 @@ The Rocket server binds to localhost at <http://127.0.0.1:4311>; press Ctrl+C to
 
 For manual tracking, `factory2 run start "Task title"` prints a run ID, and `factory2 run update <id> build running` updates it. Stages are `define`, `build`, `check`, and `finish`; statuses are `running`, `blocked`, and `done`.
 
+Run updates also accept optional reporting fields:
+
+```sh
+factory2 run update <id> build running --activity "Implementing ticket #42" --current-ticket "https://github.com/owner/repo/issues/42"
+factory2 run update <id> build blocked --blocking-reason "Waiting for credentials"
+factory2 run update <id> build running --clear-blocking-reason
+factory2 run update <id> finish done --clear-activity --clear-current-ticket
+```
+
+Omitted fields keep their stored values, including when changing stage or status. Use `--clear-activity`, `--clear-current-ticket`, and `--clear-blocking-reason` to remove them explicitly. Setting and clearing the same field in one command, or repeating a field option, is an error. Activity and blocking reason must be nonblank and at most 2,000 bytes; a current-ticket link must be an absolute HTTP(S) URL of at most 4,096 bytes. Empty strings are rejected; use a clear flag instead.
+
+The API uses `activity`, `current_ticket`, and `blocking_reason` on `POST /api/runs/<id>` alongside the required `stage` and `status`. Omit a metadata field to preserve it, send a string to replace it, or send JSON `null` to clear it. Unknown update fields are rejected. For example:
+
+```json
+{"stage":"build","status":"running","activity":"Implementing ticket #42","blocking_reason":null}
+```
+
+Run responses and `runs.json` include these optional fields and `updated_at`, a server-owned Unix timestamp in milliseconds set on creation and each successful update. Callers cannot set `updated_at` through an update. Existing records load with `null` for missing metadata and timestamps; they receive a timestamp on their next update. The timestamp records a run update, not an agent heartbeat. Restart the dashboard with the updated CLI before using the new options. This step exposes reporting data through the API; the dashboard UI is unchanged.
+
 The server listens only on localhost but has no user authentication. Other users on the same machine can read and change run titles and project paths; use it only on a trusted machine.
 
 ## Skills
