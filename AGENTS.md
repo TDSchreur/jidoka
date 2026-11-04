@@ -22,6 +22,7 @@ Read the relevant guide when working on these files or tasks:
 - [Skill authoring](.github/instructions/agent-skills.instructions.md): skills maintained in this project.
 - [Dashboard accessibility](.github/instructions/accessibility.instructions.md): dashboard HTML, CSS, and interactive behavior.
 - [Markdown](.github/instructions/markdown.instructions.md): Markdown written or edited in this project.
+- [GitHub Actions](.github/instructions/github-actions-ci-cd-best-practices.instructions.md): GitHub Actions workflows.
 
 ## Commands
 
