@@ -13,7 +13,7 @@ Do not publish manually or push tags as a substitute for the release workflow. T
 
 The matching rules from the old project are captured in `.github/rulesets/`: `develop` requires a squash PR, signed commits, linear history, resolved review threads and a successful up-to-date `ci-ok`; `master` requires a merge-commit PR, signed commits, resolved review threads and `ci-ok`. Both prevent deletion and force pushes. Release tags cannot be updated or deleted except by the repository administrator.
 
-GitHub currently rejects ruleset creation for this private repository on its current plan. These files are **not active protection** until the repository is eligible and the rulesets have been created. Once eligible, apply each file and verify the rules in GitHub:
+These rulesets are active on GitHub. If they need to be recreated, apply each file and verify the rules in GitHub:
 
 ```sh
 gh api --method POST repos/TDSchreur/tds-factory2/rulesets --input .github/rulesets/develop.json
