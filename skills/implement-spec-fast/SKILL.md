@@ -1,6 +1,6 @@
 ---
 name: implement-spec-fast
-description: Implement a spec and its tickets without TDD. Use for the Build stage of factory2-fast or when implementation without TDD is requested.
+description: Implement a spec and its tickets without TDD. Use for the Build stage of factory-fast or when implementation without TDD is requested.
 ---
 
 # Implement Spec Fast

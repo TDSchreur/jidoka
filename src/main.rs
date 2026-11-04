@@ -21,7 +21,7 @@ use std::{
 
 const ADDRESS: &str = "127.0.0.1:4311";
 const DASHBOARD: &str = include_str!("dashboard.html");
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory2 install --agent <codex|claude|copilot>\n  factory2 dashboard\n  factory2 run start <title>\n  factory2 run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory2 --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>\n  factory dashboard\n  factory run start <title>\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\nOmitted fields are preserved; clear flags remove them.";
 const BODY_LIMIT: u64 = 64 * 1024;
 
@@ -276,7 +276,7 @@ fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
         .as_slice()
     {
         [] | ["--help" | "-h"] => println!("{HELP}\n\n{UPDATE_HELP}"),
-        ["--version" | "-V"] => println!("factory2 {}", env!("CARGO_PKG_VERSION")),
+        ["--version" | "-V"] => println!("factory {}", env!("CARGO_PKG_VERSION")),
         ["install", "--agent", agent] => install::install(agent)?,
         ["dashboard"] => serve(&data_path()?)?,
         ["run", "start", title] => {
@@ -305,7 +305,7 @@ fn data_path() -> io::Result<PathBuf> {
             "cannot determine the user data directory",
         )
     })?;
-    Ok(base.join("tds-factory2/runs.json"))
+    Ok(base.join("tds-factory/runs.json"))
 }
 
 fn load_runs(path: &Path) -> io::Result<Vec<Run>> {
@@ -522,7 +522,7 @@ fn report_run(
 // Requests always name the server's trusted authority in `Host`, whichever address they connect to.
 fn api_post(server: &str, route: &str, body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut stream = TcpStream::connect(server).map_err(|e| {
-        io::Error::new(e.kind(), format!("cannot connect to factory server at {server}; start it with 'factory2 dashboard': {e}"))
+        io::Error::new(e.kind(), format!("cannot connect to factory server at {server}; start it with 'factory dashboard': {e}"))
     })?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
