@@ -6,7 +6,7 @@ The core flow is **define → build → check → finish**, implemented as an ag
 
 ## Getting started
 
-Once a release is published, install it with one command. No Factory 2 release has been published yet, so these commands are not available until then.
+Install the latest release with one command:
 
 Linux x86-64:
 
