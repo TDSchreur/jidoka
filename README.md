@@ -61,6 +61,17 @@ The server listens only on localhost but has no user authentication. Other users
 
 The [`factory2` skill](.agents/skills/factory2/SKILL.md) coordinates the flow using skills from [mattpocock/skills](https://github.com/mattpocock/skills) and [github/awesome-copilot](https://github.com/github/awesome-copilot). After installing the skills, ask your coding agent to run factory2 on your task. See [skills/README.md](skills/README.md) for the upstream origins.
 
+Both workflows report progress to the dashboard and use these skills in each stage. The skills in parentheses are loaded by the skill before them.
+
+| Stage | `/factory2` | `/factory2-fast` |
+| --- | --- | --- |
+| Define | [`grill-with-docs`](skills/grill-with-docs/SKILL.md) (`grilling`, `domain-modeling`), [`to-spec`](skills/to-spec/SKILL.md), [`to-tickets`](skills/to-tickets/SKILL.md) | The request itself as the spec for clear requests; `grill-with-docs`, `to-spec` and `to-tickets` only when needed |
+| Build | [`implement-spec`](skills/implement-spec/SKILL.md), without required TDD or subagents | [`implement-spec-fast`](skills/implement-spec-fast/SKILL.md) |
+| Check | [`code-review`](skills/code-review/SKILL.md), then [`security-review`](skills/security-review/SKILL.md) | None |
+| Finish | [`pr`](skills/pr/SKILL.md) to write the pull request | `pr` |
+
+`factory2 install` also installs `codebase-design`, `triage` and `rust-best-practices`, which neither workflow calls directly. `implement-spec` refers to `tdd`, but `factory2` doesn't require TDD and `tdd` isn't installed.
+
 The [Rust skill](skills/rust/SKILL.md) and [project instructions](AGENTS.md) guide Rust development in this repository.
 
 ## Development
