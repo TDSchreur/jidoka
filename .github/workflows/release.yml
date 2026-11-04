@@ -49,7 +49,7 @@ jobs:
           path: dist
       - name: Read release version
         id: version
-        run: echo "tag=v$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tds-factory") | .version')" >> "$GITHUB_OUTPUT"
+        run: echo "tag=v$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "factory2") | .version')" >> "$GITHUB_OUTPUT"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

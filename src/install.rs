@@ -59,21 +59,44 @@ fn install_to(root: &Path) -> io::Result<()> {
     names.dedup();
     for name in names {
         let dir = root.join(name);
-        match fs::create_dir(&dir) {
-            Ok(()) => (),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                println!("Skipped existing skill: {}", dir.display());
-                continue;
-            }
-            Err(e) => return Err(e),
-        }
-        if let Err(error) = write_skill(name, &dir) {
-            let _ = fs::remove_dir_all(&dir);
-            return Err(error);
+        let staging = root.join(format!(".{name}.installing"));
+        remove_if_exists(&staging)?;
+        fs::create_dir(&staging)?;
+        if let Err(error) = write_skill(name, &staging).and_then(|()| replace_dir(&staging, &dir)) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(io::Error::new(
+                error.kind(),
+                format!("cannot install skill {}: {error}", dir.display()),
+            ));
         }
         println!("Installed: {}", dir.display());
     }
     Ok(())
+}
+
+/// Replaces `dir` with `staging`, so the skill matches the bundle exactly.
+fn replace_dir(staging: &Path, dir: &Path) -> io::Result<()> {
+    if !dir.exists() {
+        return fs::rename(staging, dir);
+    }
+    let previous = dir.with_file_name(format!(
+        ".{}.previous",
+        dir.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    remove_if_exists(&previous)?;
+    fs::rename(dir, &previous)?;
+    if let Err(error) = fs::rename(staging, dir) {
+        let _ = fs::rename(&previous, dir);
+        return Err(error);
+    }
+    fs::remove_dir_all(previous)
+}
+
+fn remove_if_exists(path: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(path) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
 }
 
 fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
@@ -127,15 +150,22 @@ mod tests {
         assert!(skills_root("other", home, unset).is_err());
     }
     #[test]
-    fn installs_bundled_skills_without_overwriting_existing_files() {
+    fn installs_bundled_skills_and_replaces_existing_ones() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
         fs::create_dir_all(root.join("factory2")).unwrap();
-        fs::write(root.join("factory2/SKILL.md"), "user content").unwrap();
+        fs::write(root.join("factory2/SKILL.md"), "old content").unwrap();
+        fs::write(root.join("factory2/stale.md"), "removed upstream").unwrap();
+        fs::create_dir_all(root.join("my-skill")).unwrap();
+        fs::write(root.join("my-skill/SKILL.md"), "user skill").unwrap();
         install_to(root).unwrap();
+        assert!(fs::read_to_string(root.join("factory2/SKILL.md"))
+            .unwrap()
+            .contains("name: factory2"));
+        assert!(!root.join("factory2/stale.md").exists());
         assert_eq!(
-            fs::read_to_string(root.join("factory2/SKILL.md")).unwrap(),
-            "user content"
+            fs::read_to_string(root.join("my-skill/SKILL.md")).unwrap(),
+            "user skill"
         );
         assert!(root
             .join("security-review/references/language-patterns.md")
@@ -152,5 +182,11 @@ mod tests {
             .unwrap()
             .contains("Morgan Linton"));
         install_to(root).unwrap();
+        let leftovers: Vec<_> = fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with('.'))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover staging dirs: {leftovers:?}");
     }
 }
