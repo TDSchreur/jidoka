@@ -19,7 +19,7 @@ Test at the HTTP boundary and through the CLI where practical: dashboard output,
 
 ## Documents
 
-Review and update applicable claims in `README.md`, `docs/specs/run-dashboard.md`, `docs/specs/run-dashboard-tickets.md`, `skills/factory2/SKILL.md`, and the CLI help in `src/main.rs`. The currently requested `AGENTS.md`, `.gitignore`, and `.github/instructions/github-actions-ci-cd-best-practices.instructions.md` changes are also in scope. The sweep additionally listed `skills/rust/references/transform-over-mutate.md`, `skills/rust/type-design.md`, `skills/security-review/references/report-format.md`, and `skills/security-review/references/vuln-categories.md`; inspect hits and change them only if they describe this behavior.
+Review and update applicable claims in `README.md`, `docs/specs/run-dashboard.md`, `docs/specs/run-dashboard-tickets.md`, `.agents/skills/factory2/SKILL.md`, and the CLI help in `src/main.rs`. The currently requested `AGENTS.md`, `.gitignore`, and `.github/instructions/github-actions-ci-cd-best-practices.instructions.md` changes are also in scope. The sweep additionally listed `skills/rust/references/transform-over-mutate.md`, `skills/rust/type-design.md`, `skills/security-review/references/report-format.md`, and `skills/security-review/references/vuln-categories.md`; inspect hits and change them only if they describe this behavior.
 
 ## Estimate and scope decision
 

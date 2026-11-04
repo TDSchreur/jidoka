@@ -22,10 +22,10 @@ fn files(root: &Path, dir: &Path, output: &mut Vec<String>) {
 
 fn main() {
     println!("cargo:rerun-if-changed=skills");
+    println!("cargo:rerun-if-changed=.agents/skills");
     println!("cargo:rerun-if-changed=third-party");
     let mut output = Vec::new();
     for name in [
-        "factory2",
         "grill-with-docs",
         "grilling",
         "domain-modeling",
@@ -43,7 +43,18 @@ fn main() {
             &mut output,
         );
     }
-    for name in ["mattpocock-skills-LICENSE", "awesome-copilot-LICENSE"] {
+    for name in ["factory2", "factory2-fast", "triage", "rust-best-practices"] {
+        files(
+            Path::new(".agents/skills"),
+            &Path::new(".agents/skills").join(name),
+            &mut output,
+        );
+    }
+    for name in [
+        "mattpocock-skills-LICENSE",
+        "awesome-copilot-LICENSE",
+        "beautiful-rust-LICENSE",
+    ] {
         let path = fs::canonicalize(Path::new("third-party").join(name)).unwrap();
         output.push(format!(
             "({:?}, include_bytes!({:?}).as_slice()),",
