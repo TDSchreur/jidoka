@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TDS Factory</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; color: #18243a; background: #f4f6fa; }
+    body { max-width: 960px; margin: 0 auto; padding: 3rem 1.5rem; }
+    header { margin-bottom: 2.5rem; }
+    .eyebrow { color: #5065a5; font-size: .8rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+    h1 { font-size: clamp(2rem, 5vw, 3rem); margin: .4rem 0; }
+    p { color: #536078; line-height: 1.6; }
+    .stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }
+    article, .notice { background: white; border: 1px solid #e1e6ef; border-radius: 12px; padding: 1.25rem; }
+    .number { color: #697cae; font-size: .8rem; font-weight: 700; }
+    h2 { font-size: 1.1rem; margin: .7rem 0 .4rem; }
+    article p { font-size: .9rem; margin: 0; }
+    .notice { margin-top: 2rem; }
+    .notice h2 { margin-top: 0; }
+    code { background: #edf0f7; border-radius: 4px; padding: .15rem .3rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="eyebrow">TDS Factory</div>
+    <h1>Factory dashboard</h1>
+    <p>A simple flow from an idea to a pull request.</p>
+  </header>
+  <main>
+    <section aria-label="Factory stages" class="stages">
+      <article><span class="number">01</span><h2>Define</h2><p>Clarify the work, write a spec and create tickets.</p></article>
+      <article><span class="number">02</span><h2>Build</h2><p>Implement the spec and run the relevant checks.</p></article>
+      <article><span class="number">03</span><h2>Check</h2><p>Review the code and scan for security issues.</p></article>
+      <article><span class="number">04</span><h2>Finish</h2><p>Create a pull request for the completed work.</p></article>
+    </section>
+    <section class="notice">
+      <h2>Getting started</h2>
+      <p>Ask your coding agent to use <code>skills/factory2/SKILL.md</code> on a task. Run tracking is not connected yet.</p>
+    </section>
+  </main>
+</body>
+</html>
