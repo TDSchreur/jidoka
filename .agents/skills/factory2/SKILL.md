@@ -30,7 +30,7 @@ Keep the spec and tickets as local Markdown files when no tracker is configured;
 
 ## Build
 
-Use `implement-spec` to implement the tickets on a feature branch. Work sequentially in the current checkout; do not require TDD, subagents, extra worktrees, a draft PR, or a second code review here. Run the project's relevant checks and fix failures before Check.
+Use `implement-spec` to implement the tickets on a feature branch, building each ticket test-first with `tdd`. Work sequentially in the current checkout; do not require subagents, extra worktrees, a draft PR, or a second code review here. Run the project's relevant checks and fix failures before Check.
 
 ## Check
 
