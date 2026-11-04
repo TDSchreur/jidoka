@@ -76,7 +76,9 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
     }
     let license = if name == "security-review" {
         "licenses/awesome-copilot-LICENSE"
-    } else if name != "factory2" {
+    } else if name == "rust-best-practices" {
+        "licenses/beautiful-rust-LICENSE"
+    } else if name != "factory2" && name != "factory2-fast" {
         "licenses/mattpocock-skills-LICENSE"
     } else {
         ""
@@ -122,6 +124,14 @@ mod tests {
             .is_file());
         assert!(root.join("security-review/LICENSE").is_file());
         assert!(root.join("to-spec/SKILL.md").is_file());
+        assert!(root.join("factory2-fast/SKILL.md").is_file());
+        assert!(!root.join("factory2-fast/LICENSE").exists());
+        assert!(root.join("triage/AGENT-BRIEF.md").is_file());
+        assert!(root.join("triage/LICENSE").is_file());
+        assert!(root.join("rust-best-practices/SKILL.md").is_file());
+        assert!(fs::read_to_string(root.join("rust-best-practices/LICENSE"))
+            .unwrap()
+            .contains("Morgan Linton"));
         install_to(root).unwrap();
     }
 }

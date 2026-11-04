@@ -5,7 +5,7 @@ description: Take a software change from an idea to a pull request through defin
 
 # Factory 2
 
-Take the user's request through these stages in order. Tell the user what each stage produced. Use the named skills, reading their `SKILL.md` files and any referenced resources when needed. They are siblings of this directory; if installed separately, use the corresponding installed skills. This workflow's instructions take precedence where they differ from those skills.
+Take the user's request through these stages in order. Tell the user what each stage produced. Use the named skills, reading their `SKILL.md` files and any referenced resources when needed. In this project's checkout, the bundled upstream skills are in `skills/<name>/`; in an installed bundle, they are siblings of this directory. Otherwise use the corresponding installed skills. This workflow's instructions take precedence where they differ from those skills.
 
 Before Define, run `factory2 run start "<short task title>"` from the project directory and retain the printed run ID. If the server is not running, start `factory2 dashboard` as a background process, then retry once. If a different or outdated server occupies the port, report that it needs to be stopped or upgraded. At the start of each later stage run `factory2 run update <id> <build|check|finish> running`. On completion, update it with `factory2 run update <id> finish done`. When work is blocked, update the current stage with status `blocked`; set it back to `running` when work resumes. If the server or update fails, report the failure rather than claiming progress is tracked.
 

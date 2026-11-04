@@ -11,6 +11,7 @@ Day-to-day pull requests target `develop`. Release pull requests merge `develop`
 - Write idiomatic, safe Rust; avoid `unsafe` unless there is a clear need.
 - Handle errors with useful context, especially at user-facing and I/O boundaries.
 - Use the [Rust skill](skills/rust/SKILL.md) for guidance when writing or reviewing Rust. Apply its recommendations with judgment: avoid abstractions that add complexity without a concrete benefit.
+- Use [rust-best-practices](.agents/skills/rust-best-practices/SKILL.md) for Rust work, applying its guidance with the same judgment.
 - Consult the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) when designing public APIs.
 - Follow existing conventions and keep changes proportional to the task. TDD is not required.
 
