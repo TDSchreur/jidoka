@@ -10,6 +10,15 @@ Keep the factory simple and fast to develop. Prefer straightforward solutions an
 - Consult the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) when designing public APIs.
 - Follow existing conventions and keep changes proportional to the task. TDD is not required.
 
+## Scoped guides
+
+Read the relevant guide when working on these files or tasks:
+
+- [Reliable tests](.github/instructions/reliable-tests.instructions.md): tests involving time, shared state, files, ports, or processes.
+- [Skill authoring](.github/instructions/agent-skills.instructions.md): skills maintained in this project.
+- [Dashboard accessibility](.github/instructions/accessibility.instructions.md): dashboard HTML, CSS, and interactive behavior.
+- [Markdown](.github/instructions/markdown.instructions.md): Markdown written or edited in this project.
+
 ## Commands
 
 - Format: `cargo fmt --check`
@@ -17,3 +26,17 @@ Keep the factory simple and fast to develop. Prefer straightforward solutions an
 - Test: `cargo test`
 
 Run the checks relevant to the change. These instructions are informed by [Awesome Copilot's Rust instructions](https://github.com/github/awesome-copilot/blob/main/instructions/rust.instructions.md).
+
+## Agent skills
+
+### Issue tracker
+
+Specs and tickets are tracked in GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage uses the default role names as GitHub labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repository uses a single-context domain layout. See `docs/agents/domain.md`.
