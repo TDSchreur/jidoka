@@ -1,6 +1,6 @@
 # Skills
 
-`factory2` is the local workflow skill. The other skill directories are unmodified upstream copies. Each skill lives in its own directory with a `SKILL.md` and any supporting files. The CLI does not install skills; agents can read the files from this checkout or install the directories using their normal installation process.
+`factory2` is the local workflow skill. The other skill directories are unmodified upstream copies. Each skill lives in its own directory with a `SKILL.md` and any supporting files. `factory2 install --agent codex` installs the workflow and its required skills for Codex; `claude` and `copilot` are also supported. Existing skill directories are skipped. Other skills in this directory can be installed using the agent's normal installation process.
 
 - [mattpocock/skills](https://github.com/mattpocock/skills), commit [`59db609`](https://github.com/mattpocock/skills/tree/59db609eb1e18aaf59b63284d0e52255aff0c63c): `grill-with-docs`, `to-spec`, `to-tickets`, `implement-spec`, `tdd`, `diagnosing-bugs`, `code-review`, `pr`, `setup-matt-pocock-skills`, `domain-modeling`, `codebase-design`, and `grilling`.
 - [github/awesome-copilot](https://github.com/github/awesome-copilot), commit [`0fe6545`](https://github.com/github/awesome-copilot/tree/0fe6545b950671641b2b14b44eb56678fea6c6b4): `security-review` (called `security-scan` in the original Factory).

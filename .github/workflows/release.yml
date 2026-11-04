@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: factory2-linux-x86_64
+            executable: target/release/factory2
+          - os: windows-latest
+            artifact: factory2-windows-x86_64.exe
+            executable: target/release/factory2.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - shell: pwsh
+        run: |
+          Copy-Item '${{ matrix.executable }}' '${{ matrix.artifact }}'
+          (Get-FileHash -Algorithm SHA256 '${{ matrix.artifact }}').Hash.ToLowerInvariant() | Set-Content -Encoding ascii '${{ matrix.artifact }}.sha256'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}
+            ${{ matrix.artifact }}.sha256
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: factory2-*
+          merge-multiple: true
+          path: dist
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* scripts/install.sh scripts/install.ps1 --generate-notes
