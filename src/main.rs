@@ -539,6 +539,26 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn dashboard_page_shows_stage_groups_and_last_updated() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let response = api
+            .get("/")
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .dispatch()
+            .await;
+        assert_eq!(response.status(), HttpStatus::Ok);
+        let page = response.into_string().await.unwrap();
+        for group in ["Define", "Build", "Check", "Finish", "Done"] {
+            assert!(
+                page.contains(&format!("'{group}'")),
+                "missing group {group}"
+            );
+        }
+        assert!(page.contains("Last updated"));
+    }
+
+    #[rocket::async_test]
     async fn create_update_and_restart_preserve_cli_json_contract() {
         let dir = TestDir::new();
         let api = client(&dir).await;
