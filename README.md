@@ -46,6 +46,8 @@ The [Rust skill](skills/rust/SKILL.md) and [project instructions](AGENTS.md) gui
 
 ## Development
 
+Day-to-day work targets `develop`; releases merge `develop` into `master`. See [the release guide](docs/releasing.md) for the release and branch-protection setup.
+
 ```sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings

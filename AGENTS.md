@@ -2,6 +2,10 @@
 
 Keep the factory simple and fast to develop. Prefer straightforward solutions and add dependencies only when they solve a real need.
 
+The old project means [TDSchreur/tds-factory](https://github.com/TDSchreur/tds-factory).
+
+Day-to-day pull requests target `develop`. Release pull requests merge `develop` into `master`; see [the release guide](docs/releasing.md).
+
 ## Rust
 
 - Write idiomatic, safe Rust; avoid `unsafe` unless there is a clear need.
