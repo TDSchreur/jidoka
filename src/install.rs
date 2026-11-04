@@ -92,26 +92,10 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    struct TestDir(PathBuf);
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
     #[test]
     fn installs_bundled_skills_without_overwriting_existing_files() {
-        let root = TestDir(env::temp_dir().join(format!(
-            "factory2-install-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        )));
-        let root = &root.0;
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
         fs::create_dir_all(root.join("factory2")).unwrap();
         fs::write(root.join("factory2/SKILL.md"), "user content").unwrap();
         install_to(root).unwrap();

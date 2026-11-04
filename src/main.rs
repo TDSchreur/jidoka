@@ -394,29 +394,15 @@ mod tests {
     use super::*;
     use rocket::{http::Header, local::asynchronous::Client};
 
-    struct TestDir(PathBuf);
+    struct TestDir(tempfile::TempDir);
     impl TestDir {
         fn new() -> Self {
-            let path = env::temp_dir().join(format!(
-                "factory2-test-{}-{}",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            fs::create_dir(&path).unwrap();
-            Self(path)
-        }
-    }
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            Self(tempfile::tempdir().unwrap())
         }
     }
 
     async fn client(dir: &TestDir) -> Client {
-        Client::tracked(build_rocket(&dir.0.join("runs.json"), 0).unwrap())
+        Client::tracked(build_rocket(&dir.0.path().join("runs.json"), 0).unwrap())
             .await
             .unwrap()
     }
@@ -456,7 +442,7 @@ mod tests {
         assert_eq!(saved[0]["title"], "<task>");
         assert_eq!(saved[0]["stage"], "check");
         assert_eq!(
-            serde_json::from_slice::<Vec<Run>>(&fs::read(dir.0.join("runs.json")).unwrap())
+            serde_json::from_slice::<Vec<Run>>(&fs::read(dir.0.path().join("runs.json")).unwrap())
                 .unwrap()
                 .len(),
             1
@@ -513,7 +499,10 @@ mod tests {
             .await
             .unwrap();
         assert!(saved.is_empty());
-        assert_eq!(fs::read(dir.0.join("runs.json")).unwrap_or_default(), b"");
+        assert_eq!(
+            fs::read(dir.0.path().join("runs.json")).unwrap_or_default(),
+            b""
+        );
     }
 
     #[rocket::async_test]
@@ -555,7 +544,7 @@ mod tests {
     #[test]
     fn concurrent_creates_keep_all_records_and_unique_ids() {
         let dir = TestDir::new();
-        let store = std::sync::Arc::new(RunStore::open(&dir.0.join("runs.json")).unwrap());
+        let store = std::sync::Arc::new(RunStore::open(&dir.0.path().join("runs.json")).unwrap());
         let threads: Vec<_> = (0..16)
             .map(|n| {
                 let store = store.clone();
@@ -575,13 +564,16 @@ mod tests {
             .collect();
         let ids: std::collections::HashSet<_> = created.iter().map(|run| run.id.clone()).collect();
         assert_eq!(ids.len(), 16);
-        assert_eq!(load_runs(&dir.0.join("runs.json")).unwrap().len(), 16);
+        assert_eq!(
+            load_runs(&dir.0.path().join("runs.json")).unwrap().len(),
+            16
+        );
     }
 
     #[test]
     fn concurrent_updates_to_different_runs_are_both_persisted() {
         let dir = TestDir::new();
-        let store = std::sync::Arc::new(RunStore::open(&dir.0.join("runs.json")).unwrap());
+        let store = std::sync::Arc::new(RunStore::open(&dir.0.path().join("runs.json")).unwrap());
         let first = store
             .create(NewRun {
                 title: "first".into(),
@@ -616,7 +608,7 @@ mod tests {
         for thread in threads {
             thread.join().unwrap();
         }
-        let persisted = load_runs(&dir.0.join("runs.json")).unwrap();
+        let persisted = load_runs(&dir.0.path().join("runs.json")).unwrap();
         assert_eq!(persisted.len(), 2);
         assert!(persisted
             .iter()
