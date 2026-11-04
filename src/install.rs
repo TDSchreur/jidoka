@@ -174,6 +174,7 @@ mod tests {
         assert!(root.join("to-spec/SKILL.md").is_file());
         assert!(root.join("factory2-fast/SKILL.md").is_file());
         assert!(root.join("implement-spec-fast/SKILL.md").is_file());
+        assert!(root.join("tdd/mocking.md").is_file());
         assert!(!root.join("factory2-fast/LICENSE").exists());
         assert!(root.join("triage/AGENT-BRIEF.md").is_file());
         assert!(root.join("triage/LICENSE").is_file());

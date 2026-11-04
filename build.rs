@@ -34,6 +34,7 @@ fn main() {
         "to-tickets",
         "implement-spec",
         "implement-spec-fast",
+        "tdd",
         "code-review",
         "security-review",
         "pr",
