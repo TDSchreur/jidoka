@@ -22,6 +22,8 @@ irm https://github.com/TDSchreur/tds-factory2/releases/latest/download/install.p
 
 Both installers download the prebuilt CLI, verify its release checksum, and install the factory2 skills for Codex. Set `FACTORY2_AGENT` to `claude` or `copilot` before running the installer to choose another agent. Each install replaces the bundled skill directories with the versions shipped in the CLI, so local edits to those skills are lost; other skills in the same folder are left alone. To install skills for another agent later, run `factory2 install --agent claude` (or `codex` / `copilot`). Re-running the one-line installer updates both the CLI and its skills.
 
+Claude Code skills go to `$CLAUDE_CONFIG_DIR/skills` when `CLAUDE_CONFIG_DIR` is set (for example `~/.claude-work`), otherwise `~/.claude/skills`. Codex skills likewise honor `CODEX_HOME`.
+
 Stop the dashboard before upgrading, especially on Windows where a running executable cannot be replaced. The Windows CLI cross-compiles, but the installer has not yet been run on Windows; the release workflow tests the build on a Windows runner.
 
 For development, install a Rust toolchain with Cargo, then run:
