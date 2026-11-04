@@ -33,6 +33,8 @@ fn main() {
         "to-spec",
         "to-tickets",
         "implement-spec",
+        "implement-spec-fast",
+        "tdd",
         "code-review",
         "security-review",
         "pr",
@@ -43,7 +45,7 @@ fn main() {
             &mut output,
         );
     }
-    for name in ["factory2", "factory2-fast", "triage", "rust-best-practices"] {
+    for name in ["factory", "factory-fast", "triage", "rust-best-practices"] {
         files(
             Path::new(".agents/skills"),
             &Path::new(".agents/skills").join(name),

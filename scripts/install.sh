@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the latest public Factory 2 release on Linux x86-64.
+# Install the latest public TDS Factory release on Linux x86-64.
 set -eu
 
 main() {
@@ -9,17 +9,17 @@ main() {
   base='https://github.com/TDSchreur/tds-factory2/releases/latest/download'
   temp=$(mktemp -d)
   trap 'rm -rf "$temp"' EXIT HUP INT TERM
-  curl -fsSL "$base/factory2-linux-x86_64" -o "$temp/factory2"
-  curl -fsSL "$base/factory2-linux-x86_64.sha256" -o "$temp/checksum"
+  curl -fsSL "$base/factory-linux-x86_64" -o "$temp/factory"
+  curl -fsSL "$base/factory-linux-x86_64.sha256" -o "$temp/checksum"
   expected=$(awk '{print $1}' "$temp/checksum")
-  actual=$(sha256sum "$temp/factory2" | awk '{print $1}')
+  actual=$(sha256sum "$temp/factory" | awk '{print $1}')
   [ -n "$expected" ] && [ "$actual" = "$expected" ] || { echo 'Download checksum mismatch.' >&2; exit 1; }
   mkdir -p "$HOME/.local/bin"
-  chmod 755 "$temp/factory2"
+  chmod 755 "$temp/factory"
   # Copy to a temporary file in the destination before replacing the executable.
-  cp "$temp/factory2" "$HOME/.local/bin/factory2.new"
-  mv -f "$HOME/.local/bin/factory2.new" "$HOME/.local/bin/factory2"
-  "$HOME/.local/bin/factory2" install --agent "${FACTORY2_AGENT:-codex}"
-  echo 'Installed factory2. Ensure ~/.local/bin is on PATH, then run factory2 dashboard.'
+  cp "$temp/factory" "$HOME/.local/bin/factory.new"
+  mv -f "$HOME/.local/bin/factory.new" "$HOME/.local/bin/factory"
+  "$HOME/.local/bin/factory" install --agent "${FACTORY_AGENT:-codex}"
+  echo 'Installed factory. Ensure ~/.local/bin is on PATH, then run factory dashboard.'
 }
 main "$@"
