@@ -32,7 +32,7 @@ cargo run -- --version
 cargo run -- dashboard
 ```
 
-The dashboard is available at <http://127.0.0.1:4311>; press Ctrl+C to stop it. The Rust server stores run progress under `$XDG_DATA_HOME/tds-factory2/` (or `~/.local/share/tds-factory2/` when unset) on Linux, and `%LOCALAPPDATA%\tds-factory2\` on Windows. Keep it running while using factory2. To install from a checkout, use `cargo install --path . --locked`, ensure Cargo's bin directory is on PATH, and run `factory2 install --agent codex`. Restart a previously running dashboard after upgrading.
+The Rocket server binds to localhost at <http://127.0.0.1:4311>; press Ctrl+C to stop it. It stores run progress under `$XDG_DATA_HOME/tds-factory2/` (or `~/.local/share/tds-factory2/` when unset) on Linux, and `%LOCALAPPDATA%\tds-factory2\` on Windows. Keep it running while using factory2. To install from a checkout, use `cargo install --path . --locked`, ensure Cargo's bin directory is on PATH, and run `factory2 install --agent codex`. Restart a previously running dashboard after upgrading.
 
 For manual tracking, `factory2 run start "Task title"` prints a run ID, and `factory2 run update <id> build running` updates it. Stages are `define`, `build`, `check`, and `finish`; statuses are `running`, `blocked`, and `done`.
 
