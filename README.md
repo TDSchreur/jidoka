@@ -137,7 +137,11 @@ flowchart TB
     implfast -->|/factory-fast skips Check| pr
 ```
 
-`factory install` also installs `codebase-design`, `github-actions-hardening`, `triage` and `rust-best-practices`, which no workflow calls directly.
+`factory install` also installs `codebase-design` and `triage`, which no workflow calls directly, and `setup-matt-pocock-skills`, which you run yourself (see below).
+
+### First use in a repository
+
+Run `/setup-matt-pocock-skills` once in each repository before the first workflow run. It records the repository's issue tracker, triage labels and domain-doc layout in `docs/agents/` and adds an `## Agent skills` section to `AGENTS.md` or `CLAUDE.md`. Run it in your normal checkout; there is no need to commit it or push it to a protected branch first. Each workflow run starts in a fresh worktree and carries the uncommitted setup output over from the checkout it was started in, so the output lands in that run's pull request. The workflows stop at the start of Define when `docs/agents/issue-tracker.md` exists neither in the worktree nor in the original checkout.
 
 The [Rust skill](skills/rust/SKILL.md) and [project instructions](AGENTS.md) guide Rust development in this repository.
 
