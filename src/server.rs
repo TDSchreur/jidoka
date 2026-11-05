@@ -804,7 +804,7 @@ mod tests {
     #[rocket::async_test]
     async fn project_rows_collapse_with_a_remembered_toggle() {
         let script = asset("/assets/app.js").await;
-        assert!(script.contains("aria-expanded=${String(!isCollapsed)}"));
+        assert!(script.contains("aria-expanded=${String(!closed)}"));
         assert!(script.contains("localStorage.getItem('collapsed-projects')"));
         assert!(script.contains("${projectWaiting} waiting"));
         // Storage failures are tolerated on both read and write.
@@ -854,11 +854,64 @@ mod tests {
         assert!(!is_local_origin("http://localhost:4311", 4400));
     }
 
+    #[test]
+    fn the_address_constant_matches_the_default_port() {
+        assert_eq!(ADDRESS, format!("127.0.0.1:{DEFAULT_PORT}"));
+    }
+
+    #[rocket::async_test]
+    async fn a_dashboard_on_another_port_checks_host_origin_and_token_against_that_port() {
+        let dir = TestDir::new();
+        let api = Client::tracked(build_rocket(&dir.0.path().join("runs.json"), 4400).unwrap())
+            .await
+            .unwrap();
+        let page = api
+            .get("/")
+            .header(Header::new("Host", "127.0.0.1:4400"))
+            .dispatch()
+            .await;
+        assert_eq!(page.status(), HttpStatus::Ok);
+        let html = page.into_string().await.unwrap();
+        let token = html
+            .split("name=\"session-token\" content=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("the page carries the session token")
+            .to_string();
+        let delete = |host: &'static str, origin: &'static str| {
+            api.delete("/api/runs/1")
+                .header(Header::new("Host", host))
+                .header(Header::new("Origin", origin))
+                .header(Header::new(TOKEN_HEADER, token.clone()))
+                .dispatch()
+        };
+        // Right port: passes the checks (the Run does not exist, so 404).
+        assert_eq!(
+            delete("127.0.0.1:4400", "http://127.0.0.1:4400")
+                .await
+                .status(),
+            HttpStatus::NotFound
+        );
+        // The default port's authority is no longer trusted.
+        assert_eq!(
+            delete("127.0.0.1:4311", "http://127.0.0.1:4311")
+                .await
+                .status(),
+            HttpStatus::Forbidden
+        );
+        assert_eq!(
+            delete("127.0.0.1:4400", "http://127.0.0.1:4311")
+                .await
+                .status(),
+            HttpStatus::Forbidden
+        );
+    }
+
     #[rocket::async_test]
     async fn the_page_opens_on_the_requested_project_expanded_and_first() {
         let script = asset("/assets/app.js").await;
         assert!(script.contains("new URLSearchParams(location.search).get('project')"));
-        assert!(script.contains("if (wanted !== null) set.delete(wanted)"));
+        assert!(script.contains("collapsed.has(project) && !forcedOpen.has(project)"));
         assert!(script.contains("Number(b === wanted) - Number(a === wanted)"));
     }
 

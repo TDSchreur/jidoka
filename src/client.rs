@@ -4,7 +4,7 @@ use crate::{
 };
 use std::{
     io::{self, Read, Write},
-    net::TcpStream,
+    net::{TcpStream, ToSocketAddrs},
     time::Duration,
 };
 
@@ -53,22 +53,33 @@ pub(crate) enum Probe {
     Foreign,
 }
 
+/// The most a probe reads: far more than an info document, so a chatty listener cannot fill memory.
+const PROBE_LIMIT: u64 = 4096;
+
 /// Asks the server at `server` (`host:port`) who it is, through `/api/info`, not the port alone.
+/// Anything that does not answer as a Factory dashboard, including a listener that is slow or odd, is `Foreign`.
 pub(crate) fn probe_dashboard(server: &str) -> io::Result<Probe> {
-    let mut stream = match TcpStream::connect(server) {
+    let timeout = Duration::from_secs(2);
+    let address = server
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid server address"))?;
+    let mut stream = match TcpStream::connect_timeout(&address, timeout) {
         Ok(stream) => stream,
         Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => return Ok(Probe::Absent),
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => return Ok(Probe::Foreign),
         Err(error) => return Err(error),
     };
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-    write!(
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    let sent = write!(
         stream,
         "GET /api/info HTTP/1.1\r\nHost: {server}\r\nConnection: close\r\n\r\n"
-    )?;
+    );
     let mut response = Vec::new();
-    // A listener that never answers, or answers garbage, is simply not a Factory dashboard.
-    if stream.read_to_end(&mut response).is_err() && response.is_empty() {
+    // A read error keeps what arrived so far; an unfinished answer fails to parse and is foreign.
+    let _ = stream.take(PROBE_LIMIT).read_to_end(&mut response);
+    if sent.is_err() {
         return Ok(Probe::Foreign);
     }
     Ok(parse_info(&response).map_or(Probe::Foreign, Probe::Running))

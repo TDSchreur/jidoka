@@ -108,7 +108,7 @@ fn dashboard(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         }
         Probe::Foreign => {
             return Err(format!(
-                "Port {port} is in use by something that is not a Factory dashboard. Stop it, or use 'factory dashboard --port <port>'."
+                "Port {port} is in use by something that is not a Factory dashboard (it may be a dashboard from an older Factory; stop it and run 'factory dashboard' again). Or use 'factory dashboard --port <port>'."
             )
             .into())
         }
