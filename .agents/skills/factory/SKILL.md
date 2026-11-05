@@ -50,7 +50,7 @@ Use `code-review` against the branch's starting point and the spec, then use `se
 
 When there are actionable findings, start a Rework: return to Build, fix the findings test-first with `tdd`, run the relevant checks, then run Check again with both reviews. A run gets at most two Reworks.
 
-Never block work on Check findings. When findings remain after the second Rework, or a finding cannot be resolved, keep the run running: list the remaining findings and ask the user whether to do one more Rework, finish with the findings listed in the pull request, or stop. Follow their choice.
+Never block work on Check findings. When findings remain after the second Rework, or a finding cannot be resolved, keep the run running with `--activity "Waiting for a decision on remaining Check findings"`, list the remaining findings, and ask the user whether to do one more Rework, finish with the findings listed in the pull request, or stop. Follow their choice.
 
 ## Finish
 

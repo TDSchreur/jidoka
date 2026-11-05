@@ -50,7 +50,7 @@ Use one `code-review` pass against the branch's starting point and the spec or a
 
 When there are no actionable findings, go to Finish. When there are, start a Rework: return to Build, fix the findings with `implement-spec-balanced` (implement, then add or adjust behavior tests), rerun the checks the fixes affect, then run Check again with one `code-review` pass over the Rework's changes and the findings it addressed, plus `security-review` when those changes meet the criteria above. A run gets at most two Reworks.
 
-Never block work on Check findings. When findings remain after the second Rework, or a finding cannot be resolved, keep the run running: list the remaining findings and ask the user whether to do one more Rework, finish with the findings listed in the pull request, or stop. Follow their choice.
+Never block work on Check findings. When findings remain after the second Rework, or a finding cannot be resolved, keep the run running with `--activity "Waiting for a decision on remaining Check findings"`, list the remaining findings, and ask the user whether to do one more Rework, finish with the findings listed in the pull request, or stop. Follow their choice.
 
 ## Finish
 

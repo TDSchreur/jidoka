@@ -171,7 +171,7 @@ fn parse_update(
     };
     let mut args = options.iter();
     while let Some(flag) = args.next() {
-        let mut value = || {
+        let mut next_value = || {
             args.next()
                 .filter(|value| !value.starts_with("--"))
                 .ok_or_else(|| format!("Missing value for {flag}\n{UPDATE_HELP}"))
@@ -183,9 +183,9 @@ fn parse_update(
             update.rework = if *flag == "--clear-rework" {
                 FieldUpdate::Clear
             } else {
-                let count = value()?;
+                let count = next_value()?;
                 FieldUpdate::Set(count.parse().map_err(|_| {
-                    format!("Invalid value for --rework: {count}; use a whole number from 1 to 99")
+                    format!("Invalid value for --rework: {count}; use a whole number from 1 to {MAX_REWORK}")
                 })?)
             };
             continue;
@@ -202,7 +202,7 @@ fn parse_update(
         *field = if flag.starts_with("--clear-") {
             FieldUpdate::Clear
         } else {
-            FieldUpdate::Set((*value()?).to_string())
+            FieldUpdate::Set((*next_value()?).to_string())
         };
     }
     update.validate()?;
@@ -1103,6 +1103,14 @@ mod tests {
                 "options: {options:?}"
             );
         }
+        let range = format!("1 to {MAX_REWORK}");
+        for count in ["0", "100", "two"] {
+            let Err(error) = parse_update("build", "running", &["--rework", count]) else {
+                panic!("--rework {count} should be rejected");
+            };
+            assert!(error.to_string().contains(&range), "{error}");
+        }
+        assert!(UPDATE_HELP.contains(&format!("--rework <1-{MAX_REWORK}>")));
     }
 
     #[test]
