@@ -141,7 +141,7 @@ flowchart TB
 
 ### First use in a repository
 
-Run `/setup-matt-pocock-skills` once in each repository before the first workflow run. It records the repository's issue tracker, triage labels and domain-doc layout in `docs/agents/` and adds an `## Agent skills` section to `AGENTS.md` or `CLAUDE.md`. Commit that output to the base branch: the workflows stop at the start of Define when `docs/agents/issue-tracker.md` is missing.
+Run `/setup-matt-pocock-skills` once in each repository before the first workflow run. It records the repository's issue tracker, triage labels and domain-doc layout in `docs/agents/` and adds an `## Agent skills` section to `AGENTS.md` or `CLAUDE.md`. Commit and push that output to the base branch: the workflows stop at the start of Define when `docs/agents/issue-tracker.md` is missing.
 
 The [Rust skill](skills/rust/SKILL.md) and [project instructions](AGENTS.md) guide Rust development in this repository.
 

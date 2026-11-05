@@ -34,7 +34,7 @@ Run every later stage from this worktree: Define files, Build, checks, `factory 
 
 ## Define
 
-Before anything else in Define, check that `docs/agents/issue-tracker.md` exists in the run's worktree. If it is missing, the repository has not been set up for the factory: mark the run blocked with `--blocking-reason "Run /setup-matt-pocock-skills first"`, tell the user to run `/setup-matt-pocock-skills` once in this repository (and commit its output to the base branch), and stop. Do not guess a tracker.
+Before anything else in Define, check that `docs/agents/issue-tracker.md` exists in the run's worktree. If it is missing, the repository has not been set up for the factory: mark the run blocked with `--blocking-reason "Run /setup-matt-pocock-skills first"`, tell the user to run `/setup-matt-pocock-skills` once in this repository (and commit and push its output to the base branch), and stop. Do not guess a tracker.
 
 1. Use `grill-with-docs` to clarify the request and record any useful domain decisions.
 2. Use `to-spec` to write a concise spec from the discussion.

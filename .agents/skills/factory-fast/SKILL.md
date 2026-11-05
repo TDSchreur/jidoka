@@ -33,7 +33,7 @@ Run every later stage from this worktree: Define files, Build, checks, `factory 
 
 ## Define
 
-Before anything else in Define, check that `docs/agents/issue-tracker.md` exists in the run's worktree. If it is missing, the repository has not been set up for the factory: mark the run blocked with `--blocking-reason "Run /setup-matt-pocock-skills first"`, tell the user to run `/setup-matt-pocock-skills` once in this repository (and commit its output to the base branch), and stop. Do not guess a tracker.
+Before anything else in Define, check that `docs/agents/issue-tracker.md` exists in the run's worktree. If it is missing, the repository has not been set up for the factory: mark the run blocked with `--blocking-reason "Run /setup-matt-pocock-skills first"`, tell the user to run `/setup-matt-pocock-skills` once in this repository (and commit and push its output to the base branch), and stop. Do not guess a tracker.
 
 For a clear, bounded request, use the request as the spec and state a short implementation plan and acceptance criteria in the conversation. Continue directly to Build without separate spec files, tickets, or an approval round.
 
