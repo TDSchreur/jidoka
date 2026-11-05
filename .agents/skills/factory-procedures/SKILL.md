@@ -1,6 +1,6 @@
 ---
 name: factory-procedures
-description: Shared operating procedures for the factory, factory-balanced and factory-fast workflows: run reporting, continuing a run, workspace, tracker setup, and pull request and CI. Read by those workflows; do not run it on its own.
+description: Shared operating procedures for the factory, factory-balanced and factory-fast workflows: run reporting, continuing a run, workspace, tracker setup, writing, and pull request and CI. Read by those workflows; do not run it on its own.
 ---
 
 # Factory procedures
@@ -59,6 +59,14 @@ When a run's plan and acceptance criteria exist only in the conversation, save t
 1. Write a concise Markdown file with the task, the plan and the acceptance criteria to `factory-plan.md` in the run worktree's git directory (`git rev-parse --absolute-git-dir`). If that is not writable, write `<worktree path>.factory-plan.md` beside the worktree instead and remove it together with the worktree. The file stays out of the pull request.
 2. Record it with `factory run update <id> <stage> <status> --spec <absolute path>`. This is the same context option as a tracker spec, so no tracker is involved.
 3. When the plan changes, rewrite the file. Never save secrets or a transcript.
+
+## Writing
+
+Use the `humanizer` skill for human-facing prose you write or edit in a run: specs, tickets, plans, documentation, changelog entries, review summaries, commit messages, and pull request descriptions. Apply it to new or changed text only; leave unrelated prose alone.
+
+- Use Humanizer's embedded mode for text you compose (a spec, ticket, summary or description) and its file mode for edits to an existing document. Put only the finished text in the result: no intermediate drafts, no critique of the draft.
+- Stay inside the task's scope and output format. Keep required headings and sections, evidence and its labels, findings, qualifications, notices, domain terms, numbers, and technical content (code, commands, paths, metadata, data, link targets) exactly as the task needs them. Humanizer's formatting advice never overrides these, and it never adds a detail the source does not have.
+- Follow the project's own writing conventions where they differ from Humanizer's style advice.
 
 ## Pull request and CI
 
