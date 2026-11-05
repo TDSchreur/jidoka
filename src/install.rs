@@ -268,6 +268,21 @@ mod tests {
                 "the context names {flag}, which `run update` does not accept"
             );
         }
+        // A plan kept only in the conversation is saved and recorded with the existing --spec.
+        let saving = text
+            .split_once("## Saving the plan")
+            .expect("the shared procedures cannot save a plan")
+            .1
+            .split("\n## ")
+            .next()
+            .unwrap();
+        for needle in [
+            "--spec",
+            "git rev-parse --absolute-git-dir",
+            "acceptance criteria",
+        ] {
+            assert!(saving.contains(needle), "saving the plan lacks {needle}");
+        }
         // Continuing: inspect first, verify the recorded state, and never discard work.
         let continuing = text
             .split_once("## Continuing a run")
@@ -306,6 +321,11 @@ mod tests {
                     "{skill} does not point to {section}"
                 );
             }
+            assert_eq!(
+                text.contains("Saving the plan in [factory-procedures]"),
+                skill != "factory",
+                "{skill} saves a conversational plan only in the lighter workflows"
+            );
             assert!(
                 text.contains(&format!("`--mode {skill}`")),
                 "{skill} reports its own mode"

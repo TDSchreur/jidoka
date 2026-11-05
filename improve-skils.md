@@ -96,7 +96,7 @@ Run these in order. Each prompt describes a separate change suitable for `/facto
   /factory-balanced Align verification instructions across the three factory workflows and implementation skills. For balanced and fast, run relevant checks during implementation and full verification on the final candidate; reuse passing results only while the checked code and relevant inputs remain unchanged. Always honor stricter project-required checks. Retain quality mode's full verification per ticket. Reconcile these rules with commits before Check and verification before push so the instructions do not demand redundant runs without a reason. Update documentation, add a changelog fragment, and run the project's verification.
   ```
 
-- [ ] **5. Make lightweight runs independent of tracker setup and resumable.**
+- [x] **5. Make lightweight runs independent of tracker setup and resumable.**
 
   ```text
   /factory-balanced Let factory-balanced and factory-fast handle clear, bounded requests without tracker setup when no tracker operations are needed. Preserve tracker requirements for publishing specs or tickets and never guess a tracker. Before Build, durably save the lightweight plan and acceptance criteria and record its reference through the existing run-context CLI so another session can continue without the original chat. Keep this lightweight and avoid new CLI features unless existing capabilities are insufficient. Align setup recovery and readiness guidance, update documentation, add a changelog fragment, and run the project's verification.

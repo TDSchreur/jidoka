@@ -21,11 +21,9 @@ Follow Workspace in [factory-procedures](../factory-procedures/SKILL.md): every 
 
 ## Define
 
-Before anything else in Define, follow Tracker setup in [factory-procedures](../factory-procedures/SKILL.md).
+For a clear, bounded request, use the request as the spec and state a short implementation plan and acceptance criteria in the conversation; no tracker setup is needed for that. Save them as described in Saving the plan in [factory-procedures](../factory-procedures/SKILL.md), then continue directly to Build without separate spec files, tickets, or an approval round.
 
-For a clear, bounded request, use the request as the spec and state a short implementation plan and acceptance criteria in the conversation. Continue directly to Build without separate spec files, tickets, or an approval round.
-
-Use `grill-with-docs` only when unresolved requirements or domain decisions materially affect implementation. Use `to-spec` when the task needs a durable spec, and `to-tickets` when multiple dependent pieces benefit from explicit tracking. Reuse existing specs and tickets rather than recreating them.
+Use `grill-with-docs` only when unresolved requirements or domain decisions materially affect implementation. Use `to-spec` when the task needs a durable spec, and `to-tickets` when multiple dependent pieces benefit from explicit tracking. Reuse existing specs and tickets rather than recreating them. Before reading or publishing specs or tickets in the tracker, follow Tracker setup in [factory-procedures](../factory-procedures/SKILL.md).
 
 When these artifacts are needed, store them in the tracker configured in `docs/agents/issue-tracker.md`. Do not require extra approval of test seams or a separate ticket-breakdown approval. Ask the user when a decision is actually needed.
 
