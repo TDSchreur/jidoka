@@ -150,26 +150,23 @@ fn verify_checksum(data: &[u8], checksum_file: &str) -> Result<(), String> {
 }
 
 /// Puts `new` in place of the running executable `current`.
+#[cfg(not(windows))]
 fn replace_executable(current: &Path, new: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(new, fs::Permissions::from_mode(0o755))?;
-    }
-    // Windows cannot overwrite a running executable but can rename it.
-    #[cfg(windows)]
-    {
-        let old = current.with_extension("old");
-        let _ = fs::remove_file(&old);
-        fs::rename(current, &old)?;
-        if let Err(error) = fs::rename(new, current) {
-            let _ = fs::rename(&old, current);
-            return Err(error);
-        }
-        return Ok(());
-    }
-    #[cfg(not(windows))]
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(new, fs::Permissions::from_mode(0o755))?;
     fs::rename(new, current)
+}
+
+/// Puts `new` in place of the running executable `current`. Windows cannot overwrite a running
+/// executable but can rename it.
+#[cfg(windows)]
+fn replace_executable(current: &Path, new: &Path) -> io::Result<()> {
+    let old = current.with_extension("old");
+    let _ = fs::remove_file(&old);
+    fs::rename(current, &old)?;
+    fs::rename(new, current).inspect_err(|_| {
+        let _ = fs::rename(&old, current);
+    })
 }
 
 /// The agents that already have bundled skills installed.
