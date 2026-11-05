@@ -27,6 +27,21 @@ const ASSETS: &[(&str, ContentType, &[u8])] = &[
         ContentType::CSS,
         include_bytes!("../dashboard/style.css"),
     ),
+    (
+        "vendor/preact.js",
+        ContentType::JavaScript,
+        include_bytes!("../dashboard/vendor/preact.js"),
+    ),
+    (
+        "vendor/hooks.js",
+        ContentType::JavaScript,
+        include_bytes!("../dashboard/vendor/hooks.js"),
+    ),
+    (
+        "vendor/htm.js",
+        ContentType::JavaScript,
+        include_bytes!("../dashboard/vendor/htm.js"),
+    ),
 ];
 /// Placeholder in the dashboard page that is replaced with the build label.
 const BUILD_PLACEHOLDER: &str = "__BUILD__";
@@ -248,7 +263,7 @@ mod tests {
             );
         }
         assert!(page.contains("Last updated"));
-        assert!(page.contains("'Rework '"), "missing Rework label");
+        assert!(page.contains("Rework"), "missing Rework label");
         assert!(page.contains("past the cap of"));
     }
 
@@ -277,6 +292,9 @@ mod tests {
         for (path, content_type) in [
             ("/assets/app.js", ContentType::JavaScript),
             ("/assets/style.css", ContentType::CSS),
+            ("/assets/vendor/preact.js", ContentType::JavaScript),
+            ("/assets/vendor/hooks.js", ContentType::JavaScript),
+            ("/assets/vendor/htm.js", ContentType::JavaScript),
         ] {
             let response = api
                 .get(path)
@@ -341,6 +359,33 @@ mod tests {
         assert!(page.contains("src=\"/assets/app.js\""));
     }
 
+    #[rocket::async_test]
+    async fn import_map_names_only_served_vendor_files() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let page = api
+            .get("/")
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .dispatch()
+            .await
+            .into_string()
+            .await
+            .unwrap();
+        let map = &page[page.find("importmap").unwrap()..];
+        let map = &map[..map.find("</script>").unwrap()];
+        let mut mapped = 0;
+        for target in map.split('"').filter(|part| part.starts_with("/assets/")) {
+            mapped += 1;
+            let response = api
+                .get(target.to_owned())
+                .header(Header::new("Host", "127.0.0.1:4311"))
+                .dispatch()
+                .await;
+            assert_eq!(response.status(), HttpStatus::Ok, "{target}");
+        }
+        assert_eq!(mapped, 3, "preact, preact/hooks and htm");
+    }
+
     /// Custom property names declared in the CSS block that opens at `marker`.
     fn tokens_after(page: &str, marker: &str) -> std::collections::BTreeSet<String> {
         let start = page
@@ -375,18 +420,15 @@ mod tests {
     async fn dashboard_theme_toggle_is_a_labelled_radio_group_remembered_safely() {
         let page = dashboard_page().await;
         assert!(page.contains("<legend>Theme</legend>"));
+        assert!(page.contains("type=\"radio\""));
+        assert!(page.contains("name=\"theme\""));
         for value in ["system", "light", "dark"] {
             assert!(
-                page.contains(&format!(
-                    "<input type=\"radio\" name=\"theme\" value=\"{value}\""
-                )),
+                page.contains(&format!("['{value}', ")),
                 "missing {value} option"
             );
         }
-        assert!(
-            page.contains("value=\"system\" checked"),
-            "System is the default"
-        );
+        assert!(page.contains("return 'system';"), "System is the default");
         // The stored choice is applied before the stylesheet, so there is no flash.
         let early = page.find("localStorage.getItem('theme')").unwrap();
         assert!(early < page.find("rel=\"stylesheet\"").unwrap());

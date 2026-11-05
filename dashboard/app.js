@@ -1,5 +1,9 @@
-const groupsEl = document.querySelector('#groups');
-const message = document.querySelector('#message');
+import { h, render } from 'preact';
+import { useEffect, useState } from 'preact/hooks';
+import htm from 'htm';
+
+const html = htm.bind(h);
+
 const GROUPS = [
   ['define', 'Define', 'Clarify the work, write a spec and create tickets.'],
   ['build', 'Build', 'Implement the spec and run the relevant checks.'],
@@ -9,135 +13,182 @@ const GROUPS = [
 ];
 const STATUSES = ['running', 'blocked', 'done'];
 const REWORK_CAP = 2;
-let lastJson = null;
+const POLL_MS = 3000;
+const THEMES = [
+  ['system', 'System'],
+  ['light', 'Light'],
+  ['dark', 'Dark'],
+];
 
-const themeInputs = document.querySelectorAll('input[name="theme"]');
-function applyTheme(choice) {
-  if (choice === 'light' || choice === 'dark') document.documentElement.dataset.theme = choice;
-  else delete document.documentElement.dataset.theme;
-}
-try {
-  const stored = localStorage.getItem('theme');
-  for (const input of themeInputs) input.checked = input.value === (stored === 'light' || stored === 'dark' ? stored : 'system');
-} catch { /* storage unavailable: keep System selected */ }
-for (const input of themeInputs) {
-  input.addEventListener('change', () => {
-    applyTheme(input.value);
-    try {
-      if (input.value === 'system') localStorage.removeItem('theme');
-      else localStorage.setItem('theme', input.value);
-    } catch { /* the choice still applies for this visit */ }
-  });
-}
+const timestamp = (run) =>
+  typeof run.updated_at === 'number' &&
+  Number.isFinite(run.updated_at) &&
+  !Number.isNaN(new Date(run.updated_at).getTime())
+    ? run.updated_at
+    : null;
+const groupOf = (run) => (run.status === 'done' ? 'done' : run.stage);
 
-const el = (tag, text, className) => {
-  const node = document.createElement(tag);
-  if (text !== undefined) node.textContent = text;
-  if (className) node.className = className;
-  return node;
-};
-const timestamp = run => (typeof run.updated_at === 'number' && Number.isFinite(run.updated_at)
-  && !Number.isNaN(new Date(run.updated_at).getTime())) ? run.updated_at : null;
-const groupOf = run => run.status === 'done' ? 'done' : run.stage;
-
+// Blocked first, then the most recently updated; Runs without a timestamp go last, newest record first.
 function compare(a, b) {
   const blocked = (b.run.status === 'blocked') - (a.run.status === 'blocked');
   if (blocked) return blocked;
-  const ta = timestamp(a.run), tb = timestamp(b.run);
+  const ta = timestamp(a.run);
+  const tb = timestamp(b.run);
   if (ta !== null && tb !== null && ta !== tb) return tb - ta;
   if ((ta === null) !== (tb === null)) return ta === null ? 1 : -1;
   return b.index - a.index;
 }
 
-function ticket(value) {
-  const p = el('p', undefined, 'ticket');
-  p.append('Ticket: ');
+function storedTheme() {
+  try {
+    const stored = localStorage.getItem('theme');
+    if (stored === 'light' || stored === 'dark') return stored;
+  } catch {
+    /* storage unavailable: follow the system setting */
+  }
+  return 'system';
+}
+
+function applyTheme(choice) {
+  if (choice === 'light' || choice === 'dark') document.documentElement.dataset.theme = choice;
+  else delete document.documentElement.dataset.theme;
+}
+
+function ThemeSwitch() {
+  const [theme, setTheme] = useState(storedTheme);
+  const choose = (choice) => {
+    setTheme(choice);
+    applyTheme(choice);
+    try {
+      if (choice === 'system') localStorage.removeItem('theme');
+      else localStorage.setItem('theme', choice);
+    } catch {
+      /* the choice still applies for this visit */
+    }
+  };
+  return html`<fieldset class="theme">
+    <legend>Theme</legend>
+    ${THEMES.map(
+      ([value, label]) => html`<label>
+        <input
+          type="radio"
+          name="theme"
+          value=${value}
+          checked=${theme === value}
+          onChange=${() => choose(value)}
+        />
+        ${' ' + label}
+      </label>`,
+    )}
+  </fieldset>`;
+}
+
+function Ticket({ value }) {
   let url = null;
   try {
     const parsed = new URL(value);
     if (parsed.protocol === 'http:' || parsed.protocol === 'https:') url = parsed;
-  } catch { /* not a URL: show as text */ }
-  if (url) {
-    const a = el('a', value);
-    a.href = url.href;
-    a.rel = 'noopener noreferrer';
-    p.append(a);
-  } else {
-    p.append(value);
-  }
-  return p;
-}
-
-function rework(count) {
-  const text = count <= REWORK_CAP ? `${count} of ${REWORK_CAP}` : `${count} (past the cap of ${REWORK_CAP})`;
-  return el('p', 'Rework ' + text, 'rework');
-}
-
-function card(run) {
-  const item = el('li');
-  const article = el('article', undefined, run.status === 'blocked' ? 'run blocked' : 'run');
-  article.append(el('h3', run.title), el('p', run.project, 'project'));
-  const status = STATUSES.includes(run.status) ? run.status : String(run.status);
-  article.append(el('span', status, `badge ${STATUSES.includes(run.status) ? run.status : ''}`.trim()));
-  if (Number.isInteger(run.rework) && run.rework > 0) article.append(rework(run.rework));
-  if (run.activity) article.append(el('p', `Activity: ${run.activity}`, 'activity'));
-  if (run.current_ticket) article.append(ticket(String(run.current_ticket)));
-  if (run.blocking_reason) article.append(el('p', `Blocked: ${run.blocking_reason}`, 'reason'));
-  const updated = el('p', undefined, 'updated');
-  const ts = timestamp(run);
-  if (ts !== null) {
-    const date = new Date(ts);
-    updated.append('Last updated ');
-    const time = el('time', date.toLocaleString());
-    time.dateTime = date.toISOString();
-    updated.append(time);
-  } else {
-    updated.textContent = 'Last updated: not reported';
-  }
-  article.append(updated);
-  item.append(article);
-  return item;
-}
-
-function render(data) {
-  const sections = GROUPS.map(([key, name, description]) => {
-    const entries = data.map((run, index) => ({ run, index })).filter(e => groupOf(e.run) === key).sort(compare);
-    const section = el('section', undefined, 'group');
-    const heading = el('h2', name);
-    heading.id = `group-${key}`;
-    heading.append(el('span', ` (${entries.length})`, 'count'));
-    section.setAttribute('aria-labelledby', heading.id);
-    section.append(heading, el('p', description, 'group-description'));
-    if (entries.length) {
-      const list = el('ul', undefined, 'runs');
-      list.append(...entries.map(e => card(e.run)));
-      section.append(list);
-    } else {
-      section.append(el('p', 'No runs', 'empty'));
-    }
-    return section;
-  });
-  groupsEl.replaceChildren(...sections);
-}
-
-async function refresh() {
-  try {
-    const response = await fetch('/api/runs', { cache: 'no-store' });
-    if (!response.ok) throw new Error('Failed to load runs');
-    const data = await response.json();
-    if (!Array.isArray(data)) throw new Error('Unexpected response');
-    const json = JSON.stringify(data);
-    if (json !== lastJson) {
-      render(data);
-      lastJson = json;
-    }
-    message.className = '';
-    const text = data.length ? '' : 'No runs yet. Start one with the factory skill.';
-    if (message.textContent !== text) message.textContent = text;
   } catch {
-    message.className = 'error';
-    message.textContent = 'Unable to load runs. Check that the factory server is running.';
+    /* not a URL: show as text */
   }
+  return html`<p class="ticket">
+    Ticket: ${url ? html`<a href=${url.href} rel="noopener noreferrer">${value}</a>` : value}
+  </p>`;
 }
-refresh();
-setInterval(refresh, 3000);
+
+function Updated({ run }) {
+  const ts = timestamp(run);
+  if (ts === null) return html`<p class="updated">Last updated: not reported</p>`;
+  const date = new Date(ts);
+  return html`<p class="updated">
+    Last updated${' '}<time datetime=${date.toISOString()}>${date.toLocaleString()}</time>
+  </p>`;
+}
+
+function Card({ run }) {
+  const known = STATUSES.includes(run.status);
+  const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
+  return html`<li>
+    <article class=${run.status === 'blocked' ? 'run blocked' : 'run'}>
+      <h3>${run.title}</h3>
+      <p class="project">${run.project}</p>
+      <span class=${known ? `badge ${run.status}` : 'badge'}>${String(run.status)}</span>
+      ${rework !== null &&
+      html`<p class="rework">
+        Rework${' '}${rework <= REWORK_CAP
+          ? `${rework} of ${REWORK_CAP}`
+          : `${rework} (past the cap of ${REWORK_CAP})`}
+      </p>`}
+      ${run.activity && html`<p class="activity">Activity: ${run.activity}</p>`}
+      ${run.current_ticket && html`<${Ticket} value=${String(run.current_ticket)} />`}
+      ${run.blocking_reason && html`<p class="reason">Blocked: ${run.blocking_reason}</p>`}
+      <${Updated} run=${run} />
+    </article>
+  </li>`;
+}
+
+function Group({ id, name, description, entries }) {
+  return html`<section class="group" aria-labelledby=${`group-${id}`}>
+    <h2 id=${`group-${id}`}>${name}<span class="count">${` (${entries.length})`}</span></h2>
+    <p class="group-description">${description}</p>
+    ${entries.length
+      ? html`<ul class="runs">
+          ${entries.map((entry) => html`<${Card} key=${entry.index} run=${entry.run} />`)}
+        </ul>`
+      : html`<p class="empty">No runs</p>`}
+  </section>`;
+}
+
+/** Polls the Run list; `runs` stays null until the first answer and `failed` is set while the server is unreachable. */
+function useRuns() {
+  const [state, setState] = useState({ runs: null, failed: false });
+  useEffect(() => {
+    let active = true;
+    async function refresh() {
+      try {
+        const response = await fetch('/api/runs', { cache: 'no-store' });
+        if (!response.ok) throw new Error('Failed to load runs');
+        const data = await response.json();
+        if (!Array.isArray(data)) throw new Error('Unexpected response');
+        if (active) setState({ runs: data, failed: false });
+      } catch {
+        if (active) setState((current) => ({ ...current, failed: true }));
+      }
+    }
+    refresh();
+    const timer = setInterval(refresh, POLL_MS);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, []);
+  return state;
+}
+
+function App() {
+  const { runs, failed } = useRuns();
+  let text = 'Loading runs…';
+  if (failed) text = 'Unable to load runs. Check that the factory server is running.';
+  else if (runs) text = runs.length ? '' : 'No runs yet. Start one with the factory skill.';
+  const indexed = (runs ?? []).map((run, index) => ({ run, index }));
+  return html`
+    <${ThemeSwitch} />
+    <main>
+      <p id="message" role="status" class=${failed ? 'error' : ''}>${text}</p>
+      <div id="groups">
+        ${runs &&
+        GROUPS.map(
+          ([id, name, description]) => html`<${Group}
+            key=${id}
+            id=${id}
+            name=${name}
+            description=${description}
+            entries=${indexed.filter((entry) => groupOf(entry.run) === id).sort(compare)}
+          />`,
+        )}
+      </div>
+    </main>
+  `;
+}
+
+render(html`<${App} />`, document.querySelector('#app'));
