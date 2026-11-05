@@ -34,11 +34,13 @@ Run every later stage from this worktree: Define files, Build, checks, `factory 
 
 ## Define
 
+Before anything else in Define, check that `docs/agents/issue-tracker.md` exists in the run's worktree. If it is missing, the repository has not been set up for the factory: mark the run blocked with `--blocking-reason "Run /setup-matt-pocock-skills first"`, tell the user to run `/setup-matt-pocock-skills` once in this repository (and commit its output to the base branch), and stop. Do not guess a tracker.
+
 When the request is clear and bounded, use it as the spec. Otherwise use `to-spec` once to write a concise spec from the request and the code, without interviewing the user. Either way, state explicit acceptance criteria before Build.
 
 Use `to-tickets` only when the work has multiple pieces that benefit from separate tracking. Use `grill-with-docs` only when an ambiguity blocks implementation, and limit it to that ambiguity. Reuse existing specs and tickets rather than recreating them.
 
-When these artifacts are needed, keep them as local Markdown files if no tracker is configured; otherwise use the project's configured tracker. Do not require tracker setup, extra approval of test seams, or a separate ticket-breakdown approval. Ask the user when a decision is actually needed.
+When these artifacts are needed, store them in the tracker configured in `docs/agents/issue-tracker.md`. Do not require extra approval of test seams or a separate ticket-breakdown approval. Ask the user when a decision is actually needed.
 
 ## Build
 

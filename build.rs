@@ -69,8 +69,8 @@ fn main() {
         "tdd",
         "code-review",
         "security-review",
-        "github-actions-hardening",
         "pr",
+        "setup-matt-pocock-skills",
     ] {
         files(
             Path::new("skills"),
@@ -78,24 +78,14 @@ fn main() {
             &mut output,
         );
     }
-    for name in [
-        "factory",
-        "factory-fast",
-        "factory-balanced",
-        "triage",
-        "rust-best-practices",
-    ] {
+    for name in ["factory", "factory-fast", "factory-balanced", "triage"] {
         files(
             Path::new(".agents/skills"),
             &Path::new(".agents/skills").join(name),
             &mut output,
         );
     }
-    for name in [
-        "mattpocock-skills-LICENSE",
-        "awesome-copilot-LICENSE",
-        "beautiful-rust-LICENSE",
-    ] {
+    for name in ["mattpocock-skills-LICENSE", "awesome-copilot-LICENSE"] {
         let path = fs::canonicalize(Path::new("third-party").join(name)).unwrap();
         output.push(format!(
             "({:?}, include_bytes!({:?}).as_slice()),",

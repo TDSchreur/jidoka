@@ -7,8 +7,14 @@ use std::{
 
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
-/// Skill directories from releases before the rename to TDS Factory.
-const LEGACY_SKILLS: [&str; 2] = ["factory2", "factory2-fast"];
+/// Skill directories from earlier releases that are no longer bundled: the pre-rename
+/// `factory2` skills and development-only skills that were once installed.
+const LEGACY_SKILLS: [&str; 4] = [
+    "factory2",
+    "factory2-fast",
+    "github-actions-hardening",
+    "rust-best-practices",
+];
 
 /// Skills maintained in this project, installed without a third-party license.
 const LOCAL_SKILLS: [&str; 5] = [
@@ -157,10 +163,8 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
         }
         fs::write(destination, content)?;
     }
-    let license = if name == "security-review" || name == "github-actions-hardening" {
+    let license = if name == "security-review" {
         "licenses/awesome-copilot-LICENSE"
-    } else if name == "rust-best-practices" {
-        "licenses/beautiful-rust-LICENSE"
     } else if LOCAL_SKILLS.contains(&name) {
         ""
     } else {
@@ -256,7 +260,12 @@ mod tests {
         fs::create_dir_all(root.join("factory")).unwrap();
         fs::write(root.join("factory/SKILL.md"), "old content").unwrap();
         fs::write(root.join("factory/stale.md"), "removed upstream").unwrap();
-        for legacy in ["factory2", "factory2-fast"] {
+        for legacy in [
+            "factory2",
+            "factory2-fast",
+            "github-actions-hardening",
+            "rust-best-practices",
+        ] {
             fs::create_dir_all(root.join(legacy)).unwrap();
             fs::write(root.join(legacy).join("SKILL.md"), "legacy").unwrap();
         }
@@ -269,6 +278,8 @@ mod tests {
         assert!(!root.join("factory/stale.md").exists());
         assert!(!root.join("factory2").exists());
         assert!(!root.join("factory2-fast").exists());
+        assert!(!root.join("github-actions-hardening").exists());
+        assert!(!root.join("rust-best-practices").exists());
         assert_eq!(
             fs::read_to_string(root.join("my-skill/SKILL.md")).unwrap(),
             "user skill"
@@ -277,10 +288,11 @@ mod tests {
             .join("security-review/references/language-patterns.md")
             .is_file());
         assert!(root.join("security-review/LICENSE").is_file());
+        assert!(root.join("setup-matt-pocock-skills/SKILL.md").is_file());
         assert!(root
-            .join("github-actions-hardening/references/injection.md")
+            .join("setup-matt-pocock-skills/issue-tracker-github.md")
             .is_file());
-        assert!(root.join("github-actions-hardening/LICENSE").is_file());
+        assert!(root.join("setup-matt-pocock-skills/LICENSE").is_file());
         assert!(root.join("to-spec/SKILL.md").is_file());
         assert!(root.join("factory-fast/SKILL.md").is_file());
         assert!(root.join("implement-spec-fast/SKILL.md").is_file());
@@ -293,10 +305,6 @@ mod tests {
         assert!(!root.join("implement-spec-fast/LICENSE").exists());
         assert!(root.join("triage/AGENT-BRIEF.md").is_file());
         assert!(root.join("triage/LICENSE").is_file());
-        assert!(root.join("rust-best-practices/SKILL.md").is_file());
-        assert!(fs::read_to_string(root.join("rust-best-practices/LICENSE"))
-            .unwrap()
-            .contains("Morgan Linton"));
         install_to(root).unwrap();
         let leftovers: Vec<_> = fs::read_dir(root)
             .unwrap()
