@@ -225,6 +225,9 @@ body:has(.confirm[open]) { overflow: hidden; }
 .fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--spacingVerticalS) var(--spacingHorizontalXL); margin: 0; }
 .fields dt { color: var(--colorNeutralForeground3); }
 .fields dd { margin: 0; overflow-wrap: anywhere; }
+.links { margin: var(--spacingVerticalXS) 0 0; font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); }
+.ticket-list, .summaries { margin: 0; padding-left: var(--spacingHorizontalXL); }
+.ticket-status { font-weight: var(--fontWeightSemibold); }
 .fields .not-set { color: var(--colorNeutralForeground3); font-style: italic; }
 .detail-close-compact { display: none; }
 main:focus { outline: none; }

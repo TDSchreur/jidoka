@@ -219,6 +219,72 @@ mod tests {
     const WORKFLOW_SKILLS: [&str; 3] = ["factory", "factory-balanced", "factory-fast"];
 
     #[test]
+    fn workflow_skills_record_run_context_with_options_the_cli_accepts_and_continue_safely() {
+        for skill in ["factory", "factory-balanced", "factory-fast"] {
+            let text = BUNDLED
+                .iter()
+                .find(|(path, _)| *path == format!("{skill}/SKILL.md"))
+                .map(|(_, content)| String::from_utf8_lossy(content).into_owned())
+                .unwrap();
+            let context = text
+                .split_once("- **Context:**")
+                .and_then(|(_, rest)| rest.split_once("- **Done:**"))
+                .unwrap_or_else(|| panic!("{skill} has no Context step"))
+                .0;
+            let mut flags: Vec<&str> = context
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .filter(|word| word.starts_with("--") && word.len() > 2)
+                .collect();
+            flags.sort_unstable();
+            flags.dedup();
+            // The skill names every option of the context; each one is a real `run update` option.
+            for flag in [
+                "--mode",
+                "--worktree",
+                "--branch",
+                "--base-commit",
+                "--spec",
+                "--ticket",
+                "--ticket-status",
+                "--summary",
+                "--pr",
+                "--blocking-reason",
+            ] {
+                assert!(flags.contains(&flag), "{skill} does not record {flag}");
+            }
+            for flag in flags.iter().filter(|flag| !flag.starts_with("--clear-<")) {
+                assert!(
+                    crate::run::UPDATE_HELP.contains(flag),
+                    "{skill} names {flag}, which `run update` does not accept"
+                );
+            }
+            assert!(
+                context.contains(&format!("--mode {skill}")),
+                "{skill} records its own mode"
+            );
+            // Continuing: inspect first, verify the recorded state, and never discard work.
+            let continuing = text
+                .split_once("## Continuing a run")
+                .unwrap_or_else(|| panic!("{skill} has no continuation protocol"))
+                .1;
+            let continuing = continuing.split("\n## ").next().unwrap();
+            for needle in [
+                "factory run inspect",
+                "git worktree list",
+                "git branch --show-current",
+                "merge-base --is-ancestor",
+                "git status --porcelain",
+                "Never reset, clean",
+            ] {
+                assert!(
+                    continuing.contains(needle),
+                    "{skill}: continuation lacks {needle}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn bundled_skills_do_not_name_this_repository() {
         let mut offenders = Vec::new();
         for (path, content) in BUNDLED {
