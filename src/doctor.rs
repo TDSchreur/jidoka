@@ -172,7 +172,7 @@ pub(crate) fn diagnose(
     })
 }
 
-fn git_output(project: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git_output(project: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(project)
