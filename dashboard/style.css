@@ -147,7 +147,7 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .empty { margin: 0; font-style: italic; }
 .runs { display: grid; gap: var(--spacingVerticalM); list-style: none; margin: 0; padding: 0; }
 .run { background: var(--colorNeutralBackground1); border: var(--strokeWidthThin) solid var(--colorNeutralStroke2); border-radius: var(--borderRadiusMedium); box-shadow: var(--shadow4); padding: var(--spacingVerticalL) var(--spacingHorizontalL); }
-.run.blocked { border-left: var(--spacingHorizontalXS) solid var(--colorPaletteRedBorder2); }
+.run.blocked { border-left: calc(var(--strokeWidthThick) * 2) solid var(--colorPaletteRedBorder2); }
 .run h3 { margin: 0; font-size: var(--fontSizeBase300); line-height: var(--lineHeightBase300); font-weight: var(--fontWeightSemibold); overflow-wrap: anywhere; }
 .run p { margin: var(--spacingVerticalXS) 0 0; overflow-wrap: anywhere; }
 .project, .updated { font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground3); }

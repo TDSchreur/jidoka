@@ -454,25 +454,66 @@ mod tests {
     async fn dashboard_rules_use_tokens_and_no_literal_colour() {
         let css = stylesheet().await;
         let (_, rules) = split_tokens(&css);
-        for (at, _) in rules.match_indices('#') {
-            let hex = rules[at + 1..]
+        // Only declaration bodies can hold a colour; selectors such as `#add` are not colours.
+        let declarations: String = rules
+            .split('}')
+            .filter_map(|rule| rule.split_once('{').map(|(_, body)| body))
+            .collect::<Vec<_>>()
+            .join(";");
+        for (at, _) in declarations.match_indices('#') {
+            let hex = declarations[at + 1..]
                 .chars()
                 .take_while(char::is_ascii_hexdigit)
                 .count();
             assert!(
                 !matches!(hex, 3 | 4 | 6 | 8),
                 "literal colour near {:?}",
-                &rules[at..(at + 12).min(rules.len())]
+                &declarations[at..(at + 12).min(declarations.len())]
             );
         }
-        for function in ["rgb(", "rgba(", "hsl(", "hsla(", "color-mix(", "oklch("] {
-            assert!(!rules.contains(function), "literal colour {function}");
+        for function in [
+            "rgb(",
+            "rgba(",
+            "hsl(",
+            "hsla(",
+            "hwb(",
+            "lab(",
+            "lch(",
+            "oklab(",
+            "oklch(",
+            "color(",
+            "color-mix(",
+            "light-dark(",
+        ] {
+            assert!(
+                !declarations.contains(function),
+                "literal colour {function}"
+            );
         }
-        let words: std::collections::BTreeSet<_> = rules
+        let words: std::collections::BTreeSet<_> = declarations
             .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+            .map(str::to_ascii_lowercase)
             .collect();
         for named in [
-            "white", "black", "red", "green", "blue", "gray", "grey", "orange", "yellow",
+            "white",
+            "black",
+            "red",
+            "green",
+            "blue",
+            "gray",
+            "grey",
+            "orange",
+            "yellow",
+            "purple",
+            "navy",
+            "teal",
+            "pink",
+            "transparent",
+            "currentcolor",
+            "canvas",
+            "canvastext",
+            "linktext",
+            "highlight",
         ] {
             assert!(!words.contains(named), "named colour {named}");
         }
