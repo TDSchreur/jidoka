@@ -355,6 +355,39 @@ mod tests {
         }
         assert!(bundled_text("humanizer/SKILL.md").contains("**Embedded mode.**"));
         assert!(bundled_text("humanizer/SKILL.md").contains("**File mode.**"));
+        // Every workflow reads that procedure, which covers both modes and what must survive editing.
+        let writing = bundled_text("factory-procedures/SKILL.md")
+            .split_once("## Writing")
+            .expect("the shared procedures have no Writing section")
+            .1
+            .split("\n## ")
+            .next()
+            .unwrap()
+            .to_lowercase();
+        for needle in [
+            "embedded mode",
+            "file mode",
+            "evidence",
+            "qualifications",
+            "findings",
+        ] {
+            assert!(
+                writing.contains(needle),
+                "the writing procedure lacks {needle}"
+            );
+        }
+        for skill in WORKFLOW_SKILLS {
+            let text = bundled_text(&format!("{skill}/SKILL.md"));
+            assert!(
+                text.contains("Writing in [factory-procedures]"),
+                "{skill} does not point to the writing procedure"
+            );
+        }
+        // The README lists it among the installed skills.
+        let readme =
+            fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/README.md"))
+                .unwrap();
+        assert!(readme.contains("`triage`, `humanizer`"));
         // In this checkout the same names resolve as skills/<name>/ directories.
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         assert!(root.join("skills/humanizer/SKILL.md").is_file());
