@@ -1,6 +1,6 @@
 ---
 description: 'Accessibility guidance for the dashboard'
-applyTo: 'src/**/*.html,src/**/*.css,src/**/*.js'
+applyTo: 'dashboard/*.html,dashboard/*.css,dashboard/*.js'
 ---
 
 # Dashboard accessibility

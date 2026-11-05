@@ -1,6 +1,6 @@
 ---
 description: 'Keep documentation and changelog fragments in sync with code changes'
-applyTo: 'src/**,build.rs,Cargo.toml,scripts/**,skills/**,.agents/skills/**,.github/workflows/**'
+applyTo: 'src/**,dashboard/**,build.rs,Cargo.toml,scripts/**,skills/**,.agents/skills/**,.github/workflows/**'
 ---
 
 # Update docs with code changes
