@@ -72,6 +72,8 @@
     .badge.done { color: var(--done-text); background: var(--done-bg); border-color: var(--done-text); }
     .rework { font-weight: 600; }
     .reason { color: var(--danger); font-weight: 600; }
+    footer { margin-top: 2rem; }
+    .build { margin: 0; font-size: .85rem; }
     a { color: var(--link); }
     a:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
   </style>
@@ -92,6 +94,9 @@
     <p id="message" role="status">Loading runs…</p>
     <div id="groups"></div>
   </main>
+  <footer>
+    <p class="build">Version <code>__BUILD__</code></p>
+  </footer>
 <script>
   const groupsEl = document.querySelector('#groups');
   const message = document.querySelector('#message');
