@@ -195,6 +195,42 @@ mod tests {
         assert_eq!(root("copilot", &set), home.join(".copilot/skills"));
         assert!(skills_root("other", home, unset).is_err());
     }
+    /// Names that belong to this repository, not to the projects the skills are installed in.
+    /// Concrete commands and branches go in AGENTS.md, README or .github/instructions instead.
+    const PROJECT_SPECIFIC: [&str; 3] = ["verify.sh", "tds-factory", "for this project"];
+    /// Workflow skills must also not assume this repository's branch name.
+    const WORKFLOW_SKILLS: [&str; 3] = ["factory", "factory-balanced", "factory-fast"];
+
+    #[test]
+    fn bundled_skills_do_not_name_this_repository() {
+        let mut offenders = Vec::new();
+        for (path, content) in BUNDLED {
+            let (skill, _) = path.split_once('/').unwrap();
+            if skill == "licenses" {
+                continue;
+            }
+            let text = String::from_utf8_lossy(content);
+            let lowercase = text.to_lowercase();
+            for term in PROJECT_SPECIFIC {
+                if lowercase.contains(term) {
+                    offenders.push(format!("{path}: {term}"));
+                }
+            }
+            let is_workflow = WORKFLOW_SKILLS.contains(&skill);
+            if is_workflow
+                && text
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|w| w == "develop")
+            {
+                offenders.push(format!("{path}: develop"));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "bundled skills must not name this repository (see AGENTS.md): {offenders:?}"
+        );
+    }
+
     #[test]
     fn skills_roots_resolves_every_listed_agent_once() {
         let home = Path::new("/home/user");
