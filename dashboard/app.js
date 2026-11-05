@@ -149,8 +149,8 @@ function Card({ run, now }) {
   </li>`;
 }
 
-function Group({ id, name, description, entries, now }) {
-  return html`<section class="group" aria-labelledby=${`group-${id}`}>
+function Group({ id, name, description, entries, now, selected }) {
+  return html`<section class=${selected ? 'group selected' : 'group'} aria-labelledby=${`group-${id}`}>
     <div class="group-header">
       <h2 id=${`group-${id}`}>${name}<span class="count">${` (${entries.length})`}</span></h2>
       <p class="group-description">${description}</p>
@@ -209,6 +209,34 @@ function NeedsYouToggle({ count, pressed, onToggle }) {
   </button>`;
 }
 
+/** The Stage a visitor first sees in compact mode: one with a waiting Run, else the first with any Run. */
+function firstStage(stages) {
+  const waitingStage = stages.find((stage) => stage.entries.some((entry) => needsYou(entry.run)));
+  const filled = stages.find((stage) => stage.entries.length);
+  return (waitingStage ?? filled ?? stages[0]).id;
+}
+
+/** Compact mode shows one Stage at a time; these buttons pick it. Wide screens hide them and show every column. */
+function StageButtons({ stages, current, onPick }) {
+  return html`<div class="stages" role="group" aria-label="Stage">
+    ${stages.map((stage) => {
+      const waiting = stage.entries.some((entry) => needsYou(entry.run));
+      return html`<button
+        type="button"
+        key=${stage.id}
+        class="toggle"
+        aria-pressed=${String(stage.id === current)}
+        onClick=${() => onPick(stage.id)}
+      >
+        ${stage.name} (${stage.entries.length})${waiting
+          ? html`<span class="waiting-mark" aria-hidden="true">!</span
+              ><span class="visually-hidden"> needs you</span>`
+          : null}
+      </button>`;
+    })}
+  </div>`;
+}
+
 function App() {
   const { runs, failed } = useRuns();
   const now = useNow();
@@ -227,6 +255,18 @@ function App() {
   const indexed = (runs ?? [])
     .map((run, index) => ({ run, index }))
     .filter((entry) => !onlyWaiting || needsYou(entry.run));
+  const stages = GROUPS.map(([id, name, description]) => ({
+    id,
+    name,
+    description,
+    entries: indexed.filter((entry) => groupOf(entry.run) === id).sort(compare),
+  }));
+  // Chosen once when the first answer arrives, then only the visitor changes it.
+  const [stage, setStage] = useState(null);
+  useEffect(() => {
+    if (runs && stage === null) setStage(firstStage(stages));
+  });
+  const current = stage ?? GROUPS[0][0];
   return html`
     <div class="toolbar">
       <${NeedsYouToggle}
@@ -238,16 +278,18 @@ function App() {
     </div>
     <main>
       <p id="message" role="status" class=${failed ? 'error' : ''}>${text}</p>
+      ${runs ? html`<${StageButtons} stages=${stages} current=${current} onPick=${setStage} />` : null}
       <div id="groups">
         ${runs
-          ? GROUPS.map(
-              ([id, name, description]) => html`<${Group}
-                key=${id}
-                id=${id}
-                name=${name}
-                description=${description}
+          ? stages.map(
+              (item) => html`<${Group}
+                key=${item.id}
+                id=${item.id}
+                name=${item.name}
+                description=${item.description}
                 now=${now}
-                entries=${indexed.filter((entry) => groupOf(entry.run) === id).sort(compare)}
+                entries=${item.entries}
+                selected=${item.id === current}
               />`,
             )
           : null}
