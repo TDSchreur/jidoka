@@ -1,4 +1,5 @@
 mod client;
+mod doctor;
 mod install;
 mod run;
 mod server;
@@ -8,7 +9,7 @@ use run::UPDATE_HELP;
 use server::{serve, ADDRESS, DEFAULT_PORT};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>]\n  factory run start <title>\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>]\n  factory doctor [--agent <codex|claude|copilot>] [--json]\n  factory run start <title>\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -30,14 +31,18 @@ fn current_build() -> String {
 }
 
 fn main() -> ExitCode {
-    if let Err(error) = run_cli() {
-        eprintln!("{error}");
-        return ExitCode::FAILURE;
+    match run_cli() {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
     }
-    ExitCode::SUCCESS
 }
 
-fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
+/// Runs the command; `false` means it already reported why it did not succeed.
+fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args().skip(1).collect();
     match args
         .iter()
@@ -48,6 +53,11 @@ fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
         [] | ["--help" | "-h"] => println!("{HELP}\n\n{UPDATE_HELP}"),
         ["--version" | "-V"] => println!("factory {}", current_build()),
         ["install", "--agent", agent] => install::install(agent)?,
+        ["doctor", options @ ..] => {
+            let (agent, json) =
+                doctor::parse_args(options).map_err(|error| format!("{error}\n{HELP}"))?;
+            return doctor::run(agent, json);
+        }
         ["dashboard"] => dashboard(DEFAULT_PORT)?,
         ["dashboard", "--port", port] => dashboard(parse_port(port)?)?,
         ["run", "start", title] => {
@@ -60,7 +70,7 @@ fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
     }
-    Ok(())
+    Ok(true)
 }
 
 fn parse_port(port: &str) -> Result<u16, String> {

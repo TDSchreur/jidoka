@@ -53,7 +53,7 @@ fn skills_roots(
 }
 
 /// Resolves an agent's skills folder, honoring its config directory variable.
-fn skills_root(
+pub(crate) fn skills_root(
     agent: &str,
     home: &Path,
     var: impl Fn(&str) -> Option<OsString>,
@@ -78,7 +78,7 @@ fn skills_root(
     Ok(root.join("skills"))
 }
 
-fn home_dir() -> io::Result<PathBuf> {
+pub(crate) fn home_dir() -> io::Result<PathBuf> {
     #[cfg(windows)]
     let home = env::var_os("USERPROFILE");
     #[cfg(not(windows))]
@@ -88,8 +88,8 @@ fn home_dir() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cannot find your home directory"))
 }
 
-fn install_to(root: &Path) -> io::Result<()> {
-    fs::create_dir_all(root)?;
+/// The names of the skills `install` writes, in order.
+pub(crate) fn bundled_skill_names() -> Vec<&'static str> {
     let mut names: Vec<&str> = BUNDLED
         .iter()
         .filter_map(|(path, _)| path.split('/').next())
@@ -97,7 +97,12 @@ fn install_to(root: &Path) -> io::Result<()> {
         .collect();
     names.sort_unstable();
     names.dedup();
-    for name in names {
+    names
+}
+
+fn install_to(root: &Path) -> io::Result<()> {
+    fs::create_dir_all(root)?;
+    for name in bundled_skill_names() {
         let dir = root.join(name);
         let staging = root.join(format!(".{name}.installing"));
         remove_if_exists(&staging)?;

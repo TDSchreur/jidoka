@@ -145,6 +145,15 @@ flowchart TB
 
 `factory install` also installs `codebase-design` and `triage`, which no workflow calls directly, and `setup-matt-pocock-skills`, which you run yourself (see below).
 
+### Checking readiness
+
+`factory doctor` reports whether the current repository and your machine are ready for the factory, without changing anything, installing anything or starting the dashboard. It checks:
+
+- the project: a Git repository, an `origin` remote, origin's default branch (`git remote set-head origin --auto` sets it when unknown), the setup output of `/setup-matt-pocock-skills` (`docs/agents/issue-tracker.md` and the `## Agent skills` section), and the verification commands listed as bullets under `## Commands` in `AGENTS.md` or `CLAUDE.md`. It looks for each command's tool but never runs it.
+- each agent (Codex, Claude Code, Copilot): its command is on `PATH`, and every skill `factory install` bundles is installed in the folder `factory install` would use (honoring `CODEX_HOME` and `CLAUDE_CONFIG_DIR`).
+
+Each line is `pass`, `missing` (something to supply) or `fail` (something broken), with a fix. The exit status is 0 when the project checks pass and at least one agent is usable. Use `--agent codex|claude|copilot` to check, and require, one agent, and `--json` for structured output.
+
 ### First use in a repository
 
 Run `/setup-matt-pocock-skills` once in each repository before the first workflow run. It records the repository's issue tracker, triage labels and domain-doc layout in `docs/agents/` and adds an `## Agent skills` section to `AGENTS.md` or `CLAUDE.md`. Run it in your normal checkout; there is no need to commit it or push it to a protected branch first. Each workflow run starts in a fresh worktree and carries the uncommitted setup output over from the checkout it was started in, so the output lands in that run's pull request. The workflows stop at the start of Define when `docs/agents/issue-tracker.md` exists neither in the worktree nor in the original checkout.
