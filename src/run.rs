@@ -1,16 +1,22 @@
+use crate::usage::{Mark, Usage};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs, io,
+    ops::Deref,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\nOmitted fields are preserved; clear flags remove them.";
+pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\nOmitted fields are preserved; clear flags remove them.";
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
 const MAX_TICKETS: usize = 100;
+const MAX_SESSIONS: usize = 20;
+/// Sessions kept per run, and marks kept on its timeline.
+const KEEP_SESSIONS: usize = 100;
+pub(crate) const MAX_MARKS: usize = 1000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Run {
@@ -52,6 +58,18 @@ pub(crate) struct Run {
     /// One short summary per stage, kept after later stages begin.
     #[serde(default)]
     pub(crate) summaries: BTreeMap<Stage, String>,
+    // Token usage. Only identifiers and counts, never log text.
+    /// When the stage, rework or active ticket changed, oldest first: how log entries are attributed.
+    #[serde(default)]
+    pub(crate) timeline: Vec<Mark>,
+    /// When the run was marked done; usage after that is not the run's.
+    #[serde(default)]
+    pub(crate) finished_at: Option<u64>,
+    /// Ids of the agent sessions recorded for this run.
+    #[serde(default)]
+    pub(crate) sessions: Vec<String>,
+    #[serde(default)]
+    pub(crate) usage: Option<Usage>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
@@ -109,6 +127,9 @@ pub(crate) struct NewRun {
     pub(crate) project: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) repository: Option<String>,
+    /// The agent session the run is started from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -145,6 +166,9 @@ pub(crate) struct UpdateRun {
     /// Stage summaries to set; null removes that stage's summary. Other stages keep theirs.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) summaries: BTreeMap<Stage, Option<String>>,
+    /// Agent sessions to attribute to this run, added to the ones already recorded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) sessions: Vec<String>,
 }
 
 // Missing fields preserve stored values; null clears them; values replace them.
@@ -294,6 +318,19 @@ pub(crate) fn is_absolute_path(value: &str) -> bool {
     value.starts_with('/') || value.starts_with("\\\\") || windows_drive
 }
 
+/// An agent session id such as a UUID: letters, digits, `-`, `_` and `.`, so it is safe to store.
+pub(crate) fn check_session_id(id: &str) -> Result<(), String> {
+    let valid = (8..=100).contains(&id.len())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+    if valid {
+        Ok(())
+    } else {
+        Err("A session id must be 8 to 100 letters, digits, \"-\", \"_\" or \".\"".into())
+    }
+}
+
 fn io_invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
@@ -316,6 +353,7 @@ impl UpdateRun {
             tickets: FieldUpdate::Keep,
             ticket_status: BTreeMap::new(),
             summaries: BTreeMap::new(),
+            sessions: Vec::new(),
         }
     }
 
@@ -387,6 +425,14 @@ impl UpdateRun {
         }
         for summary in self.summaries.values().flatten() {
             check_text("Stage summary", summary, 2000)?;
+        }
+        for session in &self.sessions {
+            check_session_id(session)?;
+        }
+        if self.sessions.len() > MAX_SESSIONS {
+            return Err(format!(
+                "At most {MAX_SESSIONS} sessions can be given at once"
+            ));
         }
         Ok(())
     }
@@ -471,6 +517,14 @@ pub(crate) fn parse_update(
                 update.tickets = FieldUpdate::Clear;
                 continue;
             }
+            "--session" => {
+                let id = next_value()?;
+                check_session_id(id)?;
+                if !update.sessions.iter().any(|known| known == *id) {
+                    update.sessions.push((*id).to_string());
+                }
+                continue;
+            }
             "--ticket-status" => {
                 let value = next_value()?;
                 let (reference, status) = value.rsplit_once('=').ok_or_else(|| {
@@ -541,16 +595,34 @@ pub(crate) fn updated_now() -> io::Result<u64> {
     u64::try_from(millis).map_err(io::Error::other)
 }
 
+/// The run records, shared by clones: usage is collected in the background on a clone.
+#[derive(Clone)]
 pub(crate) struct RunStore {
+    shared: Arc<Shared>,
+}
+
+pub(crate) struct Shared {
     path: PathBuf,
     runs: Mutex<Vec<Run>>,
+    /// Held while usage is collected, so two collections never overlap.
+    pub(crate) collecting: Mutex<()>,
+}
+
+impl Deref for RunStore {
+    type Target = Shared;
+    fn deref(&self) -> &Shared {
+        &self.shared
+    }
 }
 
 impl RunStore {
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
         Ok(Self {
-            path: path.to_owned(),
-            runs: Mutex::new(load_runs(path)?),
+            shared: Arc::new(Shared {
+                path: path.to_owned(),
+                runs: Mutex::new(load_runs(path)?),
+                collecting: Mutex::new(()),
+            }),
         })
     }
 
@@ -597,7 +669,14 @@ impl RunStore {
             pr: None,
             tickets: Vec::new(),
             summaries: BTreeMap::new(),
+            timeline: Vec::new(),
+            finished_at: None,
+            sessions: new.session.into_iter().collect(),
+            usage: None,
         };
+        let mut run = run;
+        let created = run.updated_at.unwrap_or(0);
+        mark(&mut run, created);
         runs.push(run.clone());
         if let Err(error) = save_runs(&self.path, &runs) {
             runs.pop();
@@ -676,13 +755,44 @@ impl RunStore {
                 }
             }
         }
+        for session in update.sessions {
+            if !next.sessions.contains(&session) {
+                next.sessions.push(session);
+            }
+        }
+        if next.sessions.len() > KEEP_SESSIONS {
+            next.sessions.drain(..next.sessions.len() - KEEP_SESSIONS);
+        }
         next.updated_at = Some(updated_at);
+        // Where the work is now, for attributing token usage; and when it ended.
+        mark(&mut next, updated_at);
+        next.finished_at = match (next.status, next.finished_at) {
+            (RunStatus::Done, None) => Some(updated_at),
+            (RunStatus::Done, kept) => kept,
+            _ => None,
+        };
         let old = std::mem::replace(&mut runs[index], next);
         if let Err(error) = save_runs(&self.path, &runs) {
             runs[index] = old;
             return Err(error);
         }
         Ok(Some(runs[index].clone()))
+    }
+
+    /// Replaces the usage of a run. A failed save leaves the stored usage as it was.
+    pub(crate) fn set_usage(&self, id: &str, usage: Usage) -> io::Result<()> {
+        let mut runs = self.runs.lock().map_err(lock_error)?;
+        let Some(run) = runs.iter_mut().find(|run| run.id == id) else {
+            return Ok(());
+        };
+        let old = run.usage.replace(usage);
+        if let Err(error) = save_runs(&self.path, &runs) {
+            if let Some(run) = runs.iter_mut().find(|run| run.id == id) {
+                run.usage = old;
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Removes only the Run record. Returns whether a Run with this id existed.
@@ -707,6 +817,31 @@ impl FieldUpdate {
             Self::Set(value) => Self::Set(value.to_ascii_lowercase()),
             other => other,
         }
+    }
+}
+
+/// Appends a mark when the stage, rework or ticket in progress differs from the last one.
+fn mark(run: &mut Run, at: u64) {
+    let stage = run.stage;
+    let building = matches!(stage, Stage::Build);
+    let current = Mark {
+        at,
+        stage,
+        rework: if building { run.rework } else { None },
+        ticket: if building {
+            run.tickets
+                .iter()
+                .find(|t| t.status == TicketStatus::InProgress)
+                .map(|t| t.reference.clone())
+        } else {
+            None
+        },
+    };
+    let changed = run.timeline.last().is_none_or(|last| {
+        (last.stage, last.rework, &last.ticket) != (current.stage, current.rework, &current.ticket)
+    });
+    if changed && run.timeline.len() < MAX_MARKS {
+        run.timeline.push(current);
     }
 }
 
@@ -757,6 +892,7 @@ mod tests {
                             title: format!("run {n}"),
                             project: "/work".into(),
                             repository: None,
+                            session: None,
                         })
                         .unwrap()
                 })
@@ -783,6 +919,7 @@ mod tests {
                 title: "first".into(),
                 project: "/work".into(),
                 repository: None,
+                session: None,
             })
             .unwrap();
         let second = store
@@ -790,6 +927,7 @@ mod tests {
                 title: "second".into(),
                 project: "/work".into(),
                 repository: None,
+                session: None,
             })
             .unwrap();
         let updates = [(first.id, Stage::Build), (second.id, Stage::Check)];
@@ -931,6 +1069,7 @@ mod tests {
                 title: "task".into(),
                 project: "/work".into(),
                 repository: None,
+                session: None,
             })
             .unwrap();
         let original = fs::read(&path).unwrap();
@@ -955,6 +1094,7 @@ mod tests {
                 title: title.into(),
                 project: "/work/repo.worktrees/feature".into(),
                 repository: Some("/work/repo".into()),
+                session: None,
             })
             .unwrap()
     }
@@ -1491,5 +1631,191 @@ mod tests {
         ] {
             assert!(!is_absolute_path(no), "{no}");
         }
+    }
+
+    #[test]
+    fn the_timeline_records_where_the_work_is_for_attributing_usage() {
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let run = new_run(&store, "task");
+        assert_eq!(run.timeline.len(), 1, "a run starts in Define");
+        assert!(matches!(run.timeline[0].stage, Stage::Define) && run.finished_at.is_none());
+
+        let after = |options: &[&str], stage: &str| {
+            store
+                .update(&run.id, parse_update(stage, "running", options).unwrap())
+                .unwrap()
+                .unwrap()
+        };
+        // An update that changes nothing about the stage, ticket or rework adds no mark.
+        assert_eq!(
+            after(&["--activity", "thinking"], "define").timeline.len(),
+            1
+        );
+        after(&["--ticket", "t1 One", "--ticket", "t2 Two"], "build");
+        let started = after(&["--ticket-status", "t1=in-progress"], "build");
+        assert_eq!(started.timeline.len(), 3);
+        assert_eq!(started.timeline[2].ticket.as_deref(), Some("t1"));
+        let second = after(
+            &[
+                "--ticket-status",
+                "t1=done",
+                "--ticket-status",
+                "t2=in-progress",
+            ],
+            "build",
+        );
+        assert_eq!(second.timeline[3].ticket.as_deref(), Some("t2"));
+        let checking = after(&[], "check");
+        assert_eq!(checking.timeline[4].ticket, None, "only Build has a ticket");
+        let rework = after(&["--rework", "1"], "build");
+        assert_eq!(rework.timeline.last().unwrap().rework, Some(1));
+        assert!(rework
+            .timeline
+            .windows(2)
+            .all(|pair| pair[0].at <= pair[1].at));
+    }
+
+    #[test]
+    fn finishing_a_run_closes_its_window_and_reopening_clears_it() {
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let run = new_run(&store, "task");
+        let done = store
+            .update(&run.id, parse_update("finish", "done", &[]).unwrap())
+            .unwrap()
+            .unwrap();
+        let end = done.finished_at.expect("closed when done");
+        let again = store
+            .update(
+                &run.id,
+                parse_update("finish", "done", &["--activity", "x"]).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            again.finished_at,
+            Some(end),
+            "a second done update keeps the first end"
+        );
+        let reopened = store
+            .update(&run.id, parse_update("build", "running", &[]).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(reopened.finished_at, None);
+    }
+
+    #[test]
+    fn sessions_are_recorded_once_validated_and_kept_across_updates() {
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let created = store
+            .create(NewRun {
+                title: "t".into(),
+                project: "/p".into(),
+                repository: None,
+                session: Some("11111111-aaaa".into()),
+            })
+            .unwrap();
+        assert_eq!(created.sessions, ["11111111-aaaa"]);
+        let run = store
+            .update(
+                &created.id,
+                parse_update(
+                    "build",
+                    "running",
+                    &[
+                        "--session",
+                        "22222222-bbbb",
+                        "--session",
+                        "11111111-aaaa",
+                        "--session",
+                        "22222222-bbbb",
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.sessions, ["11111111-aaaa", "22222222-bbbb"]);
+        let kept = store
+            .update(&created.id, update(&["--activity", "x"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.sessions, run.sessions);
+        for bad in [
+            "short",
+            "has space in it",
+            "../../etc/passwd",
+            "semi;colon-id",
+            "",
+        ] {
+            assert!(
+                parse_update("build", "running", &["--session", bad]).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn usage_is_replaced_atomically_and_a_failed_save_keeps_the_old_usage() {
+        use crate::usage::{Usage, UsageStatus};
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let run = new_run(&store, "task");
+        assert!(run.usage.is_none());
+        store
+            .set_usage(&run.id, Usage::not_tracked("first", 1))
+            .unwrap();
+        fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        assert!(store
+            .set_usage(&run.id, Usage::not_tracked("second", 2))
+            .is_err());
+        assert_eq!(
+            store
+                .get(&run.id)
+                .unwrap()
+                .unwrap()
+                .usage
+                .unwrap()
+                .reason
+                .as_deref(),
+            Some("first")
+        );
+        fs::remove_dir(path.with_extension("json.tmp")).unwrap();
+        store
+            .set_usage(&run.id, Usage::not_tracked("third", 3))
+            .unwrap();
+        let restarted = RunStore::open(&path).unwrap();
+        let usage = restarted.get(&run.id).unwrap().unwrap().usage.unwrap();
+        assert_eq!(
+            (usage.status, usage.reason.as_deref()),
+            (UsageStatus::NotTracked, Some("third"))
+        );
+        // An unknown run is left alone.
+        store.set_usage("nope", Usage::not_tracked("x", 1)).unwrap();
+    }
+
+    #[test]
+    fn records_from_before_usage_tracking_load_without_a_timeline_or_usage() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        fs::write(&path, r#"[{"id":"7","title":"old","project":"/p","stage":"build","status":"running","branch":"b"}]"#).unwrap();
+        let store = RunStore::open(&path).unwrap();
+        let run = store.get("7").unwrap().unwrap();
+        assert!(
+            run.timeline.is_empty()
+                && run.sessions.is_empty()
+                && run.usage.is_none()
+                && run.finished_at.is_none()
+        );
+        // Updating it starts a timeline from now; nothing earlier is invented.
+        let run = store
+            .update("7", update(&["--activity", "x"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.timeline.len(), 1);
+        assert_eq!(run.timeline[0].at, run.updated_at.unwrap());
     }
 }

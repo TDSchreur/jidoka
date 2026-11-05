@@ -14,11 +14,13 @@ pub(crate) fn start_run(
     title: &str,
     project: &str,
     repository: Option<String>,
+    session: Option<String>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let body = serde_json::to_vec(&NewRun {
         title: title.to_string(),
         project: project.to_string(),
         repository,
+        session,
     })?;
     let run: Run = serde_json::from_slice(&api_post(server, "/api/runs", &body)?)?;
     Ok(run.id)
@@ -116,6 +118,16 @@ pub(crate) fn fetch_run(server: &str, id: &str) -> Result<Run, Box<dyn std::erro
     )?)?)
 }
 
+/// Reads every run from the factory server at `server`.
+pub(crate) fn fetch_runs(server: &str) -> Result<Vec<Run>, Box<dyn std::error::Error>> {
+    Ok(serde_json::from_slice(&api_request(
+        server,
+        "GET",
+        "/api/runs",
+        &[],
+    )?)?)
+}
+
 fn api_post(server: &str, route: &str, body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     api_request(server, "POST", route, body)
 }
@@ -164,6 +176,9 @@ mod tests {
     use super::*;
     use crate::{server::build_rocket, test_support::TestDir};
     use std::{fs, path::Path};
+
+    /// An address nobody listens on: a port the tests' own servers can never be assigned.
+    const NOTHING_LISTENS: &str = "127.0.0.1:1";
 
     /// A real Rocket server on an OS-assigned port, shut down and joined on drop.
     struct TestServer {
@@ -239,7 +254,7 @@ mod tests {
         )
         .unwrap();
         let server = TestServer::start(&path);
-        let id = start_run(&server.address, "Verify slice", "/work", None).unwrap();
+        let id = start_run(&server.address, "Verify slice", "/work", None, None).unwrap();
         let ticket = "https://github.com/example/repo/issues/7";
         let steps: [(&str, &str, &[&str]); 4] = [
             (
@@ -317,9 +332,9 @@ mod tests {
         assert!(missing.to_string().contains("Not found"), "{missing}");
         let invalid = report_run(&server.address, "12a", "build", "running", &[]).unwrap_err();
         assert_eq!(invalid.to_string(), "Invalid run id");
-        let address = server.address.clone();
-        drop(server);
-        let unreachable = start_run(&address, "task", "/work", None).unwrap_err();
+        // Nothing listens on port 1. A port that was just freed could be taken by another test's server.
+        let address = NOTHING_LISTENS.to_string();
+        let unreachable = start_run(&address, "task", "/work", None, None).unwrap_err();
         assert!(
             unreachable
                 .to_string()
@@ -343,12 +358,8 @@ mod tests {
 
     #[test]
     fn probe_reports_nothing_listening_and_foreign_listeners() {
-        // Nothing listens once the server is gone.
-        let dir = TestDir::new();
-        let server = TestServer::start(&dir.0.path().join("runs.json"));
-        let address = server.address.clone();
-        drop(server);
-        assert_eq!(probe_dashboard(&address).unwrap(), Probe::Absent);
+        // Nothing listens on port 1.
+        assert_eq!(probe_dashboard(NOTHING_LISTENS).unwrap(), Probe::Absent);
 
         // A listener that answers something else on the same port is not a dashboard.
         for reply in [
@@ -378,6 +389,7 @@ mod tests {
             "Continue me",
             "/work/repo.worktrees/x",
             Some("/work/repo".into()),
+            None,
         )
         .unwrap();
         report_run(

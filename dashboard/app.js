@@ -166,12 +166,98 @@ function RefLink({ value, label }) {
   return null;
 }
 
-/** Ticket progress as a chip, and the pull request and spec as links: the context a card shows. */
+/** Fresh tokens: input excluding cache reads, plus cache writes and output; null when neither input nor output is known. */
+const freshTokens = (t) => (t.input == null && t.output == null ? null : (t.input ?? 0) + (t.cache_write ?? 0) + (t.output ?? 0));
+
+/** Fresh tokens over all rows of a Run's usage, or null when nothing is tracked. Unknown is never 0. */
+function usageTotal(run) {
+  const usage = run.usage;
+  if (!usage || usage.status === 'not-tracked' || !Array.isArray(usage.rows)) return null;
+  const counts = usage.rows.map(freshTokens).filter((n) => n !== null);
+  return counts.length ? counts.reduce((a, b) => a + b, 0) : null;
+}
+
+const compactTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
+const tokenCount = (n) => (n === undefined || n === null ? 'n/a' : n.toLocaleString('en-US'));
+
+/** Ticket progress and fresh tokens as chips, and the pull request and spec as links: the context a card shows. */
 function ContextChips({ run }) {
   const progress = ticketProgress(run);
-  return progress
-    ? html`<span class="chip">Tickets${' '}${progress.done}/${progress.total}<span class="visually-hidden">${' done'}</span></span>`
-    : null;
+  const tokens = usageTotal(run);
+  return html`${progress
+      ? html`<span class="chip">Tickets${' '}${progress.done}/${progress.total}<span class="visually-hidden">${' done'}</span></span>`
+      : null}${tokens !== null
+      ? html`<span class="chip">Tokens${' '}${compactTokens(tokens)}<span class="visually-hidden">${' fresh'}</span>${run.usage.status === 'partial' ? ' (partial)' : ''}</span>`
+      : null}`;
+}
+
+/** Where a row's tokens were spent: a ticket, the rework, or (in Build) no ticket. */
+function rowBucket(row) {
+  if (row.ticket) return row.ticket;
+  if (row.rework) return 'Rework';
+  return row.stage === 'build' ? 'No ticket' : '';
+}
+
+/** The stage, model and ticket breakdown of a Run's token usage, with what is missing from it. */
+function UsageDetail({ usage }) {
+  const stageName = (id) => (GROUPS.find(([key]) => key === id) ?? [id, id])[1];
+  const rows = Array.isArray(usage.rows) ? usage.rows : [];
+  const total = rows.map(freshTokens).filter((n) => n !== null).reduce((a, b) => a + b, 0);
+  const status =
+    usage.status === 'tracked' ? 'Tracked' : usage.status === 'partial' ? 'Partial' : `Not tracked${usage.reason ? `: ${usage.reason}` : ''}`;
+  const noData = Array.isArray(usage.no_data) ? usage.no_data : [];
+  const notes = Array.isArray(usage.notes) ? usage.notes : [];
+  return html`<p>${status}</p>
+    ${rows.length
+      ? html`<div class="table-scroll" role="region" aria-label="Token usage by stage, model and ticket" tabindex="0">
+            <table class="usage-table">
+              <caption class="visually-hidden">Token usage by stage, model and ticket</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Stage</th>
+                  <th scope="col">Model</th>
+                  <th scope="col">Ticket</th>
+                  <th scope="col">Fresh</th>
+                  <th scope="col">Input</th>
+                  <th scope="col">Cache read</th>
+                  <th scope="col">Cache write</th>
+                  <th scope="col">Output</th>
+                  <th scope="col">Reasoning</th>
+                  <th scope="col">Subagents</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows.map(
+                  (row, index) => html`<tr key=${index}>
+                    <td>${stageName(row.stage)}</td>
+                    <td>${row.model}</td>
+                    <td>${rowBucket(row)}</td>
+                    <td>${tokenCount(freshTokens(row))}</td>
+                    <td>${tokenCount(row.input)}</td>
+                    <td>${tokenCount(row.cache_read)}</td>
+                    <td>${tokenCount(row.cache_write)}</td>
+                    <td>${tokenCount(row.output)}</td>
+                    <td>${tokenCount(row.reasoning)}</td>
+                    <td>${row.subagents ? tokenCount(freshTokens(row.subagents)) : '-'}</td>
+                  </tr>`,
+                )}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <th scope="row" colspan="3">Total fresh</th>
+                  <td>${tokenCount(total)}</td>
+                  <td colspan="6"></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <p class="usage-note">
+            Fresh tokens are input excluding cache reads, plus cache writes and output. Cache reads are shown beside
+            them, not inside. Reasoning is part of output. n/a means the log did not report it; it is not zero.
+          </p>`
+      : null}
+    ${noData.length ? html`<p>No data for: ${noData.map(stageName).join(', ')}</p>` : null}
+    ${notes.length ? html`<ul class="summaries">${notes.map((note, index) => html`<li key=${index}>${note}</li>`)}</ul>` : null}`;
 }
 
 function ContextLinks({ run }) {
@@ -381,6 +467,9 @@ function Detail({ run, now, onClose }) {
                 )}
               </ol>`
             : null}
+        <//>
+        <${Field} label="Token usage" missing="Not tracked">
+          ${run.usage ? html`<${UsageDetail} usage=${run.usage} />` : null}
         <//>
         <${Field} label="Stage summaries" missing="None recorded">
           ${summaries.length

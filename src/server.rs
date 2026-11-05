@@ -1,6 +1,7 @@
 use crate::{
     current_build,
     run::{NewRun, Run, RunStore, UpdateRun},
+    usage::{collect_and_store, UsageSettings},
 };
 use rocket::{
     data::{Limits, ToByteUnit},
@@ -12,7 +13,7 @@ use rocket::{
     Build, Rocket, State,
 };
 use serde::{Deserialize, Serialize};
-use std::{io, path::Path};
+use std::{io, path::Path, sync::Mutex};
 
 pub(crate) const DEFAULT_PORT: u16 = 4311;
 pub(crate) const ADDRESS: &str = "127.0.0.1:4311";
@@ -195,6 +196,10 @@ fn create_run(
         || new.project.trim().is_empty()
         || new.title.len() > 500
         || new.project.len() > 4096
+        || new
+            .session
+            .as_deref()
+            .is_some_and(|id| crate::run::check_session_id(id).is_err())
         || new.title.chars().any(char::is_control)
         || new.project.chars().any(char::is_control)
         || new.repository.as_deref().is_some_and(|repository| {
@@ -220,6 +225,7 @@ fn update_run(
     id: &str,
     update: Json<UpdateRun>,
     store: &State<RunStore>,
+    collector: &State<Collector>,
 ) -> Result<Json<Run>, (HttpStatus, String)> {
     if !request.post_allowed {
         return Err((HttpStatus::Forbidden, "Forbidden".into()));
@@ -230,7 +236,8 @@ fn update_run(
     update
         .validate()
         .map_err(|message| (HttpStatus::BadRequest, message))?;
-    store
+    let before = store.get(id).ok().flatten();
+    let updated = store
         .update(id, update.into_inner())
         .map_err(|error| match error.kind() {
             // An inconsistent update (an unknown ticket, two tickets in progress) is the caller's to fix.
@@ -243,8 +250,9 @@ fn update_run(
                 )
             }
         })?
-        .map(Json)
-        .ok_or((HttpStatus::NotFound, "Not found".into()))
+        .ok_or((HttpStatus::NotFound, "Not found".into()))?;
+    collector.after_update(store, before.as_ref(), &updated);
+    Ok(Json(updated))
 }
 
 #[rocket::get("/api/runs/<id>")]
@@ -308,13 +316,120 @@ fn not_found() -> (HttpStatus, &'static str) {
     (HttpStatus::NotFound, "Not found")
 }
 
+/// Collects token usage in the background after an update that moves a run on. Without settings
+/// (as in most tests) nothing is collected.
+pub(crate) struct Collector {
+    settings: Option<UsageSettings>,
+    pending: Mutex<Vec<rocket::tokio::task::JoinHandle<()>>>,
+    /// The latest collection chain per run: a newer one replaces an older one's later passes, so a flurry
+    /// of updates does not pile up scans.
+    chains: std::sync::Arc<Mutex<std::collections::HashMap<String, u64>>>,
+    /// How many passes ran, for tests.
+    #[cfg(test)]
+    passes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Collector {
+    pub(crate) fn new(settings: Option<UsageSettings>) -> Self {
+        Self {
+            settings,
+            pending: Mutex::new(Vec::new()),
+            chains: std::sync::Arc::default(),
+            #[cfg(test)]
+            passes: std::sync::Arc::default(),
+        }
+    }
+
+    /// Starts collecting for `after` when the update moved it on: a stage, rework or ticket change, a new
+    /// session, or the run finishing. The update has already succeeded; collecting never delays or fails it.
+    fn after_update(&self, store: &RunStore, before: Option<&Run>, after: &Run) {
+        let Some(settings) = self.settings.clone() else {
+            return;
+        };
+        let moved = before.is_none_or(|b| {
+            b.timeline.len() != after.timeline.len()
+                || b.sessions != after.sessions
+                || (b.finished_at.is_none() && after.finished_at.is_some())
+        });
+        if !moved {
+            return;
+        }
+        let (store, id) = (store.clone(), after.id.clone());
+        let chains = self.chains.clone();
+        let generation = chains.lock().map_or(0, |mut chains| {
+            let latest = chains.entry(id.clone()).or_insert(0);
+            *latest += 1;
+            *latest
+        });
+        #[cfg(test)]
+        let passes = self.passes.clone();
+        let handle = rocket::tokio::spawn(async move {
+            // One pass now, and one after each delay: the agents' logs lag behind the work.
+            let delays = std::iter::once(std::time::Duration::ZERO).chain(settings.settle.clone());
+            for delay in delays {
+                if !delay.is_zero() {
+                    rocket::tokio::time::sleep(delay).await;
+                }
+                // A newer update started its own chain, which does these passes again.
+                if chains
+                    .lock()
+                    .is_ok_and(|chains| chains.get(&id) != Some(&generation))
+                {
+                    return;
+                }
+                let (store, id, settings) = (store.clone(), id.clone(), settings.clone());
+                #[cfg(test)]
+                passes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = rocket::tokio::task::spawn_blocking(move || {
+                    if let Err(error) = collect_and_store(&store, &id, &settings) {
+                        eprintln!("Usage was not collected for run {id}: {error}");
+                    }
+                })
+                .await;
+            }
+            if let Ok(mut chains) = chains.lock() {
+                if chains.get(&id) == Some(&generation) {
+                    chains.remove(&id);
+                }
+            }
+        });
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.retain(|task| !task.is_finished());
+            pending.push(handle);
+        }
+    }
+
+    /// Waits for the collections started so far, for tests.
+    #[cfg(test)]
+    pub(crate) async fn wait_idle(&self) {
+        let handles: Vec<_> = self
+            .pending
+            .lock()
+            .map(|mut p| p.drain(..).collect())
+            .unwrap_or_default();
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> {
+    build_rocket_with(path, port, Collector::new(None))
+}
+
+pub(crate) fn build_rocket_with(
+    path: &Path,
+    port: u16,
+    collector: Collector,
+) -> io::Result<Rocket<Build>> {
     let config = Figment::from(rocket::Config::default())
         .merge(("address", "127.0.0.1"))
         .merge(("port", port))
         .merge(("limits", Limits::new().limit("json", BODY_LIMIT.bytes())));
     Ok(rocket::custom(config)
         .manage(RunStore::open(path)?)
+        .manage(collector)
         .manage(SessionToken::new())
         .mount(
             "/",
@@ -336,14 +451,14 @@ pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> 
         )))
 }
 
-pub(crate) fn serve(path: &Path, port: u16, url: &str) -> io::Result<()> {
+pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> io::Result<()> {
     let runtime = rocket::tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(io::Error::other)?;
     println!("Dashboard: {url} (press Ctrl+C to stop)");
     runtime.block_on(async {
-        build_rocket(path, port)
+        build_rocket_with(path, port, Collector::new(Some(usage)))
             .map_err(|error| {
                 io::Error::new(error.kind(), format!("could not open run storage: {error}"))
             })?
@@ -930,6 +1045,281 @@ mod tests {
         (response.status(), response.into_json().await)
     }
 
+    /// A dashboard whose usage collection reads fixture logs under `home` instead of a user's own.
+    async fn client_collecting(dir: &TestDir, home: &Path, enabled: bool) -> Client {
+        let roots = crate::usage_logs::Roots {
+            claude: home.join("claude/projects"),
+            codex: home.join("codex/sessions"),
+            copilot: home.join("copilot/session-state"),
+        };
+        let settings = UsageSettings {
+            enabled,
+            roots,
+            budget: std::time::Duration::from_secs(10),
+            settle: Vec::new(),
+        };
+        Client::tracked(
+            build_rocket_with(
+                &dir.0.path().join("runs.json"),
+                DEFAULT_PORT,
+                Collector::new(Some(settings)),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// A Claude transcript for a run: one line naming the run, one response at `ts` with `input` tokens.
+    fn claude_fixture(
+        home: &Path,
+        session: &str,
+        run_id: &str,
+        response: &str,
+        ts: u64,
+        input: u64,
+    ) {
+        let line = serde_json::json!({"type": "assistant", "timestamp": crate::usage::iso_timestamp(ts), "requestId": response,
+            "message": {"id": response, "model": "claude-test", "usage": {"input_tokens": input, "output_tokens": 1}}});
+        let mention = serde_json::json!({"type": "user", "message": {"content": format!("factory run update {run_id}")}});
+        let path = home
+            .join("claude/projects/-w")
+            .join(format!("{session}.jsonl"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, format!("{mention}\n{line}\n")).unwrap();
+    }
+
+    /// When the run's timeline began: a log entry at that moment is inside the run's window.
+    async fn began(api: &Client, run: &Run) -> u64 {
+        fetch(api, &run.id).await.1.unwrap().timeline[0].at
+    }
+
+    #[rocket::async_test]
+    async fn usage_is_collected_in_the_background_when_a_run_moves_on() {
+        let dir = TestDir::new();
+        let home = tempfile::tempdir().unwrap();
+        let api = client_collecting(&dir, home.path(), true).await;
+        let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
+        claude_fixture(
+            home.path(),
+            "session-one",
+            &run.id,
+            "r1",
+            began(&api, &run).await,
+            42,
+        );
+        let collector = api.rocket().state::<Collector>().unwrap();
+
+        // An update that changes neither the stage nor the ticket collects nothing.
+        assert_eq!(
+            report(
+                &api,
+                &run.id,
+                r#"{"stage":"define","status":"running","activity":"x"}"#
+            )
+            .await
+            .status(),
+            HttpStatus::Ok
+        );
+        collector.wait_idle().await;
+        assert!(fetch(&api, &run.id).await.1.unwrap().usage.is_none());
+
+        // Moving to Build collects, without delaying the answer, and records what it found.
+        let response = report(&api, &run.id, r#"{"stage":"build","status":"running"}"#).await;
+        assert_eq!(response.status(), HttpStatus::Ok);
+        collector.wait_idle().await;
+        let usage = fetch(&api, &run.id)
+            .await
+            .1
+            .unwrap()
+            .usage
+            .expect("collected");
+        assert_eq!(usage.sessions, ["session-one"]);
+        assert_eq!(usage.rows[0].tokens.input, Some(42));
+
+        // Collecting again after finishing gives the same numbers, not double.
+        report(&api, &run.id, r#"{"stage":"finish","status":"done"}"#).await;
+        collector.wait_idle().await;
+        let usage = fetch(&api, &run.id).await.1.unwrap().usage.unwrap();
+        assert_eq!(
+            usage
+                .rows
+                .iter()
+                .filter_map(|r| r.tokens.input)
+                .sum::<u64>(),
+            42
+        );
+    }
+
+    #[rocket::async_test]
+    async fn a_late_pass_picks_up_what_the_agent_wrote_after_the_update() {
+        let dir = TestDir::new();
+        let home = tempfile::tempdir().unwrap();
+        let roots = crate::usage_logs::Roots {
+            claude: home.path().join("claude/projects"),
+            codex: home.path().join("codex/sessions"),
+            copilot: home.path().join("copilot/session-state"),
+        };
+        let settings = UsageSettings {
+            enabled: true,
+            roots,
+            budget: std::time::Duration::from_secs(10),
+            settle: vec![std::time::Duration::ZERO, std::time::Duration::ZERO],
+        };
+        let api = Client::tracked(
+            build_rocket_with(
+                &dir.0.path().join("runs.json"),
+                DEFAULT_PORT,
+                Collector::new(Some(settings)),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
+        claude_fixture(
+            home.path(),
+            "session-one",
+            &run.id,
+            "r1",
+            began(&api, &run).await,
+            5,
+        );
+        report(&api, &run.id, r#"{"stage":"build","status":"running"}"#).await;
+        let collector = api.rocket().state::<Collector>().unwrap();
+        collector.wait_idle().await;
+        // One immediate pass and one per delay; the answer did not wait for any of them.
+        assert_eq!(
+            collector.passes.load(std::sync::atomic::Ordering::SeqCst),
+            3
+        );
+        // Reading the same logs again changes nothing.
+        let usage = fetch(&api, &run.id).await.1.unwrap().usage.unwrap();
+        assert_eq!(
+            usage
+                .rows
+                .iter()
+                .filter_map(|r| r.tokens.input)
+                .sum::<u64>(),
+            5
+        );
+    }
+
+    #[rocket::async_test]
+    async fn switching_collection_off_records_why_and_reads_no_logs() {
+        let dir = TestDir::new();
+        let home = tempfile::tempdir().unwrap();
+        let api = client_collecting(&dir, home.path(), false).await;
+        let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
+        claude_fixture(
+            home.path(),
+            "session-one",
+            &run.id,
+            "r1",
+            began(&api, &run).await,
+            42,
+        );
+        report(&api, &run.id, r#"{"stage":"build","status":"running"}"#).await;
+        api.rocket().state::<Collector>().unwrap().wait_idle().await;
+        let usage = fetch(&api, &run.id).await.1.unwrap().usage.unwrap();
+        assert_eq!(usage.status, crate::usage::UsageStatus::NotTracked);
+        assert!(usage.reason.unwrap().contains("switched off"));
+        assert!(usage.rows.is_empty());
+    }
+
+    #[rocket::async_test]
+    async fn a_collection_that_fails_never_fails_or_changes_the_update() {
+        let dir = TestDir::new();
+        let home = tempfile::tempdir().unwrap();
+        let api = client_collecting(&dir, home.path(), true).await;
+        let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
+        claude_fixture(
+            home.path(),
+            "session-one",
+            &run.id,
+            "r1",
+            began(&api, &run).await,
+            7,
+        );
+        let store = api.rocket().state::<RunStore>().unwrap();
+        let path = dir.0.path().join("runs.json");
+        // The update itself saves first; then storing the usage fails, because the temporary file is blocked.
+        let response = report(&api, &run.id, r#"{"stage":"build","status":"running"}"#).await;
+        assert_eq!(response.status(), HttpStatus::Ok);
+        api.rocket().state::<Collector>().unwrap().wait_idle().await;
+        let before = fs::read(&path).unwrap();
+        fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        let settings = UsageSettings {
+            enabled: true,
+            roots: crate::usage_logs::Roots {
+                claude: home.path().join("claude/projects"),
+                codex: home.path().join("codex/sessions"),
+                copilot: home.path().join("copilot/session-state"),
+            },
+            budget: std::time::Duration::from_secs(10),
+            settle: Vec::new(),
+        };
+        claude_fixture(
+            home.path(),
+            "session-two",
+            &run.id,
+            "r2",
+            began(&api, &run).await,
+            9,
+        );
+        assert!(collect_and_store(store, &run.id, &settings).is_err());
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            before,
+            "stored usage is unchanged"
+        );
+        fs::remove_dir(path.with_extension("json.tmp")).unwrap();
+        collect_and_store(store, &run.id, &settings).unwrap();
+        let usage = fetch(&api, &run.id).await.1.unwrap().usage.unwrap();
+        assert_eq!(
+            usage
+                .rows
+                .iter()
+                .filter_map(|r| r.tokens.input)
+                .sum::<u64>(),
+            16
+        );
+    }
+
+    #[rocket::async_test]
+    async fn counts_survive_a_log_that_disappears_and_a_restart() {
+        let dir = TestDir::new();
+        let home = tempfile::tempdir().unwrap();
+        let api = client_collecting(&dir, home.path(), true).await;
+        let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
+        claude_fixture(
+            home.path(),
+            "session-one",
+            &run.id,
+            "r1",
+            began(&api, &run).await,
+            42,
+        );
+        report(&api, &run.id, r#"{"stage":"build","status":"running"}"#).await;
+        api.rocket().state::<Collector>().unwrap().wait_idle().await;
+        // The vendor cleans up its logs; the next collection finds nothing but must not wipe the counts.
+        fs::remove_dir_all(home.path().join("claude")).unwrap();
+        report(&api, &run.id, r#"{"stage":"check","status":"running"}"#).await;
+        api.rocket().state::<Collector>().unwrap().wait_idle().await;
+        drop(api);
+        let restarted = client_collecting(&dir, home.path(), true).await;
+        let usage = fetch(&restarted, &run.id).await.1.unwrap().usage.unwrap();
+        assert_eq!(usage.rows[0].tokens.input, Some(42));
+        assert_eq!(usage.status, crate::usage::UsageStatus::Partial);
+        assert!(
+            usage
+                .notes
+                .iter()
+                .any(|n| n.contains("no longer available")),
+            "{usage:?}"
+        );
+    }
+
     #[rocket::async_test]
     async fn run_context_goes_through_the_api_partially_and_is_readable_by_id() {
         let dir = TestDir::new();
@@ -1055,6 +1445,50 @@ mod tests {
         )
         .await;
         assert_eq!(run.repository.as_deref(), Some("C:\\work\\repo"));
+    }
+
+    #[rocket::async_test]
+    async fn cards_show_fresh_tokens_and_run_detail_the_breakdown_without_inventing_zeros() {
+        let script = asset("/assets/app.js").await;
+        let css = asset("/assets/style.css").await;
+        // The card chip: fresh tokens, marked partial, and none at all when nothing is tracked.
+        assert!(script
+            .contains("const freshTokens = (t) => (t.input == null && t.output == null ? null :"));
+        assert!(script.contains("if (!usage || usage.status === 'not-tracked'"));
+        assert!(script.contains("run.usage.status === 'partial' ? ' (partial)' : ''"));
+        assert!(script.contains("tokens !== null"));
+        // The detail: a labelled, keyboard-scrollable table by stage, model and ticket, with n/a for unreported fields.
+        for header in [
+            "Stage",
+            "Model",
+            "Ticket",
+            "Fresh",
+            "Input",
+            "Cache read",
+            "Cache write",
+            "Output",
+            "Reasoning",
+            "Subagents",
+        ] {
+            assert!(
+                script.contains(&format!("<th scope=\"col\">{header}</th>")),
+                "{header}"
+            );
+        }
+        assert!(
+            script.contains("aria-label=\"Token usage by stage, model and ticket\" tabindex=\"0\"")
+        );
+        assert!(script.contains("n === undefined || n === null ? 'n/a'"));
+        assert!(script.contains("<${Field} label=\"Token usage\" missing=\"Not tracked\">"));
+        assert!(script.contains(
+            "Fresh tokens are input excluding cache reads, plus cache writes and output."
+        ));
+        assert!(script.contains("No data for:"));
+        assert!(css.contains(".usage-table {") && css.contains(".table-scroll:focus-visible"));
+        assert!(
+            !script.contains("price") && !script.contains("cost"),
+            "tokens only, no money"
+        );
     }
 
     #[rocket::async_test]
@@ -1504,6 +1938,7 @@ mod tests {
             title: title.into(),
             project: "/work".into(),
             repository: None,
+            session: None,
         };
         let kept = store.create(new("kept")).unwrap();
         let token = session_token(&api).await;
@@ -1560,6 +1995,7 @@ mod tests {
                         title: "stuck".into(),
                         project: "/work".into(),
                         repository: None,
+                        session: None,
                     })
                     .unwrap();
                 let update: UpdateRun =
@@ -1585,6 +2021,7 @@ mod tests {
                 title: "task".into(),
                 project: "/work".into(),
                 repository: None,
+                session: None,
             })
             .unwrap();
         let token = session_token(&api).await;
@@ -1805,6 +2242,7 @@ mod tests {
                 title: "task".into(),
                 project: "/work".into(),
                 repository: None,
+                session: None,
             })
             .unwrap();
         assert!(run.rework.is_none());
@@ -1855,6 +2293,7 @@ mod tests {
                 title: "task".into(),
                 project: "/work".into(),
                 repository: None,
+                session: None,
             })
             .unwrap();
         let path = dir.0.path().join("runs.json");
