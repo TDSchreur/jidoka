@@ -19,9 +19,31 @@ const LOCAL_SKILLS: [&str; 5] = [
     "implement-spec-balanced",
 ];
 
-pub fn install(agent: &str) -> io::Result<()> {
-    let root = skills_root(agent, &home_dir()?, |name| env::var_os(name))?;
-    install_to(&root)
+/// Installs the bundled skills for each agent in a comma-separated list such as `codex,claude`.
+pub fn install(agents: &str) -> io::Result<()> {
+    let roots = skills_roots(agents, &home_dir()?, |name| env::var_os(name))?;
+    for root in roots {
+        install_to(&root)?;
+    }
+    Ok(())
+}
+
+/// Resolves the skills folder of every listed agent before anything is installed.
+fn skills_roots(
+    agents: &str,
+    home: &Path,
+    var: impl Fn(&str) -> Option<OsString>,
+) -> io::Result<Vec<PathBuf>> {
+    let mut names: Vec<&str> = Vec::new();
+    for name in agents.split(',').map(str::trim) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| skills_root(name, home, &var))
+        .collect()
 }
 
 /// Resolves an agent's skills folder, honoring its config directory variable.
@@ -43,7 +65,7 @@ fn skills_root(
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "agent must be codex, claude, or copilot",
+                format!("unknown agent {agent:?}; use codex, claude, or copilot"),
             ))
         }
     };
@@ -172,6 +194,24 @@ mod tests {
         assert_eq!(root("codex", &set), Path::new("/custom/CODEX_HOME/skills"));
         assert_eq!(root("copilot", &set), home.join(".copilot/skills"));
         assert!(skills_root("other", home, unset).is_err());
+    }
+    #[test]
+    fn skills_roots_resolves_every_listed_agent_once() {
+        let home = Path::new("/home/user");
+        let unset = |_: &str| None;
+        assert_eq!(
+            skills_roots("codex, claude,codex", home, unset).unwrap(),
+            [home.join(".codex/skills"), home.join(".claude/skills")]
+        );
+        assert_eq!(
+            skills_roots("copilot", home, unset).unwrap(),
+            [home.join(".copilot/skills")]
+        );
+        for invalid in ["", "codex,", "codex,vscode", "all"] {
+            assert!(skills_roots(invalid, home, unset).is_err(), "{invalid:?}");
+        }
+        let error = skills_roots("codex,vscode", home, unset).unwrap_err();
+        assert!(error.to_string().contains("vscode"));
     }
     #[test]
     fn installs_bundled_skills_and_replaces_existing_ones() {
