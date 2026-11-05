@@ -195,7 +195,14 @@ pub(crate) fn update(current: &str, release: bool, agents: Option<&str>) -> Resu
         return Ok(());
     }
     let agents = match agents {
-        Some(agents) => agents.to_string(),
+        Some(agents) => {
+            let home = install::home_dir().map_err(|error| error.to_string())?;
+            for agent in agents.split(',').map(str::trim) {
+                install::skills_root(agent, &home, |name| env::var_os(name))
+                    .map_err(|error| error.to_string())?;
+            }
+            agents.to_string()
+        }
         None => {
             let home = install::home_dir().map_err(|error| error.to_string())?;
             installed_agents(&home, |name| env::var_os(name)).join(",")
