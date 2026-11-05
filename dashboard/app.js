@@ -429,6 +429,89 @@ const TITLE = 'TDS Factory';
 /** A Run needs the user when it is blocked. */
 const needsYou = (run) => run.status === 'blocked';
 
+const supportsNotifications = () => typeof Notification === 'function';
+const permission = () => (supportsNotifications() ? Notification.permission : 'unsupported');
+
+function storedNotifications() {
+  try {
+    return localStorage.getItem('notifications') === 'on';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Opt-in browser notifications "Needs you in <Project>: <title>". The Runs already waiting on the first
+ * load are only remembered; a notification goes out only for a Run that starts waiting after that.
+ * `state` is 'unsupported', 'denied', 'off' or 'on'.
+ */
+function useNotifications(runs) {
+  const [wanted, setWanted] = useState(storedNotifications);
+  const [perm, setPerm] = useState(permission);
+  const state = perm === 'unsupported' || perm === 'denied' ? perm : wanted && perm === 'granted' ? 'on' : 'off';
+  const known = useRef(null);
+  useEffect(() => {
+    if (!runs) return;
+    const waitingNow = runs.filter(needsYou);
+    if (known.current !== null && state === 'on') {
+      for (const run of waitingNow) {
+        if (known.current.has(run.id)) continue;
+        try {
+          const note = new Notification(`Needs you in ${run.project}: ${run.title}`, { tag: `needs-you-${run.id}` });
+          note.onclick = () => window.focus();
+        } catch {
+          /* the browser refused to show it: nothing else to do */
+        }
+      }
+    }
+    known.current = new Set(waitingNow.map((run) => run.id));
+  }, [runs]);
+  const remember = (on) => {
+    setWanted(on);
+    try {
+      if (on) localStorage.setItem('notifications', 'on');
+      else localStorage.removeItem('notifications');
+    } catch {
+      /* the choice still applies for this visit */
+    }
+  };
+  const toggle = async () => {
+    if (state === 'on') return remember(false);
+    if (state !== 'off') return;
+    let result = perm;
+    if (result === 'default') {
+      try {
+        result = await Notification.requestPermission();
+      } catch {
+        result = 'denied';
+      }
+      setPerm(result);
+    }
+    remember(result === 'granted');
+  };
+  return { state, toggle };
+}
+
+function NotificationsToggle({ state, onToggle }) {
+  const disabled = state === 'unsupported' || state === 'denied';
+  const label =
+    state === 'unsupported'
+      ? 'Notifications are not supported by this browser'
+      : state === 'denied'
+        ? 'Notifications are blocked in the browser settings'
+        : null;
+  return html`<button
+    type="button"
+    class="toggle"
+    aria-pressed=${String(state === 'on')}
+    disabled=${disabled}
+    title=${label}
+    onClick=${onToggle}
+  >
+    Notify me${disabled ? html`<span class="visually-hidden">${` (${label})`}</span>` : null}
+  </button>`;
+}
+
 function NeedsYouToggle({ count, pressed, onToggle }) {
   return html`<button type="button" class="toggle" aria-pressed=${String(pressed)} onClick=${onToggle}>
     Needs you (${count})
@@ -468,6 +551,7 @@ function App() {
   const now = useNow();
   const [onlyWaiting, setOnlyWaiting] = useState(false);
   const waiting = runs ? runs.filter(needsYou).length : 0;
+  const notifications = useNotifications(runs);
   useEffect(() => {
     document.title = waiting ? `(${waiting}) ${TITLE}` : TITLE;
   }, [waiting]);
@@ -553,6 +637,7 @@ function App() {
         pressed=${onlyWaiting}
         onToggle=${() => setOnlyWaiting((current) => !current)}
       />
+      <${NotificationsToggle} state=${notifications.state} onToggle=${notifications.toggle} />
       <button type="button" class="toggle help-open" onClick=${() => setHelpOpen(true)}>Help</button>
       <${ThemeSwitch} />
     </div>
