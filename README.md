@@ -41,7 +41,7 @@ The Rocket server binds to localhost at <http://127.0.0.1:4311>; press Ctrl+C to
 ## Use
 
 1. Start the dashboard and keep it running in a separate terminal: `factory dashboard`. Open <http://127.0.0.1:4311> to follow your runs.
-2. In your project, ask your coding agent to run `/factory` (or `/factory-fast` for small, clear requests) with your task. The agent reports progress to the dashboard with `factory run start` and `factory run update`, and ends by opening a pull request.
+2. In your project, ask your coding agent to run `/factory`, `/factory-balanced`, or `/factory-fast` with your task; see [Choosing a mode](#choosing-a-mode). The agent reports progress to the dashboard with `factory run start` and `factory run update`, and ends by opening a pull request.
 3. Review the pull request. See [Skills](#skills) for what each workflow does.
 
 ### Reporting runs manually
@@ -71,9 +71,30 @@ The server listens only on localhost but has no user authentication. Other users
 
 ## Skills
 
-The [`factory` skill](.agents/skills/factory/SKILL.md) coordinates the flow using skills from [mattpocock/skills](https://github.com/mattpocock/skills) and [github/awesome-copilot](https://github.com/github/awesome-copilot). After installing the skills, ask your coding agent to run `/factory` on your task. See [skills/README.md](skills/README.md) for the upstream origins.
+The workflow skills [`factory`](.agents/skills/factory/SKILL.md), [`factory-balanced`](.agents/skills/factory-balanced/SKILL.md), and [`factory-fast`](.agents/skills/factory-fast/SKILL.md) coordinate the flow using skills from [mattpocock/skills](https://github.com/mattpocock/skills) and [github/awesome-copilot](https://github.com/github/awesome-copilot). After installing the skills, ask your coding agent to run one of them on your task. See [skills/README.md](skills/README.md) for the upstream origins.
 
-Both workflows report progress to the dashboard. The diagram shows the skills each workflow runs; `/factory-fast` uses the Define skills only when a request needs them. Dotted lines show skills that `grill-with-docs` and `implement-spec` load. Each run starts by creating a fresh git worktree from `origin/<base branch>` next to the repository and does all its work there, so several runs can proceed at once; the original checkout is never touched, and the worktree is kept after the pull request opens until you remove it with `git worktree remove`.
+### Workflow modes
+
+TDS Factory has three workflow modes that trade speed against rigor: `/factory` favors quality, `/factory-fast` favors speed, and `/factory-balanced` sits between them. All three report progress to the dashboard and end with the same Finish stage; `/factory-fast` skips Check. Each run starts by creating a fresh git worktree from `origin/<base branch>` next to the repository and does all its work there, so several runs can proceed at once; the original checkout is never touched, and the worktree is kept after the pull request opens until you remove it with `git worktree remove`.
+
+| Stage | `/factory` (quality) | `/factory-balanced` | `/factory-fast` (speed) |
+| --- | --- | --- | --- |
+| Define | Always grills with [`grill-with-docs`](skills/grill-with-docs/SKILL.md) (`grilling`, `domain-modeling`), writes a spec with [`to-spec`](skills/to-spec/SKILL.md), and breaks it into tickets with [`to-tickets`](skills/to-tickets/SKILL.md) | Uses a clear request as the spec, otherwise one `to-spec` pass without grilling; always writes explicit acceptance criteria; `to-tickets` only for multi-piece work; `grill-with-docs` only when ambiguity blocks implementation | Uses a clear request as the spec with a short plan and acceptance criteria; `grill-with-docs`, `to-spec`, and `to-tickets` only when needed |
+| Build | [`implement-spec`](skills/implement-spec/SKILL.md), test-first with `tdd` red-green cycles | [`implement-spec-balanced`](skills/implement-spec-balanced/SKILL.md): implements each ticket, then adds behavior tests through public interfaces using `tdd`'s test-quality rules, without red-green cycles or seam approval | [`implement-spec-fast`](skills/implement-spec-fast/SKILL.md): implements directly; tests only where useful |
+| Check | [`code-review`](skills/code-review/SKILL.md), then [`security-review`](skills/security-review/SKILL.md); reviews rerun after fixes | One `code-review` pass; `security-review` only when the diff touches input parsing, auth or secrets, network, file or process handling, or dependencies; only affected checks rerun after fixes | Skipped |
+| Finish | [`pr`](skills/pr/SKILL.md) writes the description and opens a pull request | Same | Same |
+
+All modes build sequentially in one worktree without subagents and run the project's checks before moving on. In `/factory` and `/factory-balanced`, a review finding that cannot be fixed blocks the run before Finish.
+
+### Choosing a mode
+
+- **`/factory`**: risky, complex, or poorly understood work where you want every requirement questioned and every behavior built test-first. Slowest and most token-intensive.
+- **`/factory-balanced`**: everyday features and fixes that deserve tests and a review but not a full interview or red-green cycles.
+- **`/factory-fast`**: small, clear, low-risk changes such as documentation, configuration, or obvious fixes. No review stage.
+
+When unsure, start with `/factory-balanced`.
+
+The diagram shows the skills each mode runs. Arrows between stages are labeled with the mode that takes them; `/factory-balanced` and `/factory-fast` run each Define skill only in the cases the table lists. Dotted lines show skills that another skill loads or applies.
 
 ```mermaid
 flowchart TB
@@ -88,11 +109,12 @@ flowchart TB
 
     subgraph build [Build]
         impl[implement-spec] -.-> tdd[tdd]
+        implbal[implement-spec-balanced] -.->|test-quality rules| tdd
         implfast[implement-spec-fast]
     end
 
     subgraph check [Check]
-        review[code-review] --> security[security-review]
+        review[code-review] -->|/factory always, /factory-balanced for security-sensitive diffs| security[security-review]
     end
 
     subgraph finish [Finish]
@@ -100,22 +122,16 @@ flowchart TB
     end
 
     define -->|/factory| impl
+    define -->|/factory-balanced| implbal
     define -->|/factory-fast| implfast
     impl --> review
+    implbal --> review
     security --> pr
+    review -->|/factory-balanced for other diffs| pr
     implfast -->|/factory-fast skips Check| pr
 ```
 
-The table lists the same skills by stage; the skills in parentheses are loaded by the skill before them.
-
-| Stage | `/factory` | `/factory-fast` |
-| --- | --- | --- |
-| Define | [`grill-with-docs`](skills/grill-with-docs/SKILL.md) (`grilling`, `domain-modeling`), [`to-spec`](skills/to-spec/SKILL.md), [`to-tickets`](skills/to-tickets/SKILL.md) | The request itself as the spec for clear requests; `grill-with-docs`, `to-spec` and `to-tickets` only when needed |
-| Build | [`implement-spec`](skills/implement-spec/SKILL.md) (`tdd`), sequentially without subagents | [`implement-spec-fast`](skills/implement-spec-fast/SKILL.md) |
-| Check | [`code-review`](skills/code-review/SKILL.md), then [`security-review`](skills/security-review/SKILL.md) | None |
-| Finish | [`pr`](skills/pr/SKILL.md) to write the pull request | `pr` |
-
-`factory install` also installs `codebase-design`, `triage` and `rust-best-practices`, which neither workflow calls directly.
+`factory install` also installs `codebase-design`, `triage` and `rust-best-practices`, which no workflow calls directly.
 
 The [Rust skill](skills/rust/SKILL.md) and [project instructions](AGENTS.md) guide Rust development in this repository.
 
