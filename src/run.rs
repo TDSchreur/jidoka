@@ -283,12 +283,15 @@ fn check_text(name: &str, value: &str, limit: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `value` is written as an absolute path: `/dir`, `\\server\share` or `C:\dir`. The same
+/// answer on every system, because a record may be written on one and read on another.
 pub(crate) fn is_absolute_path(value: &str) -> bool {
-    let windows_drive = value.len() > 2
-        && value.as_bytes()[0].is_ascii_alphabetic()
-        && &value[1..2] == ":"
-        && matches!(value.as_bytes()[2], b'\\' | b'/');
-    Path::new(value).is_absolute() || windows_drive
+    let bytes = value.as_bytes();
+    let windows_drive = bytes.len() > 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/');
+    value.starts_with('/') || value.starts_with("\\\\") || windows_drive
 }
 
 fn io_invalid(message: impl Into<String>) -> io::Error {
@@ -1465,5 +1468,28 @@ mod tests {
         assert_eq!(stored.summaries.len(), 1);
         assert_eq!(stored.pr.as_deref(), Some("https://x.test/pr/1"));
         assert_eq!(stored.tickets.len(), 1);
+    }
+
+    #[test]
+    fn absolute_paths_are_recognised_the_same_way_on_every_system() {
+        for yes in [
+            "/work/repo",
+            "C:\\work\\repo",
+            "c:/work/repo",
+            "\\\\server\\share\\repo",
+        ] {
+            assert!(is_absolute_path(yes), "{yes}");
+        }
+        for no in [
+            "work/repo",
+            "./repo",
+            "..\\repo",
+            "C:repo",
+            "C:",
+            "",
+            "~/repo",
+        ] {
+            assert!(!is_absolute_path(no), "{no}");
+        }
     }
 }
