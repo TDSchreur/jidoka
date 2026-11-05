@@ -549,6 +549,7 @@ mod tests {
             .find("@media (prefers-reduced-motion")
             .unwrap_or(wide.len())];
         // Narrow screens keep the plain stacked groups.
+        assert!(!stacked.contains("repeat("), "no board grid when stacked");
         assert!(!stacked.contains("#groups { display: grid"));
         assert!(!stacked.contains(".group-header { position: sticky"));
         assert!(
@@ -714,6 +715,45 @@ mod tests {
         let script = asset("/assets/app.js").await;
         assert!(script.contains("<span class=\"detail-close-wide\">Close</span>"));
         assert!(script.contains("<span class=\"detail-close-compact\">Back</span>"));
+    }
+
+    #[rocket::async_test]
+    async fn only_a_click_that_starts_and_ends_on_the_backdrop_closes_the_detail() {
+        let css = stylesheet().await;
+        let (_, rules) = split_tokens(&css);
+        // The body fills the sheet, so the empty area below short content is not the backdrop.
+        let body = rules
+            .lines()
+            .find(|line| line.starts_with(".detail-body {"))
+            .expect("a detail body rule");
+        assert!(body.contains("min-height: 100%"));
+        assert!(body.contains("box-sizing: border-box"));
+        // A drag that starts inside the sheet and ends on the backdrop is not a backdrop click.
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("onPointerDown="));
+        assert!(script.contains("pressedBackdrop.current"));
+        // The handlers the dialog keeps never go stale.
+        assert!(script.contains("closing.current = onClose"));
+    }
+
+    #[rocket::async_test]
+    async fn focus_has_somewhere_to_go_when_the_opened_card_cannot_take_it() {
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("document.querySelector('main')?.focus()"));
+        assert!(script.contains("<main tabindex=\"-1\">"));
+        let css = stylesheet().await;
+        assert!(css.contains("main:focus { outline: none; }"));
+    }
+
+    #[rocket::async_test]
+    async fn the_detail_fields_stack_on_very_narrow_screens() {
+        let css = stylesheet().await;
+        let (_, rules) = split_tokens(&css);
+        let narrow = rules
+            .split("@media (max-width: 30rem)")
+            .nth(1)
+            .expect("a very narrow layout");
+        assert!(narrow.contains(".fields { grid-template-columns: minmax(0, 1fr); }"));
     }
 
     #[rocket::async_test]

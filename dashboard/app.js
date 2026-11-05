@@ -167,17 +167,23 @@ function Field({ label, children }) {
 /** Every field of a Run in a native modal dialog on the right. The browser handles focus containment and Escape. */
 function Detail({ run, now, onClose }) {
   const dialog = useRef(null);
+  // The listener below is added once; it calls whatever `onClose` is current.
+  const closing = useRef(onClose);
+  closing.current = onClose;
+  // Whether the current press began on the backdrop, so a drag out of the sheet is not a backdrop click.
+  const pressedBackdrop = useRef(false);
   useEffect(() => {
     const element = dialog.current;
     if (!element.open) element.showModal();
     // Escape has no hook of its own: the browser closes the dialog and fires `close`.
-    element.addEventListener('close', onClose);
-    return () => element.removeEventListener('close', onClose);
+    const onNativeClose = () => closing.current();
+    element.addEventListener('close', onNativeClose);
+    return () => element.removeEventListener('close', onNativeClose);
   }, []);
   // Close the dialog and tell the page now, rather than waiting for the `close` event.
   const dismiss = () => {
     dialog.current.close();
-    onClose();
+    closing.current();
   };
   const ts = timestamp(run);
   const stage = GROUPS.find(([id]) => id === run.stage);
@@ -186,9 +192,13 @@ function Detail({ run, now, onClose }) {
     ref=${dialog}
     class="detail"
     aria-labelledby="detail-title"
+    onPointerDown=${(event) => {
+      pressedBackdrop.current = event.target === event.currentTarget;
+    }}
     onClick=${(event) => {
-      // A click on the backdrop lands on the dialog itself; the body below fills the rest of it.
-      if (event.target === event.currentTarget) dismiss();
+      // A click on the backdrop lands on the dialog itself; the body fills the rest of the sheet.
+      if (event.target === event.currentTarget && pressedBackdrop.current) dismiss();
+      pressedBackdrop.current = false;
     }}
   >
     <div class="detail-body">
@@ -358,7 +368,10 @@ function App() {
   useEffect(() => {
     // Back to the card that was opened, once the detail is gone.
     if (openId === null && lastOpened.current !== null) {
-      document.querySelector(`[data-run-id="${CSS.escape(String(lastOpened.current))}"]`)?.focus();
+      const card = document.querySelector(`[data-run-id="${CSS.escape(String(lastOpened.current))}"]`);
+      card?.focus();
+      // The card is gone or hidden (its Run left, or changed Stage): keep focus on the board.
+      if (!card || document.activeElement !== card) document.querySelector('main')?.focus();
       lastOpened.current = null;
     }
   }, [openId]);
@@ -371,7 +384,7 @@ function App() {
       />
       <${ThemeSwitch} />
     </div>
-    <main>
+    <main tabindex="-1">
       <p id="message" role="status" class=${failed ? 'error' : ''}>${text}</p>
       ${runs ? html`<${StageButtons} stages=${stages} current=${current} onPick=${setPicked} />` : null}
       <div id="groups">
