@@ -108,7 +108,7 @@ Run these in order. Each prompt describes a separate change suitable for `/facto
   /factory-balanced Make factory and factory-balanced report blocked when unresolved Check findings require a user decision after the Rework allowance is exhausted or a finding cannot be resolved. Preserve autonomous fixes within the allowance and the existing choices to grant another Rework, finish with documented findings, or stop. Clear the blocking reason when work resumes. Update shared instructions and README wording together, add a changelog fragment, and run the project's verification.
   ```
 
-- [ ] **7. Finish the README alignment pass.**
+- [x] **7. Finish the README alignment pass.**
 
   ```text
   /factory-balanced Audit README.md and skills/README.md against the final factory, factory-balanced, factory-fast, and supporting skills. Clarify that balanced has one initial review plus reviews of Rework fixes. Extend the workflow diagram through CI watching and failure repair, label the PR destination as the selected base branch, and explain that fast still requires project verification and green CI. Check setup, continuation, shared-reference, and verification descriptions against the implemented behavior. Correct remaining discrepancies without expanding scope and run the project's verification.
