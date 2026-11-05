@@ -1539,7 +1539,7 @@ mod tests {
 
     #[rocket::async_test]
     async fn delete_removes_a_run_in_any_stage_and_status() {
-        use crate::run::{FieldUpdate, RunStatus, Stage, UpdateRun};
+        use crate::run::{RunStatus, Stage, UpdateRun};
         let dir = TestDir::new();
         let api = client(&dir).await;
         let store = api.rocket().state::<RunStore>().unwrap();
@@ -1554,21 +1554,13 @@ mod tests {
                     .create(NewRun {
                         title: "stuck".into(),
                         project: "/work".into(),
+                        repository: None,
                     })
                     .unwrap();
-                store
-                    .update(
-                        &run.id,
-                        UpdateRun {
-                            stage,
-                            status,
-                            activity: FieldUpdate::Keep,
-                            current_ticket: FieldUpdate::Keep,
-                            blocking_reason: FieldUpdate::Keep,
-                            rework: FieldUpdate::Keep,
-                        },
-                    )
-                    .unwrap();
+                let update: UpdateRun =
+                    serde_json::from_value(serde_json::json!({ "stage": stage, "status": status }))
+                        .unwrap();
+                store.update(&run.id, update).unwrap();
                 let response = delete(&api, &run.id, &headers).await;
                 assert_eq!(response.status(), HttpStatus::NoContent);
             }
