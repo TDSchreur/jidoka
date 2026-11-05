@@ -17,7 +17,13 @@ pub(crate) fn canonical_repository(dir: &Path) -> Option<String> {
     } else {
         common
     };
-    Some(root.display().to_string())
+    // Git always prints `/`; the native spelling matches the folder a run reports on Windows.
+    Some(
+        root.components()
+            .collect::<std::path::PathBuf>()
+            .display()
+            .to_string(),
+    )
 }
 
 #[cfg(test)]

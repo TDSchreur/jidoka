@@ -195,10 +195,12 @@ fn create_run(
         || new.project.trim().is_empty()
         || new.title.len() > 500
         || new.project.len() > 4096
+        || new.title.chars().any(char::is_control)
+        || new.project.chars().any(char::is_control)
         || new.repository.as_deref().is_some_and(|repository| {
-            repository.trim().is_empty()
-                || repository.len() > 4096
+            repository.len() > 4096
                 || repository.chars().any(char::is_control)
+                || !crate::run::is_absolute_path(repository)
         })
     {
         return Err(HttpStatus::BadRequest);
@@ -781,7 +783,7 @@ mod tests {
         }
         assert!(script.contains("Not set"));
         // Context a Run never recorded reads "Not recorded", not an empty or invented value.
-        assert!(script.contains("missing=\"Not recorded\""));
+        assert!(script.contains("missing=\"Unknown\""));
         assert!(script.contains("None recorded"));
     }
 
@@ -977,6 +979,74 @@ mod tests {
         // Detail lists the tickets in order with their status, and the summaries per Stage.
         assert!(script.contains("run.tickets.map("));
         assert!(script.contains("run.summaries?.[id]"));
+    }
+
+    #[rocket::async_test]
+    async fn a_run_recorded_before_context_is_served_with_everything_unknown() {
+        let dir = TestDir::new();
+        fs::write(
+            dir.0.path().join("runs.json"),
+            r#"[{"id":"7","title":"old","project":"/work/old","stage":"build","status":"running"}]"#,
+        )
+        .unwrap();
+        let api = client(&dir).await;
+        let (status, run) = fetch(&api, "7").await;
+        assert_eq!(status, HttpStatus::Ok);
+        let run = run.unwrap();
+        assert!(run.repository.is_none() && run.worktree.is_none() && run.mode.is_none());
+        let list: Vec<Run> = api
+            .get("/api/runs")
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .dispatch()
+            .await
+            .into_json()
+            .await
+            .unwrap();
+        assert_eq!(list.len(), 1);
+        // An update adds context to it without inventing the rest.
+        let response = report(
+            &api,
+            "7",
+            r#"{"stage":"build","status":"running","branch":"feature/x"}"#,
+        )
+        .await;
+        assert_eq!(response.status(), HttpStatus::Ok);
+        let run = fetch(&api, "7").await.1.unwrap();
+        assert_eq!(run.branch.as_deref(), Some("feature/x"));
+        assert!(run.repository.is_none() && run.tickets.is_empty());
+    }
+
+    #[rocket::async_test]
+    async fn starting_a_run_validates_its_identity_fields() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        for body in [
+            r#"{"title":"t","project":"/work","repository":"relative/repo"}"#,
+            r#"{"title":"t","project":"/work","repository":"/work/\u001b[2J"}"#,
+            r#"{"title":"bad\u0007title","project":"/work"}"#,
+        ] {
+            let response = api
+                .post("/api/runs")
+                .header(Header::new("Host", "127.0.0.1:4311"))
+                .header(ContentType::JSON)
+                .body(body)
+                .dispatch()
+                .await;
+            assert_eq!(response.status(), HttpStatus::BadRequest, "{body}");
+        }
+        assert!(api
+            .rocket()
+            .state::<RunStore>()
+            .unwrap()
+            .list()
+            .unwrap()
+            .is_empty());
+        let run = start(
+            &api,
+            r#"{"title":"t","project":"C:\\work\\repo","repository":"C:\\work\\repo"}"#,
+        )
+        .await;
+        assert_eq!(run.repository.as_deref(), Some("C:\\work\\repo"));
     }
 
     #[rocket::async_test]

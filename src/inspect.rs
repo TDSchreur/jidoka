@@ -37,15 +37,18 @@ fn ticket_mark(status: TicketStatus) -> &'static str {
     }
 }
 
-/// Text from the record is shown with control characters replaced, so it cannot rewrite the terminal.
+/// Text from the record is shown on one line with control and direction-changing characters replaced,
+/// so it can neither rewrite the terminal nor pass for another line of the report.
 fn shown(text: &str) -> String {
     text.chars()
-        .map(|c| {
-            if c.is_control() && c != '\n' {
-                '\u{FFFD}'
-            } else {
-                c
-            }
+        .map(|c| match c {
+            '\n' | '\r' | '\t' => ' ',
+            '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}' => '\u{FFFD}',
+            c if c.is_control() => '\u{FFFD}',
+            c => c,
         })
         .collect()
 }
@@ -114,4 +117,39 @@ pub(crate) fn render(run: &Run) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_with_summary(summary: &str) -> Run {
+        serde_json::from_value(serde_json::json!({
+            "id": "1", "title": "t", "project": "/p", "stage": "build", "status": "running",
+            "summaries": {"define": summary}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn stored_text_cannot_pass_for_another_line_or_rewrite_the_terminal() {
+        let text = render(&run_with_summary(
+            "ok\nPull request  https://evil.test\u{1b}[2J\u{202E}x",
+        ));
+        assert!(
+            !text.contains('\u{1b}') && !text.contains('\u{202E}'),
+            "{text:?}"
+        );
+        assert_eq!(
+            text.lines()
+                .filter(|line| line.starts_with("Pull request"))
+                .count(),
+            1,
+            "{text}"
+        );
+        assert!(
+            text.contains("define: ok Pull request  https://evil.test"),
+            "{text}"
+        );
+    }
 }

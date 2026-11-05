@@ -197,9 +197,27 @@ fn has_control(value: &str) -> bool {
 
 /// An absolute `http(s)` URL with a host and no credentials, so a reference never carries a secret.
 fn check_http_url(name: &str, value: &str) -> Result<(), String> {
+    check_http_url_with(name, value, true)
+}
+
+/// A URL that is stored and shown as a reference also may not carry a query string or fragment,
+/// which is where tokens usually hide.
+fn check_plain_url(name: &str, value: &str) -> Result<(), String> {
+    check_http_url_with(name, value, false)
+}
+
+fn check_http_url_with(name: &str, value: &str, allow_query: bool) -> Result<(), String> {
+    if !allow_query && (value.contains('?') || value.contains('#')) {
+        return Err(format!(
+            "{name} must not contain a query string or fragment, which can carry secrets"
+        ));
+    }
+    if value != value.trim() || value.chars().any(char::is_whitespace) {
+        return Err(format!("{name} must not contain spaces"));
+    }
     let uri = rocket::http::uri::Absolute::parse(value).ok();
     let valid = uri.as_ref().is_some_and(|uri| {
-        matches!(uri.scheme(), "http" | "https")
+        (uri.scheme().eq_ignore_ascii_case("http") || uri.scheme().eq_ignore_ascii_case("https"))
             && uri
                 .authority()
                 .is_some_and(|authority| !authority.host().is_empty())
@@ -237,8 +255,14 @@ fn check_reference(name: &str, value: &str, limit: usize) -> Result<(), String> 
     if has_control(value) {
         return Err(format!("{name} must not contain control characters"));
     }
-    if value.starts_with("http://") || value.starts_with("https://") {
-        return check_http_url(name, value);
+    // Leading spaces would hide a URL's scheme from this check yet not from a browser.
+    if value != value.trim() {
+        return Err(format!("{name} must not start or end with spaces"));
+    }
+    if value.to_ascii_lowercase().starts_with("http://")
+        || value.to_ascii_lowercase().starts_with("https://")
+    {
+        return check_plain_url(name, value);
     }
     if has_scheme(value) {
         return Err(format!("{name} must be an HTTP(S) URL or a local path"));
@@ -259,7 +283,7 @@ fn check_text(name: &str, value: &str, limit: usize) -> Result<(), String> {
     Ok(())
 }
 
-fn is_absolute_path(value: &str) -> bool {
+pub(crate) fn is_absolute_path(value: &str) -> bool {
     let windows_drive = value.len() > 2
         && value.as_bytes()[0].is_ascii_alphabetic()
         && &value[1..2] == ":"
@@ -313,11 +337,17 @@ impl UpdateRun {
         if let FieldUpdate::Set(value) = &self.branch {
             if value.is_empty()
                 || value.len() > 255
-                || value.starts_with('-')
+                || value.starts_with(['-', '/'])
+                || value.ends_with(['/', '.'])
+                || value.ends_with(".lock")
                 || value.contains("..")
-                || value.chars().any(|c| c.is_whitespace() || c.is_control())
+                || value.contains("@{")
+                || value.contains("//")
+                || value
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c))
             {
-                return Err("Branch must be a branch name without spaces, control characters or \"..\", and not start with \"-\"".into());
+                return Err("Branch must be a valid git branch name: no spaces, control characters or any of ~ ^ : ? * [ \\ \"..\" \"@{\", and not starting with \"-\"".into());
             }
         }
         if let FieldUpdate::Set(value) = &self.base_commit {
@@ -329,7 +359,7 @@ impl UpdateRun {
             check_reference("Spec", value, 4096)?;
         }
         if let FieldUpdate::Set(value) = &self.pr {
-            check_http_url("Pull request", value)?;
+            check_plain_url("Pull request", value)?;
         }
         if let FieldUpdate::Set(list) = &self.tickets {
             if list.len() > MAX_TICKETS {
@@ -696,7 +726,13 @@ pub(crate) fn save_runs(path: &Path, runs: &[Run]) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("run storage has no parent directory"))?;
     fs::create_dir_all(parent)?;
     let temp = path.with_extension("json.tmp");
-    fs::write(&temp, serde_json::to_vec(runs)?)?;
+    {
+        use std::io::Write;
+        // Flushed to disk before the rename, so a crash leaves the old or the new file, never a torn one.
+        let mut file = fs::File::create(&temp)?;
+        file.write_all(&serde_json::to_vec(runs)?)?;
+        file.sync_all()?;
+    }
     fs::rename(temp, path)
 }
 
@@ -1346,5 +1382,88 @@ mod tests {
             assert_eq!(stored.tickets[0].reference, format!("t{n}"));
             assert_eq!(stored.summaries[&Stage::Define], format!("Summary {n}"));
         }
+    }
+
+    #[test]
+    fn urls_and_names_cannot_smuggle_credentials_or_tokens() {
+        for (options, reason) in [
+            (vec!["--spec", " https://tok:secret@evil.test/x"], "spaces"),
+            (vec!["--spec", "https://evil.test/x "], "spaces"),
+            (
+                vec!["--spec", "HTTPS://tok:secret@evil.test/x"],
+                "credentials",
+            ),
+            (
+                vec!["--spec", "https://example.com/spec?token=abc"],
+                "query string",
+            ),
+            (
+                vec!["--spec", "https://example.com/spec#frag"],
+                "query string",
+            ),
+            (
+                vec!["--pr", "https://example.com/pr/1?access_token=abc"],
+                "query string",
+            ),
+            (
+                vec!["--ticket", "https://example.com/t?key=1 Title"],
+                "query string",
+            ),
+            (vec!["--branch", "a:b"], "branch name"),
+            (vec!["--branch", "x~1"], "branch name"),
+            (vec!["--branch", "a@{b}"], "branch name"),
+            (vec!["--branch", "topic.lock"], "branch name"),
+            (vec!["--branch", "trailing/"], "branch name"),
+            (vec!["--branch", "back\\slash"], "branch name"),
+        ] {
+            let Err(error) = parse_update("build", "running", &options) else {
+                panic!("{options:?} should be rejected");
+            };
+            assert!(error.to_string().contains(reason), "{options:?}: {error}");
+        }
+        for options in [
+            vec!["--branch", "feature/run-context_2"],
+            vec!["--spec", "https://github.com/o/r/issues/1"],
+        ] {
+            assert!(
+                parse_update("build", "running", &options).is_ok(),
+                "{options:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn simultaneous_updates_to_one_run_both_land() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = std::sync::Arc::new(RunStore::open(&path).unwrap());
+        let run = new_run(&store, "task");
+        let threads: Vec<_> = [
+            vec!["--branch", "feature/a"],
+            vec!["--summary", "build=Built"],
+            vec!["--pr", "https://x.test/pr/1"],
+            vec!["--ticket", "t T"],
+        ]
+        .into_iter()
+        .map(|options| {
+            let (store, id) = (store.clone(), run.id.clone());
+            std::thread::spawn(move || {
+                let options: Vec<&str> = options.clone();
+                store
+                    .update(&id, parse_update("build", "running", &options).unwrap())
+                    .unwrap()
+                    .unwrap();
+            })
+        })
+        .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        // Each update changed only its own fields, so none overwrote another.
+        let stored = load_runs(&path).unwrap().pop().unwrap();
+        assert_eq!(stored.branch.as_deref(), Some("feature/a"));
+        assert_eq!(stored.summaries.len(), 1);
+        assert_eq!(stored.pr.as_deref(), Some("https://x.test/pr/1"));
+        assert_eq!(stored.tickets.len(), 1);
     }
 }

@@ -170,14 +170,17 @@ function RefLink({ value, label }) {
 function ContextChips({ run }) {
   const progress = ticketProgress(run);
   return progress
-    ? html`<span class="chip" title="Tickets done">Tickets${' '}${progress.done}/${progress.total}</span>`
+    ? html`<span class="chip">Tickets${' '}${progress.done}/${progress.total}<span class="visually-hidden">${' done'}</span></span>`
     : null;
 }
 
 function ContextLinks({ run }) {
-  const pr = run.pr ? html`<${RefLink} value=${run.pr} label="Pull request" />` : null;
-  const spec = run.spec ? html`<${RefLink} value=${run.spec} label="Spec" />` : null;
-  return pr || spec ? html`<p class="links">${pr}${pr && spec ? ' · ' : null}${spec}</p>` : null;
+  const named = (label) => html`${label}<span class="visually-hidden">${` of ${run.title}`}</span>`;
+  const pr = run.pr ? html`<${RefLink} value=${run.pr} label=${named('Pull request')} />` : null;
+  const spec = run.spec ? html`<${RefLink} value=${run.spec} label=${named('Spec')} />` : null;
+  return pr || spec
+    ? html`<p class="links">${pr}${pr && spec ? html`<span aria-hidden="true">${' · '}</span>` : null}${spec}</p>`
+    : null;
 }
 
 function Ticket({ value }) {
@@ -317,7 +320,7 @@ function Detail({ run, now, onClose }) {
   };
   const ts = timestamp(run);
   const progress = ticketProgress(run);
-  const summaries = GROUPS.filter(([id]) => run.summaries?.[id]).map(([id, name]) => [id, name]);
+  const summaries = GROUPS.filter(([id]) => run.summaries?.[id]);
   const stage = GROUPS.find(([id]) => id === run.stage);
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   return html`<dialog
@@ -353,15 +356,15 @@ function Detail({ run, now, onClose }) {
           ${run.current_ticket ? html`<${TicketLink} value=${String(run.current_ticket)} />` : null}
         <//>
         <${Field} label="Status reason">${run.blocking_reason}<//>
-        <${Field} label="Mode" missing="Not recorded">${run.mode}<//>
-        <${Field} label="Branch" missing="Not recorded">${run.branch}<//>
-        <${Field} label="Worktree" missing="Not recorded">${run.worktree}<//>
-        <${Field} label="Repository" missing="Not recorded">${run.repository}<//>
-        <${Field} label="Base commit" missing="Not recorded">${run.base_commit}<//>
-        <${Field} label="Spec" missing="Not recorded">
+        <${Field} label="Mode" missing="Unknown">${run.mode}<//>
+        <${Field} label="Branch" missing="Unknown">${run.branch}<//>
+        <${Field} label="Worktree" missing="Unknown">${run.worktree}<//>
+        <${Field} label="Repository" missing="Unknown">${run.repository}<//>
+        <${Field} label="Base commit" missing="Unknown">${run.base_commit}<//>
+        <${Field} label="Spec" missing="Unknown">
           ${run.spec ? html`<${TicketLink} value=${String(run.spec)} />` : null}
         <//>
-        <${Field} label="Pull request" missing="Not recorded">
+        <${Field} label="Pull request" missing="Unknown">
           ${run.pr ? html`<${TicketLink} value=${String(run.pr)} />` : null}
         <//>
         <${Field} label=${progress ? `Tickets (${progress.done} of ${progress.total} done)` : 'Tickets'} missing="None recorded">
