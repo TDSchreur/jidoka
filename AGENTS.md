@@ -22,8 +22,11 @@ Read the relevant guide when working on these files or tasks:
 - [Reliable tests](.github/instructions/reliable-tests.instructions.md): tests involving time, shared state, files, ports, or processes.
 - [Skill authoring](.github/instructions/agent-skills.instructions.md): skills maintained in this project.
 - [Dashboard accessibility](.github/instructions/accessibility.instructions.md): dashboard HTML, CSS, and interactive behavior.
+- [Shell scripts](.github/instructions/shell.instructions.md): `*.sh` files, including the Linux installer.
+- [PowerShell scripts](.github/instructions/powershell.instructions.md): `*.ps1` files, including the Windows installer.
+- [Docs and changelog](.github/instructions/update-docs-on-code-change.instructions.md): code changes that need documentation or a `changelog.d` fragment.
 - [Markdown](.github/instructions/markdown.instructions.md): Markdown written or edited in this project.
-- [GitHub Actions](.github/instructions/github-actions-ci-cd-best-practices.instructions.md): GitHub Actions workflows.
+- [GitHub Actions](.github/instructions/github-actions-ci-cd-best-practices.instructions.md): GitHub Actions workflows. Use the [github-actions-hardening skill](skills/github-actions-hardening/SKILL.md) to review workflow security.
 
 ## Commands
 
