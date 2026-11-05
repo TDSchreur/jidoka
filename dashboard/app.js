@@ -65,6 +65,8 @@ const timestamp = (run) =>
   !Number.isNaN(new Date(run.updated_at).getTime())
     ? run.updated_at
     : null;
+/** Identifies a Run across Projects. Ids are global today; the Project keeps two rows from ever clashing. */
+const runKey = (run) => `${run.project}\n${run.id}`;
 const groupOf = (run) => (run.status === 'done' ? 'done' : run.stage);
 
 // Blocked first, then the most recently updated; Runs without a timestamp go last, newest record first.
@@ -165,13 +167,13 @@ function Updated({ run, now }) {
 /** A Done card is one line: the title, a Show details toggle and Delete. The rest shows on demand. */
 function DoneCard({ run, now, onOpen, onDelete }) {
   const [expanded, setExpanded] = useState(false);
-  const detailsId = `done-details-${run.id}`;
+  const detailsId = `done-details-${runKey(run).replace(/\W/g, '-')}`;
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   return html`<li>
     <article class="run done-run">
       <div class="done-line">
         <h3>
-          <button type="button" class="card-open" data-run-id=${run.id} onClick=${() => onOpen(run.id)}>
+          <button type="button" class="card-open" data-run-key=${runKey(run)} onClick=${() => onOpen(runKey(run))}>
             ${run.title}
           </button>
         </h3>
@@ -217,7 +219,7 @@ function Card({ run, now, onOpen }) {
           </p>`
         : null}
       <h3>
-        <button type="button" class="card-open" data-run-id=${run.id} onClick=${() => onOpen(run.id)}>
+        <button type="button" class="card-open" data-run-key=${runKey(run)} onClick=${() => onOpen(runKey(run))}>
           ${run.title}
         </button>
       </h3>
@@ -326,8 +328,8 @@ function Group({ id, entries, now, selected, onOpen, onDelete, onDeleteAll }) {
       ? html`<ul class="runs">
           ${entries.map((entry) =>
             id === 'done'
-              ? html`<${DoneCard} key=${entry.run.id} run=${entry.run} now=${now} onOpen=${onOpen} onDelete=${onDelete} />`
-              : html`<${Card} key=${entry.run.id} run=${entry.run} now=${now} onOpen=${onOpen} />`,
+              ? html`<${DoneCard} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${onOpen} onDelete=${onDelete} />`
+              : html`<${Card} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${onOpen} />`,
           )}
         </ul>`
       : html`<p class="empty">No runs</p>`}
@@ -463,6 +465,7 @@ const TITLE = 'TDS Factory';
 /** A Run needs the user when it is blocked. */
 const needsYou = (run) => run.status === 'blocked';
 
+
 const supportsNotifications = () => typeof Notification === 'function';
 const permission = () => (supportsNotifications() ? Notification.permission : 'unsupported');
 
@@ -489,16 +492,16 @@ function useNotifications(runs, names) {
     const waitingNow = runs.filter(needsYou);
     if (known.current !== null && state === 'on') {
       for (const run of waitingNow) {
-        if (known.current.has(run.id)) continue;
+        if (known.current.has(runKey(run))) continue;
         try {
-          const note = new Notification(`Needs you in ${names.get(run.project) ?? run.project}: ${run.title}`, { tag: `needs-you-${run.id}` });
+          const note = new Notification(`Needs you in ${names.get(run.project) ?? run.project}: ${run.title}`, { tag: `needs-you-${runKey(run)}` });
           note.onclick = () => window.focus();
         } catch {
           /* the browser refused to show it: nothing else to do */
         }
       }
     }
-    known.current = new Set(waitingNow.map((run) => run.id));
+    known.current = new Set(waitingNow.map(runKey));
   }, [runs]);
   const remember = (on) => {
     setWanted(on);
@@ -657,28 +660,28 @@ function App() {
   if (opening.current === null && runs?.length) opening.current = firstStage(runs);
   const current = picked ?? opening.current ?? GROUPS[0][0];
   // The open detail is a Run id; it is looked up in the latest full list, so refreshes update it.
-  const [openId, setOpenId] = useState(null);
+  const [openKey, setOpenKey] = useState(null);
   const lastOpened = useRef(null);
-  const openRun = openId === null ? null : (runs ?? []).find((run) => run.id === openId);
-  const open = (id) => {
-    lastOpened.current = id;
-    setOpenId(id);
+  const openRun = openKey === null ? null : (runs ?? []).find((run) => runKey(run) === openKey);
+  const open = (key) => {
+    lastOpened.current = key;
+    setOpenKey(key);
   };
-  const close = () => setOpenId(null);
+  const close = () => setOpenKey(null);
   useEffect(() => {
     // The Run is no longer listed: close the detail, so it does not come back if the Run returns.
-    if (openId !== null && runs && !openRun) setOpenId(null);
-  }, [openId, runs]);
+    if (openKey !== null && runs && !openRun) setOpenKey(null);
+  }, [openKey, runs]);
   useEffect(() => {
     // Back to the card that was opened, once the detail is gone.
-    if (openId === null && lastOpened.current !== null) {
-      const card = document.querySelector(`[data-run-id="${CSS.escape(String(lastOpened.current))}"]`);
+    if (openKey === null && lastOpened.current !== null) {
+      const card = document.querySelector(`[data-run-key="${CSS.escape(String(lastOpened.current))}"]`);
       card?.focus();
       // The card is gone or hidden (its Run left, or changed Stage): keep focus on the board.
       if (!card || document.activeElement !== card) document.querySelector('main')?.focus();
       lastOpened.current = null;
     }
-  }, [openId]);
+  }, [openKey]);
   return html`<${ProjectNames.Provider} value=${names}>
     <div class="toolbar">
       <${NeedsYouToggle}
@@ -748,7 +751,7 @@ function App() {
       ${helpOpen ? html`<${Help} onClose=${closeHelp} />` : null}
       ${pending
         ? html`<${Confirm}
-            title=${pending.runs.length === 1 ? 'Delete this run?' : `Delete all ${pending.runs.length} done runs?`}
+            title=${pending.runs.length === 1 ? 'Delete this run?' : `Delete all ${pending.runs.length} done runs in ${names.get(pending.runs[0].project) ?? pending.runs[0].project}?`}
             confirmLabel=${pending.runs.length === 1 ? 'Delete' : 'Delete all'}
             onConfirm=${confirmDelete}
             onCancel=${() => setPending(null)}
@@ -756,12 +759,12 @@ function App() {
             <p>
               ${pending.runs.length === 1
                 ? html`This removes the record of <strong>${pending.runs[0].title}</strong> from the dashboard.`
-                : 'This removes the records of these runs from the dashboard.'}
+                : `This removes the records of these runs in ${names.get(pending.runs[0].project) ?? pending.runs[0].project} from the dashboard.`}
               The worktree, branch and pull request stay as they are.
             </p>
           <//>`
         : null}
-      ${openRun ? html`<${Detail} key=${openRun.id} run=${openRun} now=${now} onClose=${close} />` : null}
+      ${openRun ? html`<${Detail} key=${runKey(openRun)} run=${openRun} now=${now} onClose=${close} />` : null}
     </main>
   <//>`;
 }
