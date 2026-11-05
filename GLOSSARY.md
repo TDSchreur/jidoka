@@ -17,3 +17,7 @@
 **Status reason**: Why a run is blocked, in the run's own words. It is the blocking reason a run is blocked with.
 
 **Continuing a run**: Starting a new session on an existing run. The session reads `factory run inspect <id>`, checks the recorded repository, worktree, branch, base commit and Git state, reports any difference to the user and never resets, cleans or discards work to make them match.
+
+**Fresh tokens**: The headline token figure of a run: input excluding cache reads, plus cache writes and output. Cache reads are shown beside it, and reasoning is part of output and not added again.
+
+**Token usage**: The tokens a run used, read from the agents' session logs and kept as counts per stage, model and ticket, with the rework and work with no ticket in their own buckets. It is `tracked`, `partial` or `not tracked`, with the reason; unknown usage is never shown as zero.

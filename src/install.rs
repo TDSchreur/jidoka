@@ -58,24 +58,30 @@ pub(crate) fn skills_root(
     home: &Path,
     var: impl Fn(&str) -> Option<OsString>,
 ) -> io::Result<PathBuf> {
+    Ok(agent_home(agent, home, var)?.join("skills"))
+}
+
+/// An agent's own folder, such as `~/.claude`, honoring its config directory variable.
+pub(crate) fn agent_home(
+    agent: &str,
+    home: &Path,
+    var: impl Fn(&str) -> Option<OsString>,
+) -> io::Result<PathBuf> {
     let config_dir = |name: &str, default: &str| {
         var(name)
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(default))
     };
-    let root = match agent {
-        "codex" => config_dir("CODEX_HOME", ".codex"),
-        "claude" => config_dir("CLAUDE_CONFIG_DIR", ".claude"),
-        "copilot" => home.join(".copilot"),
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("unknown agent {agent:?}; use codex, claude, or copilot"),
-            ))
-        }
-    };
-    Ok(root.join("skills"))
+    match agent {
+        "codex" => Ok(config_dir("CODEX_HOME", ".codex")),
+        "claude" => Ok(config_dir("CLAUDE_CONFIG_DIR", ".claude")),
+        "copilot" => Ok(home.join(".copilot")),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unknown agent {agent:?}; use codex, claude, or copilot"),
+        )),
+    }
 }
 
 pub(crate) fn home_dir() -> io::Result<PathBuf> {

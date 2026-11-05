@@ -39,7 +39,7 @@ fn ticket_mark(status: TicketStatus) -> &'static str {
 
 /// Text from the record is shown on one line with control and direction-changing characters replaced,
 /// so it can neither rewrite the terminal nor pass for another line of the report.
-fn shown(text: &str) -> String {
+pub(crate) fn shown(text: &str) -> String {
     text.chars()
         .map(|c| match c {
             '\n' | '\r' | '\t' => ' ',

@@ -14,11 +14,13 @@ pub(crate) fn start_run(
     title: &str,
     project: &str,
     repository: Option<String>,
+    session: Option<String>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let body = serde_json::to_vec(&NewRun {
         title: title.to_string(),
         project: project.to_string(),
         repository,
+        session,
     })?;
     let run: Run = serde_json::from_slice(&api_post(server, "/api/runs", &body)?)?;
     Ok(run.id)
@@ -112,6 +114,16 @@ pub(crate) fn fetch_run(server: &str, id: &str) -> Result<Run, Box<dyn std::erro
         server,
         "GET",
         &format!("/api/runs/{id}"),
+        &[],
+    )?)?)
+}
+
+/// Reads every run from the factory server at `server`.
+pub(crate) fn fetch_runs(server: &str) -> Result<Vec<Run>, Box<dyn std::error::Error>> {
+    Ok(serde_json::from_slice(&api_request(
+        server,
+        "GET",
+        "/api/runs",
         &[],
     )?)?)
 }
@@ -239,7 +251,7 @@ mod tests {
         )
         .unwrap();
         let server = TestServer::start(&path);
-        let id = start_run(&server.address, "Verify slice", "/work", None).unwrap();
+        let id = start_run(&server.address, "Verify slice", "/work", None, None).unwrap();
         let ticket = "https://github.com/example/repo/issues/7";
         let steps: [(&str, &str, &[&str]); 4] = [
             (
@@ -319,7 +331,7 @@ mod tests {
         assert_eq!(invalid.to_string(), "Invalid run id");
         let address = server.address.clone();
         drop(server);
-        let unreachable = start_run(&address, "task", "/work", None).unwrap_err();
+        let unreachable = start_run(&address, "task", "/work", None, None).unwrap_err();
         assert!(
             unreachable
                 .to_string()
@@ -378,6 +390,7 @@ mod tests {
             "Continue me",
             "/work/repo.worktrees/x",
             Some("/work/repo".into()),
+            None,
         )
         .unwrap();
         report_run(

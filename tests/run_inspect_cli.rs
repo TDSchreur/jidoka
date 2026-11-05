@@ -28,3 +28,22 @@ fn inspect_refuses_unknown_options_and_bad_ids() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid run id"));
 }
+
+#[test]
+fn stats_needs_a_run_id_or_all() {
+    for args in [
+        &["run", "stats"][..],
+        &["run", "stats", "--bogus"],
+        &["run", "stats", "1", "--all"],
+    ] {
+        let output = factory(args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("factory run stats <id> | --all"),
+            "{args:?}"
+        );
+    }
+    let output = factory(&["run", "stats", "12x"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid run id"));
+}

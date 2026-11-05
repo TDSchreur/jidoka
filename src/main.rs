@@ -5,13 +5,16 @@ mod install;
 mod repository;
 mod run;
 mod server;
+mod stats;
+mod usage;
+mod usage_logs;
 
-use client::{fetch_run, probe_dashboard, report_run, start_run, Probe};
+use client::{fetch_run, fetch_runs, probe_dashboard, report_run, start_run, Probe};
 use run::UPDATE_HELP;
 use server::{serve, ADDRESS, DEFAULT_PORT};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>]\n  factory doctor [--agent <codex|claude|copilot>] [--json]\n  factory run start <title>\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory doctor [--agent <codex|claude|copilot>] [--json]\n  factory run start <title>\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -60,14 +63,23 @@ fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
                 doctor::parse_args(options).map_err(|error| format!("{error}\n{HELP}"))?;
             return doctor::run(agent, json);
         }
-        ["dashboard"] => dashboard(DEFAULT_PORT)?,
-        ["dashboard", "--port", port] => dashboard(parse_port(port)?)?,
+        ["dashboard", options @ ..] => {
+            let (port, usage) =
+                parse_dashboard_options(options, env::var("FACTORY_USAGE").ok().as_deref())?;
+            dashboard(port, usage)?;
+        }
         ["run", "start", title] => {
             let dir = env::current_dir()?;
             let repository = repository::canonical_repository(&dir);
             println!(
                 "{}",
-                start_run(ADDRESS, title, &dir.display().to_string(), repository)?
+                start_run(
+                    ADDRESS,
+                    title,
+                    &dir.display().to_string(),
+                    repository,
+                    current_session()
+                )?
             );
         }
         ["run", "inspect", id, options @ ..] => {
@@ -83,13 +95,53 @@ fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
                 print!("{}", inspect::render(&run));
             }
         }
+        ["run", "stats", "--all"] => print!("{}", stats::render_all(&fetch_runs(ADDRESS)?)),
+        ["run", "stats", id] if !id.starts_with('-') => {
+            print!("{}", stats::render_run(&fetch_run(ADDRESS, id)?))
+        }
         ["run", "update", id, stage, status, options @ ..] => {
-            report_run(ADDRESS, id, stage, status, options)?;
+            // The agent's own session is recorded with every update, so its token usage can be attributed.
+            let session = current_session();
+            let mut options = options.to_vec();
+            if let Some(session) = session.as_deref() {
+                options.extend(["--session", session]);
+            }
+            report_run(ADDRESS, id, stage, status, &options)?;
             println!("Updated run {id}");
         }
         _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
     }
     Ok(true)
+}
+
+/// The id of the agent session this command runs in, when the agent exposes it (Claude Code does).
+fn current_session() -> Option<String> {
+    let id = env::var("CLAUDE_CODE_SESSION_ID").ok()?;
+    run::check_session_id(&id).ok().map(|()| id)
+}
+
+/// `[--port <port>] [--no-usage]` in any order. Usage collection is on unless `--no-usage` or `FACTORY_USAGE=off`.
+fn parse_dashboard_options(
+    options: &[&str],
+    factory_usage: Option<&str>,
+) -> Result<(u16, bool), String> {
+    let (mut port, mut usage) = (None, true);
+    let mut args = options.iter();
+    while let Some(arg) = args.next() {
+        match *arg {
+            "--port" if port.is_none() => {
+                port = Some(parse_port(
+                    args.next().ok_or("--port needs a port number.")?,
+                )?);
+            }
+            "--no-usage" => usage = false,
+            other => return Err(format!("Invalid dashboard option {other:?}.\n{HELP}")),
+        }
+    }
+    if usage::switched_off_by(factory_usage) {
+        usage = false;
+    }
+    Ok((port.unwrap_or(DEFAULT_PORT), usage))
 }
 
 fn parse_port(port: &str) -> Result<u16, String> {
@@ -122,7 +174,7 @@ fn dashboard_url(port: u16, project: &str) -> String {
 }
 
 /// Serves the dashboard, or, when a Factory dashboard already answers on the port, prints its URL.
-fn dashboard(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+fn dashboard(port: u16, usage: bool) -> Result<(), Box<dyn std::error::Error>> {
     // A Project is identified by its repository, so a linked worktree opens its main checkout's row.
     let dir = env::current_dir()?;
     let project =
@@ -131,6 +183,9 @@ fn dashboard(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     match probe_dashboard(&format!("127.0.0.1:{port}"))? {
         Probe::Running(info) => {
             println!("Dashboard already running (pid {}): {url}", info.pid);
+            if !usage {
+                eprintln!("Note: --no-usage and FACTORY_USAGE only apply to a dashboard this command starts.");
+            }
             let ours = current_build();
             if info.version != ours {
                 eprintln!(
@@ -145,7 +200,16 @@ fn dashboard(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             )
             .into())
         }
-        Probe::Absent => serve(&data_path(port)?, port, &url)?,
+        Probe::Absent => {
+            let home = install::home_dir()?;
+            let settings = usage::UsageSettings {
+                enabled: usage,
+                roots: usage_logs::Roots::from_home(&home, &|name| env::var_os(name))?,
+                budget: std::time::Duration::from_secs(5),
+                settle: usage::UsageSettings::default_settle(),
+            };
+            serve(&data_path(port)?, port, &url, settings)?
+        }
     }
     Ok(())
 }
@@ -222,5 +286,33 @@ mod tests {
         assert!(data_path(4400)
             .unwrap()
             .ends_with("tds-factory/runs-4400.json"));
+    }
+
+    #[test]
+    fn dashboard_options_set_the_port_and_the_usage_switch_in_any_order() {
+        assert_eq!(parse_dashboard_options(&[], None), Ok((DEFAULT_PORT, true)));
+        assert_eq!(
+            parse_dashboard_options(&["--no-usage", "--port", "4400"], None),
+            Ok((4400, false))
+        );
+        assert_eq!(
+            parse_dashboard_options(&["--port", "4400"], Some("off")),
+            Ok((4400, false))
+        );
+        for on in [None, Some(""), Some("on"), Some("1"), Some("true")] {
+            assert!(parse_dashboard_options(&[], on).unwrap().1, "{on:?}");
+        }
+        for off in ["off", "OFF", " false ", "0", "no"] {
+            assert!(!parse_dashboard_options(&[], Some(off)).unwrap().1, "{off}");
+        }
+        for bad in [
+            &["--port"][..],
+            &["--port", "0"],
+            &["--port", "1", "--port", "2"],
+            &["--nope"],
+            &["4400"],
+        ] {
+            assert!(parse_dashboard_options(bad, None).is_err(), "{bad:?}");
+        }
     }
 }

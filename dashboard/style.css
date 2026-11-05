@@ -226,6 +226,12 @@ body:has(.confirm[open]) { overflow: hidden; }
 .fields dt { color: var(--colorNeutralForeground3); }
 .fields dd { margin: 0; overflow-wrap: anywhere; }
 .links { margin: var(--spacingVerticalXS) 0 0; font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); }
+.table-scroll { overflow-x: auto; max-width: 100%; }
+.table-scroll:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: var(--strokeWidthThick); }
+.usage-table { border-collapse: collapse; font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); }
+.usage-table th, .usage-table td { padding: var(--spacingVerticalXS) var(--spacingHorizontalS); border-bottom: var(--strokeWidthThin) solid var(--colorNeutralStroke1); text-align: right; white-space: nowrap; }
+.usage-table th[scope="col"]:nth-child(-n+3), .usage-table td:nth-child(-n+3), .usage-table th[scope="row"] { text-align: left; }
+.usage-note { color: var(--colorNeutralForeground3); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); }
 .ticket-list, .summaries { margin: 0; padding-left: var(--spacingHorizontalXL); }
 .ticket-status { font-weight: var(--fontWeightSemibold); }
 .fields .not-set { color: var(--colorNeutralForeground3); font-style: italic; }
