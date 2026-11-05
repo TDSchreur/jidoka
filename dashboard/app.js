@@ -215,7 +215,7 @@ function DoneCard({ run, now, onOpen, onDelete }) {
   </li>`;
 }
 
-function Card({ run, now, onOpen }) {
+function Card({ run, now, onOpen, onDelete }) {
   const known = STATUSES.includes(run.status);
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   const blocked = run.status === 'blocked';
@@ -244,6 +244,9 @@ function Card({ run, now, onOpen }) {
       ${run.activity ? html`<p class="activity">Activity: ${run.activity}</p>` : null}
       ${run.current_ticket ? html`<${Ticket} value=${String(run.current_ticket)} />` : null}
       <${Updated} run=${run} now=${now} />
+      <button type="button" class="toggle danger" onClick=${() => onDelete(run)}>
+        Delete<span class="visually-hidden">${` ${run.title}`}</span>
+      </button>
     </article>
   </li>`;
 }
@@ -338,7 +341,7 @@ function Group({ id, entries, now, selected, onOpen, onDelete, onDeleteAll }) {
           ${entries.map((entry) =>
             id === 'done'
               ? html`<${DoneCard} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${onOpen} onDelete=${onDelete} />`
-              : html`<${Card} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${onOpen} />`,
+              : html`<${Card} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${onOpen} onDelete=${onDelete} />`,
           )}
         </ul>`
       : html`<p class="empty">No runs</p>`}
