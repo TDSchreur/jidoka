@@ -66,8 +66,16 @@ pub(crate) fn probe_dashboard(server: &str) -> io::Result<Probe> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid server address"))?;
     let mut stream = match TcpStream::connect_timeout(&address, timeout) {
         Ok(stream) => stream,
-        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => return Ok(Probe::Absent),
-        Err(error) if error.kind() == io::ErrorKind::TimedOut => return Ok(Probe::Foreign),
+        // Windows reports a closed port as a timeout, not a refusal. Nobody accepted, so nothing runs here;
+        // binding the port later reports a real conflict.
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut
+            ) =>
+        {
+            return Ok(Probe::Absent)
+        }
         Err(error) => return Err(error),
     };
     stream.set_read_timeout(Some(timeout))?;
