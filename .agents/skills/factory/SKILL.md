@@ -43,7 +43,7 @@ Use `code-review` with the base commit as the fixed point, and with the spec, th
 
 When there are actionable findings, start a Rework: return to Build, fix the findings test-first with `tdd`, run the relevant checks and then the full verification, and commit the fixes together with any new files. Then run Check again with both reviews (`code-review` and `security-review`), each using the previously reviewed commit as the fixed point so the review covers exactly the Rework's changes, together with the findings it addressed. Pin the new `HEAD` as the reviewed commit, replacing the earlier pin. A run gets at most two Reworks.
 
-Never block work on Check findings. When findings remain after the second Rework, or a finding cannot be resolved, keep the run running with `--activity "Waiting for a decision on remaining Check findings"`, list the remaining findings, and ask the user whether to do one more Rework, finish with the findings listed in the pull request, or stop. Follow their choice.
+Fix actionable findings yourself within the Rework allowance; findings alone never block a run. When findings remain after the second Rework, or a finding cannot be resolved, the run needs a decision from the user, so report it as blocked: `factory run update <id> check blocked --blocking-reason "Decision needed on remaining Check findings"`. List the remaining findings and ask the user whether to do one more Rework, finish with the findings listed in the pull request, or stop. Follow their choice, and when work resumes clear the reason with `factory run update <id> <build|finish> running --clear-blocking-reason`. If they stop the run, leave it blocked.
 
 ## Finish
 
