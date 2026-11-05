@@ -183,12 +183,11 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
         }
         fs::write(destination, content)?;
     }
-    let license = if name == "security-review" {
-        "licenses/awesome-copilot-LICENSE"
-    } else if LOCAL_SKILLS.contains(&name) {
-        ""
-    } else {
-        "licenses/mattpocock-skills-LICENSE"
+    let license = match name {
+        "security-review" => "licenses/awesome-copilot-LICENSE",
+        "humanizer" => "licenses/humanizer-LICENSE",
+        _ if LOCAL_SKILLS.contains(&name) => "",
+        _ => "licenses/mattpocock-skills-LICENSE",
     };
     if let Some((_, content)) = BUNDLED.iter().find(|(path, _)| *path == license) {
         fs::write(dir.join("LICENSE"), content)?;
@@ -396,6 +395,31 @@ mod tests {
         assert!(error.to_string().contains("vscode"));
     }
     #[test]
+    fn humanizer_is_installed_with_its_own_license_for_every_agent() {
+        let home = tempfile::tempdir().unwrap();
+        let unset = |_: &str| None;
+        let roots = skills_roots("codex,claude,copilot", home.path(), unset).unwrap();
+        assert_eq!(roots.len(), 3);
+        let upstream = bundled_text("licenses/humanizer-LICENSE");
+        for root in roots {
+            // An existing, outdated installation is replaced, including its license.
+            fs::create_dir_all(root.join("humanizer")).unwrap();
+            fs::write(root.join("humanizer/SKILL.md"), "old").unwrap();
+            fs::write(root.join("humanizer/LICENSE"), "wrong license").unwrap();
+            install_to(&root).unwrap();
+            let skill = fs::read_to_string(root.join("humanizer/SKILL.md")).unwrap();
+            assert!(skill.contains("name: humanizer"), "{root:?}");
+            let license = fs::read_to_string(root.join("humanizer/LICENSE")).unwrap();
+            assert_eq!(license, upstream, "{root:?}");
+            assert!(license.contains("Siqi Chen"));
+            assert!(!license.contains("Matt Pocock"));
+            assert!(!fs::read_to_string(root.join("tdd/LICENSE"))
+                .unwrap()
+                .contains("Siqi Chen"));
+        }
+    }
+
+    #[test]
     fn installs_bundled_skills_and_replaces_existing_ones() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
@@ -449,6 +473,7 @@ mod tests {
         assert!(!root.join("implement-spec-fast/LICENSE").exists());
         assert!(root.join("triage/AGENT-BRIEF.md").is_file());
         assert!(root.join("triage/LICENSE").is_file());
+        assert!(root.join("humanizer/agents/openai.yaml").is_file());
         install_to(root).unwrap();
         let leftovers: Vec<_> = fs::read_dir(root)
             .unwrap()
