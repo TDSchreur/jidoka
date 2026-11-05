@@ -854,6 +854,27 @@ mod tests {
         assert!(!is_local_origin("http://localhost:4311", 4400));
     }
 
+    #[rocket::async_test]
+    async fn the_header_has_no_dashboard_title_and_a_connection_indicator_follows_the_poll() {
+        let dir = TestDir::new();
+        let page = client(&dir)
+            .await
+            .get("/")
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .dispatch()
+            .await
+            .into_string()
+            .await
+            .unwrap();
+        assert!(!page.contains("Factory dashboard"));
+        let script = asset("/assets/app.js").await;
+        // The indicator is fed by the Run poll and says its state in words, not by colour alone.
+        assert!(script.contains("lastOk: Date.now(), beat: current.beat + 1"));
+        for word in ["Offline", "Connecting…", "Connected"] {
+            assert!(script.contains(word), "{word}");
+        }
+    }
+
     #[test]
     fn the_address_constant_matches_the_default_port() {
         assert_eq!(ADDRESS, format!("127.0.0.1:{DEFAULT_PORT}"));

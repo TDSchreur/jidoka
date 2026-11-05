@@ -136,9 +136,15 @@
 }
 body { max-width: 960px; margin: 0 auto; padding: var(--spacingVerticalXXL) var(--spacingHorizontalL); }
 header { margin-bottom: var(--spacingVerticalXXL); }
-.eyebrow { color: var(--colorBrandForegroundLink); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); font-weight: var(--fontWeightSemibold); letter-spacing: .08em; text-transform: uppercase; }
 h1 { font-size: var(--fontSizeBase500); line-height: var(--lineHeightBase500); font-weight: var(--fontWeightSemibold); margin: var(--spacingVerticalXS) 0; }
 p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
+.connection { display: inline-flex; align-items: center; gap: var(--spacingHorizontalXS); margin: 0 0 0 auto; font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground3); }
+.connection .pulse { width: .6rem; height: .6rem; border-radius: 50%; background: var(--colorNeutralForeground3); animation: beat 1.2s var(--curveEasyEase) 1; }
+.connection.connected .pulse { background: var(--colorPaletteGreenForeground1); }
+.connection.offline .pulse { background: var(--colorPaletteRedForeground1); animation: none; }
+.connection.offline [role="status"] { color: var(--colorPaletteRedForeground1); font-weight: var(--fontWeightSemibold); }
+@keyframes beat { from { transform: scale(1.8); opacity: .4; } to { transform: scale(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .connection .pulse { animation: none; } }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingVerticalS) var(--spacingHorizontalXXL); margin: 0 0 var(--spacingVerticalL); }
 .theme { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingVerticalXS) var(--spacingHorizontalS); margin: 0; padding: 0; border: 0; }
 .toggle { padding: var(--spacingVerticalXS) var(--spacingHorizontalM); border: var(--strokeWidthThin) solid var(--colorNeutralStroke1); border-radius: var(--borderRadiusMedium); background: var(--colorNeutralBackground1); color: var(--colorNeutralForeground1); font: inherit; cursor: pointer; transition: background-color var(--durationFast) var(--curveEasyEase); }

@@ -434,7 +434,7 @@ async function deleteRun(id) {
 
 /** Polls the Run list; `runs` stays null until the first answer and `failed` is set while the server is unreachable. */
 function useRuns() {
-  const [state, setState] = useState({ runs: null, failed: false });
+  const [state, setState] = useState({ runs: null, failed: false, lastOk: null, beat: 0 });
   const reload = useRef(() => {});
   useEffect(() => {
     let active = true;
@@ -444,7 +444,7 @@ function useRuns() {
         if (!response.ok) throw new Error('Failed to load runs');
         const data = await response.json();
         if (!Array.isArray(data)) throw new Error('Unexpected response');
-        if (active) setState({ runs: data, failed: false });
+        if (active) setState((current) => ({ runs: data, failed: false, lastOk: Date.now(), beat: current.beat + 1 }));
       } catch {
         if (active) setState((current) => ({ ...current, failed: true }));
       }
@@ -461,6 +461,22 @@ function useRuns() {
 }
 
 /** The current time, refreshed so relative times keep counting. */
+/** Whether the page can reach the server: a dot that pulses on every answer, with the state in words. */
+function Connection({ failed, lastOk, beat, now }) {
+  const state = failed ? 'offline' : lastOk === null ? 'connecting' : 'connected';
+  const label = { offline: 'Offline', connecting: 'Connecting…', connected: 'Connected' }[state];
+  const age =
+    lastOk === null
+      ? ''
+      : state === 'offline'
+        ? `last contact ${ago(now - lastOk)}`
+        : `updated ${ago(now - lastOk)}`;
+  return html`<p class=${`connection ${state}`}>
+    <span class="pulse" key=${beat} aria-hidden="true"></span>
+    <span role="status">${label}</span>${age ? html`<span class="connection-age">${` · ${age}`}</span>` : null}
+  </p>`;
+}
+
 function useNow() {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -593,7 +609,7 @@ function StageButtons({ stages, current, onPick }) {
 }
 
 function App() {
-  const { runs, failed, reload } = useRuns();
+  const { runs, failed, lastOk, beat, reload } = useRuns();
   const now = useNow();
   const [onlyWaiting, setOnlyWaiting] = useState(false);
   const [wanted] = useState(requestedProject);
@@ -711,6 +727,7 @@ function App() {
       <${NotificationsToggle} state=${notifications.state} onToggle=${notifications.toggle} />
       <button type="button" class="toggle help-open" onClick=${() => setHelpOpen(true)}>Help</button>
       <${ThemeSwitch} />
+      <${Connection} failed=${failed} lastOk=${lastOk} beat=${beat} now=${now} />
     </div>
     <main tabindex="-1">
       <p id="message" role="status" class=${failed || deleteError ? 'error' : ''}>${text}</p>
