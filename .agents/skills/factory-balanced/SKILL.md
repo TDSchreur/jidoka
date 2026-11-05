@@ -17,9 +17,27 @@ Report progress to the factory dashboard with the `factory` CLI from the run's w
 - **Rework:** when Check sends the run back to Build, run `factory run update <id> build running --rework <n> --activity "Rework <n>: <findings being fixed>"`, numbering Reworks from 1 within the run. Leave the count set when Check runs again.
 - **Ticket:** when work on a ticket with an HTTP(S) URL starts, add `--current-ticket "<url>"` to that update. When no ticket is in progress anymore, add `--clear-current-ticket`. Leave it unset for local Markdown tickets.
 - **Blocked:** when work cannot continue without outside input, run `factory run update <id> <stage> blocked --blocking-reason "<what is needed>"`. When work resumes, run `factory run update <id> <stage> running --clear-blocking-reason`.
+- **Context:** record what a new session needs to continue the run, with `factory run update <id> <stage> <status>` options, only through the CLI and never by editing the factory's files. Each of these is a reference or a short summary, never a transcript, a secret or a token. Options left out keep their value; `--clear-<name>` removes one.
+  - Once the worktree exists: `--mode factory-balanced --worktree <absolute path> --branch <branch> --base-commit <commit the worktree started from>`.
+  - Once a spec or tickets exist: `--spec <url or path>`, and one `--ticket "<reference> <title>"` per ticket in order (list them all each time; their statuses are kept). When a ticket starts, `--ticket-status <reference>=in-progress`; when it is finished, `--ticket-status <reference>=done`. A run with no tickets records none.
+  - When a stage ends: `--summary <define|build|check|finish>=<one or two sentences>`. Summaries of earlier stages are kept.
+  - When the pull request exists: `--pr <url>`.
+  - A reason you block a run with `--blocking-reason` is the run's status reason; make it say what is needed.
 - **Done:** once the pull request is open and its CI is green (or the project has no CI), run `factory run update <id> finish done --activity "Opened <pull request URL>" --clear-current-ticket`.
 
 Options that are left out keep their current value. If the server or an update fails, report the failure rather than claiming progress is tracked.
+
+## Continuing a run
+
+When the user asks you to continue an existing run, or gives you a run ID, read its context with `factory run inspect <id>` (add `--json` for structured output) before changing anything, and check the recorded state against reality. Fields shown as unknown were never recorded: do not guess them.
+
+1. The recorded repository exists, and `git -C <repository> rev-parse --git-common-dir` agrees with the worktree's.
+2. The recorded worktree exists and `git worktree list --porcelain` lists it.
+3. In that worktree, `git branch --show-current` is the recorded branch.
+4. The recorded base commit is an ancestor of `HEAD` (`git merge-base --is-ancestor <base commit> HEAD`).
+5. `git status --porcelain` shows no unexpected changes, and any commits not yet pushed are listed.
+
+Report every discrepancy and every unknown to the user, with what you found. Never reset, clean, check out over, delete or discard anything to make the state match, and do not start new work while something differs. If everything matches, continue in the recorded worktree from the recorded stage, at the first ticket that is not done, and record new context as you go. If something differs, ask the user how to proceed.
 
 ## Workspace
 

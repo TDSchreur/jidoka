@@ -1,15 +1,17 @@
 mod client;
 mod doctor;
+mod inspect;
 mod install;
+mod repository;
 mod run;
 mod server;
 
-use client::{probe_dashboard, report_run, start_run, Probe};
+use client::{fetch_run, probe_dashboard, report_run, start_run, Probe};
 use run::UPDATE_HELP;
 use server::{serve, ADDRESS, DEFAULT_PORT};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>]\n  factory doctor [--agent <codex|claude|copilot>] [--json]\n  factory run start <title>\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>]\n  factory doctor [--agent <codex|claude|copilot>] [--json]\n  factory run start <title>\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -61,8 +63,25 @@ fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
         ["dashboard"] => dashboard(DEFAULT_PORT)?,
         ["dashboard", "--port", port] => dashboard(parse_port(port)?)?,
         ["run", "start", title] => {
-            let project = env::current_dir()?.display().to_string();
-            println!("{}", start_run(ADDRESS, title, &project)?);
+            let dir = env::current_dir()?;
+            let repository = repository::canonical_repository(&dir);
+            println!(
+                "{}",
+                start_run(ADDRESS, title, &dir.display().to_string(), repository)?
+            );
+        }
+        ["run", "inspect", id, options @ ..] => {
+            let json = match options {
+                [] => false,
+                ["--json"] => true,
+                _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
+            };
+            let run = fetch_run(ADDRESS, id)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&run)?);
+            } else {
+                print!("{}", inspect::render(&run));
+            }
         }
         ["run", "update", id, stage, status, options @ ..] => {
             report_run(ADDRESS, id, stage, status, options)?;
@@ -104,7 +123,11 @@ fn dashboard_url(port: u16, project: &str) -> String {
 
 /// Serves the dashboard, or, when a Factory dashboard already answers on the port, prints its URL.
 fn dashboard(port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    let url = dashboard_url(port, &env::current_dir()?.display().to_string());
+    // A Project is identified by its repository, so a linked worktree opens its main checkout's row.
+    let dir = env::current_dir()?;
+    let project =
+        repository::canonical_repository(&dir).unwrap_or_else(|| dir.display().to_string());
+    let url = dashboard_url(port, &project);
     match probe_dashboard(&format!("127.0.0.1:{port}"))? {
         Probe::Running(info) => {
             println!("Dashboard already running (pid {}): {url}", info.pid);

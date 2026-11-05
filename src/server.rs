@@ -195,6 +195,13 @@ fn create_run(
         || new.project.trim().is_empty()
         || new.title.len() > 500
         || new.project.len() > 4096
+        || new.title.chars().any(char::is_control)
+        || new.project.chars().any(char::is_control)
+        || new.repository.as_deref().is_some_and(|repository| {
+            repository.len() > 4096
+                || repository.chars().any(char::is_control)
+                || !crate::run::is_absolute_path(repository)
+        })
     {
         return Err(HttpStatus::BadRequest);
     }
@@ -213,16 +220,43 @@ fn update_run(
     id: &str,
     update: Json<UpdateRun>,
     store: &State<RunStore>,
-) -> Result<Json<Run>, HttpStatus> {
+) -> Result<Json<Run>, (HttpStatus, String)> {
     if !request.post_allowed {
-        return Err(HttpStatus::Forbidden);
+        return Err((HttpStatus::Forbidden, "Forbidden".into()));
+    }
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err((HttpStatus::BadRequest, "Invalid run id".into()));
+    }
+    update
+        .validate()
+        .map_err(|message| (HttpStatus::BadRequest, message))?;
+    store
+        .update(id, update.into_inner())
+        .map_err(|error| match error.kind() {
+            // An inconsistent update (an unknown ticket, two tickets in progress) is the caller's to fix.
+            io::ErrorKind::InvalidInput => (HttpStatus::BadRequest, error.to_string()),
+            _ => {
+                eprintln!("Run storage error: {error}");
+                (
+                    HttpStatus::InternalServerError,
+                    "Internal server error".into(),
+                )
+            }
+        })?
+        .map(Json)
+        .ok_or((HttpStatus::NotFound, "Not found".into()))
+}
+
+#[rocket::get("/api/runs/<id>")]
+fn get_run(request: Security, id: &str, store: &State<RunStore>) -> Result<Json<Run>, HttpStatus> {
+    if !request.local {
+        return Err(HttpStatus::BadRequest);
     }
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(HttpStatus::BadRequest);
     }
-    update.validate().map_err(|_| HttpStatus::BadRequest)?;
     store
-        .update(id, update.into_inner())
+        .get(id)
         .map_err(|error| {
             eprintln!("Run storage error: {error}");
             HttpStatus::InternalServerError
@@ -284,7 +318,9 @@ pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> 
         .manage(SessionToken::new())
         .mount(
             "/",
-            rocket::routes![dashboard, asset, info, list_runs, create_run, update_run, delete_run],
+            rocket::routes![
+                dashboard, asset, info, list_runs, get_run, create_run, update_run, delete_run
+            ],
         )
         .register(
             "/",
@@ -727,7 +763,15 @@ mod tests {
             "Status",
             "Activity",
             "Ticket",
-            "Blocking reason",
+            "Status reason",
+            "Mode",
+            "Branch",
+            "Worktree",
+            "Repository",
+            "Base commit",
+            "Spec",
+            "Pull request",
+            "Stage summaries",
             "Rework",
             "Updated",
             "Run id",
@@ -738,6 +782,9 @@ mod tests {
             );
         }
         assert!(script.contains("Not set"));
+        // Context a Run never recorded reads "Not recorded", not an empty or invented value.
+        assert!(script.contains("missing=\"Unknown\""));
+        assert!(script.contains("None recorded"));
     }
 
     #[rocket::async_test]
@@ -818,7 +865,7 @@ mod tests {
         assert!(script.contains("known.current.has(runKey(run))"));
         assert!(script.contains("runKey(run) === openKey"));
         // Delete all only takes the Done Runs of its own Project row, and the dialog names it.
-        assert!(script.contains("entry.run.project === project"));
+        assert!(script.contains("projectOf(entry.run) === project"));
         assert!(script.contains("done runs in ${names.get("));
     }
 
@@ -852,6 +899,202 @@ mod tests {
         assert!(!is_local_authority("127.0.0.1", 4311));
         assert!(is_local_origin("http://localhost:4400", 4400));
         assert!(!is_local_origin("http://localhost:4311", 4400));
+    }
+
+    async fn start(api: &Client, body: &str) -> Run {
+        let response = api
+            .post("/api/runs")
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .header(ContentType::JSON)
+            .body(body)
+            .dispatch()
+            .await;
+        assert_eq!(response.status(), HttpStatus::Created);
+        response.into_json().await.unwrap()
+    }
+
+    async fn fetch(api: &Client, id: &str) -> (HttpStatus, Option<Run>) {
+        let response = api
+            .get(format!("/api/runs/{id}"))
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .dispatch()
+            .await;
+        (response.status(), response.into_json().await)
+    }
+
+    #[rocket::async_test]
+    async fn run_context_goes_through_the_api_partially_and_is_readable_by_id() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let run = start(
+            &api,
+            r#"{"title":"t","project":"/work/repo.worktrees/x","repository":"/work/repo"}"#,
+        )
+        .await;
+        assert_eq!(run.repository.as_deref(), Some("/work/repo"));
+        // A client that does not know about context still starts runs.
+        let plain = start(&api, r#"{"title":"old client","project":"/work"}"#).await;
+        assert!(plain.repository.is_none());
+
+        let body = r#"{"stage":"build","status":"running","mode":"factory","branch":"feature/x",
+            "tickets":[{"reference":"https://x.test/1","title":"One"},{"reference":"docs/2.md","title":"Two"}],
+            "ticket_status":{"https://x.test/1":"in-progress"},"summaries":{"define":"Planned"}}"#;
+        assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
+        // Only the fields that are sent change; null clears one.
+        let body =
+            r#"{"stage":"build","status":"running","branch":null,"summaries":{"build":"Started"}}"#;
+        assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
+
+        let (status, stored) = fetch(&api, &run.id).await;
+        assert_eq!(status, HttpStatus::Ok);
+        let stored = stored.unwrap();
+        assert_eq!(stored.mode, Some(crate::run::Mode::Factory));
+        assert!(stored.branch.is_none());
+        assert_eq!(stored.tickets.len(), 2);
+        assert_eq!(
+            stored.tickets[0].status,
+            crate::run::TicketStatus::InProgress
+        );
+        assert_eq!(stored.summaries.len(), 2);
+        // The other run is untouched.
+        assert!(fetch(&api, &plain.id).await.1.unwrap().tickets.is_empty());
+        assert_eq!(fetch(&api, "999").await.0, HttpStatus::NotFound);
+        assert_eq!(fetch(&api, "12a").await.0, HttpStatus::BadRequest);
+    }
+
+    #[rocket::async_test]
+    async fn linked_worktrees_group_under_their_repository_and_cards_show_progress_and_links() {
+        let script = asset("/assets/app.js").await;
+        // Rows, names, keys and notifications all use the repository, falling back to where the run started.
+        assert!(script.contains("const projectOf = (run) => run.repository ?? run.project;"));
+        assert!(script.contains("const runKey = (run) => `${projectOf(run)}\\n${run.id}`;"));
+        assert!(
+            !script.contains("entry.run.project"),
+            "grouping never reads the raw path"
+        );
+        // Cards: a ticket-progress chip and http(s)-only links to the pull request and spec.
+        assert!(script.contains("Tickets${' '}${progress.done}/${progress.total}"));
+        assert!(script.contains("url.protocol === 'http:' || url.protocol === 'https:'"));
+        assert!(script.contains("label=\"Pull request\""));
+        // Detail lists the tickets in order with their status, and the summaries per Stage.
+        assert!(script.contains("run.tickets.map("));
+        assert!(script.contains("run.summaries?.[id]"));
+    }
+
+    #[rocket::async_test]
+    async fn a_run_recorded_before_context_is_served_with_everything_unknown() {
+        let dir = TestDir::new();
+        fs::write(
+            dir.0.path().join("runs.json"),
+            r#"[{"id":"7","title":"old","project":"/work/old","stage":"build","status":"running"}]"#,
+        )
+        .unwrap();
+        let api = client(&dir).await;
+        let (status, run) = fetch(&api, "7").await;
+        assert_eq!(status, HttpStatus::Ok);
+        let run = run.unwrap();
+        assert!(run.repository.is_none() && run.worktree.is_none() && run.mode.is_none());
+        let list: Vec<Run> = api
+            .get("/api/runs")
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .dispatch()
+            .await
+            .into_json()
+            .await
+            .unwrap();
+        assert_eq!(list.len(), 1);
+        // An update adds context to it without inventing the rest.
+        let response = report(
+            &api,
+            "7",
+            r#"{"stage":"build","status":"running","branch":"feature/x"}"#,
+        )
+        .await;
+        assert_eq!(response.status(), HttpStatus::Ok);
+        let run = fetch(&api, "7").await.1.unwrap();
+        assert_eq!(run.branch.as_deref(), Some("feature/x"));
+        assert!(run.repository.is_none() && run.tickets.is_empty());
+    }
+
+    #[rocket::async_test]
+    async fn starting_a_run_validates_its_identity_fields() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        for body in [
+            r#"{"title":"t","project":"/work","repository":"relative/repo"}"#,
+            r#"{"title":"t","project":"/work","repository":"/work/\u001b[2J"}"#,
+            r#"{"title":"bad\u0007title","project":"/work"}"#,
+        ] {
+            let response = api
+                .post("/api/runs")
+                .header(Header::new("Host", "127.0.0.1:4311"))
+                .header(ContentType::JSON)
+                .body(body)
+                .dispatch()
+                .await;
+            assert_eq!(response.status(), HttpStatus::BadRequest, "{body}");
+        }
+        assert!(api
+            .rocket()
+            .state::<RunStore>()
+            .unwrap()
+            .list()
+            .unwrap()
+            .is_empty());
+        let run = start(
+            &api,
+            r#"{"title":"t","project":"C:\\work\\repo","repository":"C:\\work\\repo"}"#,
+        )
+        .await;
+        assert_eq!(run.repository.as_deref(), Some("C:\\work\\repo"));
+    }
+
+    #[rocket::async_test]
+    async fn inconsistent_context_updates_get_a_400_that_says_why() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
+        for (body, reason) in [
+            (
+                r#"{"stage":"build","status":"running","worktree":"relative"}"#,
+                "absolute path",
+            ),
+            (
+                r#"{"stage":"build","status":"running","pr":"https://u:p@x.test/1"}"#,
+                "credentials",
+            ),
+            (
+                r#"{"stage":"build","status":"running","spec":"ftp://x.test/spec"}"#,
+                "HTTP(S) URL or a local path",
+            ),
+            (
+                r#"{"stage":"build","status":"running","tickets":[{"reference":"a","title":"A"},{"reference":"a","title":"B"}]}"#,
+                "listed twice",
+            ),
+            (
+                r#"{"stage":"build","status":"running","ticket_status":{"nope":"done"}}"#,
+                "No ticket nope",
+            ),
+            (
+                r#"{"stage":"build","status":"running","summaries":{"define":"x\u001b[2J"}}"#,
+                "control characters",
+            ),
+        ] {
+            let response = report(&api, &run.id, body).await;
+            assert_eq!(response.status(), HttpStatus::BadRequest, "{body}");
+            let text = response.into_string().await.unwrap();
+            assert!(text.contains(reason), "{body}: {text}");
+        }
+        // Unknown fields and stages are still refused, and nothing was stored.
+        let response = report(
+            &api,
+            &run.id,
+            r#"{"stage":"build","status":"running","transcript":"hi"}"#,
+        )
+        .await;
+        assert_ne!(response.status(), HttpStatus::Ok);
+        let stored = fetch(&api, &run.id).await.1.unwrap();
+        assert!(stored.worktree.is_none() && stored.pr.is_none() && stored.tickets.is_empty());
     }
 
     #[rocket::async_test]
@@ -940,8 +1183,9 @@ mod tests {
     async fn notifications_are_opt_in_skip_runs_already_waiting_and_survive_missing_permission() {
         let script = asset("/assets/app.js").await;
         // The message names the project and title.
-        assert!(script
-            .contains("`Needs you in ${names.get(run.project) ?? run.project}: ${run.title}`"));
+        assert!(script.contains(
+            "`Needs you in ${names.get(projectOf(run)) ?? projectOf(run)}: ${run.title}`"
+        ));
         // Runs waiting on the first load are remembered, not announced: nothing is sent while `known` is unset.
         assert!(script.contains("known.current !== null && state === 'on'"));
         assert!(script.contains("if (known.current.has(runKey(run))) continue;"));
@@ -1251,6 +1495,7 @@ mod tests {
         let new = |title: &str| NewRun {
             title: title.into(),
             project: "/work".into(),
+            repository: None,
         };
         let kept = store.create(new("kept")).unwrap();
         let token = session_token(&api).await;
@@ -1300,6 +1545,7 @@ mod tests {
             .create(NewRun {
                 title: "task".into(),
                 project: "/work".into(),
+                repository: None,
             })
             .unwrap();
         let token = session_token(&api).await;
@@ -1519,6 +1765,7 @@ mod tests {
             .create(NewRun {
                 title: "task".into(),
                 project: "/work".into(),
+                repository: None,
             })
             .unwrap();
         assert!(run.rework.is_none());
@@ -1568,6 +1815,7 @@ mod tests {
             .create(NewRun {
                 title: "task".into(),
                 project: "/work".into(),
+                repository: None,
             })
             .unwrap();
         let path = dir.0.path().join("runs.json");

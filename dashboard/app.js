@@ -12,6 +12,7 @@ const GROUPS = [
   ['done', 'Done', 'Runs that have finished, whatever their stage.'],
 ];
 const STATUSES = ['running', 'blocked', 'done'];
+const TICKET_STATUS = { pending: 'Pending', 'in-progress': 'In progress', done: 'Done' };
 const REWORK_CAP = 2;
 const POLL_MS = 3000;
 const NOW_MS = 30000;
@@ -28,7 +29,7 @@ const folders = (path) => String(path).split(/[\\/]+/).filter(Boolean);
  * share a folder name. Linked worktrees report their own path, so they show as separate Projects.
  */
 function projectNames(runs) {
-  const paths = [...new Set(runs.map((run) => run.project).filter((path) => typeof path === 'string'))];
+  const paths = [...new Set(runs.map(projectOf).filter((path) => typeof path === 'string'))];
   const last = (path) => folders(path).at(-1) ?? path;
   const counts = new Map();
   for (const path of paths) counts.set(last(path), (counts.get(last(path)) ?? 0) + 1);
@@ -75,7 +76,9 @@ const timestamp = (run) =>
     ? run.updated_at
     : null;
 /** Identifies a Run across Projects. Ids are global today; the Project keeps two rows from ever clashing. */
-const runKey = (run) => `${run.project}\n${run.id}`;
+/** The Project a Run belongs to: its repository, so linked worktrees share a row, else where it was started. */
+const projectOf = (run) => run.repository ?? run.project;
+const runKey = (run) => `${projectOf(run)}\n${run.id}`;
 const groupOf = (run) => (run.status === 'done' ? 'done' : run.stage);
 
 // Blocked first, then the most recently updated; Runs without a timestamp go last, newest record first.
@@ -145,6 +148,41 @@ function TicketLink({ value }) {
   return url ? html`<a href=${url.href} rel="noopener noreferrer">${value}</a>` : value;
 }
 
+/** The tickets listed on a Run, with how many are done; null when none are recorded. */
+const ticketProgress = (run) => {
+  const tickets = Array.isArray(run.tickets) ? run.tickets : [];
+  return tickets.length ? { done: tickets.filter((t) => t.status === 'done').length, total: tickets.length } : null;
+};
+
+/** A link for a stored reference, only when it is an http(s) URL. */
+function RefLink({ value, label }) {
+  try {
+    const url = new URL(String(value));
+    if (url.protocol === 'http:' || url.protocol === 'https:')
+      return html`<a href=${url.href} rel="noopener noreferrer">${label}</a>`;
+  } catch {
+    /* not a URL: no link on a card */
+  }
+  return null;
+}
+
+/** Ticket progress as a chip, and the pull request and spec as links: the context a card shows. */
+function ContextChips({ run }) {
+  const progress = ticketProgress(run);
+  return progress
+    ? html`<span class="chip">Tickets${' '}${progress.done}/${progress.total}<span class="visually-hidden">${' done'}</span></span>`
+    : null;
+}
+
+function ContextLinks({ run }) {
+  const named = (label) => html`${label}<span class="visually-hidden">${` of ${run.title}`}</span>`;
+  const pr = run.pr ? html`<${RefLink} value=${run.pr} label=${named('Pull request')} />` : null;
+  const spec = run.spec ? html`<${RefLink} value=${run.spec} label=${named('Spec')} />` : null;
+  return pr || spec
+    ? html`<p class="links">${pr}${pr && spec ? html`<span aria-hidden="true">${' · '}</span>` : null}${spec}</p>`
+    : null;
+}
+
 function Ticket({ value }) {
   return html`<p class="ticket">Ticket: <${TicketLink} value=${value} /></p>`;
 }
@@ -200,13 +238,15 @@ function DoneCard({ run, now, onOpen, onDelete }) {
         </button>
       </div>
       <div id=${detailsId} hidden=${!expanded}>
-        <p class="project"><${ProjectName} path=${run.project} /></p>
+        <p class="project"><${ProjectName} path=${projectOf(run)} /></p>
         <div class="chips">
           <span class="badge done">${String(run.status)}</span>
           ${rework !== null
             ? html`<span class="chip">Rework${' '}${reworkLabel(rework)}</span>`
             : null}
+          <${ContextChips} run=${run} />
         </div>
+        <${ContextLinks} run=${run} />
         ${run.activity ? html`<p class="activity">Activity: ${run.activity}</p>` : null}
         ${run.current_ticket ? html`<${Ticket} value=${String(run.current_ticket)} />` : null}
         <${Updated} run=${run} now=${now} />
@@ -232,7 +272,7 @@ function Card({ run, now, onOpen }) {
           ${run.title}
         </button>
       </h3>
-      <p class="project"><${ProjectName} path=${run.project} /></p>
+      <p class="project"><${ProjectName} path=${projectOf(run)} /></p>
       <div class="chips">
         <span class=${known ? `badge ${run.status}` : 'badge'}>${String(run.status)}</span>
         ${rework !== null
@@ -240,7 +280,9 @@ function Card({ run, now, onOpen }) {
               >Rework${' '}${reworkLabel(rework)}</span
             >`
           : null}
+        <${ContextChips} run=${run} />
       </div>
+      <${ContextLinks} run=${run} />
       ${run.activity ? html`<p class="activity">Activity: ${run.activity}</p>` : null}
       ${run.current_ticket ? html`<${Ticket} value=${String(run.current_ticket)} />` : null}
       <${Updated} run=${run} now=${now} />
@@ -249,10 +291,10 @@ function Card({ run, now, onOpen }) {
 }
 
 /** One labelled value of the Run detail; an empty value reads "Not set". */
-function Field({ label, children }) {
+function Field({ label, children, missing = 'Not set' }) {
   const empty = children === null || children === undefined || children === '';
   return html`<dt>${label}</dt>
-    <dd class=${empty ? 'not-set' : null}>${empty ? 'Not set' : children}</dd>`;
+    <dd class=${empty ? 'not-set' : null}>${empty ? missing : children}</dd>`;
 }
 
 /** Every field of a Run in a native modal dialog on the right. The browser handles focus containment and Escape. */
@@ -277,6 +319,8 @@ function Detail({ run, now, onClose }) {
     closing.current();
   };
   const ts = timestamp(run);
+  const progress = ticketProgress(run);
+  const summaries = GROUPS.filter(([id]) => run.summaries?.[id]);
   const stage = GROUPS.find(([id]) => id === run.stage);
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   return html`<dialog
@@ -300,7 +344,7 @@ function Detail({ run, now, onClose }) {
       </div>
       <h2 id="detail-title">${run.title}</h2>
       <dl class="fields">
-        <${Field} label="Project"><${ProjectName} path=${run.project} /><//>
+        <${Field} label="Project"><${ProjectName} path=${projectOf(run)} /><//>
         <${Field} label="Stage">${stage ? stage[1] : String(run.stage)}<//>
         <${Field} label="Status">
           <span class=${STATUSES.includes(run.status) ? `badge ${run.status}` : 'badge'}
@@ -311,7 +355,37 @@ function Detail({ run, now, onClose }) {
         <${Field} label="Ticket">
           ${run.current_ticket ? html`<${TicketLink} value=${String(run.current_ticket)} />` : null}
         <//>
-        <${Field} label="Blocking reason">${run.blocking_reason}<//>
+        <${Field} label="Status reason">${run.blocking_reason}<//>
+        <${Field} label="Mode" missing="Unknown">${run.mode}<//>
+        <${Field} label="Branch" missing="Unknown">${run.branch}<//>
+        <${Field} label="Worktree" missing="Unknown">${run.worktree}<//>
+        <${Field} label="Repository" missing="Unknown">${run.repository}<//>
+        <${Field} label="Base commit" missing="Unknown">${run.base_commit}<//>
+        <${Field} label="Spec" missing="Unknown">
+          ${run.spec ? html`<${TicketLink} value=${String(run.spec)} />` : null}
+        <//>
+        <${Field} label="Pull request" missing="Unknown">
+          ${run.pr ? html`<${TicketLink} value=${String(run.pr)} />` : null}
+        <//>
+        <${Field} label=${progress ? `Tickets (${progress.done} of ${progress.total} done)` : 'Tickets'} missing="None recorded">
+          ${progress
+            ? html`<ol class="ticket-list">
+                ${run.tickets.map(
+                  (ticket) => html`<li key=${ticket.reference}>
+                    <span class="ticket-status">${TICKET_STATUS[ticket.status] ?? String(ticket.status)}</span>${' '}
+                    <${TicketLink} value=${String(ticket.reference)} />${' '}${ticket.title}
+                  </li>`,
+                )}
+              </ol>`
+            : null}
+        <//>
+        <${Field} label="Stage summaries" missing="None recorded">
+          ${summaries.length
+            ? html`<ul class="summaries">
+                ${summaries.map(([id, name]) => html`<li key=${id}><strong>${name}:</strong>${' '}${run.summaries[id]}</li>`)}
+              </ul>`
+            : null}
+        <//>
         <${Field} label="Rework">${rework !== null ? reworkLabel(rework) : null}<//>
         <${Field} label="Updated">
           ${ts !== null
@@ -519,7 +593,7 @@ function useNotifications(runs, names) {
       for (const run of waitingNow) {
         if (known.current.has(runKey(run))) continue;
         try {
-          const note = new Notification(`Needs you in ${names.get(run.project) ?? run.project}: ${run.title}`, { tag: `needs-you-${runKey(run)}` });
+          const note = new Notification(`Needs you in ${names.get(projectOf(run)) ?? projectOf(run)}: ${run.title}`, { tag: `needs-you-${runKey(run)}` });
           note.onclick = () => window.focus();
         } catch {
           /* the browser refused to show it: nothing else to do */
@@ -682,7 +756,7 @@ function App() {
     description,
     entries: indexed.filter((entry) => groupOf(entry.run) === id).sort(compare),
   }));
-  const projects = [...new Set(indexed.map((entry) => entry.run.project))].sort(
+  const projects = [...new Set(indexed.map((entry) => projectOf(entry.run)))].sort(
     (a, b) =>
       // The Project the page was opened on comes first, the rest alphabetically.
       Number(b === wanted) - Number(a === wanted) ||
@@ -743,7 +817,7 @@ function App() {
         ${projects.map((project) => {
           const closed = isCollapsed(project);
           const groupsId = `project-groups-${projects.indexOf(project)}`;
-          const projectWaiting = indexed.filter((entry) => entry.run.project === project && needsYou(entry.run)).length;
+          const projectWaiting = indexed.filter((entry) => projectOf(entry.run) === project && needsYou(entry.run)).length;
           return html`<section class="project-row" key=${project}>
           <h2 class="project-heading">
             <button
@@ -759,7 +833,7 @@ function App() {
             ${closed
               ? html`<span class="project-summary"
                   >${stages
-                    .map((item) => `${item.name} ${item.entries.filter((entry) => entry.run.project === project).length}`)
+                    .map((item) => `${item.name} ${item.entries.filter((entry) => projectOf(entry.run) === project).length}`)
                     .join(' · ')}</span
                 >${projectWaiting
                   ? html`<span class="badge blocked">${projectWaiting} waiting</span>`
@@ -768,7 +842,7 @@ function App() {
           </h2>
           <div class="project-groups" id=${groupsId} hidden=${closed}>
             ${stages.map((item) => {
-              const entries = item.entries.filter((entry) => entry.run.project === project);
+              const entries = item.entries.filter((entry) => projectOf(entry.run) === project);
               return html`<${Group}
                 key=${item.id}
                 id=${item.id}
@@ -787,7 +861,7 @@ function App() {
       ${helpOpen ? html`<${Help} onClose=${closeHelp} />` : null}
       ${pending
         ? html`<${Confirm}
-            title=${pending.runs.length === 1 ? 'Delete this run?' : `Delete all ${pending.runs.length} done runs in ${names.get(pending.runs[0].project) ?? pending.runs[0].project}?`}
+            title=${pending.runs.length === 1 ? 'Delete this run?' : `Delete all ${pending.runs.length} done runs in ${names.get(projectOf(pending.runs[0])) ?? projectOf(pending.runs[0])}?`}
             confirmLabel=${pending.runs.length === 1 ? 'Delete' : 'Delete all'}
             onConfirm=${confirmDelete}
             onCancel=${() => setPending(null)}
@@ -795,7 +869,7 @@ function App() {
             <p>
               ${pending.runs.length === 1
                 ? html`This removes the record of <strong>${pending.runs[0].title}</strong> from the dashboard.`
-                : `This removes the records of these runs in ${names.get(pending.runs[0].project) ?? pending.runs[0].project} from the dashboard.`}
+                : `This removes the records of these runs in ${names.get(projectOf(pending.runs[0])) ?? projectOf(pending.runs[0])} from the dashboard.`}
               The worktree, branch and pull request stay as they are.
             </p>
           <//>`
