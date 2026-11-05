@@ -135,7 +135,7 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
         }
         fs::write(destination, content)?;
     }
-    let license = if name == "security-review" {
+    let license = if name == "security-review" || name == "github-actions-hardening" {
         "licenses/awesome-copilot-LICENSE"
     } else if name == "rust-best-practices" {
         "licenses/beautiful-rust-LICENSE"
@@ -201,6 +201,10 @@ mod tests {
             .join("security-review/references/language-patterns.md")
             .is_file());
         assert!(root.join("security-review/LICENSE").is_file());
+        assert!(root
+            .join("github-actions-hardening/references/injection.md")
+            .is_file());
+        assert!(root.join("github-actions-hardening/LICENSE").is_file());
         assert!(root.join("to-spec/SKILL.md").is_file());
         assert!(root.join("factory-fast/SKILL.md").is_file());
         assert!(root.join("implement-spec-fast/SKILL.md").is_file());

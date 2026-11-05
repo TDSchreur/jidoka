@@ -34,6 +34,8 @@ Read the relevant guide when working on these files or tasks:
 - Lint: `cargo clippy --all-targets -- -D warnings`
 - Test: `cargo test`
 
+After a pull request merges, run `scripts/update-local.sh` from the main checkout to pull `develop`, rebuild, and reinstall the skills, so local agents always use the latest factory.
+
 Run the checks relevant to the change. These instructions are informed by [Awesome Copilot's Rust instructions](https://github.com/github/awesome-copilot/blob/main/instructions/rust.instructions.md).
 
 ## Agent skills

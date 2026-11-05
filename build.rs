@@ -38,6 +38,7 @@ fn main() {
         "tdd",
         "code-review",
         "security-review",
+        "github-actions-hardening",
         "pr",
     ] {
         files(

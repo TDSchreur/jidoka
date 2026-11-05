@@ -135,7 +135,7 @@ flowchart TB
     implfast -->|/factory-fast skips Check| pr
 ```
 
-`factory install` also installs `codebase-design`, `triage` and `rust-best-practices`, which no workflow calls directly.
+`factory install` also installs `codebase-design`, `github-actions-hardening`, `triage` and `rust-best-practices`, which no workflow calls directly.
 
 The [Rust skill](skills/rust/SKILL.md) and [project instructions](AGENTS.md) guide Rust development in this repository.
 
