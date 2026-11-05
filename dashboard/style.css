@@ -147,6 +147,7 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .toggle[aria-pressed="true"] { border-color: var(--colorBrandBackground); background: var(--colorBrandBackground); color: var(--colorNeutralForegroundOnBrand); font-weight: var(--fontWeightSemibold); }
 .toggle[aria-pressed="true"]:hover { background: var(--colorBrandBackgroundHover); }
 .toggle[aria-pressed="true"]:active { background: var(--colorBrandBackgroundPressed); }
+.toggle:disabled { color: var(--colorNeutralForeground3); cursor: not-allowed; }
 .toggle:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: var(--strokeWidthThick); }
 .theme legend { float: left; padding: 0; margin-right: var(--spacingHorizontalS); color: var(--colorNeutralForeground2); }
 .theme label { display: inline-flex; align-items: center; gap: var(--spacingHorizontalXS); padding: var(--spacingVerticalXS) var(--spacingHorizontalM); border: var(--strokeWidthThin) solid var(--colorNeutralStroke1); border-radius: var(--borderRadiusMedium); background: var(--colorNeutralBackground1); color: var(--colorNeutralForeground1); cursor: pointer; transition: background-color var(--durationFast) var(--curveEasyEase); }

@@ -771,6 +771,35 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn notifications_are_opt_in_skip_runs_already_waiting_and_survive_missing_permission() {
+        let script = asset("/assets/app.js").await;
+        // The message names the project and title.
+        assert!(script.contains("`Needs you in ${run.project}: ${run.title}`"));
+        // Runs waiting on the first load are remembered, not announced: nothing is sent while `known` is unset.
+        assert!(script.contains("known.current !== null && state === 'on'"));
+        assert!(script.contains("if (known.current.has(run.id)) continue;"));
+        assert!(script.contains("known.current = new Set("));
+        // Opt-in: asking for permission happens only from the button, and the choice is remembered safely.
+        assert_eq!(script.matches("requestPermission()").count(), 1);
+        assert!(script.contains("localStorage.setItem('notifications', 'on')"));
+        // Unsupported and denied permission disable the button instead of throwing.
+        assert!(script.contains("typeof Notification === 'function'"));
+        assert!(script.contains("'unsupported'"));
+        assert!(script.contains("'denied'"));
+        assert!(script.contains("disabled=${disabled}"));
+        // Every browser API that can throw is guarded.
+        for call in [
+            "new Notification(",
+            "Notification.requestPermission()",
+            "localStorage.getItem('notifications')",
+        ] {
+            let at = script.find(call).unwrap();
+            assert!(script[..at].rfind("try {").is_some(), "{call} is unguarded");
+            assert!(script[at..].contains("catch"), "{call} has no catch");
+        }
+    }
+
+    #[rocket::async_test]
     async fn the_detail_closes_with_escape_the_backdrop_or_a_button_and_returns_focus() {
         let script = asset("/assets/app.js").await;
         // Escape closes a native modal dialog, which fires `close`.
