@@ -21,7 +21,7 @@ jobs:
             executable: target/release/factory.exe
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
@@ -33,7 +33,7 @@ jobs:
         run: |
           Copy-Item '${{ matrix.executable }}' '${{ matrix.artifact }}'
           (Get-FileHash -Algorithm SHA256 '${{ matrix.artifact }}').Hash.ToLowerInvariant() | Set-Content -Encoding ascii '${{ matrix.artifact }}.sha256'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: |
@@ -45,10 +45,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: factory-*
           merge-multiple: true
