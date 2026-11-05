@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TDS Factory</title>
+  <meta name="session-token" content="__TOKEN__">
+  <script>
+    // Apply a stored theme choice before first paint to avoid a flash.
+    try {
+      const stored = localStorage.getItem('theme');
+      if (stored === 'light' || stored === 'dark') document.documentElement.dataset.theme = stored;
+    } catch { /* storage unavailable: follow the system setting */ }
+  </script>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "preact": "/assets/vendor/preact.js",
+        "preact/hooks": "/assets/vendor/hooks.js",
+        "htm": "/assets/vendor/htm.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <header>
+    <h1>TDS Factory</h1>
+    <p>A simple flow from an idea to a pull request.</p>
+  </header>
+  <div id="app"></div>
+  <footer>
+    <p class="build">Version <code>__BUILD__</code></p>
+  </footer>
+<script type="module" src="/assets/app.js"></script>
+</body>
+</html>

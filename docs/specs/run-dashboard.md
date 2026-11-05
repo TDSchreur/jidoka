@@ -5,3 +5,5 @@ The dashboard should show progress when an agent uses factory. The local Rust se
 Keep the system local and small: a run needs a title, project, stage, and status. The CLI talks to the server, so the skill does not manipulate stored data directly. Starting the dashboard starts the server. Existing runs survive a server restart. Do not require a database or external service.
 
 Verify run creation and updates, persistence across restart, invalid requests, and dashboard display. Preserve the existing CLI help and version commands.
+
+The board groups runs into rows by project, sorted by project name. Each row has a column per stage, with blocked runs first.

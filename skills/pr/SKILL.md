@@ -9,6 +9,8 @@ metadata:
     url: "https://github.com/humanlayer/skills/blob/main/plugins/show-me/skills/show-me/SKILL.md"
 ---
 
+Draft the PR body from the template below, then apply the `humanizer` skill in embedded mode to the finished text before returning it. Return only the final description. Keep every section, the evidence and its labels, remaining review findings, and all code, commands, paths and link targets as drafted; Humanizer must not drop a required section, add a detail the change does not support, or remove a qualification.
+
 Use this template for writing the PR body:
 
 ```markdown

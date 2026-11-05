@@ -17,8 +17,9 @@ const LEGACY_SKILLS: [&str; 4] = [
 ];
 
 /// Skills maintained in this project, installed without a third-party license.
-const LOCAL_SKILLS: [&str; 5] = [
+const LOCAL_SKILLS: [&str; 6] = [
     "factory",
+    "factory-procedures",
     "factory-fast",
     "factory-balanced",
     "implement-spec-fast",
@@ -53,7 +54,16 @@ fn skills_roots(
 }
 
 /// Resolves an agent's skills folder, honoring its config directory variable.
-fn skills_root(
+pub(crate) fn skills_root(
+    agent: &str,
+    home: &Path,
+    var: impl Fn(&str) -> Option<OsString>,
+) -> io::Result<PathBuf> {
+    Ok(agent_home(agent, home, var)?.join("skills"))
+}
+
+/// An agent's own folder, such as `~/.claude`, honoring its config directory variable.
+pub(crate) fn agent_home(
     agent: &str,
     home: &Path,
     var: impl Fn(&str) -> Option<OsString>,
@@ -64,21 +74,18 @@ fn skills_root(
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(default))
     };
-    let root = match agent {
-        "codex" => config_dir("CODEX_HOME", ".codex"),
-        "claude" => config_dir("CLAUDE_CONFIG_DIR", ".claude"),
-        "copilot" => home.join(".copilot"),
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("unknown agent {agent:?}; use codex, claude, or copilot"),
-            ))
-        }
-    };
-    Ok(root.join("skills"))
+    match agent {
+        "codex" => Ok(config_dir("CODEX_HOME", ".codex")),
+        "claude" => Ok(config_dir("CLAUDE_CONFIG_DIR", ".claude")),
+        "copilot" => Ok(home.join(".copilot")),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unknown agent {agent:?}; use codex, claude, or copilot"),
+        )),
+    }
 }
 
-fn home_dir() -> io::Result<PathBuf> {
+pub(crate) fn home_dir() -> io::Result<PathBuf> {
     #[cfg(windows)]
     let home = env::var_os("USERPROFILE");
     #[cfg(not(windows))]
@@ -88,8 +95,16 @@ fn home_dir() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cannot find your home directory"))
 }
 
-fn install_to(root: &Path) -> io::Result<()> {
-    fs::create_dir_all(root)?;
+/// The files `install` writes, as paths such as `factory/SKILL.md`, relative to the skills folder.
+pub(crate) fn bundled_skill_files() -> impl Iterator<Item = &'static str> {
+    BUNDLED
+        .iter()
+        .map(|(path, _)| *path)
+        .filter(|path| !path.starts_with("licenses/"))
+}
+
+/// The names of the skills `install` writes, in order.
+pub(crate) fn bundled_skill_names() -> Vec<&'static str> {
     let mut names: Vec<&str> = BUNDLED
         .iter()
         .filter_map(|(path, _)| path.split('/').next())
@@ -97,7 +112,12 @@ fn install_to(root: &Path) -> io::Result<()> {
         .collect();
     names.sort_unstable();
     names.dedup();
-    for name in names {
+    names
+}
+
+fn install_to(root: &Path) -> io::Result<()> {
+    fs::create_dir_all(root)?;
+    for name in bundled_skill_names() {
         let dir = root.join(name);
         let staging = root.join(format!(".{name}.installing"));
         remove_if_exists(&staging)?;
@@ -163,12 +183,11 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
         }
         fs::write(destination, content)?;
     }
-    let license = if name == "security-review" {
-        "licenses/awesome-copilot-LICENSE"
-    } else if LOCAL_SKILLS.contains(&name) {
-        ""
-    } else {
-        "licenses/mattpocock-skills-LICENSE"
+    let license = match name {
+        "security-review" => "licenses/awesome-copilot-LICENSE",
+        "humanizer" => "licenses/humanizer-LICENSE",
+        _ if LOCAL_SKILLS.contains(&name) => "",
+        _ => "licenses/mattpocock-skills-LICENSE",
     };
     if let Some((_, content)) = BUNDLED.iter().find(|(path, _)| *path == license) {
         fs::write(dir.join("LICENSE"), content)?;
@@ -204,6 +223,172 @@ mod tests {
     const PROJECT_SPECIFIC: [&str; 3] = ["verify.sh", "tds-factory", "for this project"];
     /// Workflow skills must also not assume this repository's branch name.
     const WORKFLOW_SKILLS: [&str; 3] = ["factory", "factory-balanced", "factory-fast"];
+
+    fn bundled_text(path: &str) -> String {
+        BUNDLED
+            .iter()
+            .find(|(bundled, _)| *bundled == path)
+            .map(|(_, content)| String::from_utf8_lossy(content).into_owned())
+            .unwrap_or_else(|| panic!("{path} is not bundled"))
+    }
+
+    #[test]
+    fn shared_procedures_record_run_context_with_options_the_cli_accepts_and_continue_safely() {
+        let text = bundled_text("factory-procedures/SKILL.md");
+        let context = text
+            .split_once("- **Context:**")
+            .and_then(|(_, rest)| rest.split_once("- **Done:**"))
+            .expect("the shared procedures have no Context step")
+            .0;
+        let mut flags: Vec<&str> = context
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .filter(|word| word.starts_with("--") && word.len() > 2)
+            .collect();
+        flags.sort_unstable();
+        flags.dedup();
+        // The procedures name every option of the context; each one is a real `run update` option.
+        for flag in [
+            "--mode",
+            "--worktree",
+            "--branch",
+            "--base-commit",
+            "--spec",
+            "--ticket",
+            "--ticket-status",
+            "--summary",
+            "--pr",
+            "--blocking-reason",
+        ] {
+            assert!(flags.contains(&flag), "the context does not record {flag}");
+        }
+        for flag in flags.iter().filter(|flag| !flag.starts_with("--clear-<")) {
+            assert!(
+                crate::run::UPDATE_HELP.contains(flag),
+                "the context names {flag}, which `run update` does not accept"
+            );
+        }
+        // A plan kept only in the conversation is saved and recorded with the existing --spec.
+        let saving = text
+            .split_once("## Saving the plan")
+            .expect("the shared procedures cannot save a plan")
+            .1
+            .split("\n## ")
+            .next()
+            .unwrap();
+        for needle in [
+            "--spec",
+            "git rev-parse --absolute-git-dir",
+            "acceptance criteria",
+        ] {
+            assert!(saving.contains(needle), "saving the plan lacks {needle}");
+        }
+        // Continuing: inspect first, verify the recorded state, and never discard work.
+        let continuing = text
+            .split_once("## Continuing a run")
+            .expect("the shared procedures have no continuation protocol")
+            .1;
+        let continuing = continuing.split("\n## ").next().unwrap();
+        for needle in [
+            "factory run inspect",
+            "git worktree list",
+            "git branch --show-current",
+            "merge-base --is-ancestor",
+            "git status --porcelain",
+            "Never reset, clean",
+        ] {
+            assert!(continuing.contains(needle), "continuation lacks {needle}");
+        }
+    }
+
+    #[test]
+    fn workflow_skills_use_the_shared_procedures_and_report_their_own_mode() {
+        for skill in WORKFLOW_SKILLS {
+            let text = bundled_text(&format!("{skill}/SKILL.md"));
+            assert!(
+                text.contains("(../factory-procedures/SKILL.md)"),
+                "{skill} does not link the shared procedures"
+            );
+            for section in [
+                "Run reporting",
+                "Continuing a run",
+                "Workspace",
+                "Tracker setup",
+                "Writing",
+                "Pull request and CI",
+            ] {
+                assert!(
+                    text.contains(&format!("{section} in [factory-procedures]")),
+                    "{skill} does not point to {section}"
+                );
+            }
+            assert_eq!(
+                text.contains("check blocked --blocking-reason \"Decision needed on remaining Check findings\""),
+                skill != "factory-fast",
+                "{skill} reports blocked while waiting for a decision on Check findings"
+            );
+            assert!(
+                !text.contains("Waiting for a decision"),
+                "{skill} still reports a decision wait as running"
+            );
+            assert_eq!(
+                text.contains("Saving the plan in [factory-procedures]"),
+                skill != "factory",
+                "{skill} saves a conversational plan only in the lighter workflows"
+            );
+            assert!(
+                text.contains(&format!("`--mode {skill}`")),
+                "{skill} reports its own mode"
+            );
+            assert_eq!(
+                text.contains("--rework"),
+                skill != "factory-fast",
+                "{skill} reports Reworks only when it has Check"
+            );
+        }
+    }
+
+    #[test]
+    fn writing_is_routed_through_the_bundled_humanizer() {
+        // The writing procedure and `pr` name the skill; it ships in the bundle they are read from.
+        for path in ["factory-procedures/SKILL.md", "pr/SKILL.md"] {
+            assert!(bundled_text(path).contains("`humanizer`"), "{path}");
+        }
+        assert!(bundled_text("humanizer/SKILL.md").contains("**Embedded mode.**"));
+        assert!(bundled_text("humanizer/SKILL.md").contains("**File mode.**"));
+        // Every workflow reads that procedure, which covers both modes and what must survive editing.
+        let writing = bundled_text("factory-procedures/SKILL.md")
+            .split_once("## Writing")
+            .expect("the shared procedures have no Writing section")
+            .1
+            .split("\n## ")
+            .next()
+            .unwrap()
+            .to_lowercase();
+        for needle in [
+            "embedded mode",
+            "file mode",
+            "evidence",
+            "qualifications",
+            "findings",
+        ] {
+            assert!(
+                writing.contains(needle),
+                "the writing procedure lacks {needle}"
+            );
+        }
+        for skill in WORKFLOW_SKILLS {
+            let text = bundled_text(&format!("{skill}/SKILL.md"));
+            assert!(
+                text.contains("Writing in [factory-procedures]"),
+                "{skill} does not point to the writing procedure"
+            );
+        }
+        // In this checkout the same names resolve as skills/<name>/ directories.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(root.join("skills/humanizer/SKILL.md").is_file());
+        let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
+        assert!(agents.contains("(skills/humanizer/SKILL.md)"));
+    }
 
     #[test]
     fn bundled_skills_do_not_name_this_repository() {
@@ -254,6 +439,31 @@ mod tests {
         assert!(error.to_string().contains("vscode"));
     }
     #[test]
+    fn humanizer_is_installed_with_its_own_license_for_every_agent() {
+        let home = tempfile::tempdir().unwrap();
+        let unset = |_: &str| None;
+        let roots = skills_roots("codex,claude,copilot", home.path(), unset).unwrap();
+        assert_eq!(roots.len(), 3);
+        let upstream = bundled_text("licenses/humanizer-LICENSE");
+        for root in roots {
+            // An existing, outdated installation is replaced, including its license.
+            fs::create_dir_all(root.join("humanizer")).unwrap();
+            fs::write(root.join("humanizer/SKILL.md"), "old").unwrap();
+            fs::write(root.join("humanizer/LICENSE"), "wrong license").unwrap();
+            install_to(&root).unwrap();
+            let skill = fs::read_to_string(root.join("humanizer/SKILL.md")).unwrap();
+            assert!(skill.contains("name: humanizer"), "{root:?}");
+            let license = fs::read_to_string(root.join("humanizer/LICENSE")).unwrap();
+            assert_eq!(license, upstream, "{root:?}");
+            assert!(license.contains("Siqi Chen"));
+            assert!(!license.contains("Matt Pocock"));
+            assert!(!fs::read_to_string(root.join("tdd/LICENSE"))
+                .unwrap()
+                .contains("Siqi Chen"));
+        }
+    }
+
+    #[test]
     fn installs_bundled_skills_and_replaces_existing_ones() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
@@ -301,10 +511,13 @@ mod tests {
         assert!(root.join("factory-balanced/SKILL.md").is_file());
         assert!(root.join("implement-spec-balanced/SKILL.md").is_file());
         assert!(!root.join("factory-balanced/LICENSE").exists());
+        assert!(root.join("factory-procedures/SKILL.md").is_file());
+        assert!(!root.join("factory-procedures/LICENSE").exists());
         assert!(!root.join("implement-spec-balanced/LICENSE").exists());
         assert!(!root.join("implement-spec-fast/LICENSE").exists());
         assert!(root.join("triage/AGENT-BRIEF.md").is_file());
         assert!(root.join("triage/LICENSE").is_file());
+        assert!(root.join("humanizer/agents/openai.yaml").is_file());
         install_to(root).unwrap();
         let leftovers: Vec<_> = fs::read_dir(root)
             .unwrap()
