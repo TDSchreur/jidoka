@@ -162,7 +162,12 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 #message:empty { margin: 0; }
 #message.error { color: var(--colorPaletteRedForeground1); font-weight: var(--fontWeightSemibold); }
 .project-row { margin-bottom: var(--spacingVerticalXXL); }
-.project-heading { font-size: var(--fontSizeBase400); overflow-wrap: anywhere; }
+.project-heading { font-size: var(--fontSizeBase400); overflow-wrap: anywhere; display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingHorizontalS); }
+.project-toggle { font: inherit; font-weight: var(--fontWeightSemibold); color: var(--colorNeutralForeground1); background: none; border: 0; padding: var(--spacingVerticalXS) var(--spacingHorizontalXS); cursor: pointer; text-align: left; }
+.project-toggle:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: var(--strokeWidthThick); }
+.project-chevron { display: inline-block; width: 1.2em; }
+.project-summary { font-size: var(--fontSizeBase200); font-weight: normal; color: var(--colorNeutralForeground3); }
+.project-groups[hidden] { display: none; }
 .board-headers { display: none; }
 .group { margin-bottom: var(--spacingVerticalXXL); }
 .group h2 { font-size: var(--fontSizeBase400); line-height: var(--lineHeightBase300); font-weight: var(--fontWeightSemibold); margin: 0; }

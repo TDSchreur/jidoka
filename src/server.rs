@@ -779,6 +779,16 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn project_rows_collapse_with_a_remembered_toggle() {
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("aria-expanded=${String(!isCollapsed)}"));
+        assert!(script.contains("localStorage.getItem('collapsed-projects')"));
+        assert!(script.contains("${projectWaiting} waiting"));
+        // Storage failures are tolerated on both read and write.
+        assert!(script.contains("storage is blocked"));
+    }
+
+    #[rocket::async_test]
     async fn notifications_are_opt_in_skip_runs_already_waiting_and_survive_missing_permission() {
         let script = asset("/assets/app.js").await;
         // The message names the project and title.
