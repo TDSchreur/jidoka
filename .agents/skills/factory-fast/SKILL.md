@@ -19,6 +19,10 @@ To continue an existing run, follow Continuing a run in [factory-procedures](../
 
 Follow Workspace in [factory-procedures](../factory-procedures/SKILL.md): every run gets its own fresh worktree, and the PR base branch chosen there is used in Finish.
 
+## Writing
+
+Follow Writing in [factory-procedures](../factory-procedures/SKILL.md) for all human-facing prose in every stage.
+
 ## Define
 
 For a clear, bounded request, use the request as the spec and state a short implementation plan and acceptance criteria in the conversation; no tracker setup is needed for that. Save them as described in Saving the plan in [factory-procedures](../factory-procedures/SKILL.md), then continue directly to Build without separate spec files, tickets, or an approval round.

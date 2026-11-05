@@ -313,6 +313,7 @@ mod tests {
                 "Continuing a run",
                 "Workspace",
                 "Tracker setup",
+                "Writing",
                 "Pull request and CI",
             ] {
                 assert!(
@@ -344,6 +345,21 @@ mod tests {
                 "{skill} reports Reworks only when it has Check"
             );
         }
+    }
+
+    #[test]
+    fn writing_is_routed_through_the_bundled_humanizer() {
+        // The writing procedure and `pr` name the skill; it ships in the bundle they are read from.
+        for path in ["factory-procedures/SKILL.md", "pr/SKILL.md"] {
+            assert!(bundled_text(path).contains("`humanizer`"), "{path}");
+        }
+        assert!(bundled_text("humanizer/SKILL.md").contains("**Embedded mode.**"));
+        assert!(bundled_text("humanizer/SKILL.md").contains("**File mode.**"));
+        // In this checkout the same names resolve as skills/<name>/ directories.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(root.join("skills/humanizer/SKILL.md").is_file());
+        let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
+        assert!(agents.contains("(skills/humanizer/SKILL.md)"));
     }
 
     #[test]
