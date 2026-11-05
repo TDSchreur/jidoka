@@ -90,7 +90,7 @@ Run these in order. Each prompt describes a separate change suitable for `/facto
   /factory-balanced Consolidate the duplicated operating procedures in factory, factory-balanced, and factory-fast into one shared installed reference. Preserve each mode's behavior and leave its planning, testing, review, and verification policy explicit in its own SKILL.md. Ensure references resolve in the repository and for Codex, Claude, and Copilot installations; adjust bundling only as needed. Keep bundled instructions project-agnostic. Update affected documentation, add a changelog fragment, and run the project's verification.
   ```
 
-- [ ] **4. Remove unnecessary repeated verification.**
+- [x] **4. Remove unnecessary repeated verification.**
 
   ```text
   /factory-balanced Align verification instructions across the three factory workflows and implementation skills. For balanced and fast, run relevant checks during implementation and full verification on the final candidate; reuse passing results only while the checked code and relevant inputs remain unchanged. Always honor stricter project-required checks. Retain quality mode's full verification per ticket. Reconcile these rules with commits before Check and verification before push so the instructions do not demand redundant runs without a reason. Update documentation, add a changelog fragment, and run the project's verification.
