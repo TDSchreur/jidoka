@@ -1,6 +1,6 @@
 #!/bin/sh
-# Update this checkout to the latest develop, rebuild factory, reinstall its skills
-# and restart the dashboard.
+# Update this checkout to the latest develop, rebuild factory, reinstall the `factory`
+# command and its skills, and restart the dashboard.
 set -eu
 
 # Stops any running `factory dashboard`; run data lives on disk, so nothing is lost.
@@ -35,6 +35,8 @@ main() {
   git checkout develop
   git pull --ff-only origin develop
   cargo build --release --locked
+  cargo install --path . --locked --force
+  command -v factory >/dev/null 2>&1 || echo "Add ${CARGO_HOME:-$HOME/.cargo}/bin to PATH so the factory command resolves." >&2
   "$root/target/release/factory" install --agent "$agent"
   "$root/target/release/factory" --version
   stop_dashboard
