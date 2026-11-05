@@ -84,7 +84,8 @@ function ThemeSwitch() {
   </fieldset>`;
 }
 
-function Ticket({ value }) {
+/** The ticket as a link when it is an http(s) URL, else as plain text. */
+function TicketLink({ value }) {
   let url = null;
   try {
     const parsed = new URL(value);
@@ -92,10 +93,15 @@ function Ticket({ value }) {
   } catch {
     /* not a URL: show as text */
   }
-  return html`<p class="ticket">
-    Ticket: ${url ? html`<a href=${url.href} rel="noopener noreferrer">${value}</a>` : value}
-  </p>`;
+  return url ? html`<a href=${url.href} rel="noopener noreferrer">${value}</a>` : value;
 }
+
+function Ticket({ value }) {
+  return html`<p class="ticket">Ticket: <${TicketLink} value=${value} /></p>`;
+}
+
+const reworkLabel = (count) =>
+  count <= REWORK_CAP ? `${count}/${REWORK_CAP}` : `${count} (past the cap of ${REWORK_CAP})`;
 
 /** "just now", "5m ago", "3h ago", "2d ago". */
 function ago(ms) {
@@ -118,7 +124,7 @@ function Updated({ run, now }) {
   </p>`;
 }
 
-function Card({ run, now }) {
+function Card({ run, now, onOpen }) {
   const known = STATUSES.includes(run.status);
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   const blocked = run.status === 'blocked';
@@ -130,15 +136,17 @@ function Card({ run, now }) {
             ${run.blocking_reason ? ` ${run.blocking_reason}` : null}
           </p>`
         : null}
-      <h3>${run.title}</h3>
+      <h3>
+        <button type="button" class="card-open" data-run-id=${run.id} onClick=${() => onOpen(run.id)}>
+          ${run.title}
+        </button>
+      </h3>
       <p class="project">${run.project}</p>
       <div class="chips">
         <span class=${known ? `badge ${run.status}` : 'badge'}>${String(run.status)}</span>
         ${rework !== null
           ? html`<span class="chip"
-              >Rework${' '}${rework <= REWORK_CAP
-                ? `${rework}/${REWORK_CAP}`
-                : `${rework} (past the cap of ${REWORK_CAP})`}</span
+              >Rework${' '}${reworkLabel(rework)}</span
             >`
           : null}
       </div>
@@ -149,7 +157,85 @@ function Card({ run, now }) {
   </li>`;
 }
 
-function Group({ id, name, description, entries, now, selected }) {
+/** One labelled value of the Run detail; an empty value reads "Not set". */
+function Field({ label, children }) {
+  const empty = children === null || children === undefined || children === '';
+  return html`<dt>${label}</dt>
+    <dd class=${empty ? 'not-set' : null}>${empty ? 'Not set' : children}</dd>`;
+}
+
+/** Every field of a Run in a native modal dialog on the right. The browser handles focus containment and Escape. */
+function Detail({ run, now, onClose }) {
+  const dialog = useRef(null);
+  // The listener below is added once; it calls whatever `onClose` is current.
+  const closing = useRef(onClose);
+  closing.current = onClose;
+  // Whether the current press began on the backdrop, so a drag out of the sheet is not a backdrop click.
+  const pressedBackdrop = useRef(false);
+  useEffect(() => {
+    const element = dialog.current;
+    if (!element.open) element.showModal();
+    // Escape has no hook of its own: the browser closes the dialog and fires `close`.
+    const onNativeClose = () => closing.current();
+    element.addEventListener('close', onNativeClose);
+    return () => element.removeEventListener('close', onNativeClose);
+  }, []);
+  // Close the dialog and tell the page now, rather than waiting for the `close` event.
+  const dismiss = () => {
+    dialog.current.close();
+    closing.current();
+  };
+  const ts = timestamp(run);
+  const stage = GROUPS.find(([id]) => id === run.stage);
+  const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
+  return html`<dialog
+    ref=${dialog}
+    class="detail"
+    aria-labelledby="detail-title"
+    onPointerDown=${(event) => {
+      pressedBackdrop.current = event.target === event.currentTarget;
+    }}
+    onClick=${(event) => {
+      // A click on the backdrop lands on the dialog itself; the body fills the rest of the sheet.
+      if (event.target === event.currentTarget && pressedBackdrop.current) dismiss();
+      pressedBackdrop.current = false;
+    }}
+  >
+    <div class="detail-body">
+      <div class="detail-bar">
+        <button type="button" class="toggle detail-close" onClick=${dismiss}>
+          <span class="detail-close-wide">Close</span><span class="detail-close-compact">Back</span>
+        </button>
+      </div>
+      <h2 id="detail-title">${run.title}</h2>
+      <dl class="fields">
+        <${Field} label="Project">${run.project}<//>
+        <${Field} label="Stage">${stage ? stage[1] : String(run.stage)}<//>
+        <${Field} label="Status">
+          <span class=${STATUSES.includes(run.status) ? `badge ${run.status}` : 'badge'}
+            >${String(run.status)}</span
+          >
+        <//>
+        <${Field} label="Activity">${run.activity}<//>
+        <${Field} label="Ticket">
+          ${run.current_ticket ? html`<${TicketLink} value=${String(run.current_ticket)} />` : null}
+        <//>
+        <${Field} label="Blocking reason">${run.blocking_reason}<//>
+        <${Field} label="Rework">${rework !== null ? reworkLabel(rework) : null}<//>
+        <${Field} label="Updated">
+          ${ts !== null
+            ? html`<time datetime=${new Date(ts).toISOString()}>${ago(now - ts)}</time>${' '}(${new Date(
+                ts,
+              ).toLocaleString()})`
+            : null}
+        <//>
+        <${Field} label="Run id"><code>${run.id}</code><//>
+      </dl>
+    </div>
+  </dialog>`;
+}
+
+function Group({ id, name, description, entries, now, selected, onOpen }) {
   return html`<section class=${selected ? 'group selected' : 'group'} aria-labelledby=${`group-${id}`}>
     <div class="group-header">
       <h2 id=${`group-${id}`}>${name}<span class="count">${` (${entries.length})`}</span></h2>
@@ -157,7 +243,7 @@ function Group({ id, name, description, entries, now, selected }) {
     </div>
     ${entries.length
       ? html`<ul class="runs">
-          ${entries.map((entry) => html`<${Card} key=${entry.index} run=${entry.run} now=${now} />`)}
+          ${entries.map((entry) => html`<${Card} key=${entry.index} run=${entry.run} now=${now} onOpen=${onOpen} />`)}
         </ul>`
       : html`<p class="empty">No runs</p>`}
   </section>`;
@@ -266,6 +352,29 @@ function App() {
   const opening = useRef(null);
   if (opening.current === null && runs?.length) opening.current = firstStage(runs);
   const current = picked ?? opening.current ?? GROUPS[0][0];
+  // The open detail is a Run id; it is looked up in the latest full list, so refreshes update it.
+  const [openId, setOpenId] = useState(null);
+  const lastOpened = useRef(null);
+  const openRun = openId === null ? null : (runs ?? []).find((run) => run.id === openId);
+  const open = (id) => {
+    lastOpened.current = id;
+    setOpenId(id);
+  };
+  const close = () => setOpenId(null);
+  useEffect(() => {
+    // The Run is no longer listed: close the detail, so it does not come back if the Run returns.
+    if (openId !== null && runs && !openRun) setOpenId(null);
+  }, [openId, runs]);
+  useEffect(() => {
+    // Back to the card that was opened, once the detail is gone.
+    if (openId === null && lastOpened.current !== null) {
+      const card = document.querySelector(`[data-run-id="${CSS.escape(String(lastOpened.current))}"]`);
+      card?.focus();
+      // The card is gone or hidden (its Run left, or changed Stage): keep focus on the board.
+      if (!card || document.activeElement !== card) document.querySelector('main')?.focus();
+      lastOpened.current = null;
+    }
+  }, [openId]);
   return html`
     <div class="toolbar">
       <${NeedsYouToggle}
@@ -275,7 +384,7 @@ function App() {
       />
       <${ThemeSwitch} />
     </div>
-    <main>
+    <main tabindex="-1">
       <p id="message" role="status" class=${failed ? 'error' : ''}>${text}</p>
       ${runs ? html`<${StageButtons} stages=${stages} current=${current} onPick=${setPicked} />` : null}
       <div id="groups">
@@ -289,10 +398,12 @@ function App() {
                 now=${now}
                 entries=${item.entries}
                 selected=${item.id === current}
+                onOpen=${open}
               />`,
             )
           : null}
       </div>
+      ${openRun ? html`<${Detail} key=${openRun.id} run=${openRun} now=${now} onClose=${close} />` : null}
     </main>
   `;
 }

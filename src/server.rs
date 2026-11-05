@@ -549,8 +549,9 @@ mod tests {
             .find("@media (prefers-reduced-motion")
             .unwrap_or(wide.len())];
         // Narrow screens keep the plain stacked groups.
-        assert!(!stacked.contains("grid-template-columns"));
-        assert!(!stacked.contains("position: sticky"));
+        assert!(!stacked.contains("repeat("), "no board grid when stacked");
+        assert!(!stacked.contains("#groups { display: grid"));
+        assert!(!stacked.contains(".group-header { position: sticky"));
         assert!(
             wide.contains("position: sticky"),
             "the column header sticks"
@@ -589,10 +590,11 @@ mod tests {
         let (_, rules) = split_tokens(&css);
         // Compact: the groups other than the picked Stage are hidden up to 1024 px.
         let compact = rules
-            .split_once("@media (max-width: 1024px)")
-            .expect("a compact layout")
-            .1;
-        let compact = &compact[..compact.find('}').unwrap() + 1];
+            .split("@media (max-width: 1024px)")
+            .skip(1)
+            .find(|block| block.contains(".group:not(.selected)"))
+            .expect("a compact layout");
+        let compact = &compact[..compact.find("\n}").unwrap()];
         assert!(compact.contains(".group:not(.selected) { display: none; }"));
         // Wide: every column shows, so the Stage buttons go away.
         let wide = rules
@@ -614,6 +616,144 @@ mod tests {
             "the opening Stage is kept"
         );
         assert!(css.contains(".waiting-mark {"));
+    }
+
+    #[rocket::async_test]
+    async fn selecting_a_card_opens_a_modal_detail_with_every_run_field() {
+        let script = asset("/assets/app.js").await;
+        // The card's title is the button that opens the detail, found again by the Run id.
+        assert!(script.contains("class=\"card-open\""));
+        assert!(script.contains("data-run-id="));
+        // A native modal dialog named by the Run title.
+        assert!(script.contains("<dialog"));
+        assert!(script.contains("showModal()"));
+        assert!(script.contains("aria-labelledby=\"detail-title\""));
+        assert!(script.contains("id=\"detail-title\""));
+        // Every field of the Run is listed; an empty one says so.
+        for label in [
+            "Project",
+            "Stage",
+            "Status",
+            "Activity",
+            "Ticket",
+            "Blocking reason",
+            "Rework",
+            "Updated",
+            "Run id",
+        ] {
+            assert!(
+                script.contains(&format!("<${{Field}} label=\"{label}\"")),
+                "missing field {label}"
+            );
+        }
+        assert!(script.contains("Not set"));
+    }
+
+    #[rocket::async_test]
+    async fn the_detail_closes_with_escape_the_backdrop_or_a_button_and_returns_focus() {
+        let script = asset("/assets/app.js").await;
+        // Escape closes a native modal dialog, which fires `close`.
+        assert!(script.contains("addEventListener('close'"));
+        // A click on the dialog itself is a click on the backdrop.
+        assert!(script.contains("event.target === event.currentTarget"));
+        assert!(script.contains("class=\"toggle detail-close\""));
+        // Focus goes back to the card that was opened.
+        assert!(script.contains("[data-run-id="));
+        assert!(
+            script.contains("CSS.escape("),
+            "the id is escaped in the selector"
+        );
+        assert!(script.contains(".focus()"));
+    }
+
+    #[rocket::async_test]
+    async fn the_detail_is_a_right_hand_sheet_over_a_light_backdrop_that_stops_page_scroll() {
+        let css = stylesheet().await;
+        let (_, rules) = split_tokens(&css);
+        assert!(rules.contains(".detail::backdrop {"));
+        assert!(rules.contains("background: var(--colorBackgroundOverlay)"));
+        assert!(rules.contains(".detail {"));
+        assert!(
+            rules.contains("margin: 0 0 0 auto"),
+            "the sheet sits on the right"
+        );
+        assert!(rules.contains("body:has(.detail[open]) { overflow: hidden; }"));
+        // The whole card is the click target, with the ticket link kept above it.
+        assert!(rules.contains(".card-open::after {"));
+        assert!(rules.contains(".run a { position: relative; z-index: 1; }"));
+    }
+
+    #[rocket::async_test]
+    async fn the_open_detail_follows_its_run_by_id_and_closes_when_the_run_goes() {
+        let script = asset("/assets/app.js").await;
+        // Looked up by id in the whole list, so refreshes update it and the filters never hide it.
+        assert!(script.contains("(runs ?? []).find((run) => run.id === openId)"));
+        assert!(
+            !script.contains("openRun = indexed"),
+            "not the filtered list"
+        );
+        // A Run that is no longer listed closes the detail, so it cannot reappear later.
+        assert!(script.contains("if (openId !== null && runs && !openRun) setOpenId(null)"));
+    }
+
+    #[rocket::async_test]
+    async fn the_detail_fills_the_screen_with_a_back_button_up_to_1024_px() {
+        let css = stylesheet().await;
+        let (_, rules) = split_tokens(&css);
+        // Up to 1024 px, the same limit as compact mode, the sheet is the whole screen.
+        let compact = rules
+            .split("@media (max-width: 1024px)")
+            .skip(1)
+            .find(|block| block.contains(".detail {"))
+            .expect("a compact detail layout");
+        let compact = &compact[..compact.find("\n}").unwrap()];
+        assert!(compact.contains(".detail { width: 100%; }"));
+        // One label is shown at a time, so only one is exposed to assistive technology.
+        assert!(compact.contains(".detail-close-wide { display: none; }"));
+        assert!(rules.contains(".detail-close-compact { display: none; }"));
+        assert!(compact.contains(".detail-close-compact { display: inline; }"));
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("<span class=\"detail-close-wide\">Close</span>"));
+        assert!(script.contains("<span class=\"detail-close-compact\">Back</span>"));
+    }
+
+    #[rocket::async_test]
+    async fn only_a_click_that_starts_and_ends_on_the_backdrop_closes_the_detail() {
+        let css = stylesheet().await;
+        let (_, rules) = split_tokens(&css);
+        // The body fills the sheet, so the empty area below short content is not the backdrop.
+        let body = rules
+            .lines()
+            .find(|line| line.starts_with(".detail-body {"))
+            .expect("a detail body rule");
+        assert!(body.contains("min-height: 100%"));
+        assert!(body.contains("box-sizing: border-box"));
+        // A drag that starts inside the sheet and ends on the backdrop is not a backdrop click.
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("onPointerDown="));
+        assert!(script.contains("pressedBackdrop.current"));
+        // The handlers the dialog keeps never go stale.
+        assert!(script.contains("closing.current = onClose"));
+    }
+
+    #[rocket::async_test]
+    async fn focus_has_somewhere_to_go_when_the_opened_card_cannot_take_it() {
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("document.querySelector('main')?.focus()"));
+        assert!(script.contains("<main tabindex=\"-1\">"));
+        let css = stylesheet().await;
+        assert!(css.contains("main:focus { outline: none; }"));
+    }
+
+    #[rocket::async_test]
+    async fn the_detail_fields_stack_on_very_narrow_screens() {
+        let css = stylesheet().await;
+        let (_, rules) = split_tokens(&css);
+        let narrow = rules
+            .split("@media (max-width: 30rem)")
+            .nth(1)
+            .expect("a very narrow layout");
+        assert!(narrow.contains(".fields { grid-template-columns: minmax(0, 1fr); }"));
     }
 
     #[rocket::async_test]
