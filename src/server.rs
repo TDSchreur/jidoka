@@ -414,16 +414,21 @@ mod tests {
             .collect()
     }
 
-    async fn stylesheet() -> String {
+    async fn asset(path: &'static str) -> String {
         let dir = TestDir::new();
-        let api = client(&dir).await;
-        api.get("/assets/style.css")
+        client(&dir)
+            .await
+            .get(path)
             .header(Header::new("Host", "127.0.0.1:4311"))
             .dispatch()
             .await
             .into_string()
             .await
             .unwrap()
+    }
+
+    async fn stylesheet() -> String {
+        asset("/assets/style.css").await
     }
 
     /// The design token layer and the rules below it.
@@ -576,6 +581,39 @@ mod tests {
             "{groups} columns"
         );
         assert!(script.contains("class=\"group-header\""));
+    }
+
+    #[rocket::async_test]
+    async fn dashboard_shows_one_stage_at_a_time_up_to_1024_px_and_all_stages_above() {
+        let css = stylesheet().await;
+        let (_, rules) = split_tokens(&css);
+        // Compact: the groups other than the picked Stage are hidden up to 1024 px.
+        let compact = rules
+            .split_once("@media (max-width: 1024px)")
+            .expect("a compact layout")
+            .1;
+        let compact = &compact[..compact.find('}').unwrap() + 1];
+        assert!(compact.contains(".group:not(.selected) { display: none; }"));
+        // Wide: every column shows, so the Stage buttons go away.
+        let wide = rules
+            .split_once("@media (min-width: 1025px)")
+            .expect("a wide layout")
+            .1;
+        assert!(wide.contains(".stages { display: none; }"));
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("aria-label=\"Stage\""), "a labelled group");
+        assert!(script.contains("aria-pressed=${String(stage.id === current)}"));
+        assert!(
+            script.contains("needs you"),
+            "a text alternative for the marker"
+        );
+        // The Stage is chosen once from the first answer, then only the visitor changes it.
+        assert!(script.contains("firstStage(runs)"));
+        assert!(
+            script.contains("opening.current"),
+            "the opening Stage is kept"
+        );
+        assert!(css.contains(".waiting-mark {"));
     }
 
     #[rocket::async_test]
