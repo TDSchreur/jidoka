@@ -80,7 +80,7 @@ The workflow skills [`factory`](.agents/skills/factory/SKILL.md), [`factory-bala
 
 ### Workflow modes
 
-TDS Factory has three workflow modes that trade speed against rigor: `/factory` favors quality, `/factory-fast` favors speed, and `/factory-balanced` sits between them. All three report progress to the dashboard and end with the same Finish stage; `/factory-fast` skips Check. Each run starts by creating a fresh git worktree from `origin/<base branch>` next to the repository and does all its work there, so several runs can proceed at once; the original checkout is never touched, and the worktree is kept after the pull request opens until you remove it with `git worktree remove`.
+TDS Factory has three workflow modes that trade speed against rigor: `/factory` favors quality, `/factory-fast` favors speed, and `/factory-balanced` sits between them. All three report progress to the dashboard and end with the same Finish stage; `/factory-fast` skips Check. Each run uses its own fresh git worktree based on `origin/<base branch>`, so several runs can proceed at once. Start the run in a fresh, dedicated worktree if your agent environment provides one, or the workflow creates one next to the repository. The original checkout is not modified, and the worktree is kept after the pull request opens until you remove it with `git worktree remove`.
 
 | Stage | `/factory` (quality) | `/factory-balanced` | `/factory-fast` (speed) |
 | --- | --- | --- | --- |
@@ -90,6 +90,8 @@ TDS Factory has three workflow modes that trade speed against rigor: `/factory` 
 | Finish | [`pr`](skills/pr/SKILL.md) writes the description and opens a pull request, then the agent watches its CI and fixes failures | Same | Same |
 
 All modes build sequentially in one worktree without subagents and run the project's checks before moving on.
+
+For Codex, start a new chat in Worktree mode on the intended base branch and tell the factory to use that fresh worktree. The workflow verifies it is clean and matches the fetched remote base before creating the feature branch. Codex-managed worktrees may have their own lifecycle; retain the worktree while review follow-ups are needed. Depending on the sandbox, Git operations that write shared repository metadata, network access for fetch and GitHub, and dashboard access may still require permission. In other environments, configure the sibling worktree location as writable before starting the session if needed; that alone may not grant access to shared Git metadata.
 
 In `/factory` and `/factory-balanced`, actionable Check findings send the run back to Build for a **Rework** with that mode's build approach, then Check runs again. A run gets at most two Reworks, and the dashboard shows the current one as "Rework 1 of 2". Check findings never block a run: when findings remain after the second Rework, or one cannot be resolved, the agent lists them and asks you whether to do one more Rework, finish with the findings listed in the pull request, or stop. `/factory-fast` has no Check and so no Rework.
 
