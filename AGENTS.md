@@ -36,7 +36,7 @@ Read the relevant guide when working on these files or tasks:
 
 After a pull request merges, run `scripts/update-local.sh` from the main checkout to pull `develop`, rebuild, reinstall the skills, and restart the dashboard, so local agents always use the latest factory.
 
-Run the checks relevant to the change. These instructions are informed by [Awesome Copilot's Rust instructions](https://github.com/github/awesome-copilot/blob/main/instructions/rust.instructions.md).
+Run `scripts/verify.sh` before finishing any ticket and before opening a pull request. It runs the same checks as CI, in the same order. A missing tool (`rustfmt`, `clippy`) is a blocker to fix with `rustup component add rustfmt clippy`, not something to skip and leave to CI. These instructions are informed by [Awesome Copilot's Rust instructions](https://github.com/github/awesome-copilot/blob/main/instructions/rust.instructions.md).
 
 ## Agent skills
 

@@ -42,7 +42,7 @@ Keep the spec and tickets as local Markdown files when no tracker is configured;
 
 ## Build
 
-Use `implement-spec` to implement the tickets on the run's feature branch, building each ticket test-first with `tdd`. Work sequentially in the run's worktree; do not require subagents, extra worktrees beyond it, a draft PR, or a second code review here. Run the project's relevant checks and fix failures before Check.
+Use `implement-spec` to implement the tickets on the run's feature branch, building each ticket test-first with `tdd`. Work sequentially in the run's worktree; do not require subagents, extra worktrees beyond it, a draft PR, or a second code review here. Run the project's relevant checks and fix failures before Check. When the project has `scripts/verify.sh`, run it after each ticket; a missing tool or a failing check blocks the run, so fix it or mark the run blocked, and never skip it.
 
 ## Check
 
@@ -54,4 +54,4 @@ Never block work on Check findings. When findings remain after the second Rework
 
 ## Finish
 
-Use `pr` to write the pull request description. When the user chose to finish with remaining Check findings, list them in the description. Commit the work, push the branch, and create a pull request targeting the project's default branch (`develop` for this project). Keep the worktree for review follow-ups. Report its link, the worktree path (removable with `git worktree remove <path>` after merge), and the checks performed. If a required tool, permission, or repository configuration is unavailable, report what remains, mark the run blocked with that as the reason, and stop.
+Use `pr` to write the pull request description. When the user chose to finish with remaining Check findings, list them in the description. Commit the work. When the project has `scripts/verify.sh`, run it on the final commit before pushing and report its result; do not open the pull request while it fails or cannot run. Push the branch and create a pull request targeting the project's default branch (`develop` for this project). Keep the worktree for review follow-ups. Report its link, the worktree path (removable with `git worktree remove <path>` after merge), and the checks performed. If a required tool, permission, or repository configuration is unavailable, report what remains, mark the run blocked with that as the reason, and stop.
