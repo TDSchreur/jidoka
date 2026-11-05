@@ -50,6 +50,7 @@
   --spacingHorizontalXS: 4px;
   --spacingVerticalL: 16px;
   --spacingVerticalM: 12px;
+  --spacingVerticalS: 8px;
   --spacingVerticalXS: 4px;
   --spacingVerticalXXL: 24px;
   --spacingVerticalXXS: 2px;
@@ -155,8 +156,11 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .badge { display: inline-block; margin-top: var(--spacingVerticalXS); padding: var(--spacingVerticalXXS) var(--spacingHorizontalSNudge); border: var(--strokeWidthThin) solid var(--colorNeutralStrokeAccessible); border-radius: var(--borderRadiusSmall); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); font-weight: var(--fontWeightSemibold); color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground3); text-transform: uppercase; letter-spacing: .04em; }
 .badge.blocked { color: var(--colorNeutralForegroundOnBrand); background: var(--colorPaletteRedBackground3); border-color: var(--colorPaletteRedBackground3); }
 .badge.done { color: var(--colorPaletteGreenForeground1); background: var(--colorPaletteGreenBackground1); border-color: var(--colorPaletteGreenBorder2); }
-.rework { font-weight: var(--fontWeightSemibold); }
-.reason { color: var(--colorPaletteRedForeground1); font-weight: var(--fontWeightSemibold); }
+.run .needs-you { margin: 0 0 var(--spacingVerticalS); color: var(--colorPaletteRedForeground1); font-weight: var(--fontWeightSemibold); }
+.needs-you-label { display: inline-block; margin-right: var(--spacingHorizontalXS); padding: var(--spacingVerticalXXS) var(--spacingHorizontalSNudge); border-radius: var(--borderRadiusSmall); background: var(--colorPaletteRedBackground3); color: var(--colorNeutralForegroundOnBrand); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); text-transform: uppercase; letter-spacing: .04em; }
+.chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingHorizontalXS); margin-top: var(--spacingVerticalXS); }
+.chips .badge { margin-top: 0; }
+.chip { display: inline-block; padding: var(--spacingVerticalXXS) var(--spacingHorizontalSNudge); border: var(--strokeWidthThin) solid var(--colorNeutralStrokeAccessible); border-radius: var(--borderRadiusSmall); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground3); }
 footer { margin-top: var(--spacingVerticalXXL); }
 .build { margin: 0; font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground3); }
 code { font-family: var(--fontFamilyMonospace); }

@@ -14,6 +14,7 @@ const GROUPS = [
 const STATUSES = ['running', 'blocked', 'done'];
 const REWORK_CAP = 2;
 const POLL_MS = 3000;
+const NOW_MS = 30000;
 const THEMES = [
   ['system', 'System'],
   ['light', 'Light'],
@@ -96,39 +97,59 @@ function Ticket({ value }) {
   </p>`;
 }
 
-function Updated({ run }) {
+/** "just now", "5m ago", "3h ago", "2d ago". */
+function ago(ms) {
+  const minutes = Math.floor(Math.max(0, ms) / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function Updated({ run, now }) {
   const ts = timestamp(run);
-  if (ts === null) return html`<p class="updated">Last updated: not reported</p>`;
+  if (ts === null) return html`<p class="updated">Updated: not reported</p>`;
   const date = new Date(ts);
   return html`<p class="updated">
-    Last updated${' '}<time datetime=${date.toISOString()}>${date.toLocaleString()}</time>
+    Updated${' '}<time datetime=${date.toISOString()} title=${date.toLocaleString()}
+      >${ago(now - ts)}</time
+    >
   </p>`;
 }
 
-function Card({ run }) {
+function Card({ run, now }) {
   const known = STATUSES.includes(run.status);
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
+  const blocked = run.status === 'blocked';
   return html`<li>
-    <article class=${run.status === 'blocked' ? 'run blocked' : 'run'}>
-      <h3>${run.title}</h3>
-      <p class="project">${run.project}</p>
-      <span class=${known ? `badge ${run.status}` : 'badge'}>${String(run.status)}</span>
-      ${rework !== null
-        ? html`<p class="rework">
-            Rework${' '}${rework <= REWORK_CAP
-              ? `${rework} of ${REWORK_CAP}`
-              : `${rework} (past the cap of ${REWORK_CAP})`}
+    <article class=${blocked ? 'run blocked' : 'run'}>
+      ${blocked
+        ? html`<p class="needs-you">
+            <span class="needs-you-label">Needs you</span>
+            ${run.blocking_reason ? ` ${run.blocking_reason}` : null}
           </p>`
         : null}
+      <h3>${run.title}</h3>
+      <p class="project">${run.project}</p>
+      <div class="chips">
+        <span class=${known ? `badge ${run.status}` : 'badge'}>${String(run.status)}</span>
+        ${rework !== null
+          ? html`<span class="chip"
+              >Rework${' '}${rework <= REWORK_CAP
+                ? `${rework}/${REWORK_CAP}`
+                : `${rework} (past the cap of ${REWORK_CAP})`}</span
+            >`
+          : null}
+      </div>
       ${run.activity ? html`<p class="activity">Activity: ${run.activity}</p>` : null}
       ${run.current_ticket ? html`<${Ticket} value=${String(run.current_ticket)} />` : null}
-      ${run.blocking_reason ? html`<p class="reason">Blocked: ${run.blocking_reason}</p>` : null}
-      <${Updated} run=${run} />
+      <${Updated} run=${run} now=${now} />
     </article>
   </li>`;
 }
 
-function Group({ id, name, description, entries }) {
+function Group({ id, name, description, entries, now }) {
   return html`<section class="group" aria-labelledby=${`group-${id}`}>
     <div class="group-header">
       <h2 id=${`group-${id}`}>${name}<span class="count">${` (${entries.length})`}</span></h2>
@@ -136,7 +157,7 @@ function Group({ id, name, description, entries }) {
     </div>
     ${entries.length
       ? html`<ul class="runs">
-          ${entries.map((entry) => html`<${Card} key=${entry.index} run=${entry.run} />`)}
+          ${entries.map((entry) => html`<${Card} key=${entry.index} run=${entry.run} now=${now} />`)}
         </ul>`
       : html`<p class="empty">No runs</p>`}
   </section>`;
@@ -168,8 +189,19 @@ function useRuns() {
   return state;
 }
 
+/** The current time, refreshed so relative times keep counting. */
+function useNow() {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), NOW_MS);
+    return () => clearInterval(timer);
+  }, []);
+  return now;
+}
+
 function App() {
   const { runs, failed } = useRuns();
+  const now = useNow();
   let text = 'Loading runs…';
   if (failed) text = 'Unable to load runs. Check that the factory server is running.';
   else if (runs) text = runs.length ? '' : 'No runs yet. Start one with the factory skill.';
@@ -186,6 +218,7 @@ function App() {
                 id=${id}
                 name=${name}
                 description=${description}
+                now=${now}
                 entries=${indexed.filter((entry) => groupOf(entry.run) === id).sort(compare)}
               />`,
             )

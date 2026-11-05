@@ -262,7 +262,12 @@ mod tests {
                 "missing group {group}"
             );
         }
-        assert!(page.contains("Last updated"));
+        assert!(page.contains("Needs you"), "missing Needs you label");
+        assert!(page.contains("m ago"), "missing relative time");
+        assert!(
+            page.contains("title=${date.toLocaleString()}"),
+            "exact time tooltip"
+        );
         assert!(page.contains("Rework"), "missing Rework label");
         assert!(page.contains("past the cap of"));
     }
