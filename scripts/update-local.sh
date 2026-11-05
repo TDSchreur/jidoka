@@ -71,12 +71,27 @@ start_dashboard() {
   echo "Dashboard restarted (pid $pid, log $log_dir/dashboard.log)."
 }
 
+# Restores the changes stashed by main, also when a later step failed.
+restore_changes() {
+  trap - EXIT
+  if git stash pop --index >/dev/null; then
+    echo 'Restored local changes.'
+  else
+    echo 'Could not restore local changes cleanly; they remain in the stash (git stash list).' >&2
+  fi
+}
+
 main() {
   command -v pkill >/dev/null || { echo 'pkill (procps) is required.' >&2; exit 1; }
   agents=$(choose_agents) || exit 1
   root=$(git rev-parse --show-toplevel)
   cd "$root"
-  [ -z "$(git status --porcelain)" ] || { echo 'Working tree has changes; commit or stash them first.' >&2; exit 1; }
+  if [ -n "$(git status --porcelain)" ]; then
+    git stash push --include-untracked --message 'update-local.sh autostash' >/dev/null
+    echo 'Stashed local changes; they are restored when the script ends.'
+    trap restore_changes EXIT
+    trap 'exit 1' HUP INT TERM
+  fi
   git fetch origin develop
   git checkout develop
   git pull --ff-only origin develop
