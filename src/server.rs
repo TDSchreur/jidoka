@@ -549,8 +549,8 @@ mod tests {
             .find("@media (prefers-reduced-motion")
             .unwrap_or(wide.len())];
         // Narrow screens keep the plain stacked groups.
-        assert!(!stacked.contains("grid-template-columns"));
-        assert!(!stacked.contains("position: sticky"));
+        assert!(!stacked.contains("#groups { display: grid"));
+        assert!(!stacked.contains(".group-header { position: sticky"));
         assert!(
             wide.contains("position: sticky"),
             "the column header sticks"
@@ -614,6 +614,67 @@ mod tests {
             "the opening Stage is kept"
         );
         assert!(css.contains(".waiting-mark {"));
+    }
+
+    #[rocket::async_test]
+    async fn selecting_a_card_opens_a_modal_detail_with_every_run_field() {
+        let script = asset("/assets/app.js").await;
+        // The card's title is the button that opens the detail, found again by the Run id.
+        assert!(script.contains("class=\"card-open\""));
+        assert!(script.contains("data-run-id="));
+        // A native modal dialog named by the Run title.
+        assert!(script.contains("<dialog"));
+        assert!(script.contains("showModal()"));
+        assert!(script.contains("aria-labelledby=\"detail-title\""));
+        assert!(script.contains("id=\"detail-title\""));
+        // Every field of the Run is listed; an empty one says so.
+        for label in [
+            "Project",
+            "Stage",
+            "Status",
+            "Activity",
+            "Ticket",
+            "Blocking reason",
+            "Rework",
+            "Updated",
+            "Run id",
+        ] {
+            assert!(
+                script.contains(&format!("<${{Field}} label=\"{label}\"")),
+                "missing field {label}"
+            );
+        }
+        assert!(script.contains("Not set"));
+    }
+
+    #[rocket::async_test]
+    async fn the_detail_closes_with_escape_the_backdrop_or_a_button_and_returns_focus() {
+        let script = asset("/assets/app.js").await;
+        // Escape closes a native modal dialog, which fires `close`.
+        assert!(script.contains("addEventListener('close'"));
+        // A click on the dialog itself is a click on the backdrop.
+        assert!(script.contains("event.target === event.currentTarget"));
+        assert!(script.contains("class=\"toggle detail-close\""));
+        // Focus goes back to the card that was opened.
+        assert!(script.contains("[data-run-id="));
+        assert!(script.contains(".focus()"));
+    }
+
+    #[rocket::async_test]
+    async fn the_detail_is_a_right_hand_sheet_over_a_light_backdrop_that_stops_page_scroll() {
+        let css = stylesheet().await;
+        let (_, rules) = split_tokens(&css);
+        assert!(rules.contains(".detail::backdrop {"));
+        assert!(rules.contains("background: var(--colorBackgroundOverlay)"));
+        assert!(rules.contains(".detail {"));
+        assert!(
+            rules.contains("margin: 0 0 0 auto"),
+            "the sheet sits on the right"
+        );
+        assert!(rules.contains("body:has(.detail[open]) { overflow: hidden; }"));
+        // The whole card is the click target, with the ticket link kept above it.
+        assert!(rules.contains(".card-open::after {"));
+        assert!(rules.contains(".run a { position: relative; z-index: 1; }"));
     }
 
     #[rocket::async_test]
