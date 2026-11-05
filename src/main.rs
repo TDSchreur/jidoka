@@ -618,6 +618,75 @@ mod tests {
         assert!(page.contains("past the cap of"));
     }
 
+    async fn dashboard_page() -> String {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        api.get("/")
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .dispatch()
+            .await
+            .into_string()
+            .await
+            .unwrap()
+    }
+
+    /// Custom property names declared in the CSS block that opens at `marker`.
+    fn tokens_after(page: &str, marker: &str) -> std::collections::BTreeSet<String> {
+        let start = page
+            .find(marker)
+            .unwrap_or_else(|| panic!("missing {marker}"));
+        let block = &page[start..page[start..].find('}').map(|i| start + i).unwrap()];
+        block
+            .split(&[';', '{'][..])
+            .filter_map(|decl| decl.trim_start().strip_prefix("--"))
+            .filter_map(|decl| decl.split(':').next())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[rocket::async_test]
+    async fn dashboard_theme_follows_system_and_dark_overrides_every_token() {
+        let page = dashboard_page().await;
+        // Single-line markers keep the test independent of line endings (CRLF on Windows).
+        // The first `:root {` block holds the light tokens.
+        let light = tokens_after(&page, ":root {");
+        assert!(light.len() > 10, "colours should be tokens on :root");
+        assert!(page.contains("color-scheme: light dark;"));
+        assert!(page.contains("@media (prefers-color-scheme: dark)"));
+        let system_dark = tokens_after(&page, ":root:not([data-theme=\"light\"]) {");
+        let forced_dark = tokens_after(&page, ":root[data-theme=\"dark\"] {");
+        assert_eq!(system_dark, light, "system dark theme misses tokens");
+        assert_eq!(forced_dark, light, "forced dark theme misses tokens");
+        assert!(page.contains(":root[data-theme=\"light\"] { color-scheme: light; }"));
+    }
+
+    #[rocket::async_test]
+    async fn dashboard_theme_toggle_is_a_labelled_radio_group_remembered_safely() {
+        let page = dashboard_page().await;
+        assert!(page.contains("<legend>Theme</legend>"));
+        for value in ["system", "light", "dark"] {
+            assert!(
+                page.contains(&format!(
+                    "<input type=\"radio\" name=\"theme\" value=\"{value}\""
+                )),
+                "missing {value} option"
+            );
+        }
+        assert!(
+            page.contains("value=\"system\" checked"),
+            "System is the default"
+        );
+        // The stored choice is applied before the stylesheet, so there is no flash.
+        let early = page.find("localStorage.getItem('theme')").unwrap();
+        assert!(early < page.find("<style>").unwrap());
+        // Every storage access is guarded so the page works without it.
+        for access in ["getItem", "setItem", "removeItem"] {
+            let at = page.find(access).unwrap();
+            assert!(page[..at].rfind("try {").is_some(), "{access} is unguarded");
+            assert!(page[at..].contains("catch"), "{access} has no catch");
+        }
+    }
+
     #[rocket::async_test]
     async fn create_update_and_restart_preserve_cli_json_contract() {
         let dir = TestDir::new();
