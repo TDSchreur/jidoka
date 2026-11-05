@@ -520,6 +520,51 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn dashboard_board_has_a_sticky_column_per_stage_on_wide_screens_only() {
+        let css = stylesheet().await;
+        let (_, rules) = split_tokens(&css);
+        let (stacked, wide) = rules
+            .split_once("@media (min-width: 1025px)")
+            .expect("a wide-screen layout");
+        let wide = &wide[..wide
+            .find("@media (prefers-reduced-motion")
+            .unwrap_or(wide.len())];
+        // Narrow screens keep the plain stacked groups.
+        assert!(!stacked.contains("grid-template-columns"));
+        assert!(!stacked.contains("position: sticky"));
+        assert!(
+            wide.contains("position: sticky"),
+            "the column header sticks"
+        );
+        // One column for each group the page renders.
+        let script = {
+            let dir = TestDir::new();
+            client(&dir)
+                .await
+                .get("/assets/app.js")
+                .header(Header::new("Host", "127.0.0.1:4311"))
+                .dispatch()
+                .await
+                .into_string()
+                .await
+                .unwrap()
+        };
+        let groups = script
+            .split("const GROUPS = [")
+            .nth(1)
+            .and_then(|rest| rest.split("];").next())
+            .unwrap()
+            .lines()
+            .filter(|line| line.trim_start().starts_with("['"))
+            .count();
+        assert!(
+            wide.contains(&format!("grid-template-columns: repeat({groups},")),
+            "{groups} columns"
+        );
+        assert!(script.contains("class=\"group-header\""));
+    }
+
+    #[rocket::async_test]
     async fn dashboard_tokens_are_all_used_and_all_declared() {
         let css = stylesheet().await;
         let (layer, rules) = split_tokens(&css);
