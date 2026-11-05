@@ -322,6 +322,15 @@ mod tests {
                 );
             }
             assert_eq!(
+                text.contains("check blocked --blocking-reason \"Decision needed on remaining Check findings\""),
+                skill != "factory-fast",
+                "{skill} reports blocked while waiting for a decision on Check findings"
+            );
+            assert!(
+                !text.contains("Waiting for a decision"),
+                "{skill} still reports a decision wait as running"
+            );
+            assert_eq!(
                 text.contains("Saving the plan in [factory-procedures]"),
                 skill != "factory",
                 "{skill} saves a conversational plan only in the lighter workflows"

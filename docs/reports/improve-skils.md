@@ -102,7 +102,7 @@ Run these in order. Each prompt describes a separate change suitable for `/facto
   /factory-balanced Let factory-balanced and factory-fast handle clear, bounded requests without tracker setup when no tracker operations are needed. Preserve tracker requirements for publishing specs or tickets and never guess a tracker. Before Build, durably save the lightweight plan and acceptance criteria and record its reference through the existing run-context CLI so another session can continue without the original chat. Keep this lightweight and avoid new CLI features unless existing capabilities are insufficient. Align setup recovery and readiness guidance, update documentation, add a changelog fragment, and run the project's verification.
   ```
 
-- [ ] **6. Make decision-wait status consistent.**
+- [x] **6. Make decision-wait status consistent.**
 
   ```text
   /factory-balanced Make factory and factory-balanced report blocked when unresolved Check findings require a user decision after the Rework allowance is exhausted or a finding cannot be resolved. Preserve autonomous fixes within the allowance and the existing choices to grant another Rework, finish with documented findings, or stop. Clear the blocking reason when work resumes. Update shared instructions and README wording together, add a changelog fragment, and run the project's verification.
