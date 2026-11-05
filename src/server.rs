@@ -813,8 +813,13 @@ mod tests {
         );
         assert!(script.contains("The worktree, branch and pull request stay as they are."));
         // Cards in every other column offer Delete too, so a stuck Run can be removed.
-        assert!(script
-            .contains("run=${entry.run} now=${now} onOpen=${onOpen} onDelete=${onDelete} />`\n"));
+        assert_eq!(
+            script
+                .matches("now=${now} onOpen=${onOpen} onDelete=${onDelete} />")
+                .count(),
+            2,
+            "DoneCard and Card both get onDelete"
+        );
     }
 
     #[rocket::async_test]
