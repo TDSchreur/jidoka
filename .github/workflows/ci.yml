@@ -22,6 +22,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      # Keep these three checks in sync with scripts/verify.sh.
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
