@@ -812,6 +812,14 @@ mod tests {
             "one definition, one use"
         );
         assert!(script.contains("The worktree, branch and pull request stay as they are."));
+        // Cards in every other column offer Delete too, so a stuck Run can be removed.
+        assert_eq!(
+            script
+                .matches("now=${now} onOpen=${onOpen} onDelete=${onDelete} />")
+                .count(),
+            2,
+            "DoneCard and Card both get onDelete"
+        );
     }
 
     #[rocket::async_test]
@@ -1532,6 +1540,37 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[rocket::async_test]
+    async fn delete_removes_a_run_in_any_stage_and_status() {
+        use crate::run::{RunStatus, Stage, UpdateRun};
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let store = api.rocket().state::<RunStore>().unwrap();
+        let token = session_token(&api).await;
+        let headers = vec![
+            ("Host", "127.0.0.1:4311".to_string()),
+            (TOKEN_HEADER, token),
+        ];
+        for stage in [Stage::Define, Stage::Build, Stage::Check, Stage::Finish] {
+            for status in [RunStatus::Running, RunStatus::Blocked, RunStatus::Done] {
+                let run = store
+                    .create(NewRun {
+                        title: "stuck".into(),
+                        project: "/work".into(),
+                        repository: None,
+                    })
+                    .unwrap();
+                let update: UpdateRun =
+                    serde_json::from_value(serde_json::json!({ "stage": stage, "status": status }))
+                        .unwrap();
+                store.update(&run.id, update).unwrap();
+                let response = delete(&api, &run.id, &headers).await;
+                assert_eq!(response.status(), HttpStatus::NoContent);
+            }
+        }
+        assert!(store.list().unwrap().is_empty());
     }
 
     #[rocket::async_test]
