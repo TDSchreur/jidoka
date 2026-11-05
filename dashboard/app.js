@@ -542,7 +542,8 @@ function Help({ onClose }) {
     <p>
       A <strong>Rework</strong> is a return from Check to Build to fix findings, followed by another Check. A Run gets
       at most ${REWORK_CAP} Reworks; after that you decide whether to do another, finish with the findings listed in the
-      pull request, or stop. Check findings never block a Run.
+      pull request, or stop. Findings alone never block a Run; it is blocked, and shows <em>Needs you</em>, only while it
+      waits for that decision.
     </p>
     <div class="confirm-buttons">
       <button type="button" class="toggle" autofocus onClick=${() => dialog.current.close()}>Close</button>
