@@ -1,16 +1,18 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\nOmitted fields are preserved; clear flags remove them.";
+pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\nOmitted fields are preserved; clear flags remove them.";
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
+const MAX_TICKETS: usize = 100;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Run {
     pub(crate) id: String,
     pub(crate) title: String,
@@ -21,6 +23,7 @@ pub(crate) struct Run {
     pub(crate) activity: Option<String>,
     #[serde(default)]
     pub(crate) current_ticket: Option<String>,
+    /// Why the run is blocked; the dashboard shows it as the status reason.
     #[serde(default)]
     pub(crate) blocking_reason: Option<String>,
     /// Number of the current or latest Rework: a return from Check to Build.
@@ -28,9 +31,30 @@ pub(crate) struct Run {
     pub(crate) rework: Option<u32>,
     #[serde(default)]
     pub(crate) updated_at: Option<u64>,
+    // Run context. Records from before it existed have none of it: it stays unknown, never guessed.
+    /// The canonical repository (main checkout), the same for every linked worktree of it.
+    #[serde(default)]
+    pub(crate) repository: Option<String>,
+    #[serde(default)]
+    pub(crate) worktree: Option<String>,
+    #[serde(default)]
+    pub(crate) branch: Option<String>,
+    #[serde(default)]
+    pub(crate) base_commit: Option<String>,
+    #[serde(default)]
+    pub(crate) mode: Option<Mode>,
+    #[serde(default)]
+    pub(crate) spec: Option<String>,
+    #[serde(default)]
+    pub(crate) pr: Option<String>,
+    #[serde(default)]
+    pub(crate) tickets: Vec<Ticket>,
+    /// One short summary per stage, kept after later stages begin.
+    #[serde(default)]
+    pub(crate) summaries: BTreeMap<Stage, String>,
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Stage {
     Define,
@@ -39,7 +63,7 @@ pub(crate) enum Stage {
     Finish,
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum RunStatus {
     Running,
@@ -47,13 +71,47 @@ pub(crate) enum RunStatus {
     Done,
 }
 
+/// The workflow skill carrying the run.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Mode {
+    Factory,
+    FactoryBalanced,
+    FactoryFast,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum TicketStatus {
+    Pending,
+    InProgress,
+    Done,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub(crate) struct Ticket {
+    pub(crate) reference: String,
+    pub(crate) title: String,
+    pub(crate) status: TicketStatus,
+}
+
+/// A ticket as listed by an update; its status is carried over from the stored list or starts pending.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NewTicket {
+    pub(crate) reference: String,
+    pub(crate) title: String,
+}
+
 #[derive(Deserialize, Serialize)]
 pub(crate) struct NewRun {
     pub(crate) title: String,
     pub(crate) project: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) repository: Option<String>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct UpdateRun {
     pub(crate) stage: Stage,
@@ -66,10 +124,31 @@ pub(crate) struct UpdateRun {
     pub(crate) blocking_reason: FieldUpdate,
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub(crate) rework: FieldUpdate<u32>,
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    pub(crate) mode: FieldUpdate<Mode>,
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    pub(crate) worktree: FieldUpdate,
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    pub(crate) branch: FieldUpdate,
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    pub(crate) base_commit: FieldUpdate,
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    pub(crate) spec: FieldUpdate,
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    pub(crate) pr: FieldUpdate,
+    /// The whole ordered ticket list; null removes it.
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    pub(crate) tickets: FieldUpdate<Vec<NewTicket>>,
+    /// New statuses by ticket reference, applied after `tickets`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) ticket_status: BTreeMap<String, TicketStatus>,
+    /// Stage summaries to set; null removes that stage's summary. Other stages keep theirs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) summaries: BTreeMap<Stage, Option<String>>,
 }
 
 // Missing fields preserve stored values; null clears them; values replace them.
-#[derive(Default, Serialize)]
+#[derive(Debug, Default, Serialize)]
 #[serde(untagged)]
 pub(crate) enum FieldUpdate<T = String> {
     #[default]
@@ -102,41 +181,222 @@ impl<T> FieldUpdate<T> {
 }
 
 impl FieldUpdate {
-    pub(crate) fn validate(&self, limit: usize) -> Result<(), &'static str> {
+    pub(crate) fn validate(&self, limit: usize) -> Result<(), String> {
         if let Self::Set(value) = self {
             if value.trim().is_empty() || value.len() > limit {
-                return Err("Run metadata must be nonblank and within its size limit");
+                return Err("Run metadata must be nonblank and within its size limit".into());
             }
         }
         Ok(())
     }
 }
 
+fn has_control(value: &str) -> bool {
+    value.chars().any(char::is_control)
+}
+
+/// An absolute `http(s)` URL with a host and no credentials, so a reference never carries a secret.
+fn check_http_url(name: &str, value: &str) -> Result<(), String> {
+    check_http_url_with(name, value, true)
+}
+
+/// A URL that is stored and shown as a reference also may not carry a query string or fragment,
+/// which is where tokens usually hide.
+fn check_plain_url(name: &str, value: &str) -> Result<(), String> {
+    check_http_url_with(name, value, false)
+}
+
+fn check_http_url_with(name: &str, value: &str, allow_query: bool) -> Result<(), String> {
+    if !allow_query && (value.contains('?') || value.contains('#')) {
+        return Err(format!(
+            "{name} must not contain a query string or fragment, which can carry secrets"
+        ));
+    }
+    if value != value.trim() || value.chars().any(char::is_whitespace) {
+        return Err(format!("{name} must not contain spaces"));
+    }
+    let uri = rocket::http::uri::Absolute::parse(value).ok();
+    let valid = uri.as_ref().is_some_and(|uri| {
+        (uri.scheme().eq_ignore_ascii_case("http") || uri.scheme().eq_ignore_ascii_case("https"))
+            && uri
+                .authority()
+                .is_some_and(|authority| !authority.host().is_empty())
+    });
+    if !valid {
+        return Err(format!("{name} must be an absolute HTTP(S) URL"));
+    }
+    if uri
+        .and_then(|uri| uri.authority().and_then(|a| a.user_info().map(|_| ())))
+        .is_some()
+    {
+        return Err(format!("{name} must not contain credentials"));
+    }
+    Ok(())
+}
+
+/// Whether `value` starts like a URL scheme (`javascript:`), not a Windows drive (`C:\`).
+fn has_scheme(value: &str) -> bool {
+    let Some((scheme, rest)) = value.split_once(':') else {
+        return false;
+    };
+    let is_scheme = scheme.len() > 1
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c));
+    is_scheme && !rest.is_empty()
+}
+
+/// A reference to a document: an `http(s)` URL, or a local path or identifier without a scheme.
+fn check_reference(name: &str, value: &str, limit: usize) -> Result<(), String> {
+    if value.trim().is_empty() || value.len() > limit {
+        return Err(format!("{name} must be nonblank and at most {limit} bytes"));
+    }
+    if has_control(value) {
+        return Err(format!("{name} must not contain control characters"));
+    }
+    // Leading spaces would hide a URL's scheme from this check yet not from a browser.
+    if value != value.trim() {
+        return Err(format!("{name} must not start or end with spaces"));
+    }
+    if value.to_ascii_lowercase().starts_with("http://")
+        || value.to_ascii_lowercase().starts_with("https://")
+    {
+        return check_plain_url(name, value);
+    }
+    if has_scheme(value) {
+        return Err(format!("{name} must be an HTTP(S) URL or a local path"));
+    }
+    Ok(())
+}
+
+fn check_text(name: &str, value: &str, limit: usize) -> Result<(), String> {
+    if value.trim().is_empty() || value.len() > limit {
+        return Err(format!("{name} must be nonblank and at most {limit} bytes"));
+    }
+    if value
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return Err(format!("{name} must not contain control characters"));
+    }
+    Ok(())
+}
+
+/// Whether `value` is written as an absolute path: `/dir`, `\\server\share` or `C:\dir`. The same
+/// answer on every system, because a record may be written on one and read on another.
+pub(crate) fn is_absolute_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let windows_drive = bytes.len() > 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/');
+    value.starts_with('/') || value.starts_with("\\\\") || windows_drive
+}
+
+fn io_invalid(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message.into())
+}
+
 impl UpdateRun {
-    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+    pub(crate) fn new(stage: Stage, status: RunStatus) -> Self {
+        Self {
+            stage,
+            status,
+            activity: FieldUpdate::Keep,
+            current_ticket: FieldUpdate::Keep,
+            blocking_reason: FieldUpdate::Keep,
+            rework: FieldUpdate::Keep,
+            mode: FieldUpdate::Keep,
+            worktree: FieldUpdate::Keep,
+            branch: FieldUpdate::Keep,
+            base_commit: FieldUpdate::Keep,
+            spec: FieldUpdate::Keep,
+            pr: FieldUpdate::Keep,
+            tickets: FieldUpdate::Keep,
+            ticket_status: BTreeMap::new(),
+            summaries: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), String> {
         self.activity.validate(2000)?;
         self.blocking_reason.validate(2000)?;
         self.current_ticket.validate(4096)?;
         if let FieldUpdate::Set(count) = self.rework {
             if !(1..=MAX_REWORK).contains(&count) {
-                return Err("Rework must be a whole number from 1 to 99");
+                return Err("Rework must be a whole number from 1 to 99".into());
             }
         }
         if let FieldUpdate::Set(value) = &self.current_ticket {
-            let valid = rocket::http::uri::Absolute::parse(value)
-                .ok()
-                .is_some_and(|uri| {
-                    matches!(uri.scheme(), "http" | "https")
-                        && uri
-                            .authority()
-                            .is_some_and(|authority| !authority.host().is_empty())
-                });
-            if !valid {
-                return Err("Current ticket must be an absolute HTTP(S) URL");
+            check_http_url("Current ticket", value)?;
+        }
+        if let FieldUpdate::Set(value) = &self.worktree {
+            check_text("Worktree", value, 4096)?;
+            if has_control(value) || !is_absolute_path(value) {
+                return Err("Worktree must be an absolute path without control characters".into());
             }
+        }
+        if let FieldUpdate::Set(value) = &self.branch {
+            if value.is_empty()
+                || value.len() > 255
+                || value.starts_with(['-', '/'])
+                || value.ends_with(['/', '.'])
+                || value.ends_with(".lock")
+                || value.contains("..")
+                || value.contains("@{")
+                || value.contains("//")
+                || value
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c))
+            {
+                return Err("Branch must be a valid git branch name: no spaces, control characters or any of ~ ^ : ? * [ \\ \"..\" \"@{\", and not starting with \"-\"".into());
+            }
+        }
+        if let FieldUpdate::Set(value) = &self.base_commit {
+            if !(7..=64).contains(&value.len()) || !value.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err("Base commit must be 7 to 64 hexadecimal characters".into());
+            }
+        }
+        if let FieldUpdate::Set(value) = &self.spec {
+            check_reference("Spec", value, 4096)?;
+        }
+        if let FieldUpdate::Set(value) = &self.pr {
+            check_plain_url("Pull request", value)?;
+        }
+        if let FieldUpdate::Set(list) = &self.tickets {
+            if list.len() > MAX_TICKETS {
+                return Err(format!("At most {MAX_TICKETS} tickets can be listed"));
+            }
+            for (index, ticket) in list.iter().enumerate() {
+                check_reference("Ticket reference", &ticket.reference, 4096)?;
+                if ticket.reference.chars().any(char::is_whitespace) {
+                    return Err(format!(
+                        "Ticket reference {:?} must not contain spaces",
+                        ticket.reference
+                    ));
+                }
+                check_text("Ticket title", &ticket.title, 500)?;
+                if list[..index]
+                    .iter()
+                    .any(|other| other.reference == ticket.reference)
+                {
+                    return Err(format!("Ticket {} is listed twice", ticket.reference));
+                }
+            }
+        }
+        for summary in self.summaries.values().flatten() {
+            check_text("Stage summary", summary, 2000)?;
         }
         Ok(())
     }
+}
+
+/// Parses `name=value` where the name may not contain `=`.
+fn split_pair<'a>(flag: &str, value: &'a str) -> Result<(&'a str, &'a str), String> {
+    value
+        .split_once('=')
+        .ok_or_else(|| format!("{flag} needs the form <name>=<value>, got {value:?}"))
 }
 
 pub(crate) fn parse_update(
@@ -144,14 +404,11 @@ pub(crate) fn parse_update(
     status: &str,
     options: &[&str],
 ) -> Result<UpdateRun, Box<dyn std::error::Error>> {
-    let mut update = UpdateRun {
-        stage: serde_json::from_value(stage.into())?,
-        status: serde_json::from_value(status.into())?,
-        activity: FieldUpdate::Keep,
-        current_ticket: FieldUpdate::Keep,
-        blocking_reason: FieldUpdate::Keep,
-        rework: FieldUpdate::Keep,
-    };
+    let mut update = UpdateRun::new(
+        serde_json::from_value(stage.into())?,
+        serde_json::from_value(status.into())?,
+    );
+    let mut tickets: Vec<NewTicket> = Vec::new();
     let mut args = options.iter();
     while let Some(flag) = args.next() {
         let mut next_value = || {
@@ -159,34 +416,118 @@ pub(crate) fn parse_update(
                 .filter(|value| !value.starts_with("--"))
                 .ok_or_else(|| format!("Missing value for {flag}\n{UPDATE_HELP}"))
         };
-        if matches!(*flag, "--rework" | "--clear-rework") {
-            if !update.rework.is_keep() {
-                return Err(format!("Repeated or conflicting run update option: {flag}").into());
+        let repeated = || format!("Repeated or conflicting run update option: {flag}");
+        match *flag {
+            "--rework" | "--clear-rework" => {
+                if !update.rework.is_keep() {
+                    return Err(repeated().into());
+                }
+                update.rework = if *flag == "--clear-rework" {
+                    FieldUpdate::Clear
+                } else {
+                    let count = next_value()?;
+                    FieldUpdate::Set(count.parse().map_err(|_| {
+                        format!("Invalid value for --rework: {count}; use a whole number from 1 to {MAX_REWORK}")
+                    })?)
+                };
+                continue;
             }
-            update.rework = if *flag == "--clear-rework" {
-                FieldUpdate::Clear
-            } else {
-                let count = next_value()?;
-                FieldUpdate::Set(count.parse().map_err(|_| {
-                    format!("Invalid value for --rework: {count}; use a whole number from 1 to {MAX_REWORK}")
-                })?)
-            };
-            continue;
+            "--mode" | "--clear-mode" => {
+                if !update.mode.is_keep() {
+                    return Err(repeated().into());
+                }
+                update.mode = if *flag == "--clear-mode" {
+                    FieldUpdate::Clear
+                } else {
+                    let mode = next_value()?;
+                    FieldUpdate::Set(serde_json::from_value(serde_json::Value::from(*mode)).map_err(|_| {
+                        format!("Invalid value for --mode: {mode}; use factory, factory-balanced or factory-fast")
+                    })?)
+                };
+                continue;
+            }
+            "--ticket" => {
+                if !update.tickets.is_keep() && tickets.is_empty() {
+                    return Err(repeated().into());
+                }
+                let value = next_value()?;
+                let (reference, title) = value
+                    .split_once(char::is_whitespace)
+                    .map(|(reference, title)| (reference, title.trim()))
+                    .filter(|(_, title)| !title.is_empty())
+                    .ok_or_else(|| {
+                        format!("--ticket needs \"<reference> <title>\", got {value:?}")
+                    })?;
+                tickets.push(NewTicket {
+                    reference: reference.to_string(),
+                    title: title.to_string(),
+                });
+                continue;
+            }
+            "--clear-tickets" => {
+                if !update.tickets.is_keep() || !tickets.is_empty() {
+                    return Err(repeated().into());
+                }
+                update.tickets = FieldUpdate::Clear;
+                continue;
+            }
+            "--ticket-status" => {
+                let value = next_value()?;
+                let (reference, status) = value.rsplit_once('=').ok_or_else(|| {
+                    format!("--ticket-status needs <reference>=<status>, got {value:?}")
+                })?;
+                let status: TicketStatus = serde_json::from_value(status.into()).map_err(|_| {
+                    format!("Invalid ticket status {status:?}; use pending, in-progress or done")
+                })?;
+                if update
+                    .ticket_status
+                    .insert(reference.to_string(), status)
+                    .is_some()
+                {
+                    return Err(format!("Ticket status for {reference} given twice").into());
+                }
+                continue;
+            }
+            "--summary" | "--clear-summary" => {
+                let value = next_value()?;
+                let (name, text) = if *flag == "--summary" {
+                    let (name, text) = split_pair(flag, value)?;
+                    (name, Some(text.to_string()))
+                } else {
+                    (*value, None)
+                };
+                let stage: Stage = serde_json::from_value(name.into()).map_err(|_| {
+                    format!("Unknown stage {name:?} for {flag}; use define, build, check or finish")
+                })?;
+                if update.summaries.insert(stage, text).is_some() {
+                    return Err(format!("Summary for {name} given twice").into());
+                }
+                continue;
+            }
+            _ => {}
         }
         let field = match *flag {
             "--activity" | "--clear-activity" => &mut update.activity,
             "--current-ticket" | "--clear-current-ticket" => &mut update.current_ticket,
             "--blocking-reason" | "--clear-blocking-reason" => &mut update.blocking_reason,
+            "--worktree" | "--clear-worktree" => &mut update.worktree,
+            "--branch" | "--clear-branch" => &mut update.branch,
+            "--base-commit" | "--clear-base-commit" => &mut update.base_commit,
+            "--spec" | "--clear-spec" => &mut update.spec,
+            "--pr" | "--clear-pr" => &mut update.pr,
             _ => return Err(format!("Unknown run update option: {flag}\n{UPDATE_HELP}").into()),
         };
         if !field.is_keep() {
-            return Err(format!("Repeated or conflicting run update option: {flag}").into());
+            return Err(repeated().into());
         }
         *field = if flag.starts_with("--clear-") {
             FieldUpdate::Clear
         } else {
             FieldUpdate::Set((*next_value()?).to_string())
         };
+    }
+    if !tickets.is_empty() {
+        update.tickets = FieldUpdate::Set(tickets);
     }
     update.validate()?;
     Ok(update)
@@ -217,6 +558,16 @@ impl RunStore {
         Ok(self.runs.lock().map_err(lock_error)?.clone())
     }
 
+    pub(crate) fn get(&self, id: &str) -> io::Result<Option<Run>> {
+        Ok(self
+            .runs
+            .lock()
+            .map_err(lock_error)?
+            .iter()
+            .find(|run| run.id == id)
+            .cloned())
+    }
+
     pub(crate) fn create(&self, new: NewRun) -> io::Result<Run> {
         let mut runs = self.runs.lock().map_err(lock_error)?;
         let mut id = SystemTime::now()
@@ -237,6 +588,15 @@ impl RunStore {
             blocking_reason: None,
             rework: None,
             updated_at: Some(updated_now()?),
+            repository: new.repository,
+            worktree: None,
+            branch: None,
+            base_commit: None,
+            mode: None,
+            spec: None,
+            pr: None,
+            tickets: Vec::new(),
+            summaries: BTreeMap::new(),
         };
         runs.push(run.clone());
         if let Err(error) = save_runs(&self.path, &runs) {
@@ -246,22 +606,78 @@ impl RunStore {
         Ok(run)
     }
 
+    /// Applies an update to a copy first, so an inconsistent update changes nothing, and
+    /// restores the stored record when saving fails.
     pub(crate) fn update(&self, id: &str, update: UpdateRun) -> io::Result<Option<Run>> {
         let mut runs = self.runs.lock().map_err(lock_error)?;
         let Some(index) = runs.iter().position(|run| run.id == id) else {
             return Ok(None);
         };
         let updated_at = updated_now()?;
-        let old = runs[index].clone();
-        runs[index].stage = update.stage;
-        runs[index].status = update.status;
-        update.activity.apply(&mut runs[index].activity);
-        update.current_ticket.apply(&mut runs[index].current_ticket);
-        update
-            .blocking_reason
-            .apply(&mut runs[index].blocking_reason);
-        update.rework.apply(&mut runs[index].rework);
-        runs[index].updated_at = Some(updated_at);
+        let mut next = runs[index].clone();
+        next.stage = update.stage;
+        next.status = update.status;
+        update.activity.apply(&mut next.activity);
+        update.current_ticket.apply(&mut next.current_ticket);
+        update.blocking_reason.apply(&mut next.blocking_reason);
+        update.rework.apply(&mut next.rework);
+        update.mode.apply(&mut next.mode);
+        update.worktree.apply(&mut next.worktree);
+        update.branch.apply(&mut next.branch);
+        update.base_commit.map_hex().apply(&mut next.base_commit);
+        update.spec.apply(&mut next.spec);
+        update.pr.apply(&mut next.pr);
+        match update.tickets {
+            FieldUpdate::Keep => {}
+            FieldUpdate::Clear => next.tickets.clear(),
+            FieldUpdate::Set(list) => {
+                let old = std::mem::take(&mut next.tickets);
+                next.tickets = list
+                    .into_iter()
+                    .map(|ticket| Ticket {
+                        status: old
+                            .iter()
+                            .find(|kept| kept.reference == ticket.reference)
+                            .map_or(TicketStatus::Pending, |kept| kept.status),
+                        reference: ticket.reference,
+                        title: ticket.title,
+                    })
+                    .collect();
+            }
+        }
+        for (reference, status) in update.ticket_status {
+            let ticket = next
+                .tickets
+                .iter_mut()
+                .find(|ticket| ticket.reference == reference)
+                .ok_or_else(|| {
+                    io_invalid(format!(
+                        "No ticket {reference} is listed on this run; list it with --ticket first"
+                    ))
+                })?;
+            ticket.status = status;
+        }
+        if next
+            .tickets
+            .iter()
+            .filter(|t| t.status == TicketStatus::InProgress)
+            .count()
+            > 1
+        {
+            return Err(io_invalid("Only one ticket can be in progress at a time"));
+        }
+        for (stage, summary) in update.summaries {
+            match summary {
+                Some(text) => {
+                    next.summaries.insert(stage, text);
+                }
+                None => {
+                    next.summaries.remove(&stage);
+                }
+            }
+        }
+        next.updated_at = Some(updated_at);
+        let old = std::mem::replace(&mut runs[index], next);
         if let Err(error) = save_runs(&self.path, &runs) {
             runs[index] = old;
             return Err(error);
@@ -284,6 +700,16 @@ impl RunStore {
     }
 }
 
+impl FieldUpdate {
+    /// Commit ids are stored in lowercase, whichever case they were given in.
+    fn map_hex(self) -> Self {
+        match self {
+            Self::Set(value) => Self::Set(value.to_ascii_lowercase()),
+            other => other,
+        }
+    }
+}
+
 pub(crate) fn lock_error<T>(_: std::sync::PoisonError<T>) -> io::Error {
     io::Error::other("run storage lock was poisoned")
 }
@@ -303,7 +729,13 @@ pub(crate) fn save_runs(path: &Path, runs: &[Run]) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("run storage has no parent directory"))?;
     fs::create_dir_all(parent)?;
     let temp = path.with_extension("json.tmp");
-    fs::write(&temp, serde_json::to_vec(runs)?)?;
+    {
+        use std::io::Write;
+        // Flushed to disk before the rename, so a crash leaves the old or the new file, never a torn one.
+        let mut file = fs::File::create(&temp)?;
+        file.write_all(&serde_json::to_vec(runs)?)?;
+        file.sync_all()?;
+    }
     fs::rename(temp, path)
 }
 
@@ -324,6 +756,7 @@ mod tests {
                         .create(NewRun {
                             title: format!("run {n}"),
                             project: "/work".into(),
+                            repository: None,
                         })
                         .unwrap()
                 })
@@ -349,12 +782,14 @@ mod tests {
             .create(NewRun {
                 title: "first".into(),
                 project: "/work".into(),
+                repository: None,
             })
             .unwrap();
         let second = store
             .create(NewRun {
                 title: "second".into(),
                 project: "/work".into(),
+                repository: None,
             })
             .unwrap();
         let updates = [(first.id, Stage::Build), (second.id, Stage::Check)];
@@ -364,17 +799,7 @@ mod tests {
                 let store = store.clone();
                 std::thread::spawn(move || {
                     store
-                        .update(
-                            &id,
-                            UpdateRun {
-                                stage,
-                                status: RunStatus::Done,
-                                activity: FieldUpdate::Keep,
-                                current_ticket: FieldUpdate::Keep,
-                                blocking_reason: FieldUpdate::Keep,
-                                rework: FieldUpdate::Keep,
-                            },
-                        )
+                        .update(&id, UpdateRun::new(stage, RunStatus::Done))
                         .unwrap()
                         .unwrap()
                 })
@@ -505,6 +930,7 @@ mod tests {
             .create(NewRun {
                 title: "task".into(),
                 project: "/work".into(),
+                repository: None,
             })
             .unwrap();
         let original = fs::read(&path).unwrap();
@@ -521,5 +947,549 @@ mod tests {
             original
         );
         assert_eq!(fs::read(&path).unwrap(), original);
+    }
+
+    fn new_run(store: &RunStore, title: &str) -> Run {
+        store
+            .create(NewRun {
+                title: title.into(),
+                project: "/work/repo.worktrees/feature".into(),
+                repository: Some("/work/repo".into()),
+            })
+            .unwrap()
+    }
+
+    fn update(options: &[&str]) -> UpdateRun {
+        parse_update("build", "running", options).unwrap()
+    }
+
+    #[test]
+    fn context_is_set_kept_and_cleared_one_field_at_a_time() {
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let run = new_run(&store, "task");
+        assert_eq!(run.repository.as_deref(), Some("/work/repo"));
+        assert!(run.worktree.is_none() && run.tickets.is_empty() && run.summaries.is_empty());
+
+        let run = store
+            .update(
+                &run.id,
+                update(&[
+                    "--mode",
+                    "factory-fast",
+                    "--worktree",
+                    "/work/repo.worktrees/feature",
+                    "--branch",
+                    "feature/x",
+                    "--base-commit",
+                    "ABCDEF1234",
+                    "--spec",
+                    "https://github.com/o/r/issues/1",
+                    "--pr",
+                    "https://github.com/o/r/pull/2",
+                    "--summary",
+                    "define=Spec written",
+                ]),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.mode, Some(Mode::FactoryFast));
+        assert_eq!(run.branch.as_deref(), Some("feature/x"));
+        assert_eq!(
+            run.base_commit.as_deref(),
+            Some("abcdef1234"),
+            "stored in lowercase"
+        );
+        assert_eq!(run.summaries[&Stage::Define], "Spec written");
+
+        // An update that mentions none of the context keeps all of it.
+        let kept = store
+            .update(&run.id, update(&["--activity", "Working"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.worktree, run.worktree);
+        assert_eq!(kept.spec, run.spec);
+        assert_eq!(kept.pr, run.pr);
+        assert_eq!(kept.summaries, run.summaries);
+
+        // Each clear flag removes only its own field.
+        let cleared = store
+            .update(
+                &run.id,
+                update(&["--clear-pr", "--clear-mode", "--clear-summary", "define"]),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(cleared.pr.is_none() && cleared.mode.is_none() && cleared.summaries.is_empty());
+        assert_eq!(cleared.branch.as_deref(), Some("feature/x"));
+        assert_eq!(cleared.spec, run.spec);
+    }
+
+    #[test]
+    fn stage_summaries_survive_later_stages() {
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let run = new_run(&store, "task");
+        store
+            .update(&run.id, update(&["--summary", "define=Planned"]))
+            .unwrap();
+        store
+            .update(
+                &run.id,
+                parse_update(
+                    "check",
+                    "running",
+                    &["--summary", "build=Built three tickets"],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let run = store
+            .update(
+                &run.id,
+                parse_update("finish", "running", &["--summary", "define=Planned again"]).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(matches!(run.stage, Stage::Finish));
+        assert_eq!(run.summaries[&Stage::Define], "Planned again");
+        assert_eq!(run.summaries[&Stage::Build], "Built three tickets");
+    }
+
+    #[test]
+    fn the_ticket_list_is_ordered_and_keeps_progress_when_relisted() {
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let run = new_run(&store, "task");
+        let run = store
+            .update(
+                &run.id,
+                update(&[
+                    "--ticket",
+                    "https://x.test/1 First one",
+                    "--ticket",
+                    "docs/t2.md Second",
+                    "--ticket-status",
+                    "https://x.test/1=in-progress",
+                ]),
+            )
+            .unwrap()
+            .unwrap();
+        let view = |run: &Run| {
+            run.tickets
+                .iter()
+                .map(|t| (t.reference.clone(), t.status))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            view(&run),
+            [
+                ("https://x.test/1".into(), TicketStatus::InProgress),
+                ("docs/t2.md".into(), TicketStatus::Pending)
+            ]
+        );
+        // Listing again in a new order with a new ticket keeps the status of the kept ones.
+        let run = store
+            .update(
+                &run.id,
+                update(&[
+                    "--ticket",
+                    "docs/t2.md Second",
+                    "--ticket",
+                    "https://x.test/1 First one",
+                    "--ticket",
+                    "docs/t3.md Third",
+                ]),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            view(&run),
+            [
+                ("docs/t2.md".into(), TicketStatus::Pending),
+                ("https://x.test/1".into(), TicketStatus::InProgress),
+                ("docs/t3.md".into(), TicketStatus::Pending),
+            ]
+        );
+        let run = store
+            .update(
+                &run.id,
+                update(&[
+                    "--ticket-status",
+                    "https://x.test/1=done",
+                    "--ticket-status",
+                    "docs/t2.md=in-progress",
+                ]),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.tickets[0].status, TicketStatus::InProgress);
+        assert_eq!(run.tickets[1].status, TicketStatus::Done);
+        let run = store
+            .update(&run.id, update(&["--clear-tickets"]))
+            .unwrap()
+            .unwrap();
+        assert!(run.tickets.is_empty());
+    }
+
+    #[test]
+    fn inconsistent_updates_are_rejected_with_a_reason_and_change_nothing() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let run = new_run(&store, "task");
+        store
+            .update(&run.id, update(&["--ticket", "a A", "--ticket", "b B"]))
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+
+        for (options, reason) in [
+            (
+                vec!["--ticket-status", "missing=done"],
+                "No ticket missing is listed",
+            ),
+            (
+                vec![
+                    "--ticket-status",
+                    "a=in-progress",
+                    "--ticket-status",
+                    "b=in-progress",
+                ],
+                "Only one ticket",
+            ),
+            // Even with a valid change beside it, nothing is applied.
+            (
+                vec!["--branch", "other", "--ticket-status", "zzz=done"],
+                "No ticket zzz",
+            ),
+        ] {
+            let error = store.update(&run.id, update(&options)).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(error.to_string().contains(reason), "{error}");
+        }
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(store.get(&run.id).unwrap().unwrap().branch.is_none());
+    }
+
+    #[test]
+    fn invalid_context_values_are_refused_with_a_message() {
+        for (options, reason) in [
+            (vec!["--mode", "turbo"], "factory-fast"),
+            (vec!["--worktree", "relative/path"], "absolute path"),
+            (vec!["--branch", "two words"], "branch name"),
+            (vec!["--branch", "-x"], "branch name"),
+            (vec!["--base-commit", "xyz"], "hexadecimal"),
+            (
+                vec!["--spec", "javascript:alert(1)"],
+                "HTTP(S) URL or a local path",
+            ),
+            (
+                vec!["--spec", "https://user:secret@example.com/spec"],
+                "credentials",
+            ),
+            (vec!["--pr", "/local/path"], "HTTP(S) URL"),
+            (
+                vec!["--pr", "https://tok:x@example.com/pr/1"],
+                "credentials",
+            ),
+            (vec!["--ticket", "only-a-reference"], "<reference> <title>"),
+            (
+                vec!["--ticket", "a A", "--ticket", "a Again"],
+                "listed twice",
+            ),
+            (vec!["--ticket", "a A", "--clear-tickets"], "conflicting"),
+            (vec!["--clear-tickets", "--ticket", "a A"], "conflicting"),
+            (
+                vec!["--ticket-status", "a=finished"],
+                "pending, in-progress or done",
+            ),
+            (vec!["--ticket-status", "a"], "<reference>=<status>"),
+            (
+                vec!["--ticket-status", "a=done", "--ticket-status", "a=pending"],
+                "twice",
+            ),
+            (
+                vec!["--summary", "plan=x"],
+                "define, build, check or finish",
+            ),
+            (vec!["--summary", "define"], "<name>=<value>"),
+            (
+                vec!["--summary", "define=a", "--clear-summary", "define"],
+                "twice",
+            ),
+            (vec!["--mode", "factory", "--clear-mode"], "conflicting"),
+            (
+                vec!["--summary", "define=bad\u{1b}[2J"],
+                "control characters",
+            ),
+        ] {
+            let Err(error) = parse_update("build", "running", &options) else {
+                panic!("{options:?} should be rejected");
+            };
+            assert!(error.to_string().contains(reason), "{options:?}: {error}");
+        }
+        // Windows and Unix absolute paths and local references are fine.
+        for options in [
+            vec!["--worktree", "C:\\work\\repo"],
+            vec!["--worktree", "/work/repo"],
+            vec!["--spec", "docs/specs/thing.md"],
+            vec!["--spec", "C:\\specs\\thing.md"],
+            vec!["--spec", "#12"],
+        ] {
+            assert!(
+                parse_update("build", "running", &options).is_ok(),
+                "{options:?}"
+            );
+        }
+        let too_many: Vec<String> = (0..=MAX_TICKETS).map(|n| format!("t{n} Title")).collect();
+        let options: Vec<&str> = too_many
+            .iter()
+            .flat_map(|t| ["--ticket", t.as_str()])
+            .collect();
+        assert!(parse_update("build", "running", &options)
+            .unwrap_err()
+            .to_string()
+            .contains("At most 100"));
+    }
+
+    #[test]
+    fn context_survives_a_restart_and_a_failed_save_changes_nothing() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let run = new_run(&store, "task");
+        store
+            .update(
+                &run.id,
+                update(&[
+                    "--branch",
+                    "feature/x",
+                    "--ticket",
+                    "a A",
+                    "--summary",
+                    "define=Planned",
+                    "--pr",
+                    "https://x.test/pr/1",
+                ]),
+            )
+            .unwrap();
+        let restarted = RunStore::open(&path).unwrap();
+        let loaded = restarted.get(&run.id).unwrap().unwrap();
+        assert_eq!(loaded.repository.as_deref(), Some("/work/repo"));
+        assert_eq!(loaded.branch.as_deref(), Some("feature/x"));
+        assert_eq!(loaded.tickets.len(), 1);
+        assert_eq!(loaded.summaries[&Stage::Define], "Planned");
+
+        let before = fs::read(&path).unwrap();
+        fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        let result = restarted.update(
+            &run.id,
+            update(&[
+                "--branch",
+                "other",
+                "--clear-tickets",
+                "--clear-summary",
+                "define",
+                "--clear-pr",
+            ]),
+        );
+        assert!(result.is_err());
+        let after = restarted.get(&run.id).unwrap().unwrap();
+        assert_eq!(after.branch.as_deref(), Some("feature/x"));
+        assert_eq!(after.tickets.len(), 1);
+        assert_eq!(after.summaries.len(), 1);
+        assert!(after.pr.is_some());
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn records_from_before_run_context_load_with_everything_unknown() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let legacy = r#"[{"id":"7","title":"old","project":"/work/old","stage":"build","status":"blocked","blocking_reason":"Need input","updated_at":5}]"#;
+        fs::write(&path, legacy).unwrap();
+        let store = RunStore::open(&path).unwrap();
+        let run = store.get("7").unwrap().unwrap();
+        assert_eq!(run.blocking_reason.as_deref(), Some("Need input"));
+        assert!(run.repository.is_none() && run.worktree.is_none() && run.branch.is_none());
+        assert!(
+            run.base_commit.is_none()
+                && run.mode.is_none()
+                && run.spec.is_none()
+                && run.pr.is_none()
+        );
+        assert!(run.tickets.is_empty() && run.summaries.is_empty());
+        // Updating it adds context without inventing the rest, and keeps what it had.
+        let run = store
+            .update("7", update(&["--branch", "b"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.blocking_reason.as_deref(), Some("Need input"));
+        assert!(run.repository.is_none() && run.worktree.is_none());
+        let json = serde_json::to_value(&run).unwrap();
+        assert_eq!(json["repository"], serde_json::Value::Null);
+        assert_eq!(json["tickets"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn concurrent_runs_keep_independent_context() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = std::sync::Arc::new(RunStore::open(&path).unwrap());
+        let runs: Vec<Run> = (0..8)
+            .map(|n| new_run(&store, &format!("run {n}")))
+            .collect();
+        let threads: Vec<_> = runs
+            .iter()
+            .enumerate()
+            .map(|(n, run)| {
+                let (store, id) = (store.clone(), run.id.clone());
+                std::thread::spawn(move || {
+                    let branch = format!("feature/{n}");
+                    let ticket = format!("t{n} Ticket {n}");
+                    let summary = format!("define=Summary {n}");
+                    store
+                        .update(
+                            &id,
+                            parse_update(
+                                "build",
+                                "running",
+                                &[
+                                    "--branch",
+                                    &branch,
+                                    "--ticket",
+                                    &ticket,
+                                    "--summary",
+                                    &summary,
+                                ],
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap()
+                        .unwrap();
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let persisted = load_runs(&path).unwrap();
+        assert_eq!(persisted.len(), 8);
+        for (n, run) in runs.iter().enumerate() {
+            let stored = persisted.iter().find(|r| r.id == run.id).unwrap();
+            assert_eq!(
+                stored.branch.as_deref(),
+                Some(format!("feature/{n}").as_str())
+            );
+            assert_eq!(stored.tickets.len(), 1);
+            assert_eq!(stored.tickets[0].reference, format!("t{n}"));
+            assert_eq!(stored.summaries[&Stage::Define], format!("Summary {n}"));
+        }
+    }
+
+    #[test]
+    fn urls_and_names_cannot_smuggle_credentials_or_tokens() {
+        for (options, reason) in [
+            (vec!["--spec", " https://tok:secret@evil.test/x"], "spaces"),
+            (vec!["--spec", "https://evil.test/x "], "spaces"),
+            (
+                vec!["--spec", "HTTPS://tok:secret@evil.test/x"],
+                "credentials",
+            ),
+            (
+                vec!["--spec", "https://example.com/spec?token=abc"],
+                "query string",
+            ),
+            (
+                vec!["--spec", "https://example.com/spec#frag"],
+                "query string",
+            ),
+            (
+                vec!["--pr", "https://example.com/pr/1?access_token=abc"],
+                "query string",
+            ),
+            (
+                vec!["--ticket", "https://example.com/t?key=1 Title"],
+                "query string",
+            ),
+            (vec!["--branch", "a:b"], "branch name"),
+            (vec!["--branch", "x~1"], "branch name"),
+            (vec!["--branch", "a@{b}"], "branch name"),
+            (vec!["--branch", "topic.lock"], "branch name"),
+            (vec!["--branch", "trailing/"], "branch name"),
+            (vec!["--branch", "back\\slash"], "branch name"),
+        ] {
+            let Err(error) = parse_update("build", "running", &options) else {
+                panic!("{options:?} should be rejected");
+            };
+            assert!(error.to_string().contains(reason), "{options:?}: {error}");
+        }
+        for options in [
+            vec!["--branch", "feature/run-context_2"],
+            vec!["--spec", "https://github.com/o/r/issues/1"],
+        ] {
+            assert!(
+                parse_update("build", "running", &options).is_ok(),
+                "{options:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn simultaneous_updates_to_one_run_both_land() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = std::sync::Arc::new(RunStore::open(&path).unwrap());
+        let run = new_run(&store, "task");
+        let threads: Vec<_> = [
+            vec!["--branch", "feature/a"],
+            vec!["--summary", "build=Built"],
+            vec!["--pr", "https://x.test/pr/1"],
+            vec!["--ticket", "t T"],
+        ]
+        .into_iter()
+        .map(|options| {
+            let (store, id) = (store.clone(), run.id.clone());
+            std::thread::spawn(move || {
+                let options: Vec<&str> = options.clone();
+                store
+                    .update(&id, parse_update("build", "running", &options).unwrap())
+                    .unwrap()
+                    .unwrap();
+            })
+        })
+        .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        // Each update changed only its own fields, so none overwrote another.
+        let stored = load_runs(&path).unwrap().pop().unwrap();
+        assert_eq!(stored.branch.as_deref(), Some("feature/a"));
+        assert_eq!(stored.summaries.len(), 1);
+        assert_eq!(stored.pr.as_deref(), Some("https://x.test/pr/1"));
+        assert_eq!(stored.tickets.len(), 1);
+    }
+
+    #[test]
+    fn absolute_paths_are_recognised_the_same_way_on_every_system() {
+        for yes in [
+            "/work/repo",
+            "C:\\work\\repo",
+            "c:/work/repo",
+            "\\\\server\\share\\repo",
+        ] {
+            assert!(is_absolute_path(yes), "{yes}");
+        }
+        for no in [
+            "work/repo",
+            "./repo",
+            "..\\repo",
+            "C:repo",
+            "C:",
+            "",
+            "~/repo",
+        ] {
+            assert!(!is_absolute_path(no), "{no}");
+        }
     }
 }
