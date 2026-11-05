@@ -745,6 +745,32 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn welcome_card_and_help_dialog_use_the_glossary_terms() {
+        let script = asset("/assets/app.js").await;
+        // The welcome card replaces the columns when there are no Runs, and links to Help.
+        assert!(script.contains("runs && !runs.length ? html`<${Welcome}"));
+        assert!(script.contains("runs?.length"));
+        assert!(script.contains("Read the Help"));
+        // Help is a native modal named by its heading, opened from the header and focused on its Close button.
+        assert!(script.contains("class=\"toggle help-open\""));
+        assert!(script.contains("aria-labelledby=\"help-title\""));
+        assert!(script.contains("autofocus onClick"));
+        for term in ["Stages", "Needs you", "Rework"] {
+            assert!(
+                script.contains(&format!("<h3>{term}</h3>")),
+                "missing {term}"
+            );
+        }
+        let glossary = include_str!("../GLOSSARY.md");
+        for term in ["Run", "Stage", "Needs you", "Rework"] {
+            assert!(
+                glossary.contains(&format!("**{term}**")),
+                "{term} is not in the glossary"
+            );
+        }
+    }
+
+    #[rocket::async_test]
     async fn the_detail_closes_with_escape_the_backdrop_or_a_button_and_returns_focus() {
         let script = asset("/assets/app.js").await;
         // Escape closes a native modal dialog, which fires `close`.

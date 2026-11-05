@@ -183,6 +183,16 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .done-run [hidden] { display: none; }
 .run .toggle { position: relative; z-index: 1; }
 .toggle.danger { border-color: var(--colorPaletteRedBorder2); color: var(--colorPaletteRedForeground1); }
+.help { width: min(36rem, calc(100% - 2 * var(--spacingHorizontalL))); max-height: calc(100% - 2 * var(--spacingVerticalXL)); overflow-y: auto; }
+.help h3 { margin: var(--spacingVerticalL) 0 var(--spacingVerticalXS); font-size: var(--fontSizeBase300); line-height: var(--lineHeightBase300); font-weight: var(--fontWeightSemibold); }
+.help-terms { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--spacingVerticalXS) var(--spacingHorizontalL); margin: 0; }
+.help-terms dt { font-weight: var(--fontWeightSemibold); }
+.help-terms dd { margin: 0; color: var(--colorNeutralForeground2); }
+.welcome { max-width: 40rem; padding: var(--spacingVerticalXL) var(--spacingHorizontalXL); background: var(--colorNeutralBackground1); border: var(--strokeWidthThin) solid var(--colorNeutralStroke2); border-radius: var(--borderRadiusLarge); box-shadow: var(--shadow4); }
+.welcome h2 { margin: 0 0 var(--spacingVerticalS); font-size: var(--fontSizeBase500); line-height: var(--lineHeightBase500); font-weight: var(--fontWeightSemibold); }
+.link { padding: 0; border: 0; background: none; font: inherit; color: var(--colorBrandForegroundLink); text-decoration: underline; cursor: pointer; }
+.link:hover { color: var(--colorBrandForegroundLinkHover); }
+.link:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: var(--strokeWidthThick); border-radius: var(--borderRadiusSmall); }
 .delete-all { margin-bottom: var(--spacingVerticalM); }
 /* Delete confirmation: a small centred modal. */
 .confirm { box-sizing: border-box; width: min(28rem, calc(100% - 2 * var(--spacingHorizontalL))); padding: var(--spacingVerticalXL) var(--spacingHorizontalXL); border: var(--strokeWidthThin) solid var(--colorNeutralStroke2); border-radius: var(--borderRadiusLarge); background: var(--colorNeutralBackground1); color: var(--colorNeutralForeground1); box-shadow: var(--shadow28); }

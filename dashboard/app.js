@@ -300,6 +300,58 @@ function Group({ id, name, description, entries, now, selected, onOpen, onDelete
   </section>`;
 }
 
+/** What the dashboard's words mean. A native modal: focus moves into it, and back to what opened it on close. */
+function Help({ onClose }) {
+  const dialog = useRef(null);
+  const closing = useRef(onClose);
+  closing.current = onClose;
+  useEffect(() => {
+    const element = dialog.current;
+    if (!element.open) element.showModal();
+    const onNativeClose = () => closing.current();
+    element.addEventListener('close', onNativeClose);
+    return () => element.removeEventListener('close', onNativeClose);
+  }, []);
+  return html`<dialog ref=${dialog} class="confirm help" aria-labelledby="help-title">
+    <h2 id="help-title">Help</h2>
+    <p>
+      A <strong>Run</strong> is one piece of work carried through the factory flow. Each Run sits in the column of its
+      Stage, or in Done once it has finished.
+    </p>
+    <h3>Stages</h3>
+    <dl class="help-terms">
+      ${GROUPS.map(([id, name, description]) => html`<dt key=${id}>${name}</dt><dd>${description}</dd>`)}
+    </dl>
+    <h3>Needs you</h3>
+    <p>
+      A Run that is blocked is waiting for you. Its card says <strong>Needs you</strong> and why, and it comes first in
+      its column. The <em>Needs you</em> button shows only these Runs.
+    </p>
+    <h3>Rework</h3>
+    <p>
+      A <strong>Rework</strong> is a return from Check to Build to fix findings, followed by another Check. A Run gets
+      at most ${REWORK_CAP} Reworks; after that you decide whether to do another, finish with the findings listed in the
+      pull request, or stop. Check findings never block a Run.
+    </p>
+    <div class="confirm-buttons">
+      <button type="button" class="toggle" autofocus onClick=${() => dialog.current.close()}>Close</button>
+    </div>
+  </dialog>`;
+}
+
+/** Shown instead of the columns while there are no Runs. */
+function Welcome({ onHelp }) {
+  return html`<section class="welcome" aria-labelledby="welcome-title">
+    <h2 id="welcome-title">Welcome to the factory</h2>
+    <p>
+      No Runs yet. In your project, ask your coding agent to run <code>/factory</code>, <code>/factory-balanced</code>
+      or <code>/factory-fast</code> with your task. Its Run appears here and follows the work from Define to a pull
+      request.
+    </p>
+    <p>Not sure what the Stages, Needs you or Rework mean? <button type="button" class="link" onClick=${onHelp}>Read the Help</button>.</p>
+  </section>`;
+}
+
 /** A native modal asking before something is deleted. Cancel has focus first; closing returns focus to what opened it. */
 function Confirm({ title, children, confirmLabel, onConfirm, onCancel }) {
   const dialog = useRef(null);
@@ -421,6 +473,15 @@ function App() {
   }, [waiting]);
   // What the visitor is asked to confirm deleting: one Run, or every Done Run.
   const [pending, setPending] = useState(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const closeHelp = () => {
+    setHelpOpen(false);
+    // The opener may be gone (the welcome card left); fall back to the header button.
+    setTimeout(() => {
+      if (!document.activeElement || document.activeElement === document.body)
+        document.querySelector('.help-open')?.focus();
+    });
+  };
   const [deleteError, setDeleteError] = useState('');
   const confirmDelete = async () => {
     const targets = pending.runs;
@@ -444,7 +505,7 @@ function App() {
   if (failed) text = 'Unable to load runs. Check that the factory server is running.';
   else if (deleteError) text = deleteError;
   else if (runs) {
-    if (!runs.length) text = 'No runs yet. Start one with the factory skill.';
+    if (!runs.length) text = '';
     else if (onlyWaiting && !waiting) text = 'Nothing needs you right now.';
     else text = '';
   }
@@ -492,13 +553,15 @@ function App() {
         pressed=${onlyWaiting}
         onToggle=${() => setOnlyWaiting((current) => !current)}
       />
+      <button type="button" class="toggle help-open" onClick=${() => setHelpOpen(true)}>Help</button>
       <${ThemeSwitch} />
     </div>
     <main tabindex="-1">
       <p id="message" role="status" class=${failed || deleteError ? 'error' : ''}>${text}</p>
-      ${runs ? html`<${StageButtons} stages=${stages} current=${current} onPick=${setPicked} />` : null}
+      ${runs && !runs.length ? html`<${Welcome} onHelp=${() => setHelpOpen(true)} />` : null}
+      ${runs?.length ? html`<${StageButtons} stages=${stages} current=${current} onPick=${setPicked} />` : null}
       <div id="groups">
-        ${runs
+        ${runs?.length
           ? stages.map(
               (item) => html`<${Group}
                 key=${item.id}
@@ -515,6 +578,7 @@ function App() {
             )
           : null}
       </div>
+      ${helpOpen ? html`<${Help} onClose=${closeHelp} />` : null}
       ${pending
         ? html`<${Confirm}
             title=${pending.runs.length === 1 ? 'Delete this run?' : `Delete all ${pending.runs.length} done runs?`}
