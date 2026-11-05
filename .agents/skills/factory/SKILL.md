@@ -34,7 +34,7 @@ Run every later stage from this worktree: Define files, Build, checks, `factory 
 
 ## Define
 
-Before anything else in Define, check that `docs/agents/issue-tracker.md` exists in the run's worktree. If it is missing, the repository has not been set up for the factory: mark the run blocked with `--blocking-reason "Run /setup-matt-pocock-skills first"`, tell the user to run `/setup-matt-pocock-skills` once in this repository (and commit and push its output to the base branch), and stop. Do not guess a tracker.
+Before anything else in Define, check that `docs/agents/issue-tracker.md` exists in the run's worktree. If it is missing, look in the original checkout the run was started from. If it exists there (setup was run but not committed to the base branch), copy that checkout's `docs/agents/` directory into the worktree and bring its `## Agent skills` section into the worktree's `AGENTS.md` or `CLAUDE.md` (whichever the original checkout edited), so the pull request includes the setup output; do not modify the original checkout. If it exists in neither place, the repository has not been set up for the factory: mark the run blocked with `--blocking-reason "Run /setup-matt-pocock-skills first"`, tell the user to run `/setup-matt-pocock-skills` once in the original checkout and then start the run again (the new worktree will pick up its output; this run's worktree can be removed), and stop. Do not guess a tracker.
 
 1. Use `grill-with-docs` to clarify the request and record any useful domain decisions.
 2. Use `to-spec` to write a concise spec from the discussion.
