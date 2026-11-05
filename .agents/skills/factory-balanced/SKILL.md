@@ -23,11 +23,9 @@ Follow Workspace in [factory-procedures](../factory-procedures/SKILL.md): every 
 
 ## Define
 
-Before anything else in Define, follow Tracker setup in [factory-procedures](../factory-procedures/SKILL.md).
+When the request is clear and bounded, use it as the spec and state the plan and explicit acceptance criteria in the conversation; no tracker setup is needed for that. Otherwise follow Tracker setup in [factory-procedures](../factory-procedures/SKILL.md) and use `to-spec` once to write a concise spec from the request and the code, without interviewing the user, stating explicit acceptance criteria either way. Before Build, if the plan and criteria exist only in the conversation, follow Saving the plan in [factory-procedures](../factory-procedures/SKILL.md).
 
-When the request is clear and bounded, use it as the spec. Otherwise use `to-spec` once to write a concise spec from the request and the code, without interviewing the user. Either way, state explicit acceptance criteria before Build.
-
-Use `to-tickets` only when the work has multiple pieces that benefit from separate tracking. Use `grill-with-docs` only when an ambiguity blocks implementation, and limit it to that ambiguity. Reuse existing specs and tickets rather than recreating them.
+Use `to-tickets` only when the work has multiple pieces that benefit from separate tracking. Use `grill-with-docs` only when an ambiguity blocks implementation, and limit it to that ambiguity. Reuse existing specs and tickets rather than recreating them. Reading or publishing specs and tickets in the tracker needs Tracker setup first.
 
 When these artifacts are needed, store them in the tracker configured in `docs/agents/issue-tracker.md`. Do not require extra approval of test seams or a separate ticket-breakdown approval. Ask the user when a decision is actually needed.
 
@@ -39,7 +37,7 @@ Use `implement-spec-balanced` to implement the request or tickets on the run's f
 
 Before Check, commit the completed implementation: make sure the full verification has passed on exactly this code (rerun it if anything changed since it ran), then commit everything that belongs to the change, including new files but not scratch or generated files (ignore or remove those), with a normal commit (never amend), so `git status --porcelain` is empty. `code-review` diffs committed work only, so uncommitted changes would be missed. Pin the review: the baseline is the base commit recorded for the run (`--base-commit`; read it with `factory run inspect`), and the reviewed commit is `HEAD`; record the reviewed commit's short hash with `--summary check="Review pinned at <hash>"` so a new session can find it, and repeat the latest reviewed hash in the Check summary you write when the stage ends, because a new summary replaces the old one.
 
-Use one `code-review` pass with the base commit as the fixed point, and with the spec or acceptance criteria. Use `security-review` on the same range only when the diff touches input parsing, authentication or secrets, network access, file or process handling, or dependencies; otherwise skip it and say why.
+Use one `code-review` pass with the base commit as the fixed point, and with the spec or acceptance criteria (the recorded spec or saved plan; pass a saved plan's absolute path as the spec source, which needs no tracker). Use `security-review` on the same range only when the diff touches input parsing, authentication or secrets, network access, file or process handling, or dependencies; otherwise skip it and say why.
 
 When there are no actionable findings, go to Finish. When there are, start a Rework: return to Build, fix the findings with `implement-spec-balanced` (implement, then add or adjust behavior tests), run the relevant checks and then the full verification on the changed code, and commit the fixes together with any new files. Then run Check again with one `code-review` pass using the previously reviewed commit as the fixed point, so the review covers exactly the Rework's changes, together with the findings it addressed, plus `security-review` over the same range when those changes meet the criteria above. Pin the new `HEAD` as the reviewed commit, replacing the earlier pin. A run gets at most two Reworks.
 

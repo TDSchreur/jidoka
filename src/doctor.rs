@@ -284,7 +284,10 @@ fn setup_docs_check(root: &Path) -> Check {
     } else {
         Check::missing(
             "setup-docs",
-            format!("the factory setup is incomplete: {}", missing.join(", ")),
+            format!(
+                "the factory setup is incomplete: {} (needed by /factory, and by the lighter workflows when a run publishes a spec or tickets)",
+                missing.join(", ")
+            ),
             FIX,
         )
     }
