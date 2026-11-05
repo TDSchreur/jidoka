@@ -3,12 +3,12 @@ mod install;
 mod run;
 mod server;
 
-use client::{report_run, start_run};
+use client::{probe_dashboard, report_run, start_run, Probe};
 use run::UPDATE_HELP;
-use server::{serve, ADDRESS};
+use server::{serve, ADDRESS, DEFAULT_PORT};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard\n  factory run start <title>\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>]\n  factory run start <title>\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -48,7 +48,8 @@ fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
         [] | ["--help" | "-h"] => println!("{HELP}\n\n{UPDATE_HELP}"),
         ["--version" | "-V"] => println!("factory {}", current_build()),
         ["install", "--agent", agent] => install::install(agent)?,
-        ["dashboard"] => serve(&data_path()?)?,
+        ["dashboard"] => dashboard(DEFAULT_PORT)?,
+        ["dashboard", "--port", port] => dashboard(parse_port(port)?)?,
         ["run", "start", title] => {
             let project = env::current_dir()?.display().to_string();
             println!("{}", start_run(ADDRESS, title, &project)?);
@@ -62,7 +63,62 @@ fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn data_path() -> io::Result<PathBuf> {
+fn parse_port(port: &str) -> Result<u16, String> {
+    match port.parse::<u16>() {
+        Ok(port) if port != 0 => Ok(port),
+        _ => Err(format!(
+            "Invalid port '{port}': use a number from 1 to 65535."
+        )),
+    }
+}
+
+/// Escapes everything but unreserved characters, so a path can sit in a query string.
+fn percent_encode(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
+/// The dashboard URL that opens on `project`: a Project's id is its path.
+fn dashboard_url(port: u16, project: &str) -> String {
+    format!(
+        "http://127.0.0.1:{port}/?project={}",
+        percent_encode(project)
+    )
+}
+
+/// Serves the dashboard, or, when a Factory dashboard already answers on the port, prints its URL.
+fn dashboard(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    let url = dashboard_url(port, &env::current_dir()?.display().to_string());
+    match probe_dashboard(&format!("127.0.0.1:{port}"))? {
+        Probe::Running(info) => {
+            println!("Dashboard already running (pid {}): {url}", info.pid);
+            let ours = current_build();
+            if info.version != ours {
+                eprintln!(
+                    "Warning: the running dashboard is factory {}, this is factory {ours}. It was left running; stop it and run 'factory dashboard' again to use this version.",
+                    info.version
+                );
+            }
+        }
+        Probe::Foreign => {
+            return Err(format!(
+                "Port {port} is in use by something that is not a Factory dashboard (it may be a dashboard from an older Factory; stop it and run 'factory dashboard' again). Or use 'factory dashboard --port <port>'."
+            )
+            .into())
+        }
+        Probe::Absent => serve(&data_path(port)?, port, &url)?,
+    }
+    Ok(())
+}
+
+/// The default dashboard keeps `runs.json`; one on another port keeps its own file and shares nothing.
+fn data_path(port: u16) -> io::Result<PathBuf> {
     #[cfg(windows)]
     let base = env::var_os("LOCALAPPDATA").map(PathBuf::from);
     #[cfg(not(windows))]
@@ -75,7 +131,12 @@ fn data_path() -> io::Result<PathBuf> {
             "cannot determine the user data directory",
         )
     })?;
-    Ok(base.join("tds-factory/runs.json"))
+    let file = if port == DEFAULT_PORT {
+        "runs.json".to_string()
+    } else {
+        format!("runs-{port}.json")
+    };
+    Ok(base.join("tds-factory").join(file))
 }
 
 #[cfg(test)]
@@ -98,5 +159,35 @@ mod tests {
         assert_eq!(build_label("0.3.1", true, ""), "0.3.1");
         assert_eq!(build_label("0.3.1", false, "1a2b3c4"), "dev 1a2b3c4");
         assert_eq!(build_label("0.3.1", false, ""), "dev (unknown commit)");
+    }
+
+    #[test]
+    fn the_dashboard_url_carries_the_percent_encoded_project() {
+        assert_eq!(
+            dashboard_url(4311, "/home/me/my repo"),
+            "http://127.0.0.1:4311/?project=%2Fhome%2Fme%2Fmy%20repo"
+        );
+        assert_eq!(
+            dashboard_url(4400, "C:\\work\\a&b"),
+            "http://127.0.0.1:4400/?project=C%3A%5Cwork%5Ca%26b"
+        );
+    }
+
+    #[test]
+    fn ports_are_numbers_from_1_to_65535() {
+        assert_eq!(parse_port("4400"), Ok(4400));
+        for bad in ["0", "65536", "-1", "abc", ""] {
+            assert!(parse_port(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_separate_port_keeps_its_own_data_file() {
+        assert!(data_path(DEFAULT_PORT)
+            .unwrap()
+            .ends_with("tds-factory/runs.json"));
+        assert!(data_path(4400)
+            .unwrap()
+            .ends_with("tds-factory/runs-4400.json"));
     }
 }

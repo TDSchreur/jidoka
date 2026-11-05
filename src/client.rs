@@ -1,10 +1,10 @@
 use crate::{
     run::{parse_update, NewRun, Run},
-    server::ADDRESS,
+    server::Info,
 };
 use std::{
     io::{self, Read, Write},
-    net::TcpStream,
+    net::{TcpStream, ToSocketAddrs},
     time::Duration,
 };
 
@@ -42,14 +42,73 @@ pub(crate) fn report_run(
     Ok(())
 }
 
-// Requests always name the server's trusted authority in `Host`, whichever address they connect to.
+/// What answers on a dashboard port.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Probe {
+    /// Nothing is listening.
+    Absent,
+    /// A Factory dashboard.
+    Running(Info),
+    /// Something else is using the port.
+    Foreign,
+}
+
+/// The most a probe reads: far more than an info document, so a chatty listener cannot fill memory.
+const PROBE_LIMIT: u64 = 4096;
+
+/// Asks the server at `server` (`host:port`) who it is, through `/api/info`, not the port alone.
+/// Anything that does not answer as a Factory dashboard, including a listener that is slow or odd, is `Foreign`.
+pub(crate) fn probe_dashboard(server: &str) -> io::Result<Probe> {
+    let timeout = Duration::from_secs(2);
+    let address = server
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid server address"))?;
+    let mut stream = match TcpStream::connect_timeout(&address, timeout) {
+        Ok(stream) => stream,
+        // Windows reports a closed port as a timeout, not a refusal. Nobody accepted, so nothing runs here;
+        // binding the port later reports a real conflict.
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut
+            ) =>
+        {
+            return Ok(Probe::Absent)
+        }
+        Err(error) => return Err(error),
+    };
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    let sent = write!(
+        stream,
+        "GET /api/info HTTP/1.1\r\nHost: {server}\r\nConnection: close\r\n\r\n"
+    );
+    let mut response = Vec::new();
+    // A read error keeps what arrived so far; an unfinished answer fails to parse and is foreign.
+    let _ = stream.take(PROBE_LIMIT).read_to_end(&mut response);
+    if sent.is_err() {
+        return Ok(Probe::Foreign);
+    }
+    Ok(parse_info(&response).map_or(Probe::Foreign, Probe::Running))
+}
+
+fn parse_info(response: &[u8]) -> Option<Info> {
+    let end = response.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
+    if !response.starts_with(b"HTTP/1.1 200 ") {
+        return None;
+    }
+    serde_json::from_slice(&response[end..]).ok()
+}
+
+// Requests name the address they connect to in `Host`, which is the server's own authority.
 fn api_post(server: &str, route: &str, body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut stream = TcpStream::connect(server).map_err(|e| {
         io::Error::new(e.kind(), format!("cannot connect to factory server at {server}; start it with 'factory dashboard': {e}"))
     })?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    write!(stream, "POST {route} HTTP/1.1\r\nHost: {ADDRESS}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
+    write!(stream, "POST {route} HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
     stream.write_all(body)?;
     let mut response = Vec::new();
     stream.read_to_end(&mut response)?;
@@ -118,7 +177,8 @@ mod tests {
                 .unwrap();
             write!(
                 stream,
-                "GET /api/runs HTTP/1.1\r\nHost: {ADDRESS}\r\nConnection: close\r\n\r\n"
+                "GET /api/runs HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                self.address
             )
             .unwrap();
             let mut response = String::new();
@@ -235,5 +295,46 @@ mod tests {
                 .contains(&format!("cannot connect to factory server at {address}")),
             "{unreachable}"
         );
+    }
+
+    #[test]
+    fn probe_recognises_a_factory_dashboard_by_its_info() {
+        let dir = TestDir::new();
+        let server = TestServer::start(&dir.0.path().join("runs.json"));
+        match probe_dashboard(&server.address).unwrap() {
+            Probe::Running(info) => {
+                assert_eq!(info.pid, std::process::id());
+                assert_eq!(info.version, crate::current_build());
+            }
+            other => panic!("expected a running dashboard, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn probe_reports_nothing_listening_and_foreign_listeners() {
+        // Nothing listens once the server is gone.
+        let dir = TestDir::new();
+        let server = TestServer::start(&dir.0.path().join("runs.json"));
+        let address = server.address.clone();
+        drop(server);
+        assert_eq!(probe_dashboard(&address).unwrap(), Probe::Absent);
+
+        // A listener that answers something else on the same port is not a dashboard.
+        for reply in [
+            &b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
+            b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"hello\":1}",
+            b"not http at all",
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let thread = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buffer = [0; 1024];
+                let _ = stream.read(&mut buffer);
+                stream.write_all(reply).unwrap();
+            });
+            assert_eq!(probe_dashboard(&address).unwrap(), Probe::Foreign);
+            thread.join().unwrap();
+        }
     }
 }

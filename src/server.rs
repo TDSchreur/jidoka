@@ -11,8 +11,10 @@ use rocket::{
     serde::json::Json,
     Build, Rocket, State,
 };
+use serde::{Deserialize, Serialize};
 use std::{io, path::Path};
 
+pub(crate) const DEFAULT_PORT: u16 = 4311;
 pub(crate) const ADDRESS: &str = "127.0.0.1:4311";
 const DASHBOARD: &str = include_str!("../dashboard/index.html");
 /// The files the dashboard page may load from `/assets/`; any other path is a 404.
@@ -51,8 +53,10 @@ const TOKEN_PLACEHOLDER: &str = "__TOKEN__";
 const TOKEN_HEADER: &str = "X-Session-Token";
 const BODY_LIMIT: u64 = 64 * 1024;
 
-fn is_local_authority(authority: &str) -> bool {
-    matches!(authority, "localhost:4311" | "127.0.0.1:4311")
+fn is_local_authority(authority: &str, port: u16) -> bool {
+    authority.rsplit_once(':').is_some_and(|(host, given)| {
+        matches!(host, "localhost" | "127.0.0.1") && given == port.to_string()
+    })
 }
 
 /// A random value created when the server starts. Only the dashboard page this server
@@ -73,10 +77,10 @@ impl SessionToken {
 }
 
 /// The browser sends an `Origin` on a same-origin DELETE; it must be the dashboard itself.
-fn is_local_origin(origin: &str) -> bool {
+fn is_local_origin(origin: &str, port: u16) -> bool {
     origin
         .strip_prefix("http://")
-        .is_some_and(is_local_authority)
+        .is_some_and(|authority| is_local_authority(authority, port))
 }
 
 struct Security {
@@ -90,10 +94,11 @@ impl<'r> FromRequest<'r> for Security {
     type Error = ();
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let port = request.rocket().config().port;
         let local = request
             .headers()
             .get_one("Host")
-            .is_some_and(is_local_authority);
+            .is_some_and(|authority| is_local_authority(authority, port));
         Outcome::Success(Self {
             local,
             post_allowed: local
@@ -103,7 +108,7 @@ impl<'r> FromRequest<'r> for Security {
                 && request
                     .headers()
                     .get_one("Origin")
-                    .is_none_or(is_local_origin)
+                    .is_none_or(|origin| is_local_origin(origin, port))
                 && request
                     .rocket()
                     .state::<SessionToken>()
@@ -146,6 +151,24 @@ fn asset(
         .find(|(known, _, _)| *known == name)
         .map(|(_, content_type, bytes)| (content_type.clone(), *bytes))
         .ok_or(HttpStatus::NotFound)
+}
+
+/// What a client needs to recognise a running Factory dashboard and compare its build with its own.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub(crate) struct Info {
+    pub(crate) pid: u32,
+    pub(crate) version: String,
+}
+
+#[rocket::get("/api/info")]
+fn info(request: Security) -> Result<Json<Info>, HttpStatus> {
+    if !request.local {
+        return Err(HttpStatus::BadRequest);
+    }
+    Ok(Json(Info {
+        pid: std::process::id(),
+        version: current_build(),
+    }))
 }
 
 #[rocket::get("/api/runs")]
@@ -261,7 +284,7 @@ pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> 
         .manage(SessionToken::new())
         .mount(
             "/",
-            rocket::routes![dashboard, asset, list_runs, create_run, update_run, delete_run],
+            rocket::routes![dashboard, asset, info, list_runs, create_run, update_run, delete_run],
         )
         .register(
             "/",
@@ -277,14 +300,14 @@ pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> 
         )))
 }
 
-pub(crate) fn serve(path: &Path) -> io::Result<()> {
+pub(crate) fn serve(path: &Path, port: u16, url: &str) -> io::Result<()> {
     let runtime = rocket::tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(io::Error::other)?;
-    println!("Dashboard: http://{ADDRESS} (press Ctrl+C to stop)");
+    println!("Dashboard: {url} (press Ctrl+C to stop)");
     runtime.block_on(async {
-        build_rocket(path, 4311)
+        build_rocket(path, port)
             .map_err(|error| {
                 io::Error::new(error.kind(), format!("could not open run storage: {error}"))
             })?
@@ -306,7 +329,7 @@ mod tests {
     use std::fs;
 
     async fn client(dir: &TestDir) -> Client {
-        Client::tracked(build_rocket(&dir.0.path().join("runs.json"), 0).unwrap())
+        Client::tracked(build_rocket(&dir.0.path().join("runs.json"), DEFAULT_PORT).unwrap())
             .await
             .unwrap()
     }
@@ -691,7 +714,7 @@ mod tests {
         let script = asset("/assets/app.js").await;
         // The card's title is the button that opens the detail, found again by the Run id.
         assert!(script.contains("class=\"card-open\""));
-        assert!(script.contains("data-run-id="));
+        assert!(script.contains("data-run-key="));
         // A native modal dialog named by the Run title.
         assert!(script.contains("<dialog"));
         assert!(script.contains("showModal()"));
@@ -781,11 +804,115 @@ mod tests {
     #[rocket::async_test]
     async fn project_rows_collapse_with_a_remembered_toggle() {
         let script = asset("/assets/app.js").await;
-        assert!(script.contains("aria-expanded=${String(!isCollapsed)}"));
+        assert!(script.contains("aria-expanded=${String(!closed)}"));
         assert!(script.contains("localStorage.getItem('collapsed-projects')"));
         assert!(script.contains("${projectWaiting} waiting"));
         // Storage failures are tolerated on both read and write.
         assert!(script.contains("storage is blocked"));
+    }
+
+    #[rocket::async_test]
+    async fn selection_and_notifications_are_keyed_per_project_and_run() {
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("const runKey = (run) =>"));
+        assert!(script.contains("known.current.has(runKey(run))"));
+        assert!(script.contains("runKey(run) === openKey"));
+        // Delete all only takes the Done Runs of its own Project row, and the dialog names it.
+        assert!(script.contains("entry.run.project === project"));
+        assert!(script.contains("done runs in ${names.get("));
+    }
+
+    #[rocket::async_test]
+    async fn info_names_the_process_and_build_and_needs_a_local_host() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let response = api
+            .get("/api/info")
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .dispatch()
+            .await;
+        assert_eq!(response.status(), HttpStatus::Ok);
+        let info: Info = response.into_json().await.unwrap();
+        assert_eq!(info.pid, std::process::id());
+        assert_eq!(info.version, current_build());
+        let foreign = api
+            .get("/api/info")
+            .header(Header::new("Host", "attacker.example"))
+            .dispatch()
+            .await;
+        assert_eq!(foreign.status(), HttpStatus::BadRequest);
+    }
+
+    #[test]
+    fn local_authority_follows_the_configured_port() {
+        assert!(is_local_authority("127.0.0.1:4400", 4400));
+        assert!(is_local_authority("localhost:4400", 4400));
+        assert!(!is_local_authority("127.0.0.1:4311", 4400));
+        assert!(!is_local_authority("example.com:4400", 4400));
+        assert!(!is_local_authority("127.0.0.1", 4311));
+        assert!(is_local_origin("http://localhost:4400", 4400));
+        assert!(!is_local_origin("http://localhost:4311", 4400));
+    }
+
+    #[test]
+    fn the_address_constant_matches_the_default_port() {
+        assert_eq!(ADDRESS, format!("127.0.0.1:{DEFAULT_PORT}"));
+    }
+
+    #[rocket::async_test]
+    async fn a_dashboard_on_another_port_checks_host_origin_and_token_against_that_port() {
+        let dir = TestDir::new();
+        let api = Client::tracked(build_rocket(&dir.0.path().join("runs.json"), 4400).unwrap())
+            .await
+            .unwrap();
+        let page = api
+            .get("/")
+            .header(Header::new("Host", "127.0.0.1:4400"))
+            .dispatch()
+            .await;
+        assert_eq!(page.status(), HttpStatus::Ok);
+        let html = page.into_string().await.unwrap();
+        let token = html
+            .split("name=\"session-token\" content=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("the page carries the session token")
+            .to_string();
+        let delete = |host: &'static str, origin: &'static str| {
+            api.delete("/api/runs/1")
+                .header(Header::new("Host", host))
+                .header(Header::new("Origin", origin))
+                .header(Header::new(TOKEN_HEADER, token.clone()))
+                .dispatch()
+        };
+        // Right port: passes the checks (the Run does not exist, so 404).
+        assert_eq!(
+            delete("127.0.0.1:4400", "http://127.0.0.1:4400")
+                .await
+                .status(),
+            HttpStatus::NotFound
+        );
+        // The default port's authority is no longer trusted.
+        assert_eq!(
+            delete("127.0.0.1:4311", "http://127.0.0.1:4311")
+                .await
+                .status(),
+            HttpStatus::Forbidden
+        );
+        assert_eq!(
+            delete("127.0.0.1:4400", "http://127.0.0.1:4311")
+                .await
+                .status(),
+            HttpStatus::Forbidden
+        );
+    }
+
+    #[rocket::async_test]
+    async fn the_page_opens_on_the_requested_project_expanded_and_first() {
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("new URLSearchParams(location.search).get('project')"));
+        assert!(script.contains("collapsed.has(project) && !forcedOpen.has(project)"));
+        assert!(script.contains("Number(b === wanted) - Number(a === wanted)"));
     }
 
     #[rocket::async_test]
@@ -796,7 +923,7 @@ mod tests {
             .contains("`Needs you in ${names.get(run.project) ?? run.project}: ${run.title}`"));
         // Runs waiting on the first load are remembered, not announced: nothing is sent while `known` is unset.
         assert!(script.contains("known.current !== null && state === 'on'"));
-        assert!(script.contains("if (known.current.has(run.id)) continue;"));
+        assert!(script.contains("if (known.current.has(runKey(run))) continue;"));
         assert!(script.contains("known.current = new Set("));
         // Opt-in: asking for permission happens only from the button, and the choice is remembered safely.
         assert_eq!(script.matches("requestPermission()").count(), 1);
@@ -827,7 +954,7 @@ mod tests {
         assert!(script.contains("event.target === event.currentTarget"));
         assert!(script.contains("class=\"toggle detail-close\""));
         // Focus goes back to the card that was opened.
-        assert!(script.contains("[data-run-id="));
+        assert!(script.contains("[data-run-key="));
         assert!(
             script.contains("CSS.escape("),
             "the id is escaped in the selector"
@@ -856,13 +983,13 @@ mod tests {
     async fn the_open_detail_follows_its_run_by_id_and_closes_when_the_run_goes() {
         let script = asset("/assets/app.js").await;
         // Looked up by id in the whole list, so refreshes update it and the filters never hide it.
-        assert!(script.contains("(runs ?? []).find((run) => run.id === openId)"));
+        assert!(script.contains("(runs ?? []).find((run) => runKey(run) === openKey)"));
         assert!(
             !script.contains("openRun = indexed"),
             "not the filtered list"
         );
         // A Run that is no longer listed closes the detail, so it cannot reappear later.
-        assert!(script.contains("if (openId !== null && runs && !openRun) setOpenId(null)"));
+        assert!(script.contains("if (openKey !== null && runs && !openRun) setOpenKey(null)"));
     }
 
     #[rocket::async_test]
