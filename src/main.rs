@@ -647,11 +647,14 @@ mod tests {
     #[rocket::async_test]
     async fn dashboard_theme_follows_system_and_dark_overrides_every_token() {
         let page = dashboard_page().await;
-        let light = tokens_after(&page, "    :root {\n      color-scheme: light dark;");
+        // Single-line markers keep the test independent of line endings (CRLF on Windows).
+        // The first `:root {` block holds the light tokens.
+        let light = tokens_after(&page, ":root {");
         assert!(light.len() > 10, "colours should be tokens on :root");
+        assert!(page.contains("color-scheme: light dark;"));
         assert!(page.contains("@media (prefers-color-scheme: dark)"));
-        let system_dark = tokens_after(&page, "      :root:not([data-theme=\"light\"]) {");
-        let forced_dark = tokens_after(&page, "    :root[data-theme=\"dark\"] {");
+        let system_dark = tokens_after(&page, ":root:not([data-theme=\"light\"]) {");
+        let forced_dark = tokens_after(&page, ":root[data-theme=\"dark\"] {");
         assert_eq!(system_dark, light, "system dark theme misses tokens");
         assert_eq!(forced_dark, light, "forced dark theme misses tokens");
         assert!(page.contains(":root[data-theme=\"light\"] { color-scheme: light; }"));
