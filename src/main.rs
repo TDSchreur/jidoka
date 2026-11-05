@@ -412,7 +412,9 @@ fn dashboard(request: Security) -> Result<RawHtml<String>, HttpStatus> {
     if !request.local {
         return Err(HttpStatus::BadRequest);
     }
-    Ok(RawHtml(DASHBOARD.replace(BUILD_PLACEHOLDER, &current_build())))
+    Ok(RawHtml(
+        DASHBOARD.replace(BUILD_PLACEHOLDER, &current_build()),
+    ))
 }
 
 #[rocket::get("/api/runs")]
@@ -628,7 +630,10 @@ mod tests {
     #[rocket::async_test]
     async fn dashboard_page_shows_which_build_is_running() {
         let page = dashboard_page().await;
-        assert!(!page.contains(BUILD_PLACEHOLDER), "placeholder left in page");
+        assert!(
+            !page.contains(BUILD_PLACEHOLDER),
+            "placeholder left in page"
+        );
         assert!(page.contains(&format!("<code>{}</code>", current_build())));
     }
 
