@@ -14,7 +14,20 @@ use rocket::{
 use std::{io, path::Path};
 
 pub(crate) const ADDRESS: &str = "127.0.0.1:4311";
-const DASHBOARD: &str = include_str!("dashboard.html");
+const DASHBOARD: &str = include_str!("../dashboard/index.html");
+/// The files the dashboard page may load from `/assets/`; any other path is a 404.
+const ASSETS: &[(&str, ContentType, &[u8])] = &[
+    (
+        "app.js",
+        ContentType::JavaScript,
+        include_bytes!("../dashboard/app.js"),
+    ),
+    (
+        "style.css",
+        ContentType::CSS,
+        include_bytes!("../dashboard/style.css"),
+    ),
+];
 /// Placeholder in the dashboard page that is replaced with the build label.
 const BUILD_PLACEHOLDER: &str = "__BUILD__";
 const BODY_LIMIT: u64 = 64 * 1024;
@@ -54,6 +67,26 @@ fn dashboard(request: Security) -> Result<RawHtml<String>, HttpStatus> {
     Ok(RawHtml(
         DASHBOARD.replace(BUILD_PLACEHOLDER, &current_build()),
     ))
+}
+
+#[rocket::get("/assets/<path..>")]
+fn asset(
+    request: Security,
+    path: std::path::PathBuf,
+) -> Result<(ContentType, &'static [u8]), HttpStatus> {
+    if !request.local {
+        return Err(HttpStatus::BadRequest);
+    }
+    let name = path
+        .iter()
+        .map(|part| part.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    ASSETS
+        .iter()
+        .find(|(known, _, _)| *known == name)
+        .map(|(_, content_type, bytes)| (content_type.clone(), *bytes))
+        .ok_or(HttpStatus::NotFound)
 }
 
 #[rocket::get("/api/runs")]
@@ -145,7 +178,7 @@ pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> 
         .manage(RunStore::open(path)?)
         .mount(
             "/",
-            rocket::routes![dashboard, list_runs, create_run, update_run],
+            rocket::routes![dashboard, asset, list_runs, create_run, update_run],
         )
         .register(
             "/",
@@ -207,15 +240,7 @@ mod tests {
 
     #[rocket::async_test]
     async fn dashboard_page_shows_stage_groups_last_updated_and_rework() {
-        let dir = TestDir::new();
-        let api = client(&dir).await;
-        let response = api
-            .get("/")
-            .header(Header::new("Host", "127.0.0.1:4311"))
-            .dispatch()
-            .await;
-        assert_eq!(response.status(), HttpStatus::Ok);
-        let page = response.into_string().await.unwrap();
+        let page = dashboard_page().await;
         for group in ["Define", "Build", "Check", "Finish", "Done"] {
             assert!(
                 page.contains(&format!("'{group}'")),
@@ -227,16 +252,93 @@ mod tests {
         assert!(page.contains("past the cap of"));
     }
 
+    /// The page with the stylesheet and script it loads, so tests can look for any of their text.
     async fn dashboard_page() -> String {
         let dir = TestDir::new();
         let api = client(&dir).await;
-        api.get("/")
+        let mut page = String::new();
+        for path in ["/", "/assets/style.css", "/assets/app.js"] {
+            page += &api
+                .get(path)
+                .header(Header::new("Host", "127.0.0.1:4311"))
+                .dispatch()
+                .await
+                .into_string()
+                .await
+                .unwrap();
+        }
+        page
+    }
+
+    #[rocket::async_test]
+    async fn assets_are_served_with_their_content_types() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        for (path, content_type) in [
+            ("/assets/app.js", ContentType::JavaScript),
+            ("/assets/style.css", ContentType::CSS),
+        ] {
+            let response = api
+                .get(path)
+                .header(Header::new("Host", "127.0.0.1:4311"))
+                .dispatch()
+                .await;
+            assert_eq!(response.status(), HttpStatus::Ok, "{path}");
+            assert_eq!(response.content_type(), Some(content_type), "{path}");
+            assert_eq!(
+                response.headers().get_one("Cache-Control"),
+                Some("no-store")
+            );
+        }
+    }
+
+    #[rocket::async_test]
+    async fn only_listed_assets_are_served() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        for path in [
+            "/assets/missing.js",
+            "/assets/",
+            "/assets/vendor",
+            "/assets/../Cargo.toml",
+            "/assets/%2e%2e/Cargo.toml",
+            "/assets/app.js/extra",
+        ] {
+            let response = api
+                .get(path)
+                .header(Header::new("Host", "127.0.0.1:4311"))
+                .dispatch()
+                .await;
+            assert_eq!(response.status(), HttpStatus::NotFound, "{path}");
+        }
+    }
+
+    #[rocket::async_test]
+    async fn assets_reject_a_foreign_host() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let response = api
+            .get("/assets/app.js")
+            .header(Header::new("Host", "example.com"))
+            .dispatch()
+            .await;
+        assert_eq!(response.status(), HttpStatus::BadRequest);
+    }
+
+    #[rocket::async_test]
+    async fn dashboard_page_loads_its_stylesheet_and_script_from_assets() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let page = api
+            .get("/")
             .header(Header::new("Host", "127.0.0.1:4311"))
             .dispatch()
             .await
             .into_string()
             .await
-            .unwrap()
+            .unwrap();
+        assert!(page.contains("href=\"/assets/style.css\""));
+        assert!(page.contains("src=\"/assets/app.js\""));
     }
 
     /// Custom property names declared in the CSS block that opens at `marker`.
@@ -287,7 +389,7 @@ mod tests {
         );
         // The stored choice is applied before the stylesheet, so there is no flash.
         let early = page.find("localStorage.getItem('theme')").unwrap();
-        assert!(early < page.find("<style>").unwrap());
+        assert!(early < page.find("rel=\"stylesheet\"").unwrap());
         // Every storage access is guarded so the page works without it.
         for access in ["getItem", "setItem", "removeItem"] {
             let at = page.find(access).unwrap();
