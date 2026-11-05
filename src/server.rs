@@ -691,7 +691,7 @@ mod tests {
         let script = asset("/assets/app.js").await;
         // The card's title is the button that opens the detail, found again by the Run id.
         assert!(script.contains("class=\"card-open\""));
-        assert!(script.contains("data-run-id="));
+        assert!(script.contains("data-run-key="));
         // A native modal dialog named by the Run title.
         assert!(script.contains("<dialog"));
         assert!(script.contains("showModal()"));
@@ -789,6 +789,17 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn selection_and_notifications_are_keyed_per_project_and_run() {
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("const runKey = (run) =>"));
+        assert!(script.contains("known.current.has(runKey(run))"));
+        assert!(script.contains("runKey(run) === openKey"));
+        // Delete all only takes the Done Runs of its own Project row, and the dialog names it.
+        assert!(script.contains("entry.run.project === project"));
+        assert!(script.contains("done runs in ${names.get("));
+    }
+
+    #[rocket::async_test]
     async fn notifications_are_opt_in_skip_runs_already_waiting_and_survive_missing_permission() {
         let script = asset("/assets/app.js").await;
         // The message names the project and title.
@@ -796,7 +807,7 @@ mod tests {
             .contains("`Needs you in ${names.get(run.project) ?? run.project}: ${run.title}`"));
         // Runs waiting on the first load are remembered, not announced: nothing is sent while `known` is unset.
         assert!(script.contains("known.current !== null && state === 'on'"));
-        assert!(script.contains("if (known.current.has(run.id)) continue;"));
+        assert!(script.contains("if (known.current.has(runKey(run))) continue;"));
         assert!(script.contains("known.current = new Set("));
         // Opt-in: asking for permission happens only from the button, and the choice is remembered safely.
         assert_eq!(script.matches("requestPermission()").count(), 1);
@@ -827,7 +838,7 @@ mod tests {
         assert!(script.contains("event.target === event.currentTarget"));
         assert!(script.contains("class=\"toggle detail-close\""));
         // Focus goes back to the card that was opened.
-        assert!(script.contains("[data-run-id="));
+        assert!(script.contains("[data-run-key="));
         assert!(
             script.contains("CSS.escape("),
             "the id is escaped in the selector"
@@ -856,13 +867,13 @@ mod tests {
     async fn the_open_detail_follows_its_run_by_id_and_closes_when_the_run_goes() {
         let script = asset("/assets/app.js").await;
         // Looked up by id in the whole list, so refreshes update it and the filters never hide it.
-        assert!(script.contains("(runs ?? []).find((run) => run.id === openId)"));
+        assert!(script.contains("(runs ?? []).find((run) => runKey(run) === openKey)"));
         assert!(
             !script.contains("openRun = indexed"),
             "not the filtered list"
         );
         // A Run that is no longer listed closes the detail, so it cannot reappear later.
-        assert!(script.contains("if (openId !== null && runs && !openRun) setOpenId(null)"));
+        assert!(script.contains("if (openKey !== null && runs && !openRun) setOpenKey(null)"));
     }
 
     #[rocket::async_test]
