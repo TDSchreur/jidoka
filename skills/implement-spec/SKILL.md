@@ -15,9 +15,8 @@ The issue tracker should have been provided to you. If not, tell the user to run
 1. Read the spec and tickets, identify dependencies, and inspect the relevant code and project instructions. Reuse context already gathered by the calling workflow.
 2. Create or use the task's feature branch. Work sequentially in the current checkout, one ticket at a time.
 3. Build each ticket by calling the Skill tool with `tdd`.
-4. Run the project's relevant checks after each ticket and fix failures before the next one.
-5. Run the project's full verification (the commands its agent instructions, contributing docs or build files say to run before merging, which should match its CI); a missing tool or a failing check is a blocker, never something to skip.
-6. Resolve each finished ticket the way the issue tracker closes work, unless the calling workflow handles that.
-7. Verify the result against the spec. Report the completed work, tests added, checks performed, and any remaining blockers. Leave commits, pushing, and PR creation to the calling workflow unless the user explicitly requests them.
+4. After each ticket, run the project's relevant checks and then its full verification (the commands its agent instructions, contributing docs or build files say to run before merging, which should match its CI); a missing tool or a failing check is a blocker, never something to skip. Fix failures before the next ticket.
+5. Resolve each finished ticket the way the issue tracker closes work, unless the calling workflow handles that.
+6. Verify the result against the spec. Report the completed work, tests added, checks performed, and any remaining blockers. Leave commits, pushing, and PR creation to the calling workflow unless the user explicitly requests them.
 
 Do not require subagents, extra worktrees, a draft PR, or a separate code review as part of this skill.
