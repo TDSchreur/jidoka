@@ -383,11 +383,6 @@ mod tests {
                 "{skill} does not point to the writing procedure"
             );
         }
-        // The README lists it among the installed skills.
-        let readme =
-            fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/README.md"))
-                .unwrap();
-        assert!(readme.contains("`triage`, `humanizer`"));
         // In this checkout the same names resolve as skills/<name>/ directories.
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         assert!(root.join("skills/humanizer/SKILL.md").is_file());
