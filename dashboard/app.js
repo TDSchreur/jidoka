@@ -199,15 +199,43 @@ function useNow() {
   return now;
 }
 
+const TITLE = 'TDS Factory';
+/** A Run needs the user when it is blocked. */
+const needsYou = (run) => run.status === 'blocked';
+
+function NeedsYouToggle({ count, pressed, onToggle }) {
+  return html`<button type="button" class="toggle" aria-pressed=${String(pressed)} onClick=${onToggle}>
+    Needs you (${count})
+  </button>`;
+}
+
 function App() {
   const { runs, failed } = useRuns();
   const now = useNow();
+  const [onlyWaiting, setOnlyWaiting] = useState(false);
+  const waiting = runs ? runs.filter(needsYou).length : 0;
+  useEffect(() => {
+    document.title = waiting ? `(${waiting}) ${TITLE}` : TITLE;
+  }, [waiting]);
   let text = 'Loading runs…';
   if (failed) text = 'Unable to load runs. Check that the factory server is running.';
-  else if (runs) text = runs.length ? '' : 'No runs yet. Start one with the factory skill.';
-  const indexed = (runs ?? []).map((run, index) => ({ run, index }));
+  else if (runs) {
+    if (!runs.length) text = 'No runs yet. Start one with the factory skill.';
+    else if (onlyWaiting && !waiting) text = 'Nothing needs you right now.';
+    else text = '';
+  }
+  const indexed = (runs ?? [])
+    .map((run, index) => ({ run, index }))
+    .filter((entry) => !onlyWaiting || needsYou(entry.run));
   return html`
-    <${ThemeSwitch} />
+    <div class="toolbar">
+      <${NeedsYouToggle}
+        count=${waiting}
+        pressed=${onlyWaiting}
+        onToggle=${() => setOnlyWaiting((current) => !current)}
+      />
+      <${ThemeSwitch} />
+    </div>
     <main>
       <p id="message" role="status" class=${failed ? 'error' : ''}>${text}</p>
       <div id="groups">

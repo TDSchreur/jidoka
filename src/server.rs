@@ -263,6 +263,15 @@ mod tests {
             );
         }
         assert!(page.contains("Needs you"), "missing Needs you label");
+        assert!(
+            page.contains("Needs you (${count})"),
+            "missing Needs you toggle"
+        );
+        assert!(
+            page.contains("aria-pressed"),
+            "the toggle reports its state"
+        );
+        assert!(page.contains("document.title"), "the count is in the title");
         assert!(page.contains("m ago"), "missing relative time");
         assert!(
             page.contains("title=${date.toLocaleString()}"),
