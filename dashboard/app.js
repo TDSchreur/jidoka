@@ -51,6 +51,15 @@ function storedCollapsed() {
   }
 }
 
+/** The Project the page was opened on (`?project=<path>`), or null. */
+function requestedProject() {
+  try {
+    return new URLSearchParams(location.search).get('project');
+  } catch {
+    return null;
+  }
+}
+
 const ProjectNames = createContext(new Map());
 
 /** The Project's name, with the full path as a tooltip. */
@@ -587,7 +596,13 @@ function App() {
   const { runs, failed, reload } = useRuns();
   const now = useNow();
   const [onlyWaiting, setOnlyWaiting] = useState(false);
-  const [collapsed, setCollapsed] = useState(storedCollapsed);
+  const [wanted] = useState(requestedProject);
+  // The requested Project is shown expanded, whatever was remembered; the visitor can still collapse it.
+  const [collapsed, setCollapsed] = useState(() => {
+    const set = storedCollapsed();
+    if (wanted !== null) set.delete(wanted);
+    return set;
+  });
   const toggleProject = (project) => {
     const next = new Set(collapsed);
     if (!next.delete(project)) next.add(project);
@@ -651,8 +666,12 @@ function App() {
     description,
     entries: indexed.filter((entry) => groupOf(entry.run) === id).sort(compare),
   }));
-  const projects = [...new Set(indexed.map((entry) => entry.run.project))].sort((a, b) =>
-    String(names.get(a) ?? a).localeCompare(String(names.get(b) ?? b)) || String(a).localeCompare(String(b)),
+  const projects = [...new Set(indexed.map((entry) => entry.run.project))].sort(
+    (a, b) =>
+      // The Project the page was opened on comes first, the rest alphabetically.
+      Number(b === wanted) - Number(a === wanted) ||
+      String(names.get(a) ?? a).localeCompare(String(names.get(b) ?? b)) ||
+      String(a).localeCompare(String(b)),
   );
   // Chosen once, from the first answer that has Runs (whatever the filter), then only the visitor changes it.
   const [picked, setPicked] = useState(null);
