@@ -54,7 +54,11 @@ Follow this only when the workflow says the tracker is needed: always in `/facto
 
 ## Saving the plan
 
-When a run's plan and acceptance criteria exist only in the conversation, save them before Build so another session can continue without the original chat. Write a concise Markdown file with the task, the plan and the acceptance criteria to `factory-plan.md` in the run worktree's git directory (`git rev-parse --absolute-git-dir`), or, if that is not writable, to `<worktree path>.factory-plan.md` beside the worktree. It stays out of the pull request, and it lives until the worktree is removed. Record it with `factory run update <id> <stage> <status> --spec <absolute path>`; this is the same context option as a tracker spec, so no tracker is involved. Skip this when the spec is already a tracker issue or a file in the repository, and record that reference instead. Keep the plan current: when it changes, rewrite the file. Never save secrets or a transcript.
+When a run's plan and acceptance criteria exist only in the conversation, save them before Build so another session can continue without the original chat. Skip this when the spec is already a tracker issue or a file in the repository, and record that reference instead.
+
+1. Write a concise Markdown file with the task, the plan and the acceptance criteria to `factory-plan.md` in the run worktree's git directory (`git rev-parse --absolute-git-dir`). If that is not writable, write `<worktree path>.factory-plan.md` beside the worktree instead and remove it together with the worktree. The file stays out of the pull request.
+2. Record it with `factory run update <id> <stage> <status> --spec <absolute path>`. This is the same context option as a tracker spec, so no tracker is involved.
+3. When the plan changes, rewrite the file. Never save secrets or a transcript.
 
 ## Pull request and CI
 
