@@ -11,10 +11,11 @@ include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 const LEGACY_SKILLS: [&str; 2] = ["factory2", "factory2-fast"];
 
 /// Skills maintained in this project, installed without a third-party license.
-const LOCAL_SKILLS: [&str; 4] = [
+const LOCAL_SKILLS: [&str; 5] = [
     "factory",
     "factory-fast",
     "factory-balanced",
+    "implement-spec-fast",
     "implement-spec-balanced",
 ];
 
@@ -209,6 +210,7 @@ mod tests {
         assert!(root.join("implement-spec-balanced/SKILL.md").is_file());
         assert!(!root.join("factory-balanced/LICENSE").exists());
         assert!(!root.join("implement-spec-balanced/LICENSE").exists());
+        assert!(!root.join("implement-spec-fast/LICENSE").exists());
         assert!(root.join("triage/AGENT-BRIEF.md").is_file());
         assert!(root.join("triage/LICENSE").is_file());
         assert!(root.join("rust-best-practices/SKILL.md").is_file());

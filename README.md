@@ -94,7 +94,7 @@ All modes build sequentially in one worktree without subagents and run the proje
 
 When unsure, start with `/factory-balanced`.
 
-The diagram shows the skills each mode runs. Solid arrows between stages are labeled with the mode that takes them; `/factory-balanced` and `/factory-fast` use the Define skills only when a request needs them. Dotted lines show skills that another skill loads or applies.
+The diagram shows the skills each mode runs. Arrows between stages are labeled with the mode that takes them; `/factory-balanced` and `/factory-fast` run each Define skill only in the cases the table lists. Dotted lines show skills that another skill loads or applies.
 
 ```mermaid
 flowchart TB
@@ -114,7 +114,7 @@ flowchart TB
     end
 
     subgraph check [Check]
-        review[code-review] --> security[security-review]
+        review[code-review] -->|/factory always, /factory-balanced for security-sensitive diffs| security[security-review]
     end
 
     subgraph finish [Finish]
@@ -127,7 +127,7 @@ flowchart TB
     impl --> review
     implbal --> review
     security --> pr
-    review -->|/factory-balanced when security review is not needed| pr
+    review -->|/factory-balanced for other diffs| pr
     implfast -->|/factory-fast skips Check| pr
 ```
 
