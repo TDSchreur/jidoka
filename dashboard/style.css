@@ -165,7 +165,7 @@ a:hover { color: var(--colorBrandForegroundLinkHover); }
 a:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: var(--strokeWidthThick); border-radius: var(--borderRadiusSmall); }
 /* Wide screens: one column per Stage, each with a header that stays in view. Narrower screens keep the stacked groups. */
 @media (min-width: 1025px) {
-  html { scroll-padding-top: calc(var(--spacingVerticalXXL) * 4); }
+  html { scroll-padding-top: calc(var(--spacingVerticalXXL) * 6); }
   body { max-width: none; }
   #groups { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--spacingHorizontalM); }
   .group { margin: 0; background: var(--colorNeutralBackground3); border-radius: var(--borderRadiusLarge); }
