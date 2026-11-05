@@ -10,6 +10,14 @@ include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 /// Skill directories from releases before the rename to TDS Factory.
 const LEGACY_SKILLS: [&str; 2] = ["factory2", "factory2-fast"];
 
+/// Skills maintained in this project, installed without a third-party license.
+const LOCAL_SKILLS: [&str; 4] = [
+    "factory",
+    "factory-fast",
+    "factory-balanced",
+    "implement-spec-balanced",
+];
+
 pub fn install(agent: &str) -> io::Result<()> {
     let root = skills_root(agent, &home_dir()?, |name| env::var_os(name))?;
     install_to(&root)
@@ -130,10 +138,10 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
         "licenses/awesome-copilot-LICENSE"
     } else if name == "rust-best-practices" {
         "licenses/beautiful-rust-LICENSE"
-    } else if name != "factory" && name != "factory-fast" {
-        "licenses/mattpocock-skills-LICENSE"
-    } else {
+    } else if LOCAL_SKILLS.contains(&name) {
         ""
+    } else {
+        "licenses/mattpocock-skills-LICENSE"
     };
     if let Some((_, content)) = BUNDLED.iter().find(|(path, _)| *path == license) {
         fs::write(dir.join("LICENSE"), content)?;
@@ -197,6 +205,10 @@ mod tests {
         assert!(root.join("implement-spec-fast/SKILL.md").is_file());
         assert!(root.join("tdd/mocking.md").is_file());
         assert!(!root.join("factory-fast/LICENSE").exists());
+        assert!(root.join("factory-balanced/SKILL.md").is_file());
+        assert!(root.join("implement-spec-balanced/SKILL.md").is_file());
+        assert!(!root.join("factory-balanced/LICENSE").exists());
+        assert!(!root.join("implement-spec-balanced/LICENSE").exists());
         assert!(root.join("triage/AGENT-BRIEF.md").is_file());
         assert!(root.join("triage/LICENSE").is_file());
         assert!(root.join("rust-best-practices/SKILL.md").is_file());
