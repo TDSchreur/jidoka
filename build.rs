@@ -1,4 +1,4 @@
-use std::{env, fs, path::Path};
+use std::{env, fs, path::Path, process::Command};
 
 fn files(root: &Path, dir: &Path, output: &mut Vec<String>) {
     for entry in fs::read_dir(dir).expect("read bundled skills") {
@@ -20,7 +20,38 @@ fn files(root: &Path, dir: &Path, output: &mut Vec<String>) {
     }
 }
 
+/// Runs git and returns its trimmed output, or `None` when git or the repository is unavailable.
+fn git(args: &[&str]) -> Option<String> {
+    let output = Command::new("git").args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    Some(text.trim().to_string()).filter(|text| !text.is_empty())
+}
+
+/// Records what the binary was built from: official releases set `FACTORY_RELEASE=1`;
+/// every other build is identified by its commit, when git can tell.
+fn build_identity() {
+    println!("cargo:rerun-if-env-changed=FACTORY_RELEASE");
+    if let Some(head) = git(&["rev-parse", "--git-path", "HEAD"]) {
+        println!("cargo:rerun-if-changed={head}");
+    }
+    if let Some(branch_ref) = git(&["symbolic-ref", "-q", "HEAD"])
+        .and_then(|branch| git(&["rev-parse", "--git-path", &branch]))
+    {
+        println!("cargo:rerun-if-changed={branch_ref}");
+    }
+    let commit = git(&["rev-parse", "--short=7", "HEAD"])
+        .filter(|commit| commit.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .unwrap_or_default();
+    let release = env::var("FACTORY_RELEASE").is_ok_and(|value| value == "1");
+    println!("cargo:rustc-env=FACTORY_BUILD_COMMIT={commit}");
+    println!("cargo:rustc-env=FACTORY_BUILD_RELEASE={release}");
+}
+
 fn main() {
+    build_identity();
     println!("cargo:rerun-if-changed=skills");
     println!("cargo:rerun-if-changed=.agents/skills");
     println!("cargo:rerun-if-changed=third-party");
@@ -39,6 +70,7 @@ fn main() {
         "code-review",
         "security-review",
         "pr",
+        "setup-matt-pocock-skills",
     ] {
         files(
             Path::new("skills"),
@@ -46,24 +78,14 @@ fn main() {
             &mut output,
         );
     }
-    for name in [
-        "factory",
-        "factory-fast",
-        "factory-balanced",
-        "triage",
-        "rust-best-practices",
-    ] {
+    for name in ["factory", "factory-fast", "factory-balanced", "triage"] {
         files(
             Path::new(".agents/skills"),
             &Path::new(".agents/skills").join(name),
             &mut output,
         );
     }
-    for name in [
-        "mattpocock-skills-LICENSE",
-        "awesome-copilot-LICENSE",
-        "beautiful-rust-LICENSE",
-    ] {
+    for name in ["mattpocock-skills-LICENSE", "awesome-copilot-LICENSE"] {
         let path = fs::canonicalize(Path::new("third-party").join(name)).unwrap();
         output.push(format!(
             "({:?}, include_bytes!({:?}).as_slice()),",

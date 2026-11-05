@@ -15,6 +15,10 @@ Day-to-day pull requests target `develop`. Release pull requests merge `develop`
 - Consult the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) when designing public APIs.
 - Follow existing conventions and keep changes proportional to the task. TDD is not required.
 
+## Shipped skills are project-agnostic
+
+The skills that `factory install` bundles (listed in `build.rs`) are used by anyone, on any kind of project. They must not name this repository's scripts, branches, tools or conventions, such as `scripts/verify.sh` or `develop`. Put those in `AGENTS.md`, the README or `.github/instructions/`, and word the skill generically, for example "the project's verification" or "the base branch chosen in Workspace". A test in `src/install.rs` fails when a bundled skill names this repository; search the skills you changed for this repository's names before opening a pull request.
+
 ## Scoped guides
 
 Read the relevant guide when working on these files or tasks:
@@ -22,8 +26,11 @@ Read the relevant guide when working on these files or tasks:
 - [Reliable tests](.github/instructions/reliable-tests.instructions.md): tests involving time, shared state, files, ports, or processes.
 - [Skill authoring](.github/instructions/agent-skills.instructions.md): skills maintained in this project.
 - [Dashboard accessibility](.github/instructions/accessibility.instructions.md): dashboard HTML, CSS, and interactive behavior.
+- [Shell scripts](.github/instructions/shell.instructions.md): `*.sh` files, including the Linux installer.
+- [PowerShell scripts](.github/instructions/powershell.instructions.md): `*.ps1` files, including the Windows installer.
+- [Docs and changelog](.github/instructions/update-docs-on-code-change.instructions.md): code changes that need documentation or a `changelog.d` fragment.
 - [Markdown](.github/instructions/markdown.instructions.md): Markdown written or edited in this project.
-- [GitHub Actions](.github/instructions/github-actions-ci-cd-best-practices.instructions.md): GitHub Actions workflows.
+- [GitHub Actions](.github/instructions/github-actions-ci-cd-best-practices.instructions.md): GitHub Actions workflows. Use the [github-actions-hardening skill](skills/github-actions-hardening/SKILL.md) to review workflow security.
 
 ## Commands
 
@@ -31,7 +38,9 @@ Read the relevant guide when working on these files or tasks:
 - Lint: `cargo clippy --all-targets -- -D warnings`
 - Test: `cargo test`
 
-Run the checks relevant to the change. These instructions are informed by [Awesome Copilot's Rust instructions](https://github.com/github/awesome-copilot/blob/main/instructions/rust.instructions.md).
+After a pull request merges, run `scripts/update-local.sh` from the main checkout to pull `develop`, rebuild, reinstall the `factory` command and the skills, and restart the dashboard, so local agents always use the latest factory.
+
+Run `scripts/verify.sh` before finishing any ticket and before opening a pull request. It runs the same checks as CI, in the same order. A missing tool (`rustfmt`, `clippy`) is a blocker to fix with `rustup component add rustfmt clippy`, not something to skip and leave to CI. These instructions are informed by [Awesome Copilot's Rust instructions](https://github.com/github/awesome-copilot/blob/main/instructions/rust.instructions.md).
 
 ## Agent skills
 

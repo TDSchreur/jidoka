@@ -17,7 +17,7 @@ Report progress to the factory dashboard with the `factory` CLI from the run's w
 - **Rework:** when Check sends the run back to Build, run `factory run update <id> build running --rework <n> --activity "Rework <n>: <findings being fixed>"`, numbering Reworks from 1 within the run. Leave the count set when Check runs again.
 - **Ticket:** when work on a ticket with an HTTP(S) URL starts, add `--current-ticket "<url>"` to that update. When no ticket is in progress anymore, add `--clear-current-ticket`. Leave it unset for local Markdown tickets.
 - **Blocked:** when work cannot continue without outside input, run `factory run update <id> <stage> blocked --blocking-reason "<what is needed>"`. When work resumes, run `factory run update <id> <stage> running --clear-blocking-reason`.
-- **Done:** run `factory run update <id> finish done --activity "Opened <pull request URL>" --clear-current-ticket`.
+- **Done:** once the pull request is open and its CI is green (or the project has no CI), run `factory run update <id> finish done --activity "Opened <pull request URL>" --clear-current-ticket`.
 
 Options that are left out keep their current value. If the server or an update fails, report the failure rather than claiming progress is tracked.
 
@@ -34,15 +34,17 @@ Run every later stage from this worktree: Define files, Build, checks, `factory 
 
 ## Define
 
+Before anything else in Define, check that `docs/agents/issue-tracker.md` exists in the run's worktree. If it is missing, look in the original checkout the run was started from. If it exists there (setup was run but not committed to the base branch), copy that checkout's `docs/agents/` directory into the worktree and bring its `## Agent skills` section into the worktree's `AGENTS.md` or `CLAUDE.md` (whichever the original checkout edited), so the pull request includes the setup output; do not modify the original checkout. If it exists in neither place, the repository has not been set up for the factory: mark the run blocked with `--blocking-reason "Run /setup-matt-pocock-skills first"`, tell the user to run `/setup-matt-pocock-skills` once in the original checkout and then start the run again (the new worktree will pick up its output; this run's worktree can be removed), and stop. Do not guess a tracker.
+
 When the request is clear and bounded, use it as the spec. Otherwise use `to-spec` once to write a concise spec from the request and the code, without interviewing the user. Either way, state explicit acceptance criteria before Build.
 
 Use `to-tickets` only when the work has multiple pieces that benefit from separate tracking. Use `grill-with-docs` only when an ambiguity blocks implementation, and limit it to that ambiguity. Reuse existing specs and tickets rather than recreating them.
 
-When these artifacts are needed, keep them as local Markdown files if no tracker is configured; otherwise use the project's configured tracker. Do not require tracker setup, extra approval of test seams, or a separate ticket-breakdown approval. Ask the user when a decision is actually needed.
+When these artifacts are needed, store them in the tracker configured in `docs/agents/issue-tracker.md`. Do not require extra approval of test seams or a separate ticket-breakdown approval. Ask the user when a decision is actually needed.
 
 ## Build
 
-Use `implement-spec-balanced` to implement the request or tickets on the run's feature branch: implement each ticket, then add behavior tests through public interfaces without red-green cycles or seam approval. Work sequentially in the run's worktree; do not require subagents, extra worktrees beyond it, a draft PR, or a code review here. Run the project's relevant checks for each ticket and fix failures before Check.
+Use `implement-spec-balanced` to implement the request or tickets on the run's feature branch: implement each ticket, then add behavior tests through public interfaces without red-green cycles or seam approval. Work sequentially in the run's worktree; do not require subagents, extra worktrees beyond it, a draft PR, or a code review here. Run the project's relevant checks for each ticket and fix failures before Check. Find the project's verification: the commands its agent instructions (`AGENTS.md`, `CLAUDE.md`), contributing docs or build files say to run before merging, which should match what its CI runs. Run all of them after each ticket, not only the relevant ones; a missing tool or a failing check blocks the run, so fix it or mark the run blocked, and never skip it. If you cannot find any, ask the user once, or say so in the pull request when running unattended.
 
 ## Check
 
@@ -54,4 +56,4 @@ Never block work on Check findings. When findings remain after the second Rework
 
 ## Finish
 
-Use `pr` to write the pull request description. When the user chose to finish with remaining Check findings, list them in the description. Commit the work, push the branch, and create a pull request targeting the project's default branch (`develop` for this project). Keep the worktree for review follow-ups. Report its link, the worktree path (removable with `git worktree remove <path>` after merge), and the checks performed. If a required tool, permission, or repository configuration is unavailable, report what remains, mark the run blocked with that as the reason, and stop.
+Use `pr` to write the pull request description. When the user chose to finish with remaining Check findings, list them in the description. Commit the work. Run the project's verification on the final commit before pushing and report its result; do not open the pull request while a check fails or cannot run. Push the branch and create a pull request targeting the base branch chosen in Workspace. Then watch the pull request's CI: follow every check until all have completed, noticing failures as well as success, and keep the run running with `--activity "Waiting for CI"`. When a check fails, read its log, fix the cause in a new commit on the same branch (never amend or force-push), rerun the project's verification, push, note it with a milestone update, and watch the new run; repeat until CI is green. CI fixes are not Reworks. A failure you cannot fix, such as an infrastructure problem, a missing permission, or a flaky external dependency, blocks the run with that reason. When the project has no CI, skip the watch and say so. Never merge the pull request; that is the user's decision. Report the pull request as ready for review only when CI is green. Keep the worktree for review follow-ups. Report its link, the worktree path (removable with `git worktree remove <path>` after merge), the checks performed, and the final CI result. If a required tool, permission, or repository configuration is unavailable, report what remains, mark the run blocked with that as the reason, and stop.

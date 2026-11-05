@@ -21,7 +21,9 @@ use std::{
 
 const ADDRESS: &str = "127.0.0.1:4311";
 const DASHBOARD: &str = include_str!("dashboard.html");
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>\n  factory dashboard\n  factory run start <title>\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+/// Placeholder in the dashboard page that is replaced with the build label.
+const BUILD_PLACEHOLDER: &str = "__BUILD__";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard\n  factory run start <title>\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\nOmitted fields are preserved; clear flags remove them.";
 const BODY_LIMIT: u64 = 64 * 1024;
 /// Highest Rework count a run can report.
@@ -291,6 +293,25 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> io::Error {
     io::Error::other("run storage lock was poisoned")
 }
 
+/// Names a build: the version for official releases, the commit for any other build.
+fn build_label(version: &str, release: bool, commit: &str) -> String {
+    if release {
+        version.to_string()
+    } else if commit.is_empty() {
+        "dev (unknown commit)".to_string()
+    } else {
+        format!("dev {commit}")
+    }
+}
+
+fn current_build() -> String {
+    build_label(
+        env!("CARGO_PKG_VERSION"),
+        env!("FACTORY_BUILD_RELEASE") == "true",
+        env!("FACTORY_BUILD_COMMIT"),
+    )
+}
+
 fn main() -> ExitCode {
     if let Err(error) = run_cli() {
         eprintln!("{error}");
@@ -308,7 +329,7 @@ fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
         .as_slice()
     {
         [] | ["--help" | "-h"] => println!("{HELP}\n\n{UPDATE_HELP}"),
-        ["--version" | "-V"] => println!("factory {}", env!("CARGO_PKG_VERSION")),
+        ["--version" | "-V"] => println!("factory {}", current_build()),
         ["install", "--agent", agent] => install::install(agent)?,
         ["dashboard"] => serve(&data_path()?)?,
         ["run", "start", title] => {
@@ -387,11 +408,13 @@ impl<'r> FromRequest<'r> for Security {
 }
 
 #[rocket::get("/")]
-fn dashboard(request: Security) -> Result<RawHtml<&'static str>, HttpStatus> {
+fn dashboard(request: Security) -> Result<RawHtml<String>, HttpStatus> {
     if !request.local {
         return Err(HttpStatus::BadRequest);
     }
-    Ok(RawHtml(DASHBOARD))
+    Ok(RawHtml(
+        DASHBOARD.replace(BUILD_PLACEHOLDER, &current_build()),
+    ))
 }
 
 #[rocket::get("/api/runs")]
@@ -594,6 +617,24 @@ mod tests {
         Client::tracked(build_rocket(&dir.0.path().join("runs.json"), 0).unwrap())
             .await
             .unwrap()
+    }
+
+    #[test]
+    fn build_label_shows_the_version_for_releases_and_the_commit_otherwise() {
+        assert_eq!(build_label("0.3.1", true, "1a2b3c4"), "0.3.1");
+        assert_eq!(build_label("0.3.1", true, ""), "0.3.1");
+        assert_eq!(build_label("0.3.1", false, "1a2b3c4"), "dev 1a2b3c4");
+        assert_eq!(build_label("0.3.1", false, ""), "dev (unknown commit)");
+    }
+
+    #[rocket::async_test]
+    async fn dashboard_page_shows_which_build_is_running() {
+        let page = dashboard_page().await;
+        assert!(
+            !page.contains(BUILD_PLACEHOLDER),
+            "placeholder left in page"
+        );
+        assert!(page.contains(&format!("<code>{}</code>", current_build())));
     }
 
     #[rocket::async_test]
