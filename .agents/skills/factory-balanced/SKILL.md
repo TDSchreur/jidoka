@@ -14,6 +14,7 @@ Report progress to the factory dashboard with the `factory` CLI from the run's w
 - **Start:** before Define, run `factory run start "<short task title>"` and keep the printed run ID. If the server is not running, start `factory dashboard` as a background process, then retry once. If a different or outdated server occupies the port, or the CLI rejects an option below, report that it needs to be stopped or upgraded.
 - **Stage:** at the start of each later stage, run `factory run update <id> <build|check|finish> running --activity "<what the stage is doing>"`.
 - **Milestone:** after a meaningful milestone, such as tickets created or checks passing, run `factory run update <id> <stage> running --activity "<short phrase>"`. Keep the activity to one short line without secrets.
+- **Rework:** when Check sends the run back to Build, run `factory run update <id> build running --rework <n> --activity "Rework <n>: <findings being fixed>"`, numbering Reworks from 1 within the run. Leave the count set when Check runs again.
 - **Ticket:** when work on a ticket with an HTTP(S) URL starts, add `--current-ticket "<url>"` to that update. When no ticket is in progress anymore, add `--clear-current-ticket`. Leave it unset for local Markdown tickets.
 - **Blocked:** when work cannot continue without outside input, run `factory run update <id> <stage> blocked --blocking-reason "<what is needed>"`. When work resumes, run `factory run update <id> <stage> running --clear-blocking-reason`.
 - **Done:** run `factory run update <id> finish done --activity "Opened <pull request URL>" --clear-current-ticket`.
@@ -45,10 +46,12 @@ Use `implement-spec-balanced` to implement the request or tickets on the run's f
 
 ## Check
 
-Use `code-review` once against the branch's starting point and the spec or acceptance criteria. Use `security-review` on the changed code only when the diff touches input parsing, authentication or secrets, network access, file or process handling, or dependencies; otherwise skip it and say why.
+Use one `code-review` pass against the branch's starting point and the spec or acceptance criteria. Use `security-review` on the changed code only when the diff touches input parsing, authentication or secrets, network access, file or process handling, or dependencies; otherwise skip it and say why.
 
-Fix actionable findings, then rerun only the checks the fixes affect; do not start a second full review round. If a finding cannot be resolved, report it, mark the run blocked with the finding as the reason, and stop before Finish.
+When there are no actionable findings, go to Finish. When there are, start a Rework: return to Build, fix the findings with `implement-spec-balanced` (implement, then add or adjust behavior tests), rerun the checks the fixes affect, then run Check again with one `code-review` pass over the Rework's changes and the findings it addressed, plus `security-review` when those changes meet the criteria above. A run gets at most two Reworks.
+
+Never block work on Check findings. When findings remain after the second Rework, or a finding cannot be resolved, keep the run running: list the remaining findings and ask the user whether to do one more Rework, finish with the findings listed in the pull request, or stop. Follow their choice.
 
 ## Finish
 
-Use `pr` to write the pull request description. Commit the work, push the branch, and create a pull request targeting the project's default branch (`develop` for this project). Keep the worktree for review follow-ups. Report its link, the worktree path (removable with `git worktree remove <path>` after merge), and the checks performed. If a required tool, permission, or repository configuration is unavailable, report what remains, mark the run blocked with that as the reason, and stop.
+Use `pr` to write the pull request description. When the user chose to finish with remaining Check findings, list them in the description. Commit the work, push the branch, and create a pull request targeting the project's default branch (`develop` for this project). Keep the worktree for review follow-ups. Report its link, the worktree path (removable with `git worktree remove <path>` after merge), and the checks performed. If a required tool, permission, or repository configuration is unavailable, report what remains, mark the run blocked with that as the reason, and stop.

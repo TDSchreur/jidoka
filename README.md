@@ -82,10 +82,12 @@ TDS Factory has three workflow modes that trade speed against rigor: `/factory` 
 | --- | --- | --- | --- |
 | Define | Always grills with [`grill-with-docs`](skills/grill-with-docs/SKILL.md) (`grilling`, `domain-modeling`), writes a spec with [`to-spec`](skills/to-spec/SKILL.md), and breaks it into tickets with [`to-tickets`](skills/to-tickets/SKILL.md) | Uses a clear request as the spec, otherwise one `to-spec` pass without grilling; always writes explicit acceptance criteria; `to-tickets` only for multi-piece work; `grill-with-docs` only when ambiguity blocks implementation | Uses a clear request as the spec with a short plan and acceptance criteria; `grill-with-docs`, `to-spec`, and `to-tickets` only when needed |
 | Build | [`implement-spec`](skills/implement-spec/SKILL.md), test-first with `tdd` red-green cycles | [`implement-spec-balanced`](skills/implement-spec-balanced/SKILL.md): implements each ticket, then adds behavior tests through public interfaces using `tdd`'s test-quality rules, without red-green cycles or seam approval | [`implement-spec-fast`](skills/implement-spec-fast/SKILL.md): implements directly; tests only where useful |
-| Check | [`code-review`](skills/code-review/SKILL.md), then [`security-review`](skills/security-review/SKILL.md); reviews rerun after fixes | One `code-review` pass; `security-review` only when the diff touches input parsing, auth or secrets, network, file or process handling, or dependencies; only affected checks rerun after fixes | Skipped |
+| Check | [`code-review`](skills/code-review/SKILL.md), then [`security-review`](skills/security-review/SKILL.md); findings go back to Build for a Rework, then both reviews run again | One `code-review` pass; `security-review` only when the diff touches input parsing, auth or secrets, network, file or process handling, or dependencies; findings go back to Build for a Rework, then one review pass covers the fixes | Skipped |
 | Finish | [`pr`](skills/pr/SKILL.md) writes the description and opens a pull request | Same | Same |
 
-All modes build sequentially in one worktree without subagents and run the project's checks before moving on. In `/factory` and `/factory-balanced`, a review finding that cannot be fixed blocks the run before Finish.
+All modes build sequentially in one worktree without subagents and run the project's checks before moving on.
+
+In `/factory` and `/factory-balanced`, actionable Check findings send the run back to Build for a **Rework** with that mode's build approach, then Check runs again. A run gets at most two Reworks, and the dashboard shows the current one as "Rework 1 of 2". Check findings never block a run: when findings remain after the second Rework, or one cannot be resolved, the agent lists them and asks you whether to do one more Rework, finish with the findings listed in the pull request, or stop. `/factory-fast` has no Check and so no Rework.
 
 ### Choosing a mode
 
@@ -95,7 +97,7 @@ All modes build sequentially in one worktree without subagents and run the proje
 
 When unsure, start with `/factory-balanced`.
 
-The diagram shows the skills each mode runs. Arrows between stages are labeled with the mode that takes them; `/factory-balanced` and `/factory-fast` run each Define skill only in the cases the table lists. Dotted lines show skills that another skill loads or applies.
+The diagram shows the skills each mode runs. Arrows between stages are labeled with the mode that takes them; `/factory-balanced` and `/factory-fast` run each Define skill only in the cases the table lists. Dotted lines show skills that another skill loads or applies, and the Rework loop from Check back to Build.
 
 ```mermaid
 flowchart TB
@@ -127,6 +129,7 @@ flowchart TB
     define -->|/factory-fast| implfast
     impl --> review
     implbal --> review
+    check -.->|Rework: findings, at most 2| build
     security --> pr
     review -->|/factory-balanced for other diffs| pr
     implfast -->|/factory-fast skips Check| pr
