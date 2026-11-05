@@ -58,3 +58,60 @@ fn help_lists_doctor() {
     assert!(String::from_utf8_lossy(&output.stdout)
         .contains("factory doctor [--agent <codex|claude|copilot>] [--json]"));
 }
+
+/// The folder holding `git`, so a run can use git and still see no agent on `PATH`.
+fn git_folder() -> std::path::PathBuf {
+    let name = if cfg!(windows) { "git.exe" } else { "git" };
+    std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .find(|dir| dir.join(name).is_file())
+        .expect("git is on PATH")
+}
+
+#[test]
+fn doctor_reads_the_repository_it_runs_in() {
+    let repo = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    for args in [
+        &["init", "-q"][..],
+        &["remote", "add", "origin", "https://example.com/repo.git"],
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    ] {
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_factory"))
+        .args(["doctor", "--json"])
+        .current_dir(repo.path())
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("PATH", git_folder())
+        .env_remove("CODEX_HOME")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .output()
+        .unwrap();
+    // No agent and no setup docs: not ready, but the repository checks see the real repository.
+    assert!(!output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let status = |id: &str| {
+        report["project"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id)
+            .unwrap()["status"]
+            .clone()
+    };
+    assert_eq!(status("git"), "pass");
+    assert_eq!(status("origin"), "pass");
+    assert_eq!(status("base-branch"), "pass");
+    assert_eq!(status("setup-docs"), "missing");
+}

@@ -88,6 +88,14 @@ pub(crate) fn home_dir() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cannot find your home directory"))
 }
 
+/// The files `install` writes, as paths such as `factory/SKILL.md`, relative to the skills folder.
+pub(crate) fn bundled_skill_files() -> impl Iterator<Item = &'static str> {
+    BUNDLED
+        .iter()
+        .map(|(path, _)| *path)
+        .filter(|path| !path.starts_with("licenses/"))
+}
+
 /// The names of the skills `install` writes, in order.
 pub(crate) fn bundled_skill_names() -> Vec<&'static str> {
     let mut names: Vec<&str> = BUNDLED

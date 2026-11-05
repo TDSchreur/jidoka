@@ -150,7 +150,7 @@ flowchart TB
 `factory doctor` reports whether the current repository and your machine are ready for the factory, without changing anything, installing anything or starting the dashboard. It checks:
 
 - the project: a Git repository, an `origin` remote, origin's default branch (`git remote set-head origin --auto` sets it when unknown), the setup output of `/setup-matt-pocock-skills` (`docs/agents/issue-tracker.md` and the `## Agent skills` section), and the verification commands listed as bullets under `## Commands` in `AGENTS.md` or `CLAUDE.md`. It looks for each command's tool but never runs it.
-- each agent (Codex, Claude Code, Copilot): its command is on `PATH`, and every skill `factory install` bundles is installed in the folder `factory install` would use (honoring `CODEX_HOME` and `CLAUDE_CONFIG_DIR`).
+- each agent (Codex, Claude Code, Copilot): its command is on `PATH`, and every file of every skill `factory install` bundles is installed in the folder `factory install` would use (honoring `CODEX_HOME` and `CLAUDE_CONFIG_DIR`).
 
 Each line is `pass`, `missing` (something to supply) or `fail` (something broken), with a fix. The exit status is 0 when the project checks pass and at least one agent is usable. Use `--agent codex|claude|copilot` to check, and require, one agent, and `--json` for structured output.
 

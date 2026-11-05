@@ -2,7 +2,7 @@
 //! It only reads files, looks on `PATH` and asks `git` read-only questions. It never runs the project's own
 //! commands, installs anything or needs the dashboard.
 
-use crate::install::{bundled_skill_names, skills_root};
+use crate::install::{bundled_skill_files, skills_root};
 use serde::Serialize;
 use std::{
     ffi::OsString,
@@ -25,6 +25,16 @@ pub(crate) enum Status {
     Fail,
 }
 
+impl Status {
+    fn as_str(self) -> &'static str {
+        match self {
+            Status::Pass => "pass",
+            Status::Missing => "missing",
+            Status::Fail => "fail",
+        }
+    }
+}
+
 #[derive(Serialize, Debug)]
 pub(crate) struct Check {
     id: &'static str,
@@ -35,32 +45,61 @@ pub(crate) struct Check {
 }
 
 impl Check {
-    fn pass(id: &'static str, message: impl Into<String>) -> Self {
+    /// Messages can contain text from the repository, so control characters never reach the terminal.
+    fn new(
+        id: &'static str,
+        status: Status,
+        message: impl AsRef<str>,
+        fix: Option<String>,
+    ) -> Self {
         Self {
             id,
-            status: Status::Pass,
-            message: message.into(),
-            fix: None,
+            status,
+            message: printable(message.as_ref()),
+            fix,
         }
     }
-    fn missing(id: &'static str, message: impl Into<String>, fix: impl Into<String>) -> Self {
-        Self {
-            id,
-            status: Status::Missing,
-            message: message.into(),
-            fix: Some(fix.into()),
-        }
+    fn pass(id: &'static str, message: impl AsRef<str>) -> Self {
+        Self::new(id, Status::Pass, message, None)
     }
-    fn fail(id: &'static str, message: impl Into<String>, fix: impl Into<String>) -> Self {
-        Self {
-            id,
-            status: Status::Fail,
-            message: message.into(),
-            fix: Some(fix.into()),
-        }
+    fn missing(id: &'static str, message: impl AsRef<str>, fix: impl Into<String>) -> Self {
+        Self::new(id, Status::Missing, message, Some(fix.into()))
+    }
+    fn fail(id: &'static str, message: impl AsRef<str>, fix: impl Into<String>) -> Self {
+        Self::new(id, Status::Fail, message, Some(fix.into()))
     }
     fn passed(&self) -> bool {
         self.status == Status::Pass
+    }
+}
+
+/// Replaces control characters, such as terminal escape sequences, with a visible placeholder.
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect()
+}
+
+/// A remote URL for display: no credentials, query or fragment.
+fn display_url(url: &str) -> String {
+    let url = url.split(['?', '#']).next().unwrap_or(url);
+    match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+            let host = authority
+                .rsplit_once('@')
+                .map_or(authority, |(_, host)| host);
+            if path.is_empty() {
+                format!("{scheme}://{host}")
+            } else {
+                format!("{scheme}://{host}/{path}")
+            }
+        }
+        // scp-like `user@host:path` carries a user name, not a secret, but is shortened the same way.
+        None => url
+            .rsplit_once('@')
+            .map_or(url, |(_, rest)| rest)
+            .to_string(),
     }
 }
 
@@ -175,7 +214,10 @@ fn git_checks(project: &Path) -> Vec<Check> {
             ));
             return checks;
         }
-        Some(url) => checks.push(Check::pass("origin", format!("origin is {url}"))),
+        Some(url) => checks.push(Check::pass(
+            "origin",
+            format!("origin is {}", display_url(&url)),
+        )),
     }
     checks.push(
         match git_output(project, &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]) {
@@ -252,7 +294,7 @@ fn setup_docs_check(root: &Path) -> Check {
 fn documented_commands(text: &str) -> Option<Vec<String>> {
     let mut lines = text
         .lines()
-        .skip_while(|line| !line.trim_end().starts_with("## Commands"));
+        .skip_while(|line| line.trim_end() != "## Commands");
     lines.next()?;
     let mut commands = Vec::new();
     for line in lines.take_while(|line| !line.starts_with("## ")) {
@@ -396,10 +438,13 @@ fn skills_check(agent: &'static str, machine: &Machine) -> Check {
             )
         }
     };
-    let absent: Vec<&str> = bundled_skill_names()
-        .into_iter()
-        .filter(|name| !root.join(name).join("SKILL.md").is_file())
+    // A skill counts as installed only when every file `install` writes for it is there, so an
+    // install from an older release that lacks newer files is reported too.
+    let mut absent: Vec<&str> = bundled_skill_files()
+        .filter(|file| !root.join(file).is_file())
+        .filter_map(|file| file.split('/').next())
         .collect();
+    absent.dedup();
     if absent.is_empty() {
         Check::pass(
             "skills",
@@ -423,7 +468,7 @@ pub(crate) fn render(report: &Report) -> String {
     fn line(check: &Check, indent: &str) -> String {
         let mut text = format!(
             "{indent}{:<8} {}: {}\n",
-            format!("{:?}", check.status).to_lowercase(),
+            check.status.as_str(),
             check.id,
             check.message
         );
@@ -499,6 +544,7 @@ pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<(Option<&'a str>, bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::install::bundled_skill_names;
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -535,9 +581,10 @@ mod tests {
     }
 
     fn install_skills(root: &Path) {
-        for name in bundled_skill_names() {
-            fs::create_dir_all(root.join(name)).unwrap();
-            fs::write(root.join(name).join("SKILL.md"), "skill").unwrap();
+        for file in bundled_skill_files() {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "file").unwrap();
         }
     }
 
@@ -657,6 +704,19 @@ mod tests {
         let skills = &agent(&report, "claude").checks[1];
         assert_eq!(skills.status, Status::Missing);
         assert!(skills.message.contains(bundled_skill_names()[0]));
+
+        // A skill that lost one of its other files is incomplete too.
+        let world = World::ready().with_agent("claude");
+        let root = skills_root("claude", world.home.path(), |_| None).unwrap();
+        let extra = bundled_skill_files()
+            .find(|file| !file.ends_with("/SKILL.md"))
+            .expect("a skill ships more than SKILL.md");
+        fs::remove_file(root.join(extra)).unwrap();
+        let report = world.report(Some("claude"));
+        assert_eq!(agent(&report, "claude").checks[1].status, Status::Missing);
+        assert!(agent(&report, "claude").checks[1]
+            .message
+            .contains(extra.split('/').next().unwrap()));
 
         let world = World::ready();
         install_skills(&skills_root("codex", world.home.path(), |_| None).unwrap());
@@ -789,6 +849,35 @@ mod tests {
         let verification = project_check(&report, "verification");
         assert_eq!(verification.status, Status::Missing);
         assert!(verification.fix.as_ref().unwrap().contains("## Commands"));
+    }
+
+    #[test]
+    fn the_origin_is_shown_without_credentials_or_control_characters() {
+        let world = World::ready().with_agent("claude");
+        git(
+            world.project.path(),
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://user:secret-token@example.com/me/repo.git?x=1#frag",
+            ],
+        );
+        let report = world.report(None);
+        let origin = &project_check(&report, "origin").message;
+        assert_eq!(origin, "origin is https://example.com/me/repo.git");
+        assert!(!serde_json::to_string(&report)
+            .unwrap()
+            .contains("secret-token"));
+
+        assert_eq!(
+            display_url("git@github.com:me/repo.git"),
+            "github.com:me/repo.git"
+        );
+        assert_eq!(display_url("https://example.com"), "https://example.com");
+        assert_eq!(printable("a\u{1b}[2Jb\nc"), "a\u{FFFD}[2Jb\u{FFFD}c");
+        let check = Check::missing("x", "bad \u{1b}]0;title\u{7}", "fix");
+        assert!(!check.message.chars().any(char::is_control));
     }
 
     #[test]
