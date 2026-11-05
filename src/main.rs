@@ -22,8 +22,10 @@ use std::{
 const ADDRESS: &str = "127.0.0.1:4311";
 const DASHBOARD: &str = include_str!("dashboard.html");
 const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>\n  factory dashboard\n  factory run start <title>\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
-const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\nOmitted fields are preserved; clear flags remove them.";
+const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\nOmitted fields are preserved; clear flags remove them.";
 const BODY_LIMIT: u64 = 64 * 1024;
+/// Highest Rework count a run can report.
+const MAX_REWORK: u32 = 99;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Run {
@@ -38,6 +40,9 @@ struct Run {
     current_ticket: Option<String>,
     #[serde(default)]
     blocking_reason: Option<String>,
+    /// Number of the current or latest Rework: a return from Check to Build.
+    #[serde(default)]
+    rework: Option<u32>,
     #[serde(default)]
     updated_at: Option<u64>,
 }
@@ -76,40 +81,44 @@ struct UpdateRun {
     current_ticket: FieldUpdate,
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     blocking_reason: FieldUpdate,
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    rework: FieldUpdate<u32>,
 }
 
-// Missing fields preserve stored values; null clears them; strings replace them.
+// Missing fields preserve stored values; null clears them; values replace them.
 #[derive(Default, Serialize)]
 #[serde(untagged)]
-enum FieldUpdate {
+enum FieldUpdate<T = String> {
     #[default]
     Keep,
     Clear,
-    Set(String),
+    Set(T),
 }
 
-impl<'de> Deserialize<'de> for FieldUpdate {
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for FieldUpdate<T> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(match Option::<String>::deserialize(deserializer)? {
+        Ok(match Option::<T>::deserialize(deserializer)? {
             Some(value) => Self::Set(value),
             None => Self::Clear,
         })
     }
 }
 
-impl FieldUpdate {
+impl<T> FieldUpdate<T> {
     fn is_keep(&self) -> bool {
         matches!(self, Self::Keep)
     }
 
-    fn apply(self, target: &mut Option<String>) {
+    fn apply(self, target: &mut Option<T>) {
         match self {
             Self::Keep => {}
             Self::Clear => *target = None,
             Self::Set(value) => *target = Some(value),
         }
     }
+}
 
+impl FieldUpdate {
     fn validate(&self, limit: usize) -> Result<(), &'static str> {
         if let Self::Set(value) = self {
             if value.trim().is_empty() || value.len() > limit {
@@ -125,6 +134,11 @@ impl UpdateRun {
         self.activity.validate(2000)?;
         self.blocking_reason.validate(2000)?;
         self.current_ticket.validate(4096)?;
+        if let FieldUpdate::Set(count) = self.rework {
+            if !(1..=MAX_REWORK).contains(&count) {
+                return Err("Rework must be a whole number from 1 to 99");
+            }
+        }
         if let FieldUpdate::Set(value) = &self.current_ticket {
             let valid = rocket::http::uri::Absolute::parse(value)
                 .ok()
@@ -153,9 +167,29 @@ fn parse_update(
         activity: FieldUpdate::Keep,
         current_ticket: FieldUpdate::Keep,
         blocking_reason: FieldUpdate::Keep,
+        rework: FieldUpdate::Keep,
     };
     let mut args = options.iter();
     while let Some(flag) = args.next() {
+        let mut next_value = || {
+            args.next()
+                .filter(|value| !value.starts_with("--"))
+                .ok_or_else(|| format!("Missing value for {flag}\n{UPDATE_HELP}"))
+        };
+        if matches!(*flag, "--rework" | "--clear-rework") {
+            if !update.rework.is_keep() {
+                return Err(format!("Repeated or conflicting run update option: {flag}").into());
+            }
+            update.rework = if *flag == "--clear-rework" {
+                FieldUpdate::Clear
+            } else {
+                let count = next_value()?;
+                FieldUpdate::Set(count.parse().map_err(|_| {
+                    format!("Invalid value for --rework: {count}; use a whole number from 1 to {MAX_REWORK}")
+                })?)
+            };
+            continue;
+        }
         let field = match *flag {
             "--activity" | "--clear-activity" => &mut update.activity,
             "--current-ticket" | "--clear-current-ticket" => &mut update.current_ticket,
@@ -168,11 +202,7 @@ fn parse_update(
         *field = if flag.starts_with("--clear-") {
             FieldUpdate::Clear
         } else {
-            let value = args
-                .next()
-                .filter(|value| !value.starts_with("--"))
-                .ok_or_else(|| format!("Missing value for {flag}\n{UPDATE_HELP}"))?;
-            FieldUpdate::Set((*value).to_string())
+            FieldUpdate::Set((*next_value()?).to_string())
         };
     }
     update.validate()?;
@@ -222,6 +252,7 @@ impl RunStore {
             activity: None,
             current_ticket: None,
             blocking_reason: None,
+            rework: None,
             updated_at: Some(updated_now()?),
         };
         runs.push(run.clone());
@@ -246,6 +277,7 @@ impl RunStore {
         update
             .blocking_reason
             .apply(&mut runs[index].blocking_reason);
+        update.rework.apply(&mut runs[index].rework);
         runs[index].updated_at = Some(updated_at);
         if let Err(error) = save_runs(&self.path, &runs) {
             runs[index] = old;
@@ -565,7 +597,7 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn dashboard_page_shows_stage_groups_and_last_updated() {
+    async fn dashboard_page_shows_stage_groups_last_updated_and_rework() {
         let dir = TestDir::new();
         let api = client(&dir).await;
         let response = api
@@ -582,6 +614,8 @@ mod tests {
             );
         }
         assert!(page.contains("Last updated"));
+        assert!(page.contains("'Rework '"), "missing Rework label");
+        assert!(page.contains("past the cap of"));
     }
 
     #[rocket::async_test]
@@ -779,6 +813,7 @@ mod tests {
                                 activity: FieldUpdate::Keep,
                                 current_ticket: FieldUpdate::Keep,
                                 blocking_reason: FieldUpdate::Keep,
+                                rework: FieldUpdate::Keep,
                             },
                         )
                         .unwrap()
@@ -844,6 +879,7 @@ mod tests {
         assert!(original.activity.is_none());
         assert!(original.current_ticket.is_none());
         assert!(original.blocking_reason.is_none());
+        assert!(original.rework.is_none());
         assert!(
             original.updated_at.is_none(),
             "legacy records have no invented time"
@@ -893,6 +929,58 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn rework_count_is_set_kept_cleared_and_persisted() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let api = client(&dir).await;
+        let run = api
+            .rocket()
+            .state::<RunStore>()
+            .unwrap()
+            .create(NewRun {
+                title: "task".into(),
+                project: "/work".into(),
+            })
+            .unwrap();
+        assert!(run.rework.is_none());
+        let response = report(
+            &api,
+            &run.id,
+            r#"{"stage":"build","status":"running","rework":1}"#,
+        )
+        .await;
+        assert_eq!(response.status(), HttpStatus::Ok);
+        assert_eq!(response.into_json::<Run>().await.unwrap().rework, Some(1));
+
+        let restarted = client(&dir).await;
+        let response = report(
+            &restarted,
+            &run.id,
+            r#"{"stage":"check","status":"running"}"#,
+        )
+        .await;
+        assert_eq!(
+            response.into_json::<Run>().await.unwrap().rework,
+            Some(1),
+            "omitted rework stays unchanged across restart"
+        );
+        report(
+            &restarted,
+            &run.id,
+            r#"{"stage":"build","status":"running","rework":2}"#,
+        )
+        .await;
+        assert_eq!(load_runs(&path).unwrap()[0].rework, Some(2));
+        report(
+            &restarted,
+            &run.id,
+            r#"{"stage":"finish","status":"done","rework":null}"#,
+        )
+        .await;
+        assert!(load_runs(&path).unwrap()[0].rework.is_none());
+    }
+
+    #[rocket::async_test]
     async fn invalid_metadata_and_caller_timestamps_do_not_mutate_runs() {
         let dir = TestDir::new();
         let api = client(&dir).await;
@@ -914,6 +1002,11 @@ mod tests {
             serde_json::json!({"current_ticket": "/relative"}),
             serde_json::json!({"current_ticket": "https:///missing-host"}),
             serde_json::json!({"activity": 42}),
+            serde_json::json!({"rework": 0}),
+            serde_json::json!({"rework": 100}),
+            serde_json::json!({"rework": -1}),
+            serde_json::json!({"rework": 1.5}),
+            serde_json::json!({"rework": "1"}),
             serde_json::json!({"updated_at": 1}),
         ] {
             let mut body = serde_json::json!({"stage":"build","status":"blocked"});
@@ -984,6 +1077,40 @@ mod tests {
         }
         assert!(parse_update("unknown", "running", &[]).is_err());
         assert!(parse_update("build", "unknown", &[]).is_err());
+    }
+
+    #[test]
+    fn cli_rework_option_sets_clears_and_rejects_invalid_counts() {
+        let update = parse_update("build", "running", &["--rework", "2"]).unwrap();
+        assert_eq!(serde_json::to_value(update).unwrap()["rework"], 2);
+        let update = parse_update("check", "running", &["--clear-rework"]).unwrap();
+        assert_eq!(
+            serde_json::to_value(update).unwrap().get("rework"),
+            Some(&serde_json::Value::Null)
+        );
+        for options in [
+            vec!["--rework"],
+            vec!["--rework", "0"],
+            vec!["--rework", "-1"],
+            vec!["--rework", "two"],
+            vec!["--rework", "1.5"],
+            vec!["--rework", "100"],
+            vec!["--rework", "1", "--clear-rework"],
+            vec!["--rework", "1", "--rework", "2"],
+        ] {
+            assert!(
+                parse_update("build", "running", &options).is_err(),
+                "options: {options:?}"
+            );
+        }
+        let range = format!("1 to {MAX_REWORK}");
+        for count in ["0", "100", "two"] {
+            let Err(error) = parse_update("build", "running", &["--rework", count]) else {
+                panic!("--rework {count} should be rejected");
+            };
+            assert!(error.to_string().contains(&range), "{error}");
+        }
+        assert!(UPDATE_HELP.contains(&format!("--rework <1-{MAX_REWORK}>")));
     }
 
     #[test]
@@ -1099,7 +1226,11 @@ mod tests {
                 "blocked",
                 &["--blocking-reason", "Need credentials"],
             ),
-            ("build", "running", &["--clear-blocking-reason"]),
+            (
+                "build",
+                "running",
+                &["--clear-blocking-reason", "--rework", "1"],
+            ),
             (
                 "finish",
                 "done",
@@ -1119,10 +1250,12 @@ mod tests {
         assert_eq!(snapshots[2]["status"], "running");
         assert!(snapshots[2].get("blocking_reason").unwrap().is_null());
         assert_eq!(snapshots[2]["current_ticket"], ticket);
+        assert_eq!(snapshots[2]["rework"], 1);
         let finished = &snapshots[3];
         assert_eq!(finished["stage"], "finish");
         assert_eq!(finished["status"], "done");
         assert_eq!(finished["activity"], "Opened PR");
+        assert_eq!(finished["rework"], 1, "rework count is kept when omitted");
         assert!(finished["current_ticket"].is_null());
         assert!(
             finished["updated_at"].as_u64().unwrap()

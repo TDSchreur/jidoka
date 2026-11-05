@@ -54,18 +54,19 @@ Run updates also accept optional reporting fields:
 factory run update <id> build running --activity "Implementing ticket #42" --current-ticket "https://github.com/owner/repo/issues/42"
 factory run update <id> build blocked --blocking-reason "Waiting for credentials"
 factory run update <id> build running --clear-blocking-reason
+factory run update <id> build running --rework 1 --activity "Fixing Check findings"
 factory run update <id> finish done --clear-activity --clear-current-ticket
 ```
 
-Omitted fields keep their stored values, including when changing stage or status. Use `--clear-activity`, `--clear-current-ticket`, and `--clear-blocking-reason` to remove them explicitly. Setting and clearing the same field in one command, or repeating a field option, is an error. Activity and blocking reason must be nonblank and at most 2,000 bytes; a current-ticket link must be an absolute HTTP(S) URL of at most 4,096 bytes. Empty strings are rejected; use a clear flag instead.
+Omitted fields keep their stored values, including when changing stage or status. Use `--clear-activity`, `--clear-current-ticket`, `--clear-blocking-reason`, and `--clear-rework` to remove them explicitly. Setting and clearing the same field in one command, or repeating a field option, is an error. Activity and blocking reason must be nonblank and at most 2,000 bytes; a current-ticket link must be an absolute HTTP(S) URL of at most 4,096 bytes. Empty strings are rejected; use a clear flag instead. `--rework` records which [Rework](GLOSSARY.md) the run is on, as a whole number from 1 to 99; the dashboard shows it as "Rework 1 of 2", or "Rework 3 (past the cap of 2)" when the user granted an extra Rework.
 
-The API uses `activity`, `current_ticket`, and `blocking_reason` on `POST /api/runs/<id>` alongside the required `stage` and `status`. Omit a metadata field to preserve it, send a string to replace it, or send JSON `null` to clear it. Unknown update fields are rejected. For example:
+The API uses `activity`, `current_ticket`, `blocking_reason`, and `rework` on `POST /api/runs/<id>` alongside the required `stage` and `status`. Omit a metadata field to preserve it, send a value (a string, or a number for `rework`) to replace it, or send JSON `null` to clear it. Unknown update fields are rejected. For example:
 
 ```json
 {"stage":"build","status":"running","activity":"Implementing ticket #42","blocking_reason":null}
 ```
 
-Run responses and `runs.json` include these optional fields and `updated_at`, a server-owned Unix timestamp in milliseconds set on creation and each successful update. Callers cannot set `updated_at` through an update. Existing records load with `null` for missing metadata and timestamps; they receive a timestamp on their next update. The timestamp records a run update, not an agent heartbeat. Restart the dashboard with the updated CLI before using the new options. This step exposes reporting data through the API; the dashboard UI is unchanged.
+Run responses and `runs.json` include these optional fields and `updated_at`, a server-owned Unix timestamp in milliseconds set on creation and each successful update. Callers cannot set `updated_at` through an update. Existing records load with `null` for missing metadata and timestamps; they receive a timestamp on their next update. The timestamp records a run update, not an agent heartbeat. Restart the dashboard with the updated CLI before using the new options. The dashboard shows these fields on each run card.
 
 The server listens only on localhost but has no user authentication. Other users on the same machine can read and change run titles and project paths; use it only on a trusted machine.
 
@@ -81,10 +82,12 @@ TDS Factory has three workflow modes that trade speed against rigor: `/factory` 
 | --- | --- | --- | --- |
 | Define | Always grills with [`grill-with-docs`](skills/grill-with-docs/SKILL.md) (`grilling`, `domain-modeling`), writes a spec with [`to-spec`](skills/to-spec/SKILL.md), and breaks it into tickets with [`to-tickets`](skills/to-tickets/SKILL.md) | Uses a clear request as the spec, otherwise one `to-spec` pass without grilling; always writes explicit acceptance criteria; `to-tickets` only for multi-piece work; `grill-with-docs` only when ambiguity blocks implementation | Uses a clear request as the spec with a short plan and acceptance criteria; `grill-with-docs`, `to-spec`, and `to-tickets` only when needed |
 | Build | [`implement-spec`](skills/implement-spec/SKILL.md), test-first with `tdd` red-green cycles | [`implement-spec-balanced`](skills/implement-spec-balanced/SKILL.md): implements each ticket, then adds behavior tests through public interfaces using `tdd`'s test-quality rules, without red-green cycles or seam approval | [`implement-spec-fast`](skills/implement-spec-fast/SKILL.md): implements directly; tests only where useful |
-| Check | [`code-review`](skills/code-review/SKILL.md), then [`security-review`](skills/security-review/SKILL.md); reviews rerun after fixes | One `code-review` pass; `security-review` only when the diff touches input parsing, auth or secrets, network, file or process handling, or dependencies; only affected checks rerun after fixes | Skipped |
+| Check | [`code-review`](skills/code-review/SKILL.md), then [`security-review`](skills/security-review/SKILL.md); findings go back to Build for a Rework, then both reviews run again | One `code-review` pass; `security-review` only when the diff touches input parsing, auth or secrets, network, file or process handling, or dependencies; findings go back to Build for a Rework, then one review pass covers the fixes | Skipped |
 | Finish | [`pr`](skills/pr/SKILL.md) writes the description and opens a pull request | Same | Same |
 
-All modes build sequentially in one worktree without subagents and run the project's checks before moving on. In `/factory` and `/factory-balanced`, a review finding that cannot be fixed blocks the run before Finish.
+All modes build sequentially in one worktree without subagents and run the project's checks before moving on.
+
+In `/factory` and `/factory-balanced`, actionable Check findings send the run back to Build for a **Rework** with that mode's build approach, then Check runs again. A run gets at most two Reworks, and the dashboard shows the current one as "Rework 1 of 2". Check findings never block a run: when findings remain after the second Rework, or one cannot be resolved, the agent lists them and asks you whether to do one more Rework, finish with the findings listed in the pull request, or stop. `/factory-fast` has no Check and so no Rework.
 
 ### Choosing a mode
 
@@ -94,7 +97,7 @@ All modes build sequentially in one worktree without subagents and run the proje
 
 When unsure, start with `/factory-balanced`.
 
-The diagram shows the skills each mode runs. Arrows between stages are labeled with the mode that takes them; `/factory-balanced` and `/factory-fast` run each Define skill only in the cases the table lists. Dotted lines show skills that another skill loads or applies.
+The diagram shows the skills each mode runs. Arrows between stages are labeled with the mode that takes them; `/factory-balanced` and `/factory-fast` run each Define skill only in the cases the table lists. Dotted lines show skills that another skill loads or applies, and the Rework loop from Check back to Build.
 
 ```mermaid
 flowchart TB
@@ -126,6 +129,7 @@ flowchart TB
     define -->|/factory-fast| implfast
     impl --> review
     implbal --> review
+    check -.->|Rework: findings, at most 2| build
     security --> pr
     review -->|/factory-balanced for other diffs| pr
     implfast -->|/factory-fast skips Check| pr

@@ -28,6 +28,7 @@
     .badge { display: inline-block; margin-top: .4rem; padding: .1rem .5rem; border: 1px solid #44506a; border-radius: 4px; font-size: .8rem; font-weight: 700; color: #18243a; background: #edf0f7; text-transform: uppercase; letter-spacing: .04em; }
     .badge.blocked { color: #fff; background: #8a1c1c; border-color: #8a1c1c; }
     .badge.done { color: #14532d; background: #e3f4e8; border-color: #14532d; }
+    .rework { font-weight: 600; }
     .reason { color: #8a1c1c; font-weight: 600; }
     a { color: #1d4ed8; }
     a:focus-visible { outline: 3px solid #1d4ed8; outline-offset: 2px; border-radius: 2px; }
@@ -54,6 +55,7 @@
     ['done', 'Done', 'Runs that have finished, whatever their stage.'],
   ];
   const STATUSES = ['running', 'blocked', 'done'];
+  const REWORK_CAP = 2;
   let lastJson = null;
 
   const el = (tag, text, className) => {
@@ -94,12 +96,18 @@
     return p;
   }
 
+  function rework(count) {
+    const text = count <= REWORK_CAP ? `${count} of ${REWORK_CAP}` : `${count} (past the cap of ${REWORK_CAP})`;
+    return el('p', 'Rework ' + text, 'rework');
+  }
+
   function card(run) {
     const item = el('li');
     const article = el('article', undefined, run.status === 'blocked' ? 'run blocked' : 'run');
     article.append(el('h3', run.title), el('p', run.project, 'project'));
     const status = STATUSES.includes(run.status) ? run.status : String(run.status);
     article.append(el('span', status, `badge ${STATUSES.includes(run.status) ? run.status : ''}`.trim()));
+    if (Number.isInteger(run.rework) && run.rework > 0) article.append(rework(run.rework));
     if (run.activity) article.append(el('p', `Activity: ${run.activity}`, 'activity'));
     if (run.current_ticket) article.append(ticket(String(run.current_ticket)));
     if (run.blocking_reason) article.append(el('p', `Blocked: ${run.blocking_reason}`, 'reason'));
