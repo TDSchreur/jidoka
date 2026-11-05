@@ -84,7 +84,7 @@ Run these in order. Each prompt describes a separate change suitable for `/facto
   /factory-balanced Simplify the test-first implement-spec skill used by factory. Follow the structure of implement-spec-balanced and implement-spec-fast: sequential implementation in the run's existing worktree and branch, with TDD for each ticket. Remove requirements for implementer or merger subagents, extra worktrees, a draft PR, and a duplicate code review. Leave PR creation to the calling workflow. Preserve upstream attribution, document local adaptations in skills/README.md, update affected documentation, add a changelog fragment, and run the project's verification.
   ```
 
-- [ ] **3. Extract shared workflow procedures.**
+- [x] **3. Extract shared workflow procedures.**
 
   ```text
   /factory-balanced Consolidate the duplicated operating procedures in factory, factory-balanced, and factory-fast into one shared installed reference. Preserve each mode's behavior and leave its planning, testing, review, and verification policy explicit in its own SKILL.md. Ensure references resolve in the repository and for Codex, Claude, and Copilot installations; adjust bundling only as needed. Keep bundled instructions project-agnostic. Update affected documentation, add a changelog fragment, and run the project's verification.

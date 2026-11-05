@@ -17,8 +17,9 @@ const LEGACY_SKILLS: [&str; 4] = [
 ];
 
 /// Skills maintained in this project, installed without a third-party license.
-const LOCAL_SKILLS: [&str; 5] = [
+const LOCAL_SKILLS: [&str; 6] = [
     "factory",
+    "factory-procedures",
     "factory-fast",
     "factory-balanced",
     "implement-spec-fast",
@@ -224,69 +225,96 @@ mod tests {
     /// Workflow skills must also not assume this repository's branch name.
     const WORKFLOW_SKILLS: [&str; 3] = ["factory", "factory-balanced", "factory-fast"];
 
+    fn bundled_text(path: &str) -> String {
+        BUNDLED
+            .iter()
+            .find(|(bundled, _)| *bundled == path)
+            .map(|(_, content)| String::from_utf8_lossy(content).into_owned())
+            .unwrap_or_else(|| panic!("{path} is not bundled"))
+    }
+
     #[test]
-    fn workflow_skills_record_run_context_with_options_the_cli_accepts_and_continue_safely() {
-        for skill in ["factory", "factory-balanced", "factory-fast"] {
-            let text = BUNDLED
-                .iter()
-                .find(|(path, _)| *path == format!("{skill}/SKILL.md"))
-                .map(|(_, content)| String::from_utf8_lossy(content).into_owned())
-                .unwrap();
-            let context = text
-                .split_once("- **Context:**")
-                .and_then(|(_, rest)| rest.split_once("- **Done:**"))
-                .unwrap_or_else(|| panic!("{skill} has no Context step"))
-                .0;
-            let mut flags: Vec<&str> = context
-                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-                .filter(|word| word.starts_with("--") && word.len() > 2)
-                .collect();
-            flags.sort_unstable();
-            flags.dedup();
-            // The skill names every option of the context; each one is a real `run update` option.
-            for flag in [
-                "--mode",
-                "--worktree",
-                "--branch",
-                "--base-commit",
-                "--spec",
-                "--ticket",
-                "--ticket-status",
-                "--summary",
-                "--pr",
-                "--blocking-reason",
+    fn shared_procedures_record_run_context_with_options_the_cli_accepts_and_continue_safely() {
+        let text = bundled_text("factory-procedures/SKILL.md");
+        let context = text
+            .split_once("- **Context:**")
+            .and_then(|(_, rest)| rest.split_once("- **Done:**"))
+            .expect("the shared procedures have no Context step")
+            .0;
+        let mut flags: Vec<&str> = context
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .filter(|word| word.starts_with("--") && word.len() > 2)
+            .collect();
+        flags.sort_unstable();
+        flags.dedup();
+        // The procedures name every option of the context; each one is a real `run update` option.
+        for flag in [
+            "--mode",
+            "--worktree",
+            "--branch",
+            "--base-commit",
+            "--spec",
+            "--ticket",
+            "--ticket-status",
+            "--summary",
+            "--pr",
+            "--blocking-reason",
+        ] {
+            assert!(flags.contains(&flag), "the context does not record {flag}");
+        }
+        for flag in flags.iter().filter(|flag| !flag.starts_with("--clear-<")) {
+            assert!(
+                crate::run::UPDATE_HELP.contains(flag),
+                "the context names {flag}, which `run update` does not accept"
+            );
+        }
+        // Continuing: inspect first, verify the recorded state, and never discard work.
+        let continuing = text
+            .split_once("## Continuing a run")
+            .expect("the shared procedures have no continuation protocol")
+            .1;
+        let continuing = continuing.split("\n## ").next().unwrap();
+        for needle in [
+            "factory run inspect",
+            "git worktree list",
+            "git branch --show-current",
+            "merge-base --is-ancestor",
+            "git status --porcelain",
+            "Never reset, clean",
+        ] {
+            assert!(continuing.contains(needle), "continuation lacks {needle}");
+        }
+    }
+
+    #[test]
+    fn workflow_skills_use_the_shared_procedures_and_report_their_own_mode() {
+        for skill in WORKFLOW_SKILLS {
+            let text = bundled_text(&format!("{skill}/SKILL.md"));
+            assert!(
+                text.contains("(../factory-procedures/SKILL.md)"),
+                "{skill} does not link the shared procedures"
+            );
+            for section in [
+                "Run reporting",
+                "Continuing a run",
+                "Workspace",
+                "Tracker setup",
+                "Pull request and CI",
             ] {
-                assert!(flags.contains(&flag), "{skill} does not record {flag}");
-            }
-            for flag in flags.iter().filter(|flag| !flag.starts_with("--clear-<")) {
                 assert!(
-                    crate::run::UPDATE_HELP.contains(flag),
-                    "{skill} names {flag}, which `run update` does not accept"
+                    text.contains(&format!("{section} in [factory-procedures]")),
+                    "{skill} does not point to {section}"
                 );
             }
             assert!(
-                context.contains(&format!("--mode {skill}")),
-                "{skill} records its own mode"
+                text.contains(&format!("`--mode {skill}`")),
+                "{skill} reports its own mode"
             );
-            // Continuing: inspect first, verify the recorded state, and never discard work.
-            let continuing = text
-                .split_once("## Continuing a run")
-                .unwrap_or_else(|| panic!("{skill} has no continuation protocol"))
-                .1;
-            let continuing = continuing.split("\n## ").next().unwrap();
-            for needle in [
-                "factory run inspect",
-                "git worktree list",
-                "git branch --show-current",
-                "merge-base --is-ancestor",
-                "git status --porcelain",
-                "Never reset, clean",
-            ] {
-                assert!(
-                    continuing.contains(needle),
-                    "{skill}: continuation lacks {needle}"
-                );
-            }
+            assert_eq!(
+                text.contains("--rework"),
+                skill != "factory-fast",
+                "{skill} reports Reworks only when it has Check"
+            );
         }
     }
 
@@ -386,6 +414,8 @@ mod tests {
         assert!(root.join("factory-balanced/SKILL.md").is_file());
         assert!(root.join("implement-spec-balanced/SKILL.md").is_file());
         assert!(!root.join("factory-balanced/LICENSE").exists());
+        assert!(root.join("factory-procedures/SKILL.md").is_file());
+        assert!(!root.join("factory-procedures/LICENSE").exists());
         assert!(!root.join("implement-spec-balanced/LICENSE").exists());
         assert!(!root.join("implement-spec-fast/LICENSE").exists());
         assert!(root.join("triage/AGENT-BRIEF.md").is_file());

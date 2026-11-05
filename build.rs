@@ -78,7 +78,13 @@ fn main() {
             &mut output,
         );
     }
-    for name in ["factory", "factory-fast", "factory-balanced", "triage"] {
+    for name in [
+        "factory",
+        "factory-fast",
+        "factory-balanced",
+        "factory-procedures",
+        "triage",
+    ] {
         files(
             Path::new(".agents/skills"),
             &Path::new(".agents/skills").join(name),
