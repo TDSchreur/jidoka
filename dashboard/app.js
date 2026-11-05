@@ -113,15 +113,16 @@ function Card({ run }) {
       <h3>${run.title}</h3>
       <p class="project">${run.project}</p>
       <span class=${known ? `badge ${run.status}` : 'badge'}>${String(run.status)}</span>
-      ${rework !== null &&
-      html`<p class="rework">
-        Rework${' '}${rework <= REWORK_CAP
-          ? `${rework} of ${REWORK_CAP}`
-          : `${rework} (past the cap of ${REWORK_CAP})`}
-      </p>`}
-      ${run.activity && html`<p class="activity">Activity: ${run.activity}</p>`}
-      ${run.current_ticket && html`<${Ticket} value=${String(run.current_ticket)} />`}
-      ${run.blocking_reason && html`<p class="reason">Blocked: ${run.blocking_reason}</p>`}
+      ${rework !== null
+        ? html`<p class="rework">
+            Rework${' '}${rework <= REWORK_CAP
+              ? `${rework} of ${REWORK_CAP}`
+              : `${rework} (past the cap of ${REWORK_CAP})`}
+          </p>`
+        : null}
+      ${run.activity ? html`<p class="activity">Activity: ${run.activity}</p>` : null}
+      ${run.current_ticket ? html`<${Ticket} value=${String(run.current_ticket)} />` : null}
+      ${run.blocking_reason ? html`<p class="reason">Blocked: ${run.blocking_reason}</p>` : null}
       <${Updated} run=${run} />
     </article>
   </li>`;
@@ -176,16 +177,17 @@ function App() {
     <main>
       <p id="message" role="status" class=${failed ? 'error' : ''}>${text}</p>
       <div id="groups">
-        ${runs &&
-        GROUPS.map(
-          ([id, name, description]) => html`<${Group}
-            key=${id}
-            id=${id}
-            name=${name}
-            description=${description}
-            entries=${indexed.filter((entry) => groupOf(entry.run) === id).sort(compare)}
-          />`,
-        )}
+        ${runs
+          ? GROUPS.map(
+              ([id, name, description]) => html`<${Group}
+                key=${id}
+                id=${id}
+                name=${name}
+                description=${description}
+                entries=${indexed.filter((entry) => groupOf(entry.run) === id).sort(compare)}
+              />`,
+            )
+          : null}
       </div>
     </main>
   `;
