@@ -78,7 +78,7 @@ impl World {
             target,
             runs,
             &self.roots(),
-            T0 + 1_000_000,
+            T0 + 10_000_000,
             Instant::now() + Duration::from_secs(30),
         )
     }
@@ -800,7 +800,9 @@ fn a_tight_deadline_is_reported_instead_of_blocking() {
         std::slice::from_ref(&target),
         &world.roots(),
         T0,
-        Instant::now() - Duration::from_secs(1),
+        Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now),
     );
     assert_eq!(usage.status, UsageStatus::NotTracked);
     assert!(
@@ -896,13 +898,13 @@ fn a_model_name_that_is_not_a_plain_name_is_dropped() {
 }
 
 #[test]
-fn only_a_whole_run_id_counts_as_naming_the_run() {
+fn only_a_run_command_naming_the_whole_run_id_counts_as_naming_the_run() {
     let ids: HashSet<&str> = [RUN_A].into_iter().collect();
     for yes in [
-        format!("run {RUN_A} now"),
-        format!("\\n{RUN_A}\\n"),
-        format!("\"{RUN_A}\""),
-        format!("x{RUN_A}"),
+        format!("factory run update {RUN_A} build running"),
+        format!("factory run update \"{RUN_A}\" build running"),
+        format!("{{\"command\":\"factory run inspect {RUN_A} --json\"}}"),
+        format!("factory run stats {RUN_A}"),
     ] {
         assert!(
             !crate::usage_logs::mentioned_runs(&yes, &ids).is_empty(),
@@ -910,10 +912,14 @@ fn only_a_whole_run_id_counts_as_naming_the_run() {
         );
     }
     for no in [
-        format!("{RUN_A}0"),
-        format!("0{RUN_A}"),
-        "1793872800000000009".to_string(),
-        "17938728".to_string(),
+        // The id as output or data, not as the target of a command: a session that listed runs names them all.
+        format!("Run {RUN_A}: Task"),
+        format!("run start printed {RUN_A}"),
+        format!("factory run update {RUN_A}0"),
+        format!("factory run update 0{RUN_A}"),
+        "factory run update 1793872800000000009".to_string(),
+        "factory run update 17938728".to_string(),
+        format!("see {RUN_A}"),
     ] {
         assert!(
             crate::usage_logs::mentioned_runs(&no, &ids).is_empty(),

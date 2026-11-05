@@ -16,7 +16,7 @@ const MAX_TICKETS: usize = 100;
 const MAX_SESSIONS: usize = 20;
 /// Sessions kept per run, and marks kept on its timeline.
 const KEEP_SESSIONS: usize = 100;
-const MAX_MARKS: usize = 1000;
+pub(crate) const MAX_MARKS: usize = 1000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Run {

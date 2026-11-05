@@ -321,6 +321,9 @@ fn not_found() -> (HttpStatus, &'static str) {
 pub(crate) struct Collector {
     settings: Option<UsageSettings>,
     pending: Mutex<Vec<rocket::tokio::task::JoinHandle<()>>>,
+    /// The latest collection chain per run: a newer one replaces an older one's later passes, so a flurry
+    /// of updates does not pile up scans.
+    chains: std::sync::Arc<Mutex<std::collections::HashMap<String, u64>>>,
     /// How many passes ran, for tests.
     #[cfg(test)]
     passes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -331,6 +334,7 @@ impl Collector {
         Self {
             settings,
             pending: Mutex::new(Vec::new()),
+            chains: std::sync::Arc::default(),
             #[cfg(test)]
             passes: std::sync::Arc::default(),
         }
@@ -351,6 +355,12 @@ impl Collector {
             return;
         }
         let (store, id) = (store.clone(), after.id.clone());
+        let chains = self.chains.clone();
+        let generation = chains.lock().map_or(0, |mut chains| {
+            let latest = chains.entry(id.clone()).or_insert(0);
+            *latest += 1;
+            *latest
+        });
         #[cfg(test)]
         let passes = self.passes.clone();
         let handle = rocket::tokio::spawn(async move {
@@ -359,6 +369,13 @@ impl Collector {
             for delay in delays {
                 if !delay.is_zero() {
                     rocket::tokio::time::sleep(delay).await;
+                }
+                // A newer update started its own chain, which does these passes again.
+                if chains
+                    .lock()
+                    .is_ok_and(|chains| chains.get(&id) != Some(&generation))
+                {
+                    return;
                 }
                 let (store, id, settings) = (store.clone(), id.clone(), settings.clone());
                 #[cfg(test)]
@@ -369,6 +386,11 @@ impl Collector {
                     }
                 })
                 .await;
+            }
+            if let Ok(mut chains) = chains.lock() {
+                if chains.get(&id) == Some(&generation) {
+                    chains.remove(&id);
+                }
             }
         });
         if let Ok(mut pending) = self.pending.lock() {

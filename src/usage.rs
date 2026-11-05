@@ -7,7 +7,7 @@
 
 use crate::{
     run::{Run, Stage},
-    usage_logs::{read_sessions, Roots, SessionData},
+    usage_logs::{read_sessions, ReadLimits, Roots, SessionData},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -287,12 +287,27 @@ pub(crate) struct Entry {
     pub(crate) subagent: bool,
 }
 
+/// How far ahead of this machine's clock a log entry may be.
+const FUTURE_SLACK_MS: u64 = 60_000;
+
 /// The last mark at or before `ts`, when `ts` is inside the run's window.
 fn mark_at(run: &Run, ts: u64) -> Option<&Mark> {
     if run.finished_at.is_some_and(|end| ts > end) {
         return None;
     }
     run.timeline.iter().rev().find(|mark| mark.at <= ts)
+}
+
+/// Whether two runs were active at the same time.
+fn overlaps(a: &Run, b: &Run) -> bool {
+    let window = |run: &Run| {
+        (
+            run.timeline.first().map_or(u64::MAX, |m| m.at),
+            run.finished_at.unwrap_or(u64::MAX),
+        )
+    };
+    let ((a_start, a_end), (b_start, b_end)) = (window(a), window(b));
+    a_start <= b_end && b_start <= a_end
 }
 
 fn claims(run: &Run, session: &SessionData) -> bool {
@@ -316,6 +331,7 @@ pub(crate) fn attribute(
     target: &Run,
     runs: &[Run],
     sessions: &[SessionData],
+    now: u64,
 ) -> (Vec<UsageRow>, Tokens, Vec<String>) {
     type Key = (Stage, String, Option<String>, bool);
     let mut rows: BTreeMap<Key, UsageRow> = BTreeMap::new();
@@ -325,6 +341,10 @@ pub(crate) fn attribute(
         let claimants: Vec<&Run> = runs.iter().filter(|run| claims(run, session)).collect();
         let mut used = false;
         for entry in &session.entries {
+            // An entry from the future cannot be the run's work: a clock is wrong or the log is made up.
+            if entry.ts > now.saturating_add(FUTURE_SLACK_MS) {
+                continue;
+            }
             let Some(mark) = mark_at(target, entry.ts) else {
                 continue;
             };
@@ -383,13 +403,29 @@ pub(crate) fn collect(
     now: u64,
     deadline: Instant,
 ) -> Usage {
+    collect_limited(target, runs, roots, now, deadline, ReadLimits::default())
+}
+
+fn collect_limited(
+    target: &Run,
+    runs: &[Run],
+    roots: &Roots,
+    now: u64,
+    deadline: Instant,
+    limits: ReadLimits,
+) -> Usage {
     let Some(first) = target.timeline.first() else {
         return Usage::not_tracked(
             "the run has no stage timeline: it started before usage tracking existed",
             now,
         );
     };
-    let tracked: Vec<&Run> = runs.iter().filter(|run| !run.timeline.is_empty()).collect();
+    // Only runs whose time overlaps the target's can contest its entries, so only they are looked for;
+    // this also keeps the scan from reaching back to the oldest run there is.
+    let tracked: Vec<&Run> = runs
+        .iter()
+        .filter(|run| run.id == target.id || (!run.timeline.is_empty() && overlaps(target, run)))
+        .collect();
     let ids: HashSet<&str> = tracked.iter().map(|run| run.id.as_str()).collect();
     let recorded: HashSet<&str> = tracked
         .iter()
@@ -401,19 +437,21 @@ pub(crate) fn collect(
         .map(|mark| mark.at)
         .min()
         .unwrap_or(first.at);
-    let read = read_sessions(roots, &ids, &recorded, from, deadline);
+    let read = read_sessions(roots, &ids, &recorded, from, deadline, limits);
     let claimed: Vec<&SessionData> = read.sessions.iter().filter(|s| claims(target, s)).collect();
     if claimed.is_empty() {
         let reason = if read.roots_found == 0 {
             "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()
         } else if read.timed_out {
             "reading the session logs took too long".to_string()
+        } else if read.truncated {
+            "reading the session logs stopped at its limit on their number and size".to_string()
         } else {
             "no session log names this run and none was recorded for it; its agent may not write logs this tool reads, or its session id was never recorded".to_string()
         };
         return Usage::not_tracked(reason, now);
     }
-    let (rows, unattributed, counted) = attribute(target, runs, &read.sessions);
+    let (rows, unattributed, counted) = attribute(target, runs, &read.sessions, now);
     let mut notes: Vec<String> = Vec::new();
     for note in &read.notes {
         if note
@@ -427,6 +465,15 @@ pub(crate) fn collect(
     }
     if read.timed_out {
         notes.push("reading the session logs took too long; usage may be incomplete".into());
+    }
+    if read.truncated {
+        notes.push("reading the session logs stopped at its limit on their number and size; usage may be incomplete".into());
+    }
+    if target.timeline.len() >= crate::run::MAX_MARKS {
+        notes.push(
+            "the stage timeline reached its limit, so later work is attributed to its last entry"
+                .into(),
+        );
     }
     if !unattributed.is_empty() {
         notes.push(format!(
@@ -473,7 +520,7 @@ pub(crate) fn collect(
         notes,
         no_data,
         collected_at: now,
-        sessions: counted,
+        sessions: counted.into_iter().take(100).collect(),
         rows,
         unattributed,
     }
@@ -544,7 +591,7 @@ fn keep_more(old: Option<&Usage>, new: Usage) -> Usage {
     let mut kept = old.clone();
     kept.status = UsageStatus::Partial;
     kept.collected_at = new.collected_at;
-    let note = "some session logs are no longer available, so the counts kept from an earlier reading may be incomplete";
+    let note = "the counts kept from an earlier reading are higher than the latest reading found: a session log is no longer available, or its work is now shared with another run";
     if !kept.notes.iter().any(|n| n == note) {
         kept.notes.push(note.to_string());
     }

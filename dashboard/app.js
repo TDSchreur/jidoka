@@ -187,7 +187,7 @@ function ContextChips({ run }) {
   return html`${progress
       ? html`<span class="chip">Tickets${' '}${progress.done}/${progress.total}<span class="visually-hidden">${' done'}</span></span>`
       : null}${tokens !== null
-      ? html`<span class="chip">Tokens${' '}${compactTokens(tokens)}${run.usage.status === 'partial' ? ' (partial)' : ''}<span class="visually-hidden">${' fresh'}</span></span>`
+      ? html`<span class="chip">Tokens${' '}${compactTokens(tokens)}<span class="visually-hidden">${' fresh'}</span>${run.usage.status === 'partial' ? ' (partial)' : ''}</span>`
       : null}`;
 }
 
@@ -211,6 +211,7 @@ function UsageDetail({ usage }) {
     ${rows.length
       ? html`<div class="table-scroll" role="region" aria-label="Token usage by stage, model and ticket" tabindex="0">
             <table class="usage-table">
+              <caption class="visually-hidden">Token usage by stage, model and ticket</caption>
               <thead>
                 <tr>
                   <th scope="col">Stage</th>

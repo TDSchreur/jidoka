@@ -177,6 +177,9 @@ mod tests {
     use crate::{server::build_rocket, test_support::TestDir};
     use std::{fs, path::Path};
 
+    /// An address nobody listens on: a port the tests' own servers can never be assigned.
+    const NOTHING_LISTENS: &str = "127.0.0.1:1";
+
     /// A real Rocket server on an OS-assigned port, shut down and joined on drop.
     struct TestServer {
         address: String,
@@ -329,8 +332,8 @@ mod tests {
         assert!(missing.to_string().contains("Not found"), "{missing}");
         let invalid = report_run(&server.address, "12a", "build", "running", &[]).unwrap_err();
         assert_eq!(invalid.to_string(), "Invalid run id");
-        let address = server.address.clone();
-        drop(server);
+        // Nothing listens on port 1. A port that was just freed could be taken by another test's server.
+        let address = NOTHING_LISTENS.to_string();
         let unreachable = start_run(&address, "task", "/work", None, None).unwrap_err();
         assert!(
             unreachable
@@ -355,12 +358,8 @@ mod tests {
 
     #[test]
     fn probe_reports_nothing_listening_and_foreign_listeners() {
-        // Nothing listens once the server is gone.
-        let dir = TestDir::new();
-        let server = TestServer::start(&dir.0.path().join("runs.json"));
-        let address = server.address.clone();
-        drop(server);
-        assert_eq!(probe_dashboard(&address).unwrap(), Probe::Absent);
+        // Nothing listens on port 1.
+        assert_eq!(probe_dashboard(NOTHING_LISTENS).unwrap(), Probe::Absent);
 
         // A listener that answers something else on the same port is not a dashboard.
         for reply in [

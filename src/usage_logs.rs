@@ -15,12 +15,28 @@ use std::{
     ffi::OsString,
     fs, io,
     path::{Path, PathBuf},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Instant, UNIX_EPOCH},
 };
 
 /// The largest log read: real session logs are a few megabytes, so a bigger one is skipped.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+const MTIME_SLACK_MS: u64 = 5 * 60 * 1000;
+/// Limits on one pass over the logs, so a huge or hostile log folder cannot exhaust memory or time.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ReadLimits {
+    pub(crate) files: usize,
+    pub(crate) bytes: u64,
+}
+
+impl Default for ReadLimits {
+    fn default() -> Self {
+        Self {
+            files: 20_000,
+            bytes: 512 * 1024 * 1024,
+        }
+    }
+}
 
 /// Where each agent keeps its session logs.
 #[derive(Clone, Debug)]
@@ -68,6 +84,8 @@ pub(crate) struct ReadResult {
     /// How many of the three log folders exist.
     pub(crate) roots_found: usize,
     pub(crate) timed_out: bool,
+    /// Reading stopped at a limit on the number or size of the logs.
+    pub(crate) truncated: bool,
 }
 
 // --- shared pieces ----------------------------------------------------------------------------------
@@ -97,7 +115,7 @@ fn modified_ms(path: &Path) -> Option<u64> {
     u64::try_from(modified.duration_since(UNIX_EPOCH).ok()?.as_millis()).ok()
 }
 
-enum Read {
+enum LogFile {
     Content(String),
     /// Not a regular file, so not followed.
     Skipped,
@@ -105,22 +123,25 @@ enum Read {
 }
 
 /// The text of a regular log file; a link or special file is not followed.
-fn read_text(path: &Path) -> io::Result<Read> {
+fn read_text(path: &Path) -> io::Result<LogFile> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.is_file() {
-        return Ok(Read::Skipped);
+        return Ok(LogFile::Skipped);
     }
     if meta.len() > MAX_FILE_BYTES {
-        return Ok(Read::TooBig);
+        return Ok(LogFile::TooBig);
     }
-    Ok(Read::Content(
+    Ok(LogFile::Content(
         String::from_utf8_lossy(&fs::read(path)?).into_owned(),
     ))
 }
 
-/// The run ids a log names: whole numbers of 8 to 22 digits that are a known run id. A run id is
-/// digits only, so a number inside a longer number or a word is not a match.
+/// The run ids a log names *in a command on the run*: a known run id right after `run update`,
+/// `run inspect` or `run stats`, as `factory run update <id>` is written. Run ids also appear in tool
+/// output and in files an agent reads (a session that listed every run would otherwise claim them all), so
+/// a bare number does not count. A run id is digits only, so a number inside a longer number does not match.
 pub(crate) fn mentioned_runs(text: &str, ids: &HashSet<&str>) -> HashSet<String> {
+    const COMMANDS: [&str; 3] = ["run update", "run inspect", "run stats"];
     let bytes = text.as_bytes();
     let mut found = HashSet::new();
     let mut at = 0;
@@ -133,11 +154,20 @@ pub(crate) fn mentioned_runs(text: &str, ids: &HashSet<&str>) -> HashSet<String>
         while at < bytes.len() && bytes[at].is_ascii_digit() {
             at += 1;
         }
-        if (8..=22).contains(&(at - start)) {
-            let number = &text[start..at];
-            if ids.contains(number) {
-                found.insert(number.to_string());
-            }
+        if !(8..=22).contains(&(at - start)) || !ids.contains(&text[start..at]) {
+            continue;
+        }
+        // What comes just before the number: the command, then spaces and an optional quote.
+        let before = text.as_bytes()[..start]
+            .iter()
+            .rev()
+            .take(24)
+            .copied()
+            .collect::<Vec<u8>>();
+        let before: String = before.into_iter().rev().map(char::from).collect();
+        let before = before.trim_end_matches(['"', '\'', '`', ' ']);
+        if COMMANDS.iter().any(|command| before.ends_with(command)) {
+            found.insert(text[start..at].to_string());
         }
     }
     found
@@ -148,6 +178,20 @@ fn sorted_dir(path: &Path) -> Vec<fs::DirEntry> {
         .map(|dir| dir.flatten().collect())
         .unwrap_or_default();
     entries.sort_by_key(fs::DirEntry::file_name);
+    entries
+}
+
+/// The folders inside `path`. A link to a folder is not followed, so a link cannot lead out of the log folder.
+fn sub_dirs(path: &Path) -> Vec<fs::DirEntry> {
+    let mut entries = sorted_dir(path);
+    entries.retain(|e| e.file_type().is_ok_and(|t| t.is_dir()));
+    entries
+}
+
+/// The regular files inside `path`; links are not followed.
+fn files_in(path: &Path) -> Vec<fs::DirEntry> {
+    let mut entries = sorted_dir(path);
+    entries.retain(|e| e.file_type().is_ok_and(|t| t.is_file()));
     entries
 }
 
@@ -164,15 +208,38 @@ fn merge_largest(into: &mut Tokens, other: &Tokens) {
     into.reasoning = max(into.reasoning, other.reasoning);
 }
 
-/// What one log file gave: keyed entries and how many lines that looked like usage could not be read.
+/// What one log file gave. Lines that looked like usage but could not be used are counted, so the
+/// coverage can say so instead of silently looking complete.
 #[derive(Default)]
 struct Parsed {
     entries: Vec<(String, Entry)>,
+    /// Lines that were not valid JSON.
     malformed: usize,
+    /// Valid lines that held no usable model, time or counts.
+    unusable: usize,
+    /// Entries that carry no response id, so a repeat of them cannot be told from a new call.
+    unidentified: usize,
 }
 
-fn is_unrecognised(parsed: &Parsed) -> bool {
-    parsed.entries.is_empty()
+impl Parsed {
+    /// Adds an entry under its response id, or, with none, under its line so it counts once as written.
+    fn push(&mut self, id: Option<String>, line: usize, prefix: &str, entry: Entry) {
+        let key = match id {
+            Some(id) => format!("{prefix}|{id}"),
+            None => {
+                self.unidentified += 1;
+                format!("{prefix}|{}|line {line}", entry.session)
+            }
+        };
+        self.entries.push((key, entry));
+    }
+
+    fn absorb(&mut self, other: Parsed) {
+        self.malformed += other.malformed;
+        self.unusable += other.unusable;
+        self.unidentified += other.unidentified;
+        self.entries.extend(other.entries);
+    }
 }
 
 // --- Claude Code ------------------------------------------------------------------------------------
@@ -181,22 +248,28 @@ fn is_unrecognised(parsed: &Parsed) -> bool {
 /// `input_tokens` excludes the cache; thinking tokens are inside `output_tokens`.
 fn parse_claude(text: &str, session: &str, subagent_file: bool) -> Parsed {
     let mut parsed = Parsed::default();
-    for line in text.lines().filter(|line| line.contains("\"usage\"")) {
+    for (number, line) in text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains("\"usage\""))
+    {
         let Ok(data) = serde_json::from_str::<Value>(line) else {
             parsed.malformed += 1;
             continue;
         };
         let message = &data["message"];
         let usage = &message["usage"];
+        if !usage.is_object() {
+            // Another kind of line that mentions "usage", such as a task's totals: not a response.
+            continue;
+        }
         let (Some(model), Some(ts)) = (
             model_name(&message["model"]),
             timestamp(data.get("timestamp")),
         ) else {
+            parsed.unusable += 1;
             continue;
         };
-        if !usage.is_object() {
-            continue;
-        }
         let tokens = Tokens {
             input: count(usage.get("input_tokens")),
             cache_read: count(usage.get("cache_read_input_tokens")),
@@ -205,16 +278,18 @@ fn parse_claude(text: &str, session: &str, subagent_file: bool) -> Parsed {
             reasoning: count(usage.pointer("/output_tokens_details/thinking_tokens")),
         };
         if tokens.input.is_none() && tokens.output.is_none() {
+            parsed.unusable += 1;
             continue;
         }
         let id = message["id"]
             .as_str()
             .or(data["uuid"].as_str())
-            .map_or_else(|| ts.to_string(), str::to_string);
-        let key = format!("claude|{id}|{}", data["requestId"].as_str().unwrap_or(""));
+            .map(|id| format!("{id}|{}", data["requestId"].as_str().unwrap_or("")));
         let subagent = subagent_file || data["isSidechain"].as_bool() == Some(true);
-        parsed.entries.push((
-            key,
+        parsed.push(
+            id,
+            number,
+            "claude",
             Entry {
                 session: session.to_string(),
                 ts,
@@ -222,14 +297,14 @@ fn parse_claude(text: &str, session: &str, subagent_file: bool) -> Parsed {
                 tokens,
                 subagent,
             },
-        ));
+        );
     }
     parsed
 }
 
 fn read_claude(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
-    for slug in sorted_dir(root).into_iter().filter(|e| e.path().is_dir()) {
-        for file in sorted_dir(&slug.path()) {
+    for slug in sub_dirs(root) {
+        for file in files_in(&slug.path()) {
             let path = file.path();
             let Some(stem) = path
                 .file_name()
@@ -238,13 +313,10 @@ fn read_claude(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
             else {
                 continue;
             };
-            if !path.is_file() {
-                continue;
-            }
-            if ctx.over_time(out) {
+            if ctx.over_limit(out) {
                 return;
             }
-            if modified_ms(&path).is_some_and(|m| m < ctx.from) {
+            if ctx.stale(&path) {
                 continue;
             }
             let stem = stem.to_string();
@@ -256,17 +328,18 @@ fn read_claude(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
                 continue;
             }
             let mut parsed = parse_claude(&text, &stem, false);
+            drop(text);
             // The subagents of a session are in its own folder; the same response is never counted twice.
-            let sub_dir = slug.path().join(&stem).join("subagents");
-            for sub in sorted_dir(&sub_dir) {
+            for sub in files_in(&slug.path().join(&stem).join("subagents")) {
                 let sub_path = sub.path();
                 if sub_path.extension().is_none_or(|e| e != "jsonl") {
                     continue;
                 }
+                if ctx.over_limit(out) {
+                    break;
+                }
                 if let Some(sub_text) = ctx.load(&sub_path, &stem, out) {
-                    let more = parse_claude(&sub_text, &stem, true);
-                    parsed.malformed += more.malformed;
-                    parsed.entries.extend(more.entries);
+                    parsed.absorb(parse_claude(&sub_text, &stem, true));
                 }
             }
             ctx.add(&stem, mentions, parsed, "Claude Code", out);
@@ -276,12 +349,14 @@ fn read_claude(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
 
 // --- Codex ------------------------------------------------------------------------------------------
 
+/// A rollout seen on the first pass: its ids and where it is, not its text, so unclaimed rollouts
+/// cost no memory.
 struct Rollout {
+    path: PathBuf,
     id: String,
     root: String,
     subagent: bool,
     mentions: HashSet<String>,
-    text: String,
 }
 
 /// The ids on a rollout's `session_meta` line. A rollout of a subagent has its own id and the id of the
@@ -311,7 +386,7 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
     let mut parsed = Parsed::default();
     let mut model_by_turn: BTreeMap<String, String> = BTreeMap::new();
     let mut last_model: Option<String> = None;
-    for line in text.lines() {
+    for (number, line) in text.lines().enumerate() {
         let is_context = line.contains("\"turn_context\"");
         if !is_context && !line.contains("\"token_usage_record\"") {
             continue;
@@ -335,6 +410,7 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
         }
         let usage = &payload["usage"];
         let (Some(ts), true) = (timestamp(data.get("timestamp")), usage.is_object()) else {
+            parsed.unusable += 1;
             continue;
         };
         let (input, cached, written, output) = (
@@ -343,14 +419,14 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
             count(usage.get("cache_write_input_tokens")),
             count(usage.get("output_tokens")),
         );
-        if input.is_none() && output.is_none() {
-            continue;
-        }
         let model = payload["turn_id"]
             .as_str()
             .and_then(|t| model_by_turn.get(t))
             .or(last_model.as_ref());
-        let Some(model) = model else { continue };
+        let Some(model) = model.filter(|_| input.is_some() || output.is_some()) else {
+            parsed.unusable += 1;
+            continue;
+        };
         let tokens = Tokens {
             input: input.map(|n| {
                 n.saturating_sub(cached.unwrap_or(0))
@@ -361,11 +437,10 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
             output,
             reasoning: count(usage.get("reasoning_output_tokens")),
         };
-        let id = payload["response_id"]
-            .as_str()
-            .map_or_else(|| format!("{ts}|{input:?}|{output:?}"), str::to_string);
-        parsed.entries.push((
-            format!("codex|{id}"),
+        parsed.push(
+            payload["response_id"].as_str().map(str::to_string),
+            number,
+            "codex",
             Entry {
                 session: session.to_string(),
                 ts,
@@ -373,7 +448,7 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
                 tokens,
                 subagent,
             },
-        ));
+        );
     }
     parsed
 }
@@ -381,15 +456,9 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
 fn read_codex(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
     let earliest_day = civil_day(ctx.from.saturating_sub(DAY_MS));
     let mut rollouts: Vec<Rollout> = Vec::new();
-    for year in sorted_dir(root).into_iter().filter(|e| e.path().is_dir()) {
-        for month in sorted_dir(&year.path())
-            .into_iter()
-            .filter(|e| e.path().is_dir())
-        {
-            for day in sorted_dir(&month.path())
-                .into_iter()
-                .filter(|e| e.path().is_dir())
-            {
+    for year in sub_dirs(root) {
+        for month in sub_dirs(&year.path()) {
+            for day in sub_dirs(&month.path()) {
                 let name = format!(
                     "{}-{}-{}",
                     year.file_name().to_string_lossy(),
@@ -399,18 +468,16 @@ fn read_codex(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
                 if name < earliest_day {
                     continue;
                 }
-                for file in sorted_dir(&day.path()) {
+                for file in files_in(&day.path()) {
                     let path = file.path();
                     let fname = file.file_name().to_string_lossy().into_owned();
-                    if !(fname.starts_with("rollout-") && fname.ends_with(".jsonl"))
-                        || !path.is_file()
-                    {
+                    if !(fname.starts_with("rollout-") && fname.ends_with(".jsonl")) {
                         continue;
                     }
-                    if ctx.over_time(out) {
+                    if ctx.over_limit(out) {
                         return;
                     }
-                    if modified_ms(&path).is_some_and(|m| m < ctx.from) {
+                    if ctx.stale(&path) {
                         continue;
                     }
                     let Some(text) = ctx.load(&path, &fname, out) else {
@@ -421,11 +488,11 @@ fn read_codex(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
                     };
                     let mentions = mentioned_runs(&text, ctx.ids);
                     rollouts.push(Rollout {
+                        path,
                         id,
                         root,
                         subagent,
                         mentions,
-                        text,
                     });
                 }
             }
@@ -443,11 +510,17 @@ fn read_codex(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
         .collect();
     let mut by_root: BTreeMap<String, (HashSet<String>, Parsed)> = BTreeMap::new();
     for rollout in rollouts.iter().filter(|r| claimed_roots.contains(&r.root)) {
-        let parsed = parse_codex(&rollout.text, &rollout.root, rollout.subagent);
+        if ctx.over_limit(out) {
+            return;
+        }
+        // Only a claimed rollout is read again, to parse it.
+        let Some(text) = ctx.load(&rollout.path, &rollout.root, out) else {
+            continue;
+        };
+        let parsed = parse_codex(&text, &rollout.root, rollout.subagent);
         let (mentions, all) = by_root.entry(rollout.root.clone()).or_default();
         mentions.extend(rollout.mentions.iter().cloned());
-        all.malformed += parsed.malformed;
-        all.entries.extend(parsed.entries);
+        all.absorb(parsed);
     }
     for (root, (mentions, parsed)) in by_root {
         ctx.add(&root, mentions, parsed, "Codex", out);
@@ -465,9 +538,10 @@ fn civil_day(millis: u64) -> String {
 /// tokens are part of output.
 fn parse_copilot(text: &str, session: &str) -> Parsed {
     let mut parsed = Parsed::default();
-    for line in text
+    for (number, line) in text
         .lines()
-        .filter(|line| line.contains("\"session.usage_record\""))
+        .enumerate()
+        .filter(|(_, line)| line.contains("\"session.usage_record\""))
     {
         let Ok(data) = serde_json::from_str::<Value>(line) else {
             parsed.malformed += 1;
@@ -481,6 +555,7 @@ fn parse_copilot(text: &str, session: &str) -> Parsed {
             model_name(&usage["model"]),
             timestamp(data.get("timestamp")),
         ) else {
+            parsed.unusable += 1;
             continue;
         };
         let (input, read, write, output) = (
@@ -490,6 +565,7 @@ fn parse_copilot(text: &str, session: &str) -> Parsed {
             count(usage.get("outputTokens")),
         );
         if input.is_none() && output.is_none() {
+            parsed.unusable += 1;
             continue;
         }
         let tokens = Tokens {
@@ -502,11 +578,10 @@ fn parse_copilot(text: &str, session: &str) -> Parsed {
             output,
             reasoning: count(usage.get("reasoningTokens")),
         };
-        let call = usage["apiCallId"]
-            .as_str()
-            .map_or_else(|| format!("{ts}|{input:?}|{output:?}"), str::to_string);
-        parsed.entries.push((
-            format!("copilot|{session}|{call}"),
+        parsed.push(
+            usage["apiCallId"].as_str().map(str::to_string),
+            number,
+            &format!("copilot|{session}"),
             Entry {
                 session: session.to_string(),
                 ts,
@@ -514,22 +589,22 @@ fn parse_copilot(text: &str, session: &str) -> Parsed {
                 tokens,
                 subagent: usage["initiator"] == "sub-agent",
             },
-        ));
+        );
     }
     parsed
 }
 
 fn read_copilot(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
-    for dir in sorted_dir(root).into_iter().filter(|e| e.path().is_dir()) {
+    for dir in sub_dirs(root) {
         let session = dir.file_name().to_string_lossy().into_owned();
         let path = dir.path().join("events.jsonl");
-        if !path.is_file() {
+        if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
             continue;
         }
-        if ctx.over_time(out) {
+        if ctx.over_limit(out) {
             return;
         }
-        if modified_ms(&path).is_some_and(|m| m < ctx.from) {
+        if ctx.stale(&path) {
             continue;
         }
         let Some(text) = ctx.load(&path, &session, out) else {
@@ -546,31 +621,46 @@ fn read_copilot(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
 
 // --- reading ----------------------------------------------------------------------------------------
 
-/// What the readers share: which runs and sessions are of interest, and the time budget.
+/// What the readers share: which runs and sessions are of interest, and the limits.
 struct Ctx<'a> {
     ids: &'a HashSet<&'a str>,
     recorded: &'a HashSet<&'a str>,
     from: u64,
     deadline: Instant,
+    limits: ReadLimits,
+    files: usize,
+    bytes: u64,
     /// Entries by key across every session, so a response that appears twice counts once.
     entries: BTreeMap<String, Entry>,
-    /// Per session: the run ids it names and the keys of its entries.
+    /// Per session: the run ids it names.
     sessions: BTreeMap<String, HashSet<String>>,
 }
 
 impl Ctx<'_> {
-    fn over_time(&self, out: &mut ReadResult) -> bool {
+    /// Whether a log was last written well before the earliest run of interest, so it cannot hold its
+    /// work. File times are coarse and clocks differ, so there is plenty of slack.
+    fn stale(&self, path: &Path) -> bool {
+        modified_ms(path).is_some_and(|m| m.saturating_add(MTIME_SLACK_MS) < self.from)
+    }
+
+    /// Whether to stop reading: out of time, or past the limit on the number or size of the logs.
+    fn over_limit(&mut self, out: &mut ReadResult) -> bool {
         if Instant::now() > self.deadline {
             out.timed_out = true;
         }
-        out.timed_out
+        self.files += 1;
+        if self.files > self.limits.files || self.bytes > self.limits.bytes {
+            out.truncated = true;
+        }
+        out.timed_out || out.truncated
     }
 
     /// The text of a log, or a note about why not. Only a session that was recorded for a run is
     /// named in a note, because only then is it known to matter.
-    fn load(&self, path: &Path, session: &str, out: &mut ReadResult) -> Option<String> {
-        let note_for = |text: &str, out: &mut ReadResult| {
-            if self.recorded.contains(session) {
+    fn load(&mut self, path: &Path, session: &str, out: &mut ReadResult) -> Option<String> {
+        let recorded = self.recorded.contains(session);
+        let mut note = |text: &str| {
+            if recorded {
                 out.notes.push(Note {
                     session: Some(session.to_string()),
                     text: text.to_string(),
@@ -578,14 +668,17 @@ impl Ctx<'_> {
             }
         };
         match read_text(path) {
-            Ok(Read::Content(text)) => Some(text),
-            Ok(Read::Skipped) => None,
-            Ok(Read::TooBig) => {
-                note_for("a session log larger than 64 MiB was not read", out);
+            Ok(LogFile::Content(text)) => {
+                self.bytes += text.len() as u64;
+                Some(text)
+            }
+            Ok(LogFile::Skipped) => None,
+            Ok(LogFile::TooBig) => {
+                note("a session log larger than 64 MiB was not read");
                 None
             }
             Err(_) => {
-                note_for("a session log could not be read", out);
+                note("a session log could not be read");
                 None
             }
         }
@@ -599,20 +692,42 @@ impl Ctx<'_> {
         agent: &str,
         out: &mut ReadResult,
     ) {
-        if parsed.malformed > 0 {
-            out.notes.push(Note {
-                session: Some(id.to_string()),
-                text: format!(
-                    "{} malformed {agent} log line(s) were skipped",
-                    parsed.malformed
-                ),
-            });
+        // An id comes from the log's file or folder name or its own metadata: only a plain one is kept.
+        let plain = (1..=100).contains(&id.len())
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+        if !plain {
+            return;
         }
-        if is_unrecognised(&parsed) {
+        let mut note = |text: String| {
             out.notes.push(Note {
                 session: Some(id.to_string()),
-                text: format!("a {agent} session log held no usage entries in a recognised format"),
-            });
+                text,
+            })
+        };
+        if parsed.malformed > 0 {
+            note(format!(
+                "{} malformed {agent} log line(s) were skipped",
+                parsed.malformed
+            ));
+        }
+        if parsed.unusable > 0 {
+            note(format!(
+                "{} {agent} usage line(s) had no usable model, time or count and were skipped",
+                parsed.unusable
+            ));
+        }
+        if parsed.unidentified > 0 {
+            note(format!(
+                "{} {agent} usage entr(ies) have no response id, so a repeat of them cannot be detected",
+                parsed.unidentified
+            ));
+        }
+        if parsed.entries.is_empty() {
+            note(format!(
+                "a {agent} session log held no usage entries in a recognised format"
+            ));
         }
         for (key, entry) in parsed.entries {
             match self.entries.get_mut(&key) {
@@ -636,6 +751,7 @@ pub(crate) fn read_sessions(
     recorded: &HashSet<&str>,
     from: u64,
     deadline: Instant,
+    limits: ReadLimits,
 ) -> ReadResult {
     let mut out = ReadResult::default();
     let mut ctx = Ctx {
@@ -643,10 +759,12 @@ pub(crate) fn read_sessions(
         recorded,
         from,
         deadline,
+        limits,
+        files: 0,
+        bytes: 0,
         entries: BTreeMap::new(),
         sessions: BTreeMap::new(),
     };
-    let _ = SystemTime::now();
     for (root, read) in [
         (
             &roots.claude,
@@ -655,12 +773,13 @@ pub(crate) fn read_sessions(
         (&roots.codex, read_codex),
         (&roots.copilot, read_copilot),
     ] {
+        // The log folder itself may be a link (a dotfiles setup); what is inside it is not followed.
         if !root.is_dir() {
             continue;
         }
         out.roots_found += 1;
         read(root, &mut ctx, &mut out);
-        if out.timed_out {
+        if out.timed_out || out.truncated {
             break;
         }
     }
