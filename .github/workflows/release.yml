@@ -29,6 +29,8 @@ jobs:
           toolchain: stable
       - run: cargo test --locked
       - run: cargo build --release --locked
+        env:
+          FACTORY_RELEASE: '1'
       - shell: pwsh
         run: |
           Copy-Item '${{ matrix.executable }}' '${{ matrix.artifact }}'
