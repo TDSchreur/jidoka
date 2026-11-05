@@ -400,20 +400,141 @@ mod tests {
             .collect()
     }
 
+    async fn stylesheet() -> String {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        api.get("/assets/style.css")
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .dispatch()
+            .await
+            .into_string()
+            .await
+            .unwrap()
+    }
+
+    /// The design token layer and the rules below it.
+    fn split_tokens(css: &str) -> (&str, &str) {
+        css.split_once("/* End of design tokens */")
+            .expect("the stylesheet ends its token layer with a marker")
+    }
+
+    fn variable_uses(rules: &str) -> std::collections::BTreeSet<String> {
+        rules
+            .split("var(--")
+            .skip(1)
+            .filter_map(|rest| rest.split(')').next())
+            .map(str::to_owned)
+            .collect()
+    }
+
     #[rocket::async_test]
-    async fn dashboard_theme_follows_system_and_dark_overrides_every_token() {
-        let page = dashboard_page().await;
+    async fn dashboard_theme_follows_system_and_dark_overrides_every_themed_token() {
+        let css = stylesheet().await;
         // Single-line markers keep the test independent of line endings (CRLF on Windows).
         // The first `:root {` block holds the light tokens.
-        let light = tokens_after(&page, ":root {");
-        assert!(light.len() > 10, "colours should be tokens on :root");
-        assert!(page.contains("color-scheme: light dark;"));
-        assert!(page.contains("@media (prefers-color-scheme: dark)"));
-        let system_dark = tokens_after(&page, ":root:not([data-theme=\"light\"]) {");
-        let forced_dark = tokens_after(&page, ":root[data-theme=\"dark\"] {");
-        assert_eq!(system_dark, light, "system dark theme misses tokens");
-        assert_eq!(forced_dark, light, "forced dark theme misses tokens");
-        assert!(page.contains(":root[data-theme=\"light\"] { color-scheme: light; }"));
+        let light = tokens_after(&css, ":root {");
+        assert!(light.len() > 10, "design values should be tokens on :root");
+        assert!(css.contains("color-scheme: light dark;"));
+        assert!(css.contains("@media (prefers-color-scheme: dark)"));
+        // Colours and shadows change with the theme; the rest (spacing, type) is shared.
+        let themed: std::collections::BTreeSet<_> = light
+            .iter()
+            .filter(|name| name.starts_with("color") || name.starts_with("shadow"))
+            .cloned()
+            .collect();
+        assert!(!themed.is_empty());
+        let system_dark = tokens_after(&css, ":root:not([data-theme=\"light\"]) {");
+        let forced_dark = tokens_after(&css, ":root[data-theme=\"dark\"] {");
+        assert_eq!(system_dark, themed, "system dark theme misses tokens");
+        assert_eq!(forced_dark, themed, "forced dark theme misses tokens");
+        assert!(css.contains(":root[data-theme=\"light\"] { color-scheme: light; }"));
+    }
+
+    #[rocket::async_test]
+    async fn dashboard_rules_use_tokens_and_no_literal_colour() {
+        let css = stylesheet().await;
+        let (_, rules) = split_tokens(&css);
+        // Only declaration bodies can hold a colour; selectors such as `#add` are not colours.
+        let declarations: String = rules
+            .split('}')
+            .filter_map(|rule| rule.split_once('{').map(|(_, body)| body))
+            .collect::<Vec<_>>()
+            .join(";");
+        for (at, _) in declarations.match_indices('#') {
+            let hex = declarations[at + 1..]
+                .chars()
+                .take_while(char::is_ascii_hexdigit)
+                .count();
+            assert!(
+                !matches!(hex, 3 | 4 | 6 | 8),
+                "literal colour near {:?}",
+                &declarations[at..(at + 12).min(declarations.len())]
+            );
+        }
+        for function in [
+            "rgb(",
+            "rgba(",
+            "hsl(",
+            "hsla(",
+            "hwb(",
+            "lab(",
+            "lch(",
+            "oklab(",
+            "oklch(",
+            "color(",
+            "color-mix(",
+            "light-dark(",
+        ] {
+            assert!(
+                !declarations.contains(function),
+                "literal colour {function}"
+            );
+        }
+        let words: std::collections::BTreeSet<_> = declarations
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+            .map(str::to_ascii_lowercase)
+            .collect();
+        for named in [
+            "white",
+            "black",
+            "red",
+            "green",
+            "blue",
+            "gray",
+            "grey",
+            "orange",
+            "yellow",
+            "purple",
+            "navy",
+            "teal",
+            "pink",
+            "transparent",
+            "currentcolor",
+            "canvas",
+            "canvastext",
+            "linktext",
+            "highlight",
+        ] {
+            assert!(!words.contains(named), "named colour {named}");
+        }
+    }
+
+    #[rocket::async_test]
+    async fn dashboard_tokens_are_all_used_and_all_declared() {
+        let css = stylesheet().await;
+        let (layer, rules) = split_tokens(&css);
+        let declared = tokens_after(layer, ":root {");
+        let used = variable_uses(rules);
+        assert_eq!(
+            declared.difference(&used).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "tokens no rule uses"
+        );
+        assert_eq!(
+            used.difference(&declared).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "variables no token declares"
+        );
     }
 
     #[rocket::async_test]
