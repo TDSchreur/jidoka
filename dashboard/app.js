@@ -51,6 +51,15 @@ function storedCollapsed() {
   }
 }
 
+/** The Project the page was opened on (`?project=<path>`), or null. */
+function requestedProject() {
+  try {
+    return new URLSearchParams(location.search).get('project');
+  } catch {
+    return null;
+  }
+}
+
 const ProjectNames = createContext(new Map());
 
 /** The Project's name, with the full path as a tooltip. */
@@ -587,11 +596,17 @@ function App() {
   const { runs, failed, reload } = useRuns();
   const now = useNow();
   const [onlyWaiting, setOnlyWaiting] = useState(false);
+  const [wanted] = useState(requestedProject);
+  // The requested Project is shown expanded for this visit, without touching what was remembered.
   const [collapsed, setCollapsed] = useState(storedCollapsed);
+  const [forcedOpen, setForcedOpen] = useState(() => new Set(wanted === null ? [] : [wanted]));
+  const isCollapsed = (project) => collapsed.has(project) && !forcedOpen.has(project);
   const toggleProject = (project) => {
     const next = new Set(collapsed);
-    if (!next.delete(project)) next.add(project);
+    if (isCollapsed(project)) next.delete(project);
+    else next.add(project);
     setCollapsed(next);
+    setForcedOpen((current) => new Set([...current].filter((path) => path !== project)));
     try {
       localStorage.setItem('collapsed-projects', JSON.stringify([...next]));
     } catch {
@@ -651,8 +666,12 @@ function App() {
     description,
     entries: indexed.filter((entry) => groupOf(entry.run) === id).sort(compare),
   }));
-  const projects = [...new Set(indexed.map((entry) => entry.run.project))].sort((a, b) =>
-    String(names.get(a) ?? a).localeCompare(String(names.get(b) ?? b)) || String(a).localeCompare(String(b)),
+  const projects = [...new Set(indexed.map((entry) => entry.run.project))].sort(
+    (a, b) =>
+      // The Project the page was opened on comes first, the rest alphabetically.
+      Number(b === wanted) - Number(a === wanted) ||
+      String(names.get(a) ?? a).localeCompare(String(names.get(b) ?? b)) ||
+      String(a).localeCompare(String(b)),
   );
   // Chosen once, from the first answer that has Runs (whatever the filter), then only the visitor changes it.
   const [picked, setPicked] = useState(null);
@@ -705,7 +724,7 @@ function App() {
       ${runs?.length ? html`<p class="compact-description">${stages.find((stage) => stage.id === current).description}</p>` : null}
       <div id="groups">
         ${projects.map((project) => {
-          const isCollapsed = collapsed.has(project);
+          const closed = isCollapsed(project);
           const groupsId = `project-groups-${projects.indexOf(project)}`;
           const projectWaiting = indexed.filter((entry) => entry.run.project === project && needsYou(entry.run)).length;
           return html`<section class="project-row" key=${project}>
@@ -713,14 +732,14 @@ function App() {
             <button
               type="button"
               class="project-toggle"
-              aria-expanded=${String(!isCollapsed)}
+              aria-expanded=${String(!closed)}
               aria-controls=${groupsId}
               onClick=${() => toggleProject(project)}
             >
-              <span class="project-chevron" aria-hidden="true">${isCollapsed ? '▸' : '▾'}</span
+              <span class="project-chevron" aria-hidden="true">${closed ? '▸' : '▾'}</span
               ><${ProjectName} path=${project} />
             </button>
-            ${isCollapsed
+            ${closed
               ? html`<span class="project-summary"
                   >${stages
                     .map((item) => `${item.name} ${item.entries.filter((entry) => entry.run.project === project).length}`)
@@ -730,7 +749,7 @@ function App() {
                   : null}`
               : null}
           </h2>
-          <div class="project-groups" id=${groupsId} hidden=${isCollapsed}>
+          <div class="project-groups" id=${groupsId} hidden=${closed}>
             ${stages.map((item) => {
               const entries = item.entries.filter((entry) => entry.run.project === project);
               return html`<${Group}
