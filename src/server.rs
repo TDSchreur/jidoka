@@ -678,6 +678,19 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn the_open_detail_follows_its_run_by_id_and_closes_when_the_run_goes() {
+        let script = asset("/assets/app.js").await;
+        // Looked up by id in the whole list, so refreshes update it and the filters never hide it.
+        assert!(script.contains("(runs ?? []).find((run) => run.id === openId)"));
+        assert!(
+            !script.contains("openRun = indexed"),
+            "not the filtered list"
+        );
+        // A Run that is no longer listed closes the detail, so it cannot reappear later.
+        assert!(script.contains("if (openId !== null && runs && !openRun) setOpenId(null)"));
+    }
+
+    #[rocket::async_test]
     async fn dashboard_tokens_are_all_used_and_all_declared() {
         let css = stylesheet().await;
         let (layer, rules) = split_tokens(&css);

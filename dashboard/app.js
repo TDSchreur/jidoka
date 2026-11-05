@@ -352,6 +352,10 @@ function App() {
   };
   const close = () => setOpenId(null);
   useEffect(() => {
+    // The Run is no longer listed: close the detail, so it does not come back if the Run returns.
+    if (openId !== null && runs && !openRun) setOpenId(null);
+  }, [openId, runs]);
+  useEffect(() => {
     // Back to the card that was opened, once the detail is gone.
     if (openId === null && lastOpened.current !== null) {
       document.querySelector(`[data-run-id="${lastOpened.current}"]`)?.focus();
