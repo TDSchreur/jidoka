@@ -48,6 +48,7 @@
   --spacingHorizontalS: 8px;
   --spacingHorizontalSNudge: 6px;
   --spacingHorizontalXS: 4px;
+  --spacingHorizontalXXL: 24px;
   --spacingVerticalL: 16px;
   --spacingVerticalM: 12px;
   --spacingVerticalS: 8px;
@@ -129,7 +130,15 @@ header { margin-bottom: var(--spacingVerticalXXL); }
 .eyebrow { color: var(--colorBrandForegroundLink); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); font-weight: var(--fontWeightSemibold); letter-spacing: .08em; text-transform: uppercase; }
 h1 { font-size: var(--fontSizeBase500); line-height: var(--lineHeightBase500); font-weight: var(--fontWeightSemibold); margin: var(--spacingVerticalXS) 0; }
 p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
-.theme { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingVerticalXS) var(--spacingHorizontalS); margin: 0 0 var(--spacingVerticalL); padding: 0; border: 0; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingVerticalS) var(--spacingHorizontalXXL); margin: 0 0 var(--spacingVerticalL); }
+.theme { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingVerticalXS) var(--spacingHorizontalS); margin: 0; padding: 0; border: 0; }
+.toggle { padding: var(--spacingVerticalXS) var(--spacingHorizontalM); border: var(--strokeWidthThin) solid var(--colorNeutralStroke1); border-radius: var(--borderRadiusMedium); background: var(--colorNeutralBackground1); color: var(--colorNeutralForeground1); font: inherit; cursor: pointer; transition: background-color var(--durationFast) var(--curveEasyEase); }
+.toggle:hover { background: var(--colorNeutralBackground1Hover); }
+.toggle:active { background: var(--colorNeutralBackground1Pressed); }
+.toggle[aria-pressed="true"] { border-color: var(--colorBrandBackground); background: var(--colorBrandBackground); color: var(--colorNeutralForegroundOnBrand); font-weight: var(--fontWeightSemibold); }
+.toggle[aria-pressed="true"]:hover { background: var(--colorBrandBackgroundHover); }
+.toggle[aria-pressed="true"]:active { background: var(--colorBrandBackgroundPressed); }
+.toggle:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: var(--strokeWidthThick); }
 .theme legend { float: left; padding: 0; margin-right: var(--spacingHorizontalS); color: var(--colorNeutralForeground2); }
 .theme label { display: inline-flex; align-items: center; gap: var(--spacingHorizontalXS); padding: var(--spacingVerticalXS) var(--spacingHorizontalM); border: var(--strokeWidthThin) solid var(--colorNeutralStroke1); border-radius: var(--borderRadiusMedium); background: var(--colorNeutralBackground1); color: var(--colorNeutralForeground1); cursor: pointer; transition: background-color var(--durationFast) var(--curveEasyEase); }
 .theme label:hover { background: var(--colorNeutralBackground1Hover); }
@@ -178,5 +187,5 @@ a:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2
   .group .empty { padding: 0 var(--spacingHorizontalM) var(--spacingVerticalM); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .theme label { transition: none; }
+  .theme label, .toggle { transition: none; }
 }
