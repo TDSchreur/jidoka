@@ -1,5 +1,5 @@
 import { h, render } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 
 const html = htm.bind(h);
@@ -210,10 +210,10 @@ function NeedsYouToggle({ count, pressed, onToggle }) {
 }
 
 /** The Stage a visitor first sees in compact mode: one with a waiting Run, else the first with any Run. */
-function firstStage(stages) {
-  const waitingStage = stages.find((stage) => stage.entries.some((entry) => needsYou(entry.run)));
-  const filled = stages.find((stage) => stage.entries.length);
-  return (waitingStage ?? filled ?? stages[0]).id;
+function firstStage(runs) {
+  const waiting = runs.find(needsYou);
+  if (waiting) return groupOf(waiting);
+  return (GROUPS.find(([id]) => runs.some((run) => groupOf(run) === id)) ?? GROUPS[0])[0];
 }
 
 /** Compact mode shows one Stage at a time; these buttons pick it. Wide screens hide them and show every column. */
@@ -261,12 +261,11 @@ function App() {
     description,
     entries: indexed.filter((entry) => groupOf(entry.run) === id).sort(compare),
   }));
-  // Chosen once when the first answer arrives, then only the visitor changes it.
-  const [stage, setStage] = useState(null);
-  useEffect(() => {
-    if (runs && stage === null) setStage(firstStage(stages));
-  });
-  const current = stage ?? GROUPS[0][0];
+  // Chosen once, from the first answer that has Runs (whatever the filter), then only the visitor changes it.
+  const [picked, setPicked] = useState(null);
+  const opening = useRef(null);
+  if (opening.current === null && runs?.length) opening.current = firstStage(runs);
+  const current = picked ?? opening.current ?? GROUPS[0][0];
   return html`
     <div class="toolbar">
       <${NeedsYouToggle}
@@ -278,7 +277,7 @@ function App() {
     </div>
     <main>
       <p id="message" role="status" class=${failed ? 'error' : ''}>${text}</p>
-      ${runs ? html`<${StageButtons} stages=${stages} current=${current} onPick=${setStage} />` : null}
+      ${runs ? html`<${StageButtons} stages=${stages} current=${current} onPick=${setPicked} />` : null}
       <div id="groups">
         ${runs
           ? stages.map(

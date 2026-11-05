@@ -179,7 +179,7 @@ a:hover { color: var(--colorBrandForegroundLinkHover); }
 a:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: var(--strokeWidthThick); border-radius: var(--borderRadiusSmall); }
 /* Compact: one Stage at a time, picked with the Stage buttons. */
 .stages { display: flex; flex-wrap: wrap; gap: var(--spacingHorizontalS); margin: 0 0 var(--spacingVerticalL); }
-.waiting-mark { display: inline-block; min-width: var(--lineHeightBase200); margin-left: var(--spacingHorizontalXS); border-radius: var(--borderRadiusCircular); background: var(--colorPaletteRedBackground3); color: var(--colorNeutralForegroundOnBrand); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); font-weight: var(--fontWeightSemibold); text-align: center; }
+.waiting-mark { display: inline-block; min-width: var(--lineHeightBase200); margin-left: var(--spacingHorizontalXS); border: var(--strokeWidthThin) solid var(--colorNeutralForegroundOnBrand); border-radius: var(--borderRadiusCircular); background: var(--colorPaletteRedBackground3); color: var(--colorNeutralForegroundOnBrand); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); font-weight: var(--fontWeightSemibold); text-align: center; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 @media (max-width: 1024px) {
   .group:not(.selected) { display: none; }

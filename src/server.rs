@@ -428,15 +428,7 @@ mod tests {
     }
 
     async fn stylesheet() -> String {
-        let dir = TestDir::new();
-        let api = client(&dir).await;
-        api.get("/assets/style.css")
-            .header(Header::new("Host", "127.0.0.1:4311"))
-            .dispatch()
-            .await
-            .into_string()
-            .await
-            .unwrap()
+        asset("/assets/style.css").await
     }
 
     /// The design token layer and the rules below it.
@@ -616,7 +608,12 @@ mod tests {
             "a text alternative for the marker"
         );
         // The Stage is chosen once from the first answer, then only the visitor changes it.
-        assert!(script.contains("if (runs && stage === null) setStage(firstStage(stages))"));
+        assert!(script.contains("firstStage(runs)"));
+        assert!(
+            script.contains("opening.current"),
+            "the opening Stage is kept"
+        );
+        assert!(css.contains(".waiting-mark {"));
     }
 
     #[rocket::async_test]
