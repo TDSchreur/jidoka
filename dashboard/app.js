@@ -305,23 +305,19 @@ function Detail({ run, now, onClose }) {
   </dialog>`;
 }
 
-function Group({ id, name, description, entries, now, selected, onOpen, onDelete, onDeleteAll }) {
-  return html`<section class=${selected ? 'group selected' : 'group'} aria-labelledby=${`group-${id}`}>
-    <div class="group-header">
-      <h2 id=${`group-${id}`}>${name}<span class="count">${` (${entries.length})`}</span></h2>
-      <p class="group-description">${description}</p>
-      ${id === 'done' && entries.length
-        ? html`<button type="button" class="toggle danger delete-all" onClick=${onDeleteAll}>
-            Delete all<span class="visually-hidden">${` ${entries.length} done runs`}</span>
-          </button>`
-        : null}
-    </div>
+function Group({ id, entries, now, selected, onOpen, onDelete, onDeleteAll }) {
+  return html`<section class=${selected ? 'group selected' : 'group'} aria-label=${GROUPS.find(([key]) => key === id)[1]}>
+    ${id === 'done' && entries.length
+      ? html`<button type="button" class="toggle danger delete-all" onClick=${onDeleteAll}>
+          Delete all<span class="visually-hidden">${` ${entries.length} done runs`}</span>
+        </button>`
+      : null}
     ${entries.length
       ? html`<ul class="runs">
           ${entries.map((entry) =>
             id === 'done'
-              ? html`<${DoneCard} key=${entry.index} run=${entry.run} now=${now} onOpen=${onOpen} onDelete=${onDelete} />`
-              : html`<${Card} key=${entry.index} run=${entry.run} now=${now} onOpen=${onOpen} />`,
+              ? html`<${DoneCard} key=${entry.run.id} run=${entry.run} now=${now} onOpen=${onOpen} onDelete=${onDelete} />`
+              : html`<${Card} key=${entry.run.id} run=${entry.run} now=${now} onOpen=${onOpen} />`,
           )}
         </ul>`
       : html`<p class="empty">No runs</p>`}
@@ -631,6 +627,9 @@ function App() {
     description,
     entries: indexed.filter((entry) => groupOf(entry.run) === id).sort(compare),
   }));
+  const projects = [...new Set(indexed.map((entry) => entry.run.project))].sort((a, b) =>
+    String(names.get(a) ?? a).localeCompare(String(names.get(b) ?? b)) || String(a).localeCompare(String(b)),
+  );
   // Chosen once, from the first answer that has Runs (whatever the filter), then only the visitor changes it.
   const [picked, setPicked] = useState(null);
   const opening = useRef(null);
@@ -674,23 +673,31 @@ function App() {
       <p id="message" role="status" class=${failed || deleteError ? 'error' : ''}>${text}</p>
       ${runs && !runs.length ? html`<${Welcome} onHelp=${() => setHelpOpen(true)} />` : null}
       ${runs?.length ? html`<${StageButtons} stages=${stages} current=${current} onPick=${setPicked} />` : null}
+      ${runs?.length
+        ? html`<div class="board-headers">
+            ${stages.map((stage) => html`<div class="group-header"><h2>${stage.name}<span class="count">${` (${stage.entries.length})`}</span></h2><p class="group-description">${stage.description}</p></div>`)}
+          </div>`
+        : null}
+      ${runs?.length ? html`<p class="compact-description">${stages.find((stage) => stage.id === current).description}</p>` : null}
       <div id="groups">
-        ${runs?.length
-          ? stages.map(
-              (item) => html`<${Group}
+        ${projects.map((project) => html`<section class="project-row" key=${project}>
+          <h2 class="project-heading"><${ProjectName} path=${project} /></h2>
+          <div class="project-groups">
+            ${stages.map((item) => {
+              const entries = item.entries.filter((entry) => entry.run.project === project);
+              return html`<${Group}
                 key=${item.id}
                 id=${item.id}
-                name=${item.name}
-                description=${item.description}
                 now=${now}
-                entries=${item.entries}
+                entries=${entries}
                 selected=${item.id === current}
                 onOpen=${open}
                 onDelete=${(run) => setPending({ runs: [run] })}
-                onDeleteAll=${() => setPending({ runs: item.entries.map((entry) => entry.run) })}
-              />`,
-            )
-          : null}
+                onDeleteAll=${() => setPending({ runs: entries.map((entry) => entry.run) })}
+              />`;
+            })}
+          </div>
+        </section>`)}
       </div>
       ${helpOpen ? html`<${Help} onClose=${closeHelp} />` : null}
       ${pending

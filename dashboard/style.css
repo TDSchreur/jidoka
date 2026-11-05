@@ -161,6 +161,9 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 #message { margin: 0 0 var(--spacingVerticalL); }
 #message:empty { margin: 0; }
 #message.error { color: var(--colorPaletteRedForeground1); font-weight: var(--fontWeightSemibold); }
+.project-row { margin-bottom: var(--spacingVerticalXXL); }
+.project-heading { font-size: var(--fontSizeBase400); overflow-wrap: anywhere; }
+.board-headers { display: none; }
 .group { margin-bottom: var(--spacingVerticalXXL); }
 .group h2 { font-size: var(--fontSizeBase400); line-height: var(--lineHeightBase300); font-weight: var(--fontWeightSemibold); margin: 0; }
 .count { color: var(--colorNeutralForeground3); font-weight: normal; }
@@ -246,10 +249,14 @@ a:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2
 @media (min-width: 1025px) {
   html { scroll-padding-top: calc(var(--spacingVerticalXXL) * 6); }
   .stages { display: none; }
+  .compact-description { display: none; }
   body { max-width: none; }
-  #groups { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--spacingHorizontalM); }
-  .group { margin: 0; background: var(--colorNeutralBackground3); border-radius: var(--borderRadiusLarge); }
-  .group-header { position: sticky; top: 0; z-index: 1; padding: var(--spacingVerticalM) var(--spacingHorizontalM) var(--spacingVerticalXS); background: var(--colorNeutralBackground3); border-radius: var(--borderRadiusLarge); }
+  .board-headers, .project-groups { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--spacingHorizontalM); }
+  .board-headers { position: sticky; top: 0; z-index: 1; background: var(--colorNeutralBackground1); }
+  .project-groups { align-items: stretch; }
+  .group { margin: 0; padding-top: var(--spacingVerticalM); background: var(--colorNeutralBackground3); border-radius: var(--borderRadiusLarge); }
+  .group-header { padding: var(--spacingVerticalM) var(--spacingHorizontalM) var(--spacingVerticalXS); background: var(--colorNeutralBackground3); border-radius: var(--borderRadiusLarge); }
+  .group .delete-all { margin: var(--spacingVerticalM) var(--spacingHorizontalM); }
   .group .runs { padding: 0 var(--spacingHorizontalM) var(--spacingVerticalM); }
   .group .empty { padding: 0 var(--spacingHorizontalM) var(--spacingVerticalM); }
 }
