@@ -268,6 +268,20 @@ impl RunStore {
         }
         Ok(Some(runs[index].clone()))
     }
+
+    /// Removes only the Run record. Returns whether a Run with this id existed.
+    pub(crate) fn delete(&self, id: &str) -> io::Result<bool> {
+        let mut runs = self.runs.lock().map_err(lock_error)?;
+        let Some(index) = runs.iter().position(|run| run.id == id) else {
+            return Ok(false);
+        };
+        let removed = runs.remove(index);
+        if let Err(error) = save_runs(&self.path, &runs) {
+            runs.insert(index, removed);
+            return Err(error);
+        }
+        Ok(true)
+    }
 }
 
 pub(crate) fn lock_error<T>(_: std::sync::PoisonError<T>) -> io::Error {

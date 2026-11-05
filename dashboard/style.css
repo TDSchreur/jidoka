@@ -176,10 +176,24 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .card-open:focus-visible::after { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: var(--strokeWidthThick); }
 .run:has(.card-open:hover) { background: var(--colorNeutralBackground1Hover); }
 .run a { position: relative; z-index: 1; }
+/* Done cards: one line, with the rest behind Show details. */
+.done-run { padding: var(--spacingVerticalS) var(--spacingHorizontalL); }
+.done-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingVerticalXS) var(--spacingHorizontalS); }
+.done-line h3 { flex: 1 1 8rem; min-width: 0; }
+.done-run [hidden] { display: none; }
+.run .toggle { position: relative; z-index: 1; }
+.toggle.danger { border-color: var(--colorPaletteRedBorder2); color: var(--colorPaletteRedForeground1); }
+.delete-all { margin-bottom: var(--spacingVerticalM); }
+/* Delete confirmation: a small centred modal. */
+.confirm { box-sizing: border-box; width: min(28rem, calc(100% - 2 * var(--spacingHorizontalL))); padding: var(--spacingVerticalXL) var(--spacingHorizontalXL); border: var(--strokeWidthThin) solid var(--colorNeutralStroke2); border-radius: var(--borderRadiusLarge); background: var(--colorNeutralBackground1); color: var(--colorNeutralForeground1); box-shadow: var(--shadow28); }
+.confirm::backdrop { background: var(--colorBackgroundOverlay); }
+.confirm h2 { margin: 0 0 var(--spacingVerticalS); font-size: var(--fontSizeBase400); line-height: var(--lineHeightBase300); font-weight: var(--fontWeightSemibold); }
+.confirm-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--spacingHorizontalS); margin-top: var(--spacingVerticalL); }
 /* Run detail: a native modal dialog as a sheet on the right. */
 .detail { box-sizing: border-box; width: min(56rem, 100%); max-width: 100%; height: 100%; max-height: none; margin: 0 0 0 auto; padding: 0; border: 0; background: var(--colorNeutralBackground1); color: var(--colorNeutralForeground1); box-shadow: var(--shadow28); overflow-y: auto; }
 .detail::backdrop { background: var(--colorBackgroundOverlay); }
 body:has(.detail[open]) { overflow: hidden; }
+body:has(.confirm[open]) { overflow: hidden; }
 .detail-body { box-sizing: border-box; min-height: 100%; padding: var(--spacingVerticalXL) var(--spacingHorizontalXXL); }
 .detail-bar { display: flex; justify-content: flex-end; margin-bottom: var(--spacingVerticalM); }
 .detail h2 { margin: 0 0 var(--spacingVerticalL); font-size: var(--fontSizeBase500); line-height: var(--lineHeightBase500); font-weight: var(--fontWeightSemibold); overflow-wrap: anywhere; }
