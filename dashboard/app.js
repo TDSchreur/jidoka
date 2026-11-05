@@ -41,6 +41,16 @@ function projectNames(runs) {
   );
 }
 
+/** Project paths the visitor collapsed. Blocked or broken storage only means the choice is not remembered. */
+function storedCollapsed() {
+  try {
+    const value = JSON.parse(localStorage.getItem('collapsed-projects'));
+    return new Set(Array.isArray(value) ? value.filter((path) => typeof path === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
 const ProjectNames = createContext(new Map());
 
 /** The Project's name, with the full path as a tooltip. */
@@ -574,6 +584,17 @@ function App() {
   const { runs, failed, reload } = useRuns();
   const now = useNow();
   const [onlyWaiting, setOnlyWaiting] = useState(false);
+  const [collapsed, setCollapsed] = useState(storedCollapsed);
+  const toggleProject = (project) => {
+    const next = new Set(collapsed);
+    if (!next.delete(project)) next.add(project);
+    setCollapsed(next);
+    try {
+      localStorage.setItem('collapsed-projects', JSON.stringify([...next]));
+    } catch {
+      /* storage is blocked: the choice lasts until the page is reloaded */
+    }
+  };
   const waiting = runs ? runs.filter(needsYou).length : 0;
   const names = projectNames(runs ?? []);
   const notifications = useNotifications(runs, names);
@@ -680,9 +701,33 @@ function App() {
         : null}
       ${runs?.length ? html`<p class="compact-description">${stages.find((stage) => stage.id === current).description}</p>` : null}
       <div id="groups">
-        ${projects.map((project) => html`<section class="project-row" key=${project}>
-          <h2 class="project-heading"><${ProjectName} path=${project} /></h2>
-          <div class="project-groups">
+        ${projects.map((project) => {
+          const isCollapsed = collapsed.has(project);
+          const groupsId = `project-groups-${projects.indexOf(project)}`;
+          const projectWaiting = indexed.filter((entry) => entry.run.project === project && needsYou(entry.run)).length;
+          return html`<section class="project-row" key=${project}>
+          <h2 class="project-heading">
+            <button
+              type="button"
+              class="project-toggle"
+              aria-expanded=${String(!isCollapsed)}
+              aria-controls=${groupsId}
+              onClick=${() => toggleProject(project)}
+            >
+              <span class="project-chevron" aria-hidden="true">${isCollapsed ? '▸' : '▾'}</span
+              ><${ProjectName} path=${project} />
+            </button>
+            ${isCollapsed
+              ? html`<span class="project-summary"
+                  >${stages
+                    .map((item) => `${item.name} ${item.entries.filter((entry) => entry.run.project === project).length}`)
+                    .join(' · ')}</span
+                >${projectWaiting
+                  ? html`<span class="badge blocked">${projectWaiting} waiting</span>`
+                  : null}`
+              : null}
+          </h2>
+          <div class="project-groups" id=${groupsId} hidden=${isCollapsed}>
             ${stages.map((item) => {
               const entries = item.entries.filter((entry) => entry.run.project === project);
               return html`<${Group}
@@ -697,7 +742,8 @@ function App() {
               />`;
             })}
           </div>
-        </section>`)}
+        </section>`;
+        })}
       </div>
       ${helpOpen ? html`<${Help} onClose=${closeHelp} />` : null}
       ${pending
