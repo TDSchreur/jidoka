@@ -33,7 +33,7 @@ jobs:
         run: |
           Copy-Item '${{ matrix.executable }}' '${{ matrix.artifact }}'
           (Get-FileHash -Algorithm SHA256 '${{ matrix.artifact }}').Hash.ToLowerInvariant() | Set-Content -Encoding ascii '${{ matrix.artifact }}.sha256'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: |
