@@ -589,10 +589,11 @@ mod tests {
         let (_, rules) = split_tokens(&css);
         // Compact: the groups other than the picked Stage are hidden up to 1024 px.
         let compact = rules
-            .split_once("@media (max-width: 1024px)")
-            .expect("a compact layout")
-            .1;
-        let compact = &compact[..compact.find('}').unwrap() + 1];
+            .split("@media (max-width: 1024px)")
+            .skip(1)
+            .find(|block| block.contains(".group:not(.selected)"))
+            .expect("a compact layout");
+        let compact = &compact[..compact.find("\n}").unwrap()];
         assert!(compact.contains(".group:not(.selected) { display: none; }"));
         // Wide: every column shows, so the Stage buttons go away.
         let wide = rules
@@ -657,6 +658,10 @@ mod tests {
         assert!(script.contains("class=\"toggle detail-close\""));
         // Focus goes back to the card that was opened.
         assert!(script.contains("[data-run-id="));
+        assert!(
+            script.contains("CSS.escape("),
+            "the id is escaped in the selector"
+        );
         assert!(script.contains(".focus()"));
     }
 
@@ -688,6 +693,27 @@ mod tests {
         );
         // A Run that is no longer listed closes the detail, so it cannot reappear later.
         assert!(script.contains("if (openId !== null && runs && !openRun) setOpenId(null)"));
+    }
+
+    #[rocket::async_test]
+    async fn the_detail_fills_the_screen_with_a_back_button_up_to_1024_px() {
+        let css = stylesheet().await;
+        let (_, rules) = split_tokens(&css);
+        // Up to 1024 px, the same limit as compact mode, the sheet is the whole screen.
+        let compact = rules
+            .split("@media (max-width: 1024px)")
+            .skip(1)
+            .find(|block| block.contains(".detail {"))
+            .expect("a compact detail layout");
+        let compact = &compact[..compact.find("\n}").unwrap()];
+        assert!(compact.contains(".detail { width: 100%; }"));
+        // One label is shown at a time, so only one is exposed to assistive technology.
+        assert!(compact.contains(".detail-close-wide { display: none; }"));
+        assert!(rules.contains(".detail-close-compact { display: none; }"));
+        assert!(compact.contains(".detail-close-compact { display: inline; }"));
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("<span class=\"detail-close-wide\">Close</span>"));
+        assert!(script.contains("<span class=\"detail-close-compact\">Back</span>"));
     }
 
     #[rocket::async_test]

@@ -194,7 +194,7 @@ function Detail({ run, now, onClose }) {
     <div class="detail-body">
       <div class="detail-bar">
         <button type="button" class="toggle detail-close" onClick=${dismiss}>
-          Close
+          <span class="detail-close-wide">Close</span><span class="detail-close-compact">Back</span>
         </button>
       </div>
       <h2 id="detail-title">${run.title}</h2>
@@ -358,7 +358,7 @@ function App() {
   useEffect(() => {
     // Back to the card that was opened, once the detail is gone.
     if (openId === null && lastOpened.current !== null) {
-      document.querySelector(`[data-run-id="${lastOpened.current}"]`)?.focus();
+      document.querySelector(`[data-run-id="${CSS.escape(String(lastOpened.current))}"]`)?.focus();
       lastOpened.current = null;
     }
   }, [openId]);

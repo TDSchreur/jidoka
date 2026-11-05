@@ -188,6 +188,13 @@ body:has(.detail[open]) { overflow: hidden; }
 .fields dt { color: var(--colorNeutralForeground3); }
 .fields dd { margin: 0; overflow-wrap: anywhere; }
 .fields .not-set { color: var(--colorNeutralForeground3); font-style: italic; }
+.detail-close-compact { display: none; }
+/* Up to 1024 px, as in compact mode: the sheet is the whole screen and the button says Back. */
+@media (max-width: 1024px) {
+  .detail { width: 100%; }
+  .detail-close-wide { display: none; }
+  .detail-close-compact { display: inline; }
+}
 .project, .updated { font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground3); }
 .badge { display: inline-block; margin-top: var(--spacingVerticalXS); padding: var(--spacingVerticalXXS) var(--spacingHorizontalSNudge); border: var(--strokeWidthThin) solid var(--colorNeutralStrokeAccessible); border-radius: var(--borderRadiusSmall); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); font-weight: var(--fontWeightSemibold); color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground3); text-transform: uppercase; letter-spacing: .04em; }
 .badge.blocked { color: var(--colorNeutralForegroundOnBrand); background: var(--colorPaletteRedBackground3); border-color: var(--colorPaletteRedBackground3); }
