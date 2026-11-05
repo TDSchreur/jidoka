@@ -3,6 +3,7 @@
    Colours and shadows differ per theme; every rule below the layer reads tokens only. */
 :root {
   color-scheme: light dark;
+  --borderRadiusLarge: 6px;
   --borderRadiusMedium: 4px;
   --borderRadiusSmall: 2px;
   --colorBrandBackground: #0f6cbd;
@@ -162,6 +163,16 @@ code { font-family: var(--fontFamilyMonospace); }
 a { color: var(--colorBrandForegroundLink); }
 a:hover { color: var(--colorBrandForegroundLinkHover); }
 a:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: var(--strokeWidthThick); border-radius: var(--borderRadiusSmall); }
+/* Wide screens: one column per Stage, each with a header that stays in view. Narrower screens keep the stacked groups. */
+@media (min-width: 1025px) {
+  html { scroll-padding-top: calc(var(--spacingVerticalXXL) * 4); }
+  body { max-width: none; }
+  #groups { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--spacingHorizontalM); }
+  .group { margin: 0; background: var(--colorNeutralBackground3); border-radius: var(--borderRadiusLarge); }
+  .group-header { position: sticky; top: 0; z-index: 1; padding: var(--spacingVerticalM) var(--spacingHorizontalM) var(--spacingVerticalXS); background: var(--colorNeutralBackground3); border-radius: var(--borderRadiusLarge); }
+  .group .runs { padding: 0 var(--spacingHorizontalM) var(--spacingVerticalM); }
+  .group .empty { padding: 0 var(--spacingHorizontalM) var(--spacingVerticalM); }
+}
 @media (prefers-reduced-motion: reduce) {
   .theme label { transition: none; }
 }

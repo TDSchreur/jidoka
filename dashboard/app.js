@@ -130,8 +130,10 @@ function Card({ run }) {
 
 function Group({ id, name, description, entries }) {
   return html`<section class="group" aria-labelledby=${`group-${id}`}>
-    <h2 id=${`group-${id}`}>${name}<span class="count">${` (${entries.length})`}</span></h2>
-    <p class="group-description">${description}</p>
+    <div class="group-header">
+      <h2 id=${`group-${id}`}>${name}<span class="count">${` (${entries.length})`}</span></h2>
+      <p class="group-description">${description}</p>
+    </div>
     ${entries.length
       ? html`<ul class="runs">
           ${entries.map((entry) => html`<${Card} key=${entry.index} run=${entry.run} />`)}
