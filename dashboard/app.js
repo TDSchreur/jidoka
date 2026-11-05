@@ -124,6 +124,48 @@ function Updated({ run, now }) {
   </p>`;
 }
 
+/** A Done card is one line: the title, a Show details toggle and Delete. The rest shows on demand. */
+function DoneCard({ run, now, onOpen, onDelete }) {
+  const [expanded, setExpanded] = useState(false);
+  const detailsId = `done-details-${run.id}`;
+  const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
+  return html`<li>
+    <article class="run done-run">
+      <div class="done-line">
+        <h3>
+          <button type="button" class="card-open" data-run-id=${run.id} onClick=${() => onOpen(run.id)}>
+            ${run.title}
+          </button>
+        </h3>
+        <button
+          type="button"
+          class="toggle"
+          aria-expanded=${String(expanded)}
+          aria-controls=${detailsId}
+          onClick=${() => setExpanded((current) => !current)}
+        >
+          ${expanded ? 'Hide details' : 'Show details'}<span class="visually-hidden">${` for ${run.title}`}</span>
+        </button>
+        <button type="button" class="toggle danger" onClick=${() => onDelete(run)}>
+          Delete<span class="visually-hidden">${` ${run.title}`}</span>
+        </button>
+      </div>
+      <div id=${detailsId} hidden=${!expanded}>
+        <p class="project">${run.project}</p>
+        <div class="chips">
+          <span class="badge done">${String(run.status)}</span>
+          ${rework !== null
+            ? html`<span class="chip">Rework${' '}${reworkLabel(rework)}</span>`
+            : null}
+        </div>
+        ${run.activity ? html`<p class="activity">Activity: ${run.activity}</p>` : null}
+        ${run.current_ticket ? html`<${Ticket} value=${String(run.current_ticket)} />` : null}
+        <${Updated} run=${run} now=${now} />
+      </div>
+    </article>
+  </li>`;
+}
+
 function Card({ run, now, onOpen }) {
   const known = STATUSES.includes(run.status);
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
@@ -235,23 +277,68 @@ function Detail({ run, now, onClose }) {
   </dialog>`;
 }
 
-function Group({ id, name, description, entries, now, selected, onOpen }) {
+function Group({ id, name, description, entries, now, selected, onOpen, onDelete, onDeleteAll }) {
   return html`<section class=${selected ? 'group selected' : 'group'} aria-labelledby=${`group-${id}`}>
     <div class="group-header">
       <h2 id=${`group-${id}`}>${name}<span class="count">${` (${entries.length})`}</span></h2>
       <p class="group-description">${description}</p>
+      ${id === 'done' && entries.length
+        ? html`<button type="button" class="toggle danger delete-all" onClick=${onDeleteAll}>
+            Delete all<span class="visually-hidden">${` ${entries.length} done runs`}</span>
+          </button>`
+        : null}
     </div>
     ${entries.length
       ? html`<ul class="runs">
-          ${entries.map((entry) => html`<${Card} key=${entry.index} run=${entry.run} now=${now} onOpen=${onOpen} />`)}
+          ${entries.map((entry) =>
+            id === 'done'
+              ? html`<${DoneCard} key=${entry.index} run=${entry.run} now=${now} onOpen=${onOpen} onDelete=${onDelete} />`
+              : html`<${Card} key=${entry.index} run=${entry.run} now=${now} onOpen=${onOpen} />`,
+          )}
         </ul>`
       : html`<p class="empty">No runs</p>`}
   </section>`;
 }
 
+/** A native modal asking before something is deleted. Cancel has focus first; closing returns focus to what opened it. */
+function Confirm({ title, children, confirmLabel, onConfirm, onCancel }) {
+  const dialog = useRef(null);
+  const cancelling = useRef(onCancel);
+  cancelling.current = onCancel;
+  useEffect(() => {
+    const element = dialog.current;
+    if (!element.open) element.showModal();
+    // Escape closes the dialog and fires `close`.
+    const onNativeClose = () => cancelling.current();
+    element.addEventListener('close', onNativeClose);
+    return () => element.removeEventListener('close', onNativeClose);
+  }, []);
+  return html`<dialog ref=${dialog} class="confirm" aria-labelledby="confirm-title">
+    <h2 id="confirm-title">${title}</h2>
+    ${children}
+    <div class="confirm-buttons">
+      <button type="button" class="toggle" autofocus onClick=${() => dialog.current.close()}>Cancel</button>
+      <button type="button" class="toggle danger" onClick=${onConfirm}>${confirmLabel}</button>
+    </div>
+  </dialog>`;
+}
+
+/** The token this server put in the page; deleting needs it. */
+const sessionToken = () => document.querySelector('meta[name="session-token"]')?.content ?? '';
+
+/** Deletes the Run record; a Run that is already gone counts as deleted. */
+async function deleteRun(id) {
+  const response = await fetch(`/api/runs/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { 'X-Session-Token': sessionToken() },
+  });
+  return response.ok || response.status === 404;
+}
+
 /** Polls the Run list; `runs` stays null until the first answer and `failed` is set while the server is unreachable. */
 function useRuns() {
   const [state, setState] = useState({ runs: null, failed: false });
+  const reload = useRef(() => {});
   useEffect(() => {
     let active = true;
     async function refresh() {
@@ -265,6 +352,7 @@ function useRuns() {
         if (active) setState((current) => ({ ...current, failed: true }));
       }
     }
+    reload.current = refresh;
     refresh();
     const timer = setInterval(refresh, POLL_MS);
     return () => {
@@ -272,7 +360,7 @@ function useRuns() {
       clearInterval(timer);
     };
   }, []);
-  return state;
+  return { ...state, reload: () => reload.current() };
 }
 
 /** The current time, refreshed so relative times keep counting. */
@@ -324,15 +412,37 @@ function StageButtons({ stages, current, onPick }) {
 }
 
 function App() {
-  const { runs, failed } = useRuns();
+  const { runs, failed, reload } = useRuns();
   const now = useNow();
   const [onlyWaiting, setOnlyWaiting] = useState(false);
   const waiting = runs ? runs.filter(needsYou).length : 0;
   useEffect(() => {
     document.title = waiting ? `(${waiting}) ${TITLE}` : TITLE;
   }, [waiting]);
+  // What the visitor is asked to confirm deleting: one Run, or every Done Run.
+  const [pending, setPending] = useState(null);
+  const [deleteError, setDeleteError] = useState('');
+  const confirmDelete = async () => {
+    const targets = pending.runs;
+    setPending(null);
+    let failures = 0;
+    for (const run of targets) {
+      try {
+        if (!(await deleteRun(run.id))) failures += 1;
+      } catch {
+        failures += 1;
+      }
+    }
+    setDeleteError(
+      failures ? `Could not delete ${failures} of ${targets.length} ${targets.length === 1 ? 'run' : 'runs'}.` : '',
+    );
+    await reload();
+    // The card and the button that opened the dialog are gone: keep focus on the board.
+    document.querySelector('main')?.focus();
+  };
   let text = 'Loading runs…';
   if (failed) text = 'Unable to load runs. Check that the factory server is running.';
+  else if (deleteError) text = deleteError;
   else if (runs) {
     if (!runs.length) text = 'No runs yet. Start one with the factory skill.';
     else if (onlyWaiting && !waiting) text = 'Nothing needs you right now.';
@@ -385,7 +495,7 @@ function App() {
       <${ThemeSwitch} />
     </div>
     <main tabindex="-1">
-      <p id="message" role="status" class=${failed ? 'error' : ''}>${text}</p>
+      <p id="message" role="status" class=${failed || deleteError ? 'error' : ''}>${text}</p>
       ${runs ? html`<${StageButtons} stages=${stages} current=${current} onPick=${setPicked} />` : null}
       <div id="groups">
         ${runs
@@ -399,10 +509,27 @@ function App() {
                 entries=${item.entries}
                 selected=${item.id === current}
                 onOpen=${open}
+                onDelete=${(run) => setPending({ runs: [run] })}
+                onDeleteAll=${() => setPending({ runs: item.entries.map((entry) => entry.run) })}
               />`,
             )
           : null}
       </div>
+      ${pending
+        ? html`<${Confirm}
+            title=${pending.runs.length === 1 ? 'Delete this run?' : `Delete all ${pending.runs.length} done runs?`}
+            confirmLabel=${pending.runs.length === 1 ? 'Delete' : 'Delete all'}
+            onConfirm=${confirmDelete}
+            onCancel=${() => setPending(null)}
+          >
+            <p>
+              ${pending.runs.length === 1
+                ? html`This removes the record of <strong>${pending.runs[0].title}</strong> from the dashboard.`
+                : 'This removes the records of these runs from the dashboard.'}
+              The worktree, branch and pull request stay as they are.
+            </p>
+          <//>`
+        : null}
       ${openRun ? html`<${Detail} key=${openRun.id} run=${openRun} now=${now} onClose=${close} />` : null}
     </main>
   `;

@@ -45,15 +45,44 @@ const ASSETS: &[(&str, ContentType, &[u8])] = &[
 ];
 /// Placeholder in the dashboard page that is replaced with the build label.
 const BUILD_PLACEHOLDER: &str = "__BUILD__";
+/// Placeholder in the dashboard page that is replaced with this server's session token.
+const TOKEN_PLACEHOLDER: &str = "__TOKEN__";
+/// The header the dashboard sends its session token in.
+const TOKEN_HEADER: &str = "X-Session-Token";
 const BODY_LIMIT: u64 = 64 * 1024;
 
 fn is_local_authority(authority: &str) -> bool {
     matches!(authority, "localhost:4311" | "127.0.0.1:4311")
 }
 
+/// A random value created when the server starts. Only the dashboard page this server
+/// serves to a local host carries it, so a request that has it came from that page.
+struct SessionToken(String);
+
+impl SessionToken {
+    fn new() -> Self {
+        use std::hash::{BuildHasher, Hasher};
+        // `RandomState` is seeded from the operating system's randomness.
+        let part = || {
+            std::collections::hash_map::RandomState::new()
+                .build_hasher()
+                .finish()
+        };
+        Self(format!("{:016x}{:016x}", part(), part()))
+    }
+}
+
+/// The browser sends an `Origin` on a same-origin DELETE; it must be the dashboard itself.
+fn is_local_origin(origin: &str) -> bool {
+    origin
+        .strip_prefix("http://")
+        .is_some_and(is_local_authority)
+}
+
 struct Security {
     local: bool,
     post_allowed: bool,
+    delete_allowed: bool,
 }
 
 #[rocket::async_trait]
@@ -70,17 +99,32 @@ impl<'r> FromRequest<'r> for Security {
             post_allowed: local
                 && request.headers().get_one("Origin").is_none()
                 && request.content_type() == Some(&ContentType::JSON),
+            delete_allowed: local
+                && request
+                    .headers()
+                    .get_one("Origin")
+                    .is_none_or(is_local_origin)
+                && request
+                    .rocket()
+                    .state::<SessionToken>()
+                    .zip(request.headers().get_one(TOKEN_HEADER))
+                    .is_some_and(|(token, given)| token.0 == given),
         })
     }
 }
 
 #[rocket::get("/")]
-fn dashboard(request: Security) -> Result<RawHtml<String>, HttpStatus> {
+fn dashboard(
+    request: Security,
+    token: &State<SessionToken>,
+) -> Result<RawHtml<String>, HttpStatus> {
     if !request.local {
         return Err(HttpStatus::BadRequest);
     }
     Ok(RawHtml(
-        DASHBOARD.replace(BUILD_PLACEHOLDER, &current_build()),
+        DASHBOARD
+            .replace(BUILD_PLACEHOLDER, &current_build())
+            .replace(TOKEN_PLACEHOLDER, &token.0),
     ))
 }
 
@@ -164,6 +208,29 @@ fn update_run(
         .ok_or(HttpStatus::NotFound)
 }
 
+/// Deletes the Run record only; nothing the Run created (worktree, branch, pull request) is touched.
+#[rocket::delete("/api/runs/<id>")]
+fn delete_run(
+    request: Security,
+    id: &str,
+    store: &State<RunStore>,
+) -> Result<HttpStatus, HttpStatus> {
+    if !request.delete_allowed {
+        return Err(HttpStatus::Forbidden);
+    }
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(HttpStatus::BadRequest);
+    }
+    match store.delete(id) {
+        Ok(true) => Ok(HttpStatus::NoContent),
+        Ok(false) => Err(HttpStatus::NotFound),
+        Err(error) => {
+            eprintln!("Run storage error: {error}");
+            Err(HttpStatus::InternalServerError)
+        }
+    }
+}
+
 #[rocket::catch(413)]
 fn too_large() -> (HttpStatus, &'static str) {
     (HttpStatus::PayloadTooLarge, "Request too large")
@@ -191,9 +258,10 @@ pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> 
         .merge(("limits", Limits::new().limit("json", BODY_LIMIT.bytes())));
     Ok(rocket::custom(config)
         .manage(RunStore::open(path)?)
+        .manage(SessionToken::new())
         .mount(
             "/",
-            rocket::routes![dashboard, asset, list_runs, create_run, update_run],
+            rocket::routes![dashboard, asset, list_runs, create_run, update_run, delete_run],
         )
         .register(
             "/",
@@ -650,6 +718,33 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn done_cards_collapse_to_one_line_and_delete_asks_first() {
+        let script = asset("/assets/app.js").await;
+        // A Done card hides its details behind a toggle that tells assistive technology its state.
+        assert!(script.contains("DoneCard"));
+        assert!(script.contains("aria-expanded=${String(expanded)}"));
+        assert!(script.contains("aria-controls=${detailsId}"));
+        assert!(script.contains("Show details"));
+        assert!(script.contains("hidden=${!expanded}"));
+        // Delete per Run and Delete all (Done column only) both open a confirmation dialog first.
+        assert!(script.contains("onDelete=${(run) => setPending({ runs: [run] })}"));
+        assert!(script.contains("id === 'done' && entries.length"));
+        assert!(script.contains("Delete all"));
+        assert!(script.contains("<${Confirm}"));
+        assert!(script.contains("aria-labelledby=\"confirm-title\""));
+        assert!(script.contains("autofocus"), "Cancel takes focus first");
+        // Only the confirm button sends the request, with the page's session token.
+        assert!(script.contains("method: 'DELETE'"));
+        assert!(script.contains("'X-Session-Token': sessionToken()"));
+        assert_eq!(
+            script.matches("deleteRun(").count(),
+            2,
+            "one definition, one use"
+        );
+        assert!(script.contains("The worktree, branch and pull request stay as they are."));
+    }
+
+    #[rocket::async_test]
     async fn the_detail_closes_with_escape_the_backdrop_or_a_button_and_returns_focus() {
         let script = asset("/assets/app.js").await;
         // Escape closes a native modal dialog, which fires `close`.
@@ -895,6 +990,181 @@ mod tests {
             fs::read(dir.0.path().join("runs.json")).unwrap_or_default(),
             b""
         );
+    }
+
+    async fn session_token(api: &Client) -> String {
+        let page = api
+            .get("/")
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .dispatch()
+            .await
+            .into_string()
+            .await
+            .unwrap();
+        assert!(!page.contains(TOKEN_PLACEHOLDER));
+        page.split("name=\"session-token\" content=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("the page carries the session token")
+            .to_owned()
+    }
+
+    async fn delete<'a>(
+        api: &'a Client,
+        id: &str,
+        headers: &[(&'static str, String)],
+    ) -> rocket::local::asynchronous::LocalResponse<'a> {
+        let mut request = api.delete(format!("/api/runs/{id}"));
+        for (name, value) in headers {
+            request = request.header(Header::new(*name, value.clone()));
+        }
+        request.dispatch().await
+    }
+
+    #[rocket::async_test]
+    async fn delete_removes_only_the_record_and_survives_restart() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let store = api.rocket().state::<RunStore>().unwrap();
+        let new = |title: &str| NewRun {
+            title: title.into(),
+            project: "/work".into(),
+        };
+        let kept = store.create(new("kept")).unwrap();
+        let token = session_token(&api).await;
+        // A request without an Origin (curl) and the dashboard's own same-origin requests are allowed.
+        for origin in [
+            None,
+            Some("http://127.0.0.1:4311"),
+            Some("http://localhost:4311"),
+        ] {
+            let run = store.create(new("gone")).unwrap();
+            let mut headers = vec![
+                ("Host", "127.0.0.1:4311".to_string()),
+                (TOKEN_HEADER, token.clone()),
+            ];
+            headers.extend(origin.map(|origin| ("Origin", origin.to_string())));
+            let response = delete(&api, &run.id, &headers).await;
+            assert_eq!(
+                response.status(),
+                HttpStatus::NoContent,
+                "origin {origin:?}"
+            );
+        }
+        let remaining = load_runs(&dir.0.path().join("runs.json")).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, kept.id);
+        let restarted = client(&dir).await;
+        assert_eq!(
+            restarted
+                .rocket()
+                .state::<RunStore>()
+                .unwrap()
+                .list()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[rocket::async_test]
+    async fn delete_rejects_bad_host_origin_and_token_without_mutation() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let run = api
+            .rocket()
+            .state::<RunStore>()
+            .unwrap()
+            .create(NewRun {
+                title: "task".into(),
+                project: "/work".into(),
+            })
+            .unwrap();
+        let token = session_token(&api).await;
+        let host = ("Host", "127.0.0.1:4311".to_string());
+        let good = ("X-Session-Token", token.clone());
+        let cases: Vec<(&str, Vec<(&'static str, String)>)> = vec![
+            (
+                "foreign host",
+                vec![("Host", "attacker.example".into()), good.clone()],
+            ),
+            (
+                "wrong port",
+                vec![("Host", "127.0.0.1:4312".into()), good.clone()],
+            ),
+            ("no host", vec![good.clone()]),
+            (
+                "foreign origin",
+                vec![
+                    host.clone(),
+                    good.clone(),
+                    ("Origin", "https://example.test".into()),
+                ],
+            ),
+            (
+                "foreign origin on a local port",
+                vec![
+                    host.clone(),
+                    good.clone(),
+                    ("Origin", "http://127.0.0.1:9999".into()),
+                ],
+            ),
+            (
+                "https origin",
+                vec![
+                    host.clone(),
+                    good.clone(),
+                    ("Origin", "https://127.0.0.1:4311".into()),
+                ],
+            ),
+            (
+                "null origin",
+                vec![host.clone(), good.clone(), ("Origin", "null".into())],
+            ),
+            ("missing token", vec![host.clone()]),
+            (
+                "wrong token",
+                vec![host.clone(), ("X-Session-Token", "nope".into())],
+            ),
+            (
+                "empty token",
+                vec![host.clone(), ("X-Session-Token", String::new())],
+            ),
+        ];
+        for (name, headers) in cases {
+            let response = delete(&api, &run.id, &headers).await;
+            assert_eq!(response.status(), HttpStatus::Forbidden, "{name}");
+            assert_eq!(
+                api.rocket()
+                    .state::<RunStore>()
+                    .unwrap()
+                    .list()
+                    .unwrap()
+                    .len(),
+                1,
+                "{name} deleted the Run"
+            );
+        }
+        let headers = [host.clone(), good.clone()];
+        assert_eq!(
+            delete(&api, "nope", &headers).await.status(),
+            HttpStatus::BadRequest
+        );
+        assert_eq!(
+            delete(&api, "123", &headers).await.status(),
+            HttpStatus::NotFound
+        );
+        assert_eq!(load_runs(&dir.0.path().join("runs.json")).unwrap().len(), 1);
+    }
+
+    #[rocket::async_test]
+    async fn each_server_start_has_its_own_session_token() {
+        let (first, second) = (TestDir::new(), TestDir::new());
+        let (first, second) = (client(&first).await, client(&second).await);
+        let (a, b) = (session_token(&first).await, session_token(&second).await);
+        assert_eq!(a.len(), 32);
+        assert_ne!(a, b);
+        assert_eq!(a, session_token(&first).await);
     }
 
     #[rocket::async_test]
