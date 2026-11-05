@@ -771,10 +771,19 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn cards_show_the_project_name_with_the_path_as_tooltip() {
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("function projectNames(runs)"));
+        assert!(script.contains("title=${path}>${name}"));
+        assert!(!script.contains("${run.project}</p>"));
+    }
+
+    #[rocket::async_test]
     async fn notifications_are_opt_in_skip_runs_already_waiting_and_survive_missing_permission() {
         let script = asset("/assets/app.js").await;
         // The message names the project and title.
-        assert!(script.contains("`Needs you in ${run.project}: ${run.title}`"));
+        assert!(script
+            .contains("`Needs you in ${names.get(run.project) ?? run.project}: ${run.title}`"));
         // Runs waiting on the first load are remembered, not announced: nothing is sent while `known` is unset.
         assert!(script.contains("known.current !== null && state === 'on'"));
         assert!(script.contains("if (known.current.has(run.id)) continue;"));

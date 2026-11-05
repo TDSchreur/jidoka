@@ -1,5 +1,5 @@
-import { h, render } from 'preact';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { createContext, h, render } from 'preact';
+import { useContext, useEffect, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 
 const html = htm.bind(h);
@@ -20,6 +20,34 @@ const THEMES = [
   ['light', 'Light'],
   ['dark', 'Dark'],
 ];
+
+const folders = (path) => String(path).split(/[\\/]+/).filter(Boolean);
+
+/**
+ * Maps each distinct Project path to a short name: its folder name, or "parent/folder" when two Projects
+ * share a folder name. Linked worktrees report their own path, so they show as separate Projects.
+ */
+function projectNames(runs) {
+  const paths = [...new Set(runs.map((run) => run.project).filter((path) => typeof path === 'string'))];
+  const last = (path) => folders(path).at(-1) ?? path;
+  const counts = new Map();
+  for (const path of paths) counts.set(last(path), (counts.get(last(path)) ?? 0) + 1);
+  return new Map(
+    paths.map((path) => {
+      const parts = folders(path);
+      const name = counts.get(last(path)) > 1 && parts.length > 1 ? parts.slice(-2).join('/') : last(path);
+      return [path, name];
+    }),
+  );
+}
+
+const ProjectNames = createContext(new Map());
+
+/** The Project's name, with the full path as a tooltip. */
+function ProjectName({ path }) {
+  const name = useContext(ProjectNames).get(path) ?? path;
+  return html`<span title=${path}>${name}</span>`;
+}
 
 const timestamp = (run) =>
   typeof run.updated_at === 'number' &&
@@ -151,7 +179,7 @@ function DoneCard({ run, now, onOpen, onDelete }) {
         </button>
       </div>
       <div id=${detailsId} hidden=${!expanded}>
-        <p class="project">${run.project}</p>
+        <p class="project"><${ProjectName} path=${run.project} /></p>
         <div class="chips">
           <span class="badge done">${String(run.status)}</span>
           ${rework !== null
@@ -183,7 +211,7 @@ function Card({ run, now, onOpen }) {
           ${run.title}
         </button>
       </h3>
-      <p class="project">${run.project}</p>
+      <p class="project"><${ProjectName} path=${run.project} /></p>
       <div class="chips">
         <span class=${known ? `badge ${run.status}` : 'badge'}>${String(run.status)}</span>
         ${rework !== null
@@ -251,7 +279,7 @@ function Detail({ run, now, onClose }) {
       </div>
       <h2 id="detail-title">${run.title}</h2>
       <dl class="fields">
-        <${Field} label="Project">${run.project}<//>
+        <${Field} label="Project"><${ProjectName} path=${run.project} /><//>
         <${Field} label="Stage">${stage ? stage[1] : String(run.stage)}<//>
         <${Field} label="Status">
           <span class=${STATUSES.includes(run.status) ? `badge ${run.status}` : 'badge'}
@@ -445,7 +473,7 @@ function storedNotifications() {
  * load are only remembered; a notification goes out only for a Run that starts waiting after that.
  * `state` is 'unsupported', 'denied', 'off' or 'on'.
  */
-function useNotifications(runs) {
+function useNotifications(runs, names) {
   const [wanted, setWanted] = useState(storedNotifications);
   const [perm, setPerm] = useState(permission);
   const state = perm === 'unsupported' || perm === 'denied' ? perm : wanted && perm === 'granted' ? 'on' : 'off';
@@ -457,7 +485,7 @@ function useNotifications(runs) {
       for (const run of waitingNow) {
         if (known.current.has(run.id)) continue;
         try {
-          const note = new Notification(`Needs you in ${run.project}: ${run.title}`, { tag: `needs-you-${run.id}` });
+          const note = new Notification(`Needs you in ${names.get(run.project) ?? run.project}: ${run.title}`, { tag: `needs-you-${run.id}` });
           note.onclick = () => window.focus();
         } catch {
           /* the browser refused to show it: nothing else to do */
@@ -551,7 +579,8 @@ function App() {
   const now = useNow();
   const [onlyWaiting, setOnlyWaiting] = useState(false);
   const waiting = runs ? runs.filter(needsYou).length : 0;
-  const notifications = useNotifications(runs);
+  const names = projectNames(runs ?? []);
+  const notifications = useNotifications(runs, names);
   useEffect(() => {
     document.title = waiting ? `(${waiting}) ${TITLE}` : TITLE;
   }, [waiting]);
@@ -630,7 +659,7 @@ function App() {
       lastOpened.current = null;
     }
   }, [openId]);
-  return html`
+  return html`<${ProjectNames.Provider} value=${names}>
     <div class="toolbar">
       <${NeedsYouToggle}
         count=${waiting}
@@ -681,7 +710,7 @@ function App() {
         : null}
       ${openRun ? html`<${Detail} key=${openRun.id} run=${openRun} now=${now} onClose=${close} />` : null}
     </main>
-  `;
+  <//>`;
 }
 
 render(html`<${App} />`, document.querySelector('#app'));
