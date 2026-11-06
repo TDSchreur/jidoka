@@ -418,8 +418,11 @@ mod tests {
             .map(|(_, rest)| rest)
             .expect("the procedures have a Pull request and CI section");
         for needle in [
+            "git merge-base --is-ancestor origin/<base> HEAD",
             "gh pr view --json mergeStateStatus",
             "`BEHIND`",
+            "`DIRTY`",
+            "`UNKNOWN`",
             "normal merge commit",
             "never rebase, amend or force-push",
             "neither a Rework nor a CI fix",
