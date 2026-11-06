@@ -411,6 +411,61 @@ mod tests {
     }
 
     #[test]
+    fn the_check_review_agents_follow_the_model_routing_procedure() {
+        let procedures = bundled_text("factory-procedures/SKILL.md");
+        let section = procedures
+            .split_once("## Model routing")
+            .and_then(|(_, rest)| rest.split_once("\n## "))
+            .map(|(section, _)| section)
+            .expect("the procedures have a Model routing section");
+        for needle in [
+            "factory run inspect <id> --json",
+            "`model_routing`",
+            "`overrides[task]`",
+            "never a fork",
+            "model routing not applied",
+            "Copilot CLI",
+            "do not claim a switch",
+        ] {
+            assert!(section.contains(needle), "Model routing lacks {needle}");
+        }
+        let review = bundled_text("code-review/SKILL.md");
+        for needle in [
+            "`model`",
+            "`effort`",
+            "not forks",
+            "exactly as described here",
+        ] {
+            assert!(review.contains(needle), "code-review lacks {needle}");
+        }
+        // The workflows with a Check point to it; the one without a Check does not.
+        for skill in ["factory-full", "factory-balanced"] {
+            let text = bundled_text(&format!("{skill}/SKILL.md"));
+            assert!(
+                text.contains(
+                    "Model routing in [factory-procedures](../factory-procedures/SKILL.md)"
+                ),
+                "{skill} does not point to Model routing"
+            );
+            assert!(
+                text.contains("`code-review`"),
+                "{skill} lost its code review"
+            );
+        }
+        let fast = bundled_text("factory-fast/SKILL.md");
+        assert!(
+            !fast.contains("Model routing"),
+            "factory-fast has no Check to route"
+        );
+        assert!(
+            !fast.contains("code-review"),
+            "factory-fast gained a review"
+        );
+        let full = bundled_text("factory-full/SKILL.md");
+        assert!(full.contains("`security-review`") && full.contains("`tdd`"));
+    }
+
+    #[test]
     fn bundled_skills_do_not_name_this_repository() {
         let mut offenders = Vec::new();
         for (path, content) in BUNDLED {

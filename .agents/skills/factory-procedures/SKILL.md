@@ -1,6 +1,6 @@
 ---
 name: factory-procedures
-description: Shared operating procedures for the factory-full, factory-balanced and factory-fast workflows: run reporting, continuing a run, workspace, tracker setup, writing, and pull request and CI. Read by those workflows; do not run it on its own.
+description: Shared operating procedures for the factory-full, factory-balanced and factory-fast workflows: run reporting, continuing a run, workspace, tracker setup, model routing, writing, and pull request and CI. Read by those workflows; do not run it on its own.
 ---
 
 # Factory procedures
@@ -59,6 +59,16 @@ When a run's plan and acceptance criteria exist only in the conversation, save t
 1. Write a concise Markdown file with the task, the plan and the acceptance criteria to `factory-plan.md` in the run worktree's git directory (`git rev-parse --absolute-git-dir`). If that is not writable, write `<worktree path>.factory-plan.md` beside the worktree instead and remove it together with the worktree. The file stays out of the pull request.
 2. Record it with `factory run update <id> <stage> <status> --spec <absolute path>`. This is the same context option as a tracker spec, so no tracker is involved.
 3. When the plan changes, rewrite the file. Never save secrets or a transcript.
+
+## Model routing
+
+A run can carry a model-routing selection: the model and effort each kind of task should use. For now only the review agents that Check starts use it. The coordinating session, which is you, keeps its own model, and so does every step you run yourself.
+
+1. Read the selection with `factory run inspect <id> --json`. `model_routing` holds `agent` (`claude` or `codex`), `roles` (each with a `model` and an optional `effort`), `tasks` (task to role) and `overrides` (task to role, which win over `tasks`). The role for a task is `overrides[task]`, otherwise `tasks[task]`, and its model and effort are in `roles[role]`. A run without `model_routing`, or a task without a role, is not routed. On Copilot CLI no selection is ever recorded, so nothing there is routed.
+2. Use it only for agents you start for that task, and only when `agent` is the agent you are running in. On Claude Code, set the Agent tool's `model` to the recorded alias and `effort` to the recorded effort, and start a fresh subagent, never a fork, because a fork ignores `model`. On Codex, set the model and effort of the agent you start through Codex's own subagent settings. If the host will not take them, such as a Claude Code that rejects `effort`, start the agent without them.
+3. Say what happened in the stage summary: "Check agents ran on opus, effort high", or "model routing not applied: <reason>" when there is no selection, the task has no role, the recorded agent is not the one you run in, or the host refused the setting. A step you run in your own session, such as a security review you do not hand to a separate agent, runs on your model: do not claim a switch for it.
+
+Routing never changes which stages, reviews or checks a workflow runs, and a workflow with no Check has nothing to route yet.
 
 ## Writing
 
