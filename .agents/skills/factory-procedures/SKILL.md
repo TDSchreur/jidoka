@@ -1,11 +1,11 @@
 ---
 name: factory-procedures
-description: Shared operating procedures for the factory, factory-balanced and factory-fast workflows: run reporting, continuing a run, workspace, tracker setup, writing, and pull request and CI. Read by those workflows; do not run it on its own.
+description: Shared operating procedures for the factory-full, factory-balanced and factory-fast workflows: run reporting, continuing a run, workspace, tracker setup, writing, and pull request and CI. Read by those workflows; do not run it on its own.
 ---
 
 # Factory procedures
 
-The `factory`, `factory-balanced` and `factory-fast` workflows read this file for the procedures they share. Each workflow keeps its own planning, testing, review and verification policy, and its instructions take precedence over this file where they differ. Do not start a run from this skill.
+The `factory-full`, `factory-balanced` and `factory-fast` workflows read this file for the procedures they share. Each workflow keeps its own planning, testing, review and verification policy, and its instructions take precedence over this file where they differ. Do not start a run from this skill.
 
 ## Run reporting
 
@@ -50,7 +50,7 @@ Run every later stage from the run's worktree: Define files, Build, checks, `fac
 
 ## Tracker setup
 
-Follow this only when the workflow says the tracker is needed: always in `/factory`, and in the lighter workflows only when the run reads or publishes a spec or tickets in the tracker. A clear, bounded request planned in the conversation does not need it, so never block such a run on it. When it is needed, check that `docs/agents/issue-tracker.md` exists in the run's worktree. If it is missing, look first in the checkout where the run started if it is distinct from the run worktree, then in the main checkout identified by `git worktree list --porcelain` (the first worktree, if it is not bare). If it exists in either checkout (setup was run but not committed to the base branch), copy that checkout's `docs/agents/` directory into the worktree and bring its `## Agent skills` section into the worktree's `AGENTS.md` or `CLAUDE.md` (whichever the source checkout edited), so the pull request includes the setup output; do not modify the source checkout. If it is absent from all available checkouts, or the main repository is bare and no setup source is available, mark the run blocked with `--blocking-reason "Run /setup-matt-pocock-skills first"`, tell the user to run `/setup-matt-pocock-skills` once in the original checkout and then start the run again (the new worktree will pick up its output; this run's worktree can be removed), and stop. Do not guess a tracker.
+Follow this only when the workflow says the tracker is needed: always in `/factory-full`, and in the lighter workflows only when the run reads or publishes a spec or tickets in the tracker. A clear, bounded request planned in the conversation does not need it, so never block such a run on it. When it is needed, check that `docs/agents/issue-tracker.md` exists in the run's worktree. If it is missing, look first in the checkout where the run started if it is distinct from the run worktree, then in the main checkout identified by `git worktree list --porcelain` (the first worktree, if it is not bare). If it exists in either checkout (setup was run but not committed to the base branch), copy that checkout's `docs/agents/` directory into the worktree and bring its `## Agent skills` section into the worktree's `AGENTS.md` or `CLAUDE.md` (whichever the source checkout edited), so the pull request includes the setup output; do not modify the source checkout. If it is absent from all available checkouts, or the main repository is bare and no setup source is available, mark the run blocked with `--blocking-reason "Run /setup-matt-pocock-skills first"`, tell the user to run `/setup-matt-pocock-skills` once in the original checkout and then start the run again (the new worktree will pick up its output; this run's worktree can be removed), and stop. Do not guess a tracker.
 
 ## Saving the plan
 

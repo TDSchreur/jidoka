@@ -9,7 +9,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\nOmitted fields are preserved; clear flags remove them.";
+pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory-full|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\nOmitted fields are preserved; clear flags remove them.";
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
 const MAX_TICKETS: usize = 100;
@@ -93,9 +93,12 @@ pub(crate) enum RunStatus {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Mode {
-    Factory,
-    FactoryBalanced,
-    FactoryFast,
+    #[serde(rename = "factory-full", alias = "factory")]
+    Full,
+    #[serde(rename = "factory-balanced")]
+    Balanced,
+    #[serde(rename = "factory-fast")]
+    Fast,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -487,7 +490,7 @@ pub(crate) fn parse_update(
                 } else {
                     let mode = next_value()?;
                     FieldUpdate::Set(serde_json::from_value(serde_json::Value::from(*mode)).map_err(|_| {
-                        format!("Invalid value for --mode: {mode}; use factory, factory-balanced or factory-fast")
+                        format!("Invalid value for --mode: {mode}; use factory-full, factory-balanced or factory-fast")
                     })?)
                 };
                 continue;
@@ -1133,7 +1136,7 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        assert_eq!(run.mode, Some(Mode::FactoryFast));
+        assert_eq!(run.mode, Some(Mode::Fast));
         assert_eq!(run.branch.as_deref(), Some("feature/x"));
         assert_eq!(
             run.base_commit.as_deref(),
@@ -1440,6 +1443,28 @@ mod tests {
         assert_eq!(after.summaries.len(), 1);
         assert!(after.pr.is_some());
         assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn legacy_full_mode_loads_without_rewriting_and_normalizes_on_update() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let legacy = r#"[{"id":"7","title":"old","project":"/work/old","stage":"build","status":"running","updated_at":5,"mode":"factory","branch":"feature/x","base_commit":"abc1234","spec":"docs/spec.md"}]"#;
+        fs::write(&path, legacy).unwrap();
+        let store = RunStore::open(&path).unwrap();
+        let run = store.get("7").unwrap().unwrap();
+        assert_eq!(run.mode, Some(Mode::Full));
+        assert_eq!(run.branch.as_deref(), Some("feature/x"));
+        assert_eq!(run.spec.as_deref(), Some("docs/spec.md"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), legacy);
+        store
+            .update("7", update(&["--activity", "Continuing"]))
+            .unwrap();
+        let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored[0]["mode"], "factory-full");
+        assert_eq!(stored[0]["id"], "7");
+        assert_eq!(stored[0]["stage"], "build");
+        assert_eq!(stored[0]["branch"], "feature/x");
     }
 
     #[test]
