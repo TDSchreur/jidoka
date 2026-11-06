@@ -51,17 +51,8 @@ fn read_snippet(input: &str) -> Snippet {
     while i < chars.len() {
         match chars[i] {
             '"' | '\'' | '`' => i = skip_string(&chars, i),
-            '/' if chars.get(i + 1) == Some(&'/') => {
-                while chars.get(i).is_some_and(|c| *c != '\n') {
-                    i += 1;
-                }
-            }
-            '/' if chars.get(i + 1) == Some(&'*') => {
-                i += 2;
-                while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
-                    i += 1;
-                }
-                i += 2;
+            '/' if skip_comment(&chars, i).is_some() => {
+                i = skip_comment(&chars, i).unwrap_or(i + 1)
             }
             c if is_identifier_char(c) => {
                 let start = i;
@@ -120,6 +111,10 @@ fn call_end(chars: &[char], start: usize) -> usize {
                 i = skip_string(chars, i);
                 continue;
             }
+            '/' if skip_comment(chars, i).is_some() => {
+                i = skip_comment(chars, i).unwrap_or(i + 1);
+                continue;
+            }
             '(' => depth += 1,
             ')' => {
                 depth -= 1;
@@ -132,6 +127,27 @@ fn call_end(chars: &[char], start: usize) -> usize {
         i += 1;
     }
     chars.len()
+}
+
+/// The index after the comment that starts at `chars[i]` (`// ...` to the line end, or `/* ... */`), if one does.
+fn skip_comment(chars: &[char], i: usize) -> Option<usize> {
+    if chars.get(i) != Some(&'/') {
+        return None;
+    }
+    match chars.get(i + 1) {
+        Some('/') => {
+            let end = chars[i..].iter().position(|c| *c == '\n');
+            Some(end.map_or(chars.len(), |p| i + p))
+        }
+        Some('*') => {
+            let mut j = i + 2;
+            while j < chars.len() && !(chars[j] == '*' && chars.get(j + 1) == Some(&'/')) {
+                j += 1;
+            }
+            Some((j + 2).min(chars.len()))
+        }
+        _ => None,
+    }
 }
 
 /// The index after the string literal that starts at `chars[start]` (an unterminated one runs to the end).
@@ -149,10 +165,15 @@ fn skip_string(chars: &[char], start: usize) -> usize {
 }
 
 fn skip_whitespace(chars: &[char], mut i: usize) -> usize {
-    while chars.get(i).is_some_and(|c| c.is_whitespace()) {
-        i += 1;
+    loop {
+        while chars.get(i).is_some_and(|c| c.is_whitespace()) {
+            i += 1;
+        }
+        match skip_comment(chars, i) {
+            Some(next) => i = next,
+            None => return i,
+        }
     }
-    i
 }
 
 /// The `cmd` of a `tools.exec_command({...})` call whose argument list starts at `chars[start]`, when it is
@@ -221,6 +242,10 @@ fn skip_value(chars: &[char], start: usize) -> Option<usize> {
         match chars[i] {
             '"' | '\'' | '`' => {
                 i = skip_string(chars, i);
+                continue;
+            }
+            '/' if skip_comment(chars, i).is_some() => {
+                i = skip_comment(chars, i).unwrap_or(i + 1);
                 continue;
             }
             '(' | '[' | '{' => depth += 1,

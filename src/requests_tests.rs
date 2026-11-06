@@ -1621,3 +1621,29 @@ fn a_call_after_a_broken_one_in_the_same_snippet_is_still_read() {
         Category::PrCreationAndPush
     );
 }
+
+#[test]
+fn javascript_comments_inside_a_call_do_not_hide_it_or_the_calls_after_it() {
+    for (snippet, expected) in [
+        // A quote in a comment must not open a string that runs to the end.
+        (
+            "tools.exec_command({cmd:\"ls\", // don't wait\n yield_time_ms: 1000}); await tools.exec_command({cmd:\"git push\"})",
+            Category::PrCreationAndPush,
+        ),
+        (
+            "tools.exec_command({cmd:\"ls\", /* it's slow */ yield_time_ms: 1000}); await tools.exec_command({cmd:\"git push\"})",
+            Category::PrCreationAndPush,
+        ),
+        // A comment before `cmd` or between properties.
+        (
+            "await tools.exec_command({ // don't forget the dir\n workdir: \"/w\", /* the command: */ cmd: \"git push\" })",
+            Category::PrCreationAndPush,
+        ),
+        (
+            "await tools.exec_command({cmd: \"git push\" // done\n })",
+            Category::PrCreationAndPush,
+        ),
+    ] {
+        assert_eq!(codex_category_of(snippet), expected, "{snippet}");
+    }
+}
