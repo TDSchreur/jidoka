@@ -312,9 +312,19 @@ fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::erro
             Ok(0)
         }
         Err(run_begin::BeginError::NoRun(text)) => Err(inspect::shown(&text).into()),
-        Err(run_begin::BeginError::Blocked { run, reason, retry }) => {
+        Err(run_begin::BeginError::Blocked {
+            run,
+            reason,
+            retry,
+            marked,
+        }) => {
+            let state = if marked {
+                "is blocked"
+            } else {
+                "could not be marked blocked (the server did not accept the update)"
+            };
             eprintln!(
-                "Run {run} is blocked: {}\nTo retry: {}",
+                "Run {run} {state}: {}\nTo retry: {}",
                 inspect::shown(&reason),
                 inspect::shown(&retry)
             );

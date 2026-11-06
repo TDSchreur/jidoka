@@ -4,16 +4,34 @@ use super::*;
 use std::{cell::RefCell, fs, path::PathBuf, process::Command};
 use tempfile::TempDir;
 
-fn git(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
-        .args(args)
+/// A user's own git settings (a signing key, hooks) must not reach the tests: this file never exists.
+fn no_global_config() -> PathBuf {
+    std::env::temp_dir().join("factory-tests-no-such-gitconfig")
+}
+
+fn isolated(command: &mut Command) -> &mut Command {
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", no_global_config())
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .output()
-        .unwrap();
+}
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args);
+    let output = isolated(&mut command).output().unwrap();
     assert!(
         output.status.success(),
         "git {args:?}: {}",
@@ -50,12 +68,9 @@ impl Project {
         git(&seed, &["commit", "-q", "--allow-empty", "-m", "second"]);
         git(&seed, &["push", "-q", "origin", "develop", "release"]);
         let repo = root.join("repo");
-        let clone = Command::new("git")
-            .args(["clone", "-q"])
-            .arg(&remote)
-            .arg(&repo)
-            .output()
-            .unwrap();
+        let mut clone_command = Command::new("git");
+        clone_command.args(["clone", "-q"]).arg(&remote).arg(&repo);
+        let clone = isolated(&mut clone_command).output().unwrap();
         assert!(
             clone.status.success(),
             "{}",
@@ -87,6 +102,8 @@ struct FakeApi {
     updates: RefCell<Vec<Update>>,
     /// What `get` answers; `None` means the run is unknown.
     existing: RefCell<Option<RunSummary>>,
+    /// Every update fails, as when the server cannot be reached.
+    fail_updates: std::cell::Cell<bool>,
 }
 
 impl RunApi for FakeApi {
@@ -112,6 +129,9 @@ impl RunApi for FakeApi {
     }
 
     fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
+        if self.fail_updates.get() {
+            return Err("the server is not reachable".into());
+        }
         self.updates.borrow_mut().push((
             id.into(),
             stage.into(),
@@ -269,7 +289,9 @@ fn names_come_from_the_title() {
 
 fn blocked(result: Result<Begun, BeginError>) -> (String, String, String) {
     match result {
-        Err(BeginError::Blocked { run, reason, retry }) => (run, reason, retry),
+        Err(BeginError::Blocked {
+            run, reason, retry, ..
+        }) => (run, reason, retry),
         other => panic!("expected a blocked run, got {other:?}"),
     }
 }
@@ -364,6 +386,7 @@ fn git_that_cannot_write_blocks_the_run_and_says_so() {
     if fs::create_dir(&probe).is_ok() {
         fs::remove_dir(&probe).unwrap();
         fs::set_permissions(&project.worktrees, fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!("skipped: this user can write to a read-only folder (root)");
         return;
     }
     let api = FakeApi::default();
@@ -715,9 +738,19 @@ fn nothing_in_the_command_deletes_resets_checks_out_or_cleans() {
         "\"stash\"",
         "\"--force\"",
         "\"-D\"",
+        "\"-d\"",
+        "\"-B\"",
+        "\"-f\"",
+        "\"-ff\"",
+        "\"--hard\"",
+        "\"--detach\"",
         "\"remove\"",
+        "\"switch\"",
+        "\"gc\"",
+        "\"update-ref\"",
         "remove_dir",
         "remove_file",
+        "fs::write",
     ] {
         assert!(!source.contains(forbidden), "{forbidden}");
     }
@@ -736,4 +769,132 @@ fn a_resume_is_parsed_without_a_title() {
     );
     assert!(parse_resume("12x", &[]).is_err());
     assert!(parse_resume("", &[]).is_err());
+}
+
+// --- rework 1 ---------------------------------------------------------------------------------------
+
+#[test]
+fn a_resume_without_a_branch_never_takes_over_an_existing_workspace() {
+    let project = Project::new();
+    let api = FakeApi::default();
+    let first = begin(&project.repo, &options("Add login"), &api, None, None).unwrap();
+    assert_eq!(first.branch, "add-login");
+
+    // Another run with the same title is resumed without a branch: nothing was made for it yet.
+    let other = api_with_run("Add login");
+    let opts = Options {
+        title: String::new(),
+        run: Some("200".into()),
+        ..Options::default()
+    };
+    let resumed = begin(&project.repo, &opts, &other, None, None).unwrap();
+    assert_eq!(resumed.branch, "add-login-2");
+    assert_ne!(resumed.worktree, first.worktree);
+    // The first run's workspace is untouched.
+    assert_eq!(
+        git(Path::new(&first.worktree), &["branch", "--show-current"]),
+        "add-login"
+    );
+}
+
+#[test]
+fn another_base_can_be_fetched_in_a_single_branch_clone() {
+    let project = Project::new();
+    let single = project.worktrees.parent().unwrap().join("single");
+    let mut clone = Command::new("git");
+    clone
+        .args(["clone", "-q", "--single-branch", "-b", "develop"])
+        .arg(&project.remote)
+        .arg(&single);
+    assert!(isolated(&mut clone).output().unwrap().status.success());
+    let api = FakeApi::default();
+    let mut opts = options("Other base");
+    opts.base = Some("release".into());
+    let begun = begin(&single, &opts, &api, None, None).unwrap();
+    assert_eq!(begun.base_commit, project.origin_commit("release"));
+}
+
+#[test]
+fn a_worktree_git_lists_but_that_is_gone_says_to_prune_it() {
+    let project = Project::new();
+    let api = FakeApi::default();
+    let mut opts = options("Gone");
+    opts.branch = Some("gone".into());
+    let made = begin(&project.repo, &opts, &api, None, None).unwrap();
+    fs::remove_dir_all(&made.worktree).unwrap();
+    let again = api_with_run("Gone");
+    let (_, reason, _) = blocked(begin(
+        &project.repo,
+        &resuming("Gone", "gone"),
+        &again,
+        None,
+        None,
+    ));
+    assert!(reason.contains("git worktree prune"), "{reason}");
+    assert!(!reason.contains("not on gone"), "{reason}");
+}
+
+#[test]
+fn a_repository_inside_another_git_folder_is_refused_before_a_run_is_made() {
+    let dir = tempfile::tempdir().unwrap();
+    let inside = dir.path().join("super/.git/modules/lib");
+    fs::create_dir_all(&inside).unwrap();
+    git(&inside, &["init", "-q", "--bare"]);
+    let api = FakeApi::default();
+    let result = begin(&inside, &options("Module"), &api, None, None);
+    assert!(
+        matches!(result, Err(BeginError::NoRun(ref t)) if t.contains(".git")),
+        "{result:?}"
+    );
+    assert!(api.created.borrow().is_empty());
+    assert!(!dir.path().join("super/.git/modules/lib.worktrees").exists());
+}
+
+#[test]
+fn a_tag_with_the_name_of_the_branch_does_not_decide_whether_the_branch_is_unused() {
+    let project = Project::new();
+    git(&project.repo, &["branch", "bt", "origin/develop"]);
+    // A tag of the same name on a commit that is not on the base.
+    git(
+        &project.repo,
+        &["checkout", "-q", "--detach", "origin/develop"],
+    );
+    git(
+        &project.repo,
+        &["commit", "-q", "--allow-empty", "-m", "elsewhere"],
+    );
+    git(&project.repo, &["tag", "bt"]);
+    git(&project.repo, &["checkout", "-q", "develop"]);
+    let api = api_with_run("Tagged");
+    let begun = begin(&project.repo, &resuming("Tagged", "bt"), &api, None, None).unwrap();
+    assert_eq!(begun.branch, "bt");
+}
+
+#[test]
+fn the_text_output_is_printable_whatever_the_folder_is_called() {
+    let begun = Begun {
+        run: "100".into(),
+        worktree: "/w/\u{1b}[2J/x".into(),
+        branch: "b".into(),
+        base: "develop".into(),
+        base_commit: "abc".into(),
+    };
+    assert!(!render(&begun).chars().any(|c| c.is_control() && c != '\n'));
+}
+
+#[test]
+fn a_block_that_could_not_be_recorded_says_so() {
+    let project = Project::new();
+    git(&project.repo, &["remote", "remove", "origin"]);
+    let api = FakeApi::default();
+    api.fail_updates.set(true);
+    match begin(&project.repo, &options("Offline"), &api, None, None) {
+        Err(BeginError::Blocked { marked, .. }) => assert!(!marked),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn git_is_asked_in_english_so_that_its_messages_can_be_told_apart() {
+    assert!(include_str!("run_begin.rs").contains(r#".env("LC_ALL", "C")"#));
 }

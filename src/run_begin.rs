@@ -1,6 +1,6 @@
 //! `factory run begin`: creates a run and its workspace (a worktree on a new branch from the base) and records it.
 
-use crate::routing::ModelRouting;
+use crate::{inspect::shown, routing::ModelRouting};
 use serde::Serialize;
 use std::{path::Path, process::Command};
 
@@ -155,10 +155,12 @@ pub(crate) enum BeginError {
         run: String,
         reason: String,
         retry: String,
+        /// Whether the server accepted the blocked status; if not, the run still shows as running.
+        marked: bool,
     },
 }
 
-/// The longest blocking reason the factory keeps.
+/// Reasons are kept short: the dashboard shows one on the run's card.
 const MAX_REASON_CHARS: usize = 300;
 /// The longest branch name derived from a title.
 const MAX_NAME_CHARS: usize = 40;
@@ -170,6 +172,8 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .arg(dir)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
+        // Its messages are told apart below, so they must be in English.
+        .env("LC_ALL", "C")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .output()
@@ -250,6 +254,15 @@ pub(crate) fn begin(
                 .into(),
         ));
     };
+    if Path::new(&repository)
+        .components()
+        .any(|part| part.as_os_str() == ".git")
+    {
+        return Err(BeginError::NoRun(
+            "This repository's git folder is inside another .git folder (a submodule?), so worktrees cannot go beside it. Run the command in a normal checkout, or create the worktree by hand."
+                .into(),
+        ));
+    }
     let (run, title) = match &options.run {
         Some(id) => {
             let known = api.get(id).map_err(BeginError::NoRun)?;
@@ -340,12 +353,14 @@ fn blocked(
     reason: String,
 ) -> BeginError {
     let reason: String = reason.chars().take(MAX_REASON_CHARS).collect();
-    // If this fails too, the error below still tells the caller what happened.
-    let _ = api.update(run, "define", "blocked", &["--blocking-reason", &reason]);
+    let marked = api
+        .update(run, "define", "blocked", &["--blocking-reason", &reason])
+        .is_ok();
     BeginError::Blocked {
         run: run.to_string(),
         reason,
         retry: retry_command(run, options, branch),
+        marked,
     }
 }
 
@@ -417,8 +432,8 @@ fn is_unused(main: &Path, branch: &str, base: &str) -> bool {
         &[
             "merge-base",
             "--is-ancestor",
-            branch,
-            &format!("origin/{base}"),
+            &format!("refs/heads/{branch}"),
+            &format!("refs/remotes/origin/{base}"),
         ],
     )
     .is_ok()
@@ -475,7 +490,9 @@ fn workspace(
                     .to_string()
             })?,
     };
-    git(main, &["fetch", "origin", &base]).map_err(|error| {
+    // An explicit refspec also works in a clone that was made for one branch only.
+    let refspec = format!("+refs/heads/{base}:refs/remotes/origin/{base}");
+    git(main, &["fetch", "origin", &refspec]).map_err(|error| {
         if error.contains("couldn't find remote ref") {
             format!("The base branch {base} does not exist on origin. Pass an existing branch with --base.")
         } else {
@@ -513,12 +530,13 @@ fn workspace(
         }
     };
 
-    // The branch: the one asked for, or on a resume the derived one (a retry command names it), or the
-    // first derived name, with -2, -3 and so on, that neither a branch nor a folder uses.
-    let branch = match (&options.branch, resume) {
-        (Some(branch), _) => branch.clone(),
-        (None, true) => derived,
-        (None, false) => {
+    // The branch: the one asked for, or the first derived name, with -2, -3 and so on, that neither a
+    // branch nor a folder uses. A resume takes over what exists only when it is told the branch: a retry
+    // command names it as soon as one was chosen, and before that nothing was made.
+    let adopt = resume && options.branch.is_some();
+    let branch = match &options.branch {
+        Some(branch) => branch.clone(),
+        None => {
             let mut candidate = derived.clone();
             let mut number = 1;
             while taken(&candidate) {
@@ -570,7 +588,7 @@ fn workspace(
         ))
     };
 
-    if !resume {
+    if !adopt {
         if exists {
             return Err(fail(format!(
                 "The branch {branch} already exists. Pick another name with --branch."
@@ -612,6 +630,9 @@ fn workspace(
             }
             Ok(made(tip(&branch)?))
         }
+        (_, false, Some(_)) => Err(fail(format!(
+            "git lists a worktree at {path_text} that is not on disk any more. Run `git worktree prune` yourself, then retry."
+        ))),
         (_, true, None) => Err(fail(format!(
             "{path_text} already exists and is not a worktree. Move it away or pick another name with --branch."
         ))),
@@ -628,7 +649,11 @@ fn workspace(
 pub(crate) fn render(begun: &Begun) -> String {
     format!(
         "Run: {}\nWorktree: {}\nBranch: {}\nBase: {}\nBase commit: {}\n",
-        begun.run, begun.worktree, begun.branch, begun.base, begun.base_commit
+        shown(&begun.run),
+        shown(&begun.worktree),
+        shown(&begun.branch),
+        shown(&begun.base),
+        shown(&begun.base_commit)
     )
 }
 
