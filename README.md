@@ -204,7 +204,7 @@ The dashboard reads the token counts your agents write to their own session logs
 
 Model routing lets you say which model and effort each kind of task should use, independently of the workflow mode. The factory records your choices on the run, and the role mapped to `check` sets the model and effort of the review agents of `factory-full` and `factory-balanced`. The `build` and `finish` tasks are not routed yet and run on the session's model. Without a policy file, runs behave as before.
 
-Write one policy file, `model-routing.json`, in the factory's config folder: `$XDG_CONFIG_HOME/tds-factory/` (or `~/.config/tds-factory/` when unset) on Linux, and `%APPDATA%\tds-factory\` on Windows. For example:
+Write one policy file, `model-routing.json`, in the factory's config folder: `$XDG_CONFIG_HOME/tds-factory/` (or `~/.config/tds-factory/` when unset) on Linux, and `%APPDATA%\tds-factory\` on Windows. `factory doctor --agent claude --create-model-routing` (or `--agent codex`) writes a starter for you, as described under [Checking readiness](#checking-readiness). For example:
 
 ```json
 {
@@ -245,7 +245,7 @@ Copilot CLI is not supported. It chooses a subagent's model from its own setting
 
 ### Checking readiness
 
-`factory doctor` reports whether the current repository and your machine are ready for the factory, without changing anything, installing anything or starting the dashboard. It checks:
+`factory doctor` reports whether the current repository and your machine are ready for the factory, without changing anything, installing anything or starting the dashboard, unless you ask it to create the model-routing policy file (see below). It checks:
 
 - the project: a Git repository, an `origin` remote, origin's default branch (`git remote set-head origin --auto` sets it when unknown), the setup output of `/setup-matt-pocock-skills` (`docs/agents/issue-tracker.md` and the `## Agent skills` section), which `/factory-full` always needs and the lighter workflows only when they read or publish specs or tickets, and the verification commands listed as bullets under `## Commands` in `AGENTS.md` or `CLAUDE.md`. It looks for each command's tool but never runs it.
 - each agent (Codex, Claude Code, Copilot): its command is on `PATH`, and every file of every skill `factory install` bundles is installed in the folder `factory install` would use (honoring `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `COPILOT_HOME`).
@@ -258,6 +258,8 @@ Copilot CLI is not supported. It chooses a subagent's model from its own setting
   - A policy for Copilot CLI shows one `pass` line: model routing is not supported there and every stage uses the session's model.
 
 Each line is `pass`, `missing` (something to supply), `fail` (something broken), `warning` (a risk to read about that does not stop the factory) or `skipped` (not checked, with the reason), with a fix where there is one. Model routing problems other than a policy file that cannot be used are warnings, because model routing is optional and without it a stage uses the session's model. The exit status is 0 when the project checks pass and at least one agent is usable, and the model-routing policy, if there is one, loads. Use `--agent codex|claude|copilot` to check, and require, one agent, and `--json` for structured output.
+
+The one thing doctor can write is a starter model-routing policy. `factory doctor --agent claude --create-model-routing` (or `--agent codex`) creates `model-routing.json` in the config folder, with the three roles for that agent and only the `check` task routed to `strong`, and then runs its checks, so the new file is verified straight away. Giving the option is the confirmation: there is no prompt. The file is switched on, so the next run's review agents use it; edit the models and efforts, or set `"enabled": false`. Doctor never overwrites or follows anything already at that path, and the option is refused with `--agent copilot`, because Copilot CLI is not supported. With `--json`, the note about the file goes to stderr and stdout stays JSON.
 
 ### First use in a repository
 

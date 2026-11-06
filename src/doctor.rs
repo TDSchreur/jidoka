@@ -4,6 +4,7 @@
 //! installs anything or needs the dashboard.
 
 use crate::install::{bundled_skill_files, skills_root};
+use crate::routing::{create_starter, policy_path_in, RoutingAgent};
 use serde::Serialize;
 use std::{
     ffi::OsString,
@@ -569,13 +570,23 @@ fn agent_version(program: &Path) -> Option<String> {
 }
 
 /// Runs the checks for the current folder and prints the report. Returns whether the factory is ready.
-pub(crate) fn run(agent: Option<&str>, json: bool) -> Result<bool, Box<dyn std::error::Error>> {
+pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
     let machine = Machine {
         home: crate::install::home_dir()?,
         path: std::env::var_os("PATH").unwrap_or_default(),
         var: &|name| std::env::var_os(name),
         version: &agent_version,
     };
+    let (agent, json) = (args.agent, args.json);
+    if args.create_routing {
+        // Parsing guarantees an agent here. With `--json` the note goes to stderr: stdout stays JSON.
+        let note = create_model_routing(agent.unwrap_or_default(), &machine)?;
+        if json {
+            eprintln!("{note}");
+        } else {
+            println!("{note}\n");
+        }
+    }
     let report = diagnose(&std::env::current_dir()?, agent, &machine)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -585,13 +596,51 @@ pub(crate) fn run(agent: Option<&str>, json: bool) -> Result<bool, Box<dyn std::
     Ok(report.ok)
 }
 
-/// Reads `[--agent <name>] [--json]` in any order.
-pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<(Option<&'a str>, bool), String> {
-    let (mut agent, mut json) = (None, false);
+/// What `factory doctor` was asked to do.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Args<'a> {
+    pub(crate) agent: Option<&'a str>,
+    pub(crate) json: bool,
+    /// Write a starter model-routing policy first, when none exists.
+    pub(crate) create_routing: bool,
+}
+
+/// Writes a starter model-routing policy for `agent` unless a file is already there, and says what it did.
+/// This is the one thing doctor writes, and only when asked.
+fn create_model_routing(agent: &str, machine: &Machine) -> Result<String, String> {
+    let agent = match agent {
+        "claude" => RoutingAgent::Claude,
+        "codex" => RoutingAgent::Codex,
+        other => {
+            return Err(format!(
+                "Model routing is not supported on {other}: there is no policy file to create."
+            ))
+        }
+    };
+    let path = policy_path_in(|name| (machine.var)(name))
+        .ok_or("cannot work out the configuration folder for the model-routing policy")?;
+    let shown = printable(&path.display().to_string());
+    match create_starter(&path, agent) {
+        Ok(true) => Ok(format!(
+            "Created {shown}, a starter policy for {} that routes the check task to the strong role. \
+             It is switched on: edit the models and efforts, or set \"enabled\": false to switch it off.",
+            agent.name()
+        )),
+        Ok(false) => Ok(format!(
+            "{shown} already exists and was left unchanged."
+        )),
+        Err(error) => Err(format!("cannot create {shown}: {error}")),
+    }
+}
+
+/// Reads `[--agent <name>] [--json] [--create-model-routing]` in any order.
+pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
+    let (mut agent, mut json, mut create_routing) = (None, false, false);
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match *arg {
             "--json" => json = true,
+            "--create-model-routing" => create_routing = true,
             "--agent" => match args.next() {
                 Some(name) if AGENTS.contains(name) && agent.is_none() => agent = Some(*name),
                 Some(name) if AGENTS.contains(name) => {
@@ -607,7 +656,23 @@ pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<(Option<&'a str>, bool)
             other => return Err(format!("Unknown option {other:?}.")),
         }
     }
-    Ok((agent, json))
+    if create_routing {
+        match agent {
+            Some("claude" | "codex") => {}
+            Some(_) => {
+                return Err(
+                    "--create-model-routing is not supported with copilot: model routing is not supported on Copilot CLI."
+                        .into(),
+                )
+            }
+            None => return Err("--create-model-routing needs --agent claude or --agent codex.".into()),
+        }
+    }
+    Ok(Args {
+        agent,
+        json,
+        create_routing,
+    })
 }
 
 #[cfg(test)]
@@ -1037,14 +1102,25 @@ mod tests {
 
     #[test]
     fn arguments_accept_an_agent_and_json_in_any_order() {
-        assert_eq!(parse_args(&[]), Ok((None, false)));
+        let args = |agent, json, create_routing| {
+            Ok(Args {
+                agent,
+                json,
+                create_routing,
+            })
+        };
+        assert_eq!(parse_args(&[]), args(None, false, false));
         assert_eq!(
             parse_args(&["--json", "--agent", "copilot"]),
-            Ok((Some("copilot"), true))
+            args(Some("copilot"), true, false)
         );
         assert_eq!(
             parse_args(&["--agent", "codex"]),
-            Ok((Some("codex"), false))
+            args(Some("codex"), false, false)
+        );
+        assert_eq!(
+            parse_args(&["--create-model-routing", "--json", "--agent", "claude"]),
+            args(Some("claude"), true, true)
         );
         for bad in [
             &["--agent"][..],
@@ -1055,6 +1131,94 @@ mod tests {
         ] {
             assert!(parse_args(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn creating_the_policy_needs_an_agent_that_model_routing_supports() {
+        let error = |args: &[&str]| parse_args(args).unwrap_err();
+        assert!(error(&["--create-model-routing"]).contains("--agent"));
+        let copilot = error(&["--create-model-routing", "--agent", "copilot"]);
+        assert!(
+            copilot.contains("Copilot") && copilot.contains("not supported"),
+            "{copilot}"
+        );
+        assert!(parse_args(&["--agent", "copilot"]).is_ok());
+    }
+
+    impl World {
+        /// What `--create-model-routing` does on this fake machine.
+        fn create_routing(&self, agent: &str) -> Result<String, String> {
+            let machine = Machine {
+                home: self.home.path().to_path_buf(),
+                path: self.bin.path().into(),
+                var: &|name| self.vars.get(name).cloned(),
+                version: &|_| None,
+            };
+            create_model_routing(agent, &machine)
+        }
+    }
+
+    #[test]
+    fn doctor_creates_a_starter_policy_for_the_agent_and_then_checks_it() {
+        let world = World::ready().claude_ready().with_config_folder();
+        let message = world.create_routing("claude").unwrap();
+        let path = world
+            .home
+            .path()
+            .join("config/tds-factory/model-routing.json");
+        assert!(path.is_file(), "{message}");
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert!(
+            message.contains("check") && message.contains("enabled"),
+            "{message}"
+        );
+        // The next report already sees the file, and it passes every check.
+        let report = world.report(None);
+        assert!(report.ok, "{}", render(&report));
+        assert!(
+            report.model_routing.iter().all(Check::passed),
+            "{}",
+            render(&report)
+        );
+        // Created for Codex, the policy names Codex.
+        let codex = World::ready().with_config_folder();
+        codex.create_routing("codex").unwrap();
+        let text = fs::read_to_string(
+            codex
+                .home
+                .path()
+                .join("config/tds-factory/model-routing.json"),
+        )
+        .unwrap();
+        assert!(text.contains("\"agent\": \"codex\""), "{text}");
+    }
+
+    #[test]
+    fn doctor_leaves_an_existing_policy_alone_and_says_so() {
+        let world = World::ready().claude_ready().with_policy(CLAUDE_POLICY);
+        let path = world
+            .home
+            .path()
+            .join("config/tds-factory/model-routing.json");
+        let message = world.create_routing("claude").unwrap();
+        assert!(
+            message.contains("already exists") && message.contains("unchanged"),
+            "{message}"
+        );
+        assert_eq!(fs::read_to_string(path).unwrap(), CLAUDE_POLICY);
+    }
+
+    #[test]
+    fn doctor_refuses_to_create_a_policy_it_cannot_place_or_that_is_not_supported() {
+        // No configuration folder can be worked out.
+        let world = World::ready();
+        let error = world.create_routing("claude").unwrap_err();
+        assert!(error.contains("configuration"), "{error}");
+        let copilot = World::ready()
+            .with_config_folder()
+            .create_routing("copilot")
+            .unwrap_err();
+        assert!(copilot.contains("not supported"), "{copilot}");
     }
 
     #[test]
@@ -1079,6 +1243,15 @@ mod tests {
             let config = self.home.path().join("config");
             fs::create_dir_all(config.join("tds-factory")).unwrap();
             fs::write(config.join("tds-factory/model-routing.json"), policy).unwrap();
+            for name in ["XDG_CONFIG_HOME", "APPDATA"] {
+                self.vars.insert(name.into(), config.clone().into());
+            }
+            self
+        }
+
+        /// Points the configuration folder at a temporary one inside the fake home, with no policy in it.
+        fn with_config_folder(mut self) -> Self {
+            let config = self.home.path().join("config");
             for name in ["XDG_CONFIG_HOME", "APPDATA"] {
                 self.vars.insert(name.into(), config.clone().into());
             }

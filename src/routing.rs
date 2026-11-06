@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
@@ -67,6 +68,59 @@ pub(crate) fn model_matches(requested: &str, observed: &str) -> bool {
             boundary(observed[..start].chars().next_back())
                 && boundary(observed[start + requested.len()..].chars().next())
         })
+}
+
+/// A starting policy for `agent`, written by `factory doctor --create-model-routing`. It defines all three
+/// roles so they can be extended, and routes only `check`, the one task that uses routing so far.
+pub(crate) fn starter(agent: RoutingAgent) -> &'static str {
+    match agent {
+        RoutingAgent::Claude => {
+            r#"{
+  "enabled": true,
+  "agent": "claude",
+  "roles": {
+    "strong": { "model": "opus", "effort": "high" },
+    "coding": { "model": "sonnet", "effort": "medium" },
+    "routine": { "model": "haiku", "effort": "low" }
+  },
+  "tasks": { "check": "strong" }
+}
+"#
+        }
+        RoutingAgent::Codex => {
+            r#"{
+  "enabled": true,
+  "agent": "codex",
+  "roles": {
+    "strong": { "model": "gpt-6-astra", "effort": "high" },
+    "coding": { "model": "gpt-6.1-sol", "effort": "medium" },
+    "routine": { "model": "gpt-6-luna", "effort": "low" }
+  },
+  "tasks": { "check": "strong" }
+}
+"#
+        }
+    }
+}
+
+/// Writes the starter policy to `path`, creating its folder. Whatever is already at `path`, even a link
+/// that points nowhere, is left alone and `false` is returned.
+pub(crate) fn create_starter(path: &Path, agent: RoutingAgent) -> io::Result<bool> {
+    if let Some(folder) = path.parent() {
+        fs::create_dir_all(folder)?;
+    }
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            file.write_all(starter(agent).as_bytes())?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 /// Longest model or effort text. They are shown in a terminal and handed to agents, so they stay short.
@@ -261,6 +315,58 @@ mod tests {
         },
         "tasks": {"build": "coding", "check": "strong", "finish": "routine"}
     }"#;
+
+    #[test]
+    fn each_starter_policy_loads_and_routes_check_to_the_strong_role() {
+        let dir = tempfile::tempdir().unwrap();
+        for agent in [RoutingAgent::Claude, RoutingAgent::Codex] {
+            let path = dir.path().join(format!("{}.json", agent.name()));
+            assert!(create_starter(&path, agent).unwrap());
+            let selection = load(&path).unwrap().selection.expect("the starter routes");
+            assert_eq!(selection.agent, agent);
+            assert_eq!(
+                selection.tasks.keys().copied().collect::<Vec<_>>(),
+                [Task::Check]
+            );
+            assert_eq!(selection.role_for(Task::Check), Some(Role::Strong));
+            // All three roles are there to extend, each with a model and an effort.
+            for role in [Role::Strong, Role::Coding, Role::Routine] {
+                let choice = &selection.roles[&role];
+                assert!(
+                    !choice.model.is_empty() && choice.effort.is_some(),
+                    "{agent:?} {role:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_starter_is_created_with_its_folder_and_never_replaces_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tds-factory/model-routing.json");
+        assert!(create_starter(&path, RoutingAgent::Claude).unwrap());
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("\"agent\": \"claude\""));
+        // A second call, even for another agent, leaves the file alone.
+        fs::write(&path, "my own policy").unwrap();
+        assert!(!create_starter(&path, RoutingAgent::Codex).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "my own policy");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_the_policy_path_is_left_alone_even_when_it_points_nowhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("elsewhere.json");
+        let path = dir.path().join("model-routing.json");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(!create_starter(&path, RoutingAgent::Claude).unwrap());
+        assert!(
+            !target.exists(),
+            "the link must not be followed to create a file"
+        );
+    }
 
     #[test]
     fn a_requested_model_matches_an_observed_id_by_whole_parts() {
