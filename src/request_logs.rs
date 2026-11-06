@@ -470,36 +470,102 @@ pub(crate) fn classify(commands: &[String], other_tool: bool, any_tool: bool) ->
     }
 }
 
-/// The commands of a shell line, split at `&&`, `||`, `;`, `|` and line ends. The lines of a here-document
-/// are text, not commands.
+/// The commands of a shell line, split at `&&`, `||`, `;`, `|` and line ends. Text inside quotes stays in
+/// its command, and the lines of a here-document are text, not commands.
 fn segments(command: &str) -> Vec<String> {
+    let chars: Vec<char> = command.chars().collect();
     let mut out = Vec::new();
-    let mut delimiter: Option<String> = None;
-    for line in command.lines() {
-        if let Some(end) = &delimiter {
-            if line.trim() == end {
-                delimiter = None;
-            }
-            continue;
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut heredoc: Option<String> = None;
+    let mut flush = |current: &mut String| {
+        let part = current.trim();
+        if !part.is_empty() {
+            out.push(part.to_string());
         }
-        if let Some(at) = line.find("<<") {
-            let word = line[at + 2..]
-                .trim_start_matches(['-', ' '])
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .trim_matches(['\'', '"']);
-            if !word.is_empty() {
-                delimiter = Some(word.to_string());
+        current.clear();
+    };
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if let Some(open) = quote {
+            current.push(c);
+            if c == '\\' && open == '"' {
+                if let Some(escaped) = next {
+                    current.push(escaped);
+                    i += 1;
+                }
+            } else if c == open {
+                quote = None;
+            }
+        } else {
+            match c {
+                '\\' => {
+                    current.push(c);
+                    if let Some(escaped) = next {
+                        current.push(escaped);
+                        i += 1;
+                    }
+                }
+                '\'' | '"' => {
+                    quote = Some(c);
+                    current.push(c);
+                }
+                '<' if next == Some('<') && chars.get(i + 2) != Some(&'<') => {
+                    // `<<EOF`, `<<-EOF`, `<<'EOF'`: the delimiter ends the text that follows.
+                    let mut j = i + 2;
+                    while chars.get(j).is_some_and(|c| matches!(c, '-' | ' ' | '\t')) {
+                        j += 1;
+                    }
+                    let start = j;
+                    while chars.get(j).is_some_and(|c| !c.is_whitespace()) {
+                        j += 1;
+                    }
+                    let word: String = chars[start..j].iter().collect();
+                    let word = word.trim_matches(['\'', '"']);
+                    if !word.is_empty() {
+                        heredoc = Some(word.to_string());
+                    }
+                    current.push_str("<<");
+                    i = j - 1;
+                }
+                '\n' => {
+                    flush(&mut current);
+                    if let Some(end) = heredoc.take() {
+                        // Skip the lines up to and including the delimiter.
+                        let mut line_start = i + 1;
+                        while line_start < chars.len() {
+                            let line_end = chars[line_start..]
+                                .iter()
+                                .position(|c| *c == '\n')
+                                .map_or(chars.len(), |p| line_start + p);
+                            let line: String = chars[line_start..line_end].iter().collect();
+                            line_start = line_end + 1;
+                            if line.trim() == end {
+                                break;
+                            }
+                        }
+                        i = line_start.saturating_sub(1);
+                    }
+                }
+                ';' | '|' => {
+                    flush(&mut current);
+                    // `||`
+                    if c == '|' && next == Some('|') {
+                        i += 1;
+                    }
+                }
+                '&' if next == Some('&') => {
+                    flush(&mut current);
+                    i += 1;
+                }
+                _ => current.push(c),
             }
         }
-        for part in line.replace("&&", ";").replace("||", ";").split([';', '|']) {
-            let part = part.trim();
-            if !part.is_empty() {
-                out.push(part.to_string());
-            }
-        }
+        i += 1;
     }
+    flush(&mut current);
     out
 }
 
@@ -516,20 +582,38 @@ fn is_assignment(word: &str) -> bool {
 /// hostile command of thousands of words costs no more than a normal one.
 const MAX_COMMAND_WORDS: usize = 32;
 
-/// The words of one command, without quotes, env assignments and wrappers such as `sudo`.
+/// The words of one command, without quotes, env assignments and the words that only wrap it: `sudo`,
+/// `time`, `env`, `timeout <duration>`, `if`, `then`, `!` and an opening parenthesis or brace.
 fn command_words(segment: &str) -> Vec<&str> {
     let words: Vec<&str> = segment
         .split_whitespace()
         .take(MAX_COMMAND_WORDS)
-        .map(|word| word.trim_matches(['"', '\'']))
-        .collect();
-    let start = words
-        .iter()
-        .position(|word| {
-            !(is_assignment(word) || ["sudo", "time", "command", "exec", "nohup"].contains(word))
+        .map(|word| {
+            word.trim_matches(['"', '\''])
+                .trim_start_matches(['(', '{'])
         })
-        .unwrap_or(words.len());
-    words[start..].to_vec()
+        .filter(|word| !word.is_empty())
+        .collect();
+    const WRAPPERS: [&str; 14] = [
+        "sudo", "time", "command", "exec", "nohup", "env", "if", "then", "do", "else", "elif",
+        "while", "until", "!",
+    ];
+    let mut start = 0;
+    while let Some(word) = words.get(start) {
+        if is_assignment(word) || WRAPPERS.contains(word) {
+            start += 1;
+        } else if *word == "timeout" {
+            // `timeout [options] <duration> <command>`
+            start += 1;
+            while words.get(start).is_some_and(|w| w.starts_with('-')) {
+                start += 1;
+            }
+            start += 1;
+        } else {
+            break;
+        }
+    }
+    words[start.min(words.len())..].to_vec()
 }
 
 fn hit(segment: &str) -> Hit {

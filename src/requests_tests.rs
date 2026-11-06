@@ -871,12 +871,78 @@ fn the_pooled_view_keeps_the_notes_that_say_a_reading_was_cut_short() {
         &runs,
         &world.roots(),
         T0 + 10_000_000,
-        Instant::now(),
+        Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("the clock is far enough from its start"),
         &PoolOptions::default(),
     );
     assert!(
         result.notes.iter().any(|n| n.contains("took too long")),
         "{:?}",
         result.notes
+    );
+}
+
+// --- rework 2 ---------------------------------------------------------------------------------------
+
+/// The sessions that claim `RUN_A` among the given commands, one session per command.
+fn claimed_by(commands: &[String]) -> Vec<String> {
+    let world = World::new();
+    for (index, command) in commands.iter().enumerate() {
+        world.session(
+            &format!("s{index}"),
+            &[one(10, &format!("m{index}"), bash(command))],
+        );
+    }
+    let target = run(RUN_A, 0, Some(100), &[]);
+    let mut sessions = world
+        .analyze(&target, std::slice::from_ref(&target))
+        .sessions;
+    sessions.sort();
+    sessions
+}
+
+#[test]
+fn text_inside_quotes_never_claims_a_run() {
+    let id = RUN_A;
+    assert!(claimed_by(&[
+        format!("echo \"done; factory run update {id} ok\""),
+        format!("git commit -m \"wip && factory run update {id}\""),
+        format!("gh pr create --body \"Summary\nfactory run update {id} check done\nmore\""),
+        format!("echo 'a | factory run update {id}'"),
+        format!("echo \"say \\\"x\\\"; factory run update {id}\""),
+    ])
+    .is_empty());
+}
+
+#[test]
+fn a_real_update_command_claims_however_it_is_wrapped() {
+    let id = RUN_A;
+    let commands: Vec<String> = [
+        "factory run update ID build running",
+        "/usr/local/bin/factory run update ID build running",
+        "cd /repo && factory run update ID build running",
+        "(factory run update ID build running)",
+        "if factory run update ID build running; then echo ok; fi",
+        "env X=1 factory run update ID build running",
+        "timeout 60 factory run update ID build running",
+        "X=1 sudo factory run update \"ID\" build running",
+        "ls | factory run update ID build running",
+    ]
+    .iter()
+    .map(|c| c.replace("ID", id))
+    .collect();
+    assert_eq!(claimed_by(&commands).len(), commands.len());
+}
+
+#[test]
+fn words_inside_quotes_do_not_decide_the_category() {
+    assert_eq!(
+        category_of("echo \"a; git push\""),
+        Category::ReadingEditingAnalysis
+    );
+    assert_eq!(
+        category_of("git commit -m \"fix; cargo test\" && ls"),
+        Category::Commit
     );
 }
