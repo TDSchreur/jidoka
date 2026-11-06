@@ -412,7 +412,8 @@ mod tests {
 
     #[test]
     fn the_model_routing_procedure_says_how_to_read_and_apply_the_selection() {
-        let procedures = bundled_text("factory-procedures/SKILL.md");
+        // A Windows checkout may have CRLF line endings.
+        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
         let section = procedures
             .split_once("## Model routing\n")
             .map(|(_, rest)| {
