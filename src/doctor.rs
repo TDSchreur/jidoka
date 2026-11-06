@@ -537,6 +537,10 @@ pub(crate) fn render(report: &Report) -> String {
 
 /// Asks an agent's program for its version. This is the only command doctor runs, and it calls no model.
 fn agent_version(program: &Path) -> Option<String> {
+    // A relative path, such as one found through an empty `PATH` entry, would run a file from the project.
+    if !program.is_absolute() {
+        return None;
+    }
     let output = Command::new(program).arg("--version").output().ok()?;
     output.status.success().then(|| {
         String::from_utf8_lossy(&output.stdout)
@@ -1350,6 +1354,26 @@ mod tests {
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["model_routing"][1]["status"], "warning");
         assert!(text.contains("Ready"), "{text}");
+    }
+
+    #[test]
+    fn a_relative_program_is_never_run_to_ask_its_version() {
+        assert_eq!(agent_version(Path::new("claude")), None);
+        assert_eq!(agent_version(Path::new("./claude")), None);
+    }
+
+    #[test]
+    fn a_role_without_a_model_is_a_policy_failure() {
+        let policy =
+            r#"{"agent":"claude","roles":{"coding":{"effort":"low"}},"tasks":{"build":"coding"}}"#;
+        let report = World::ready()
+            .claude_ready()
+            .with_policy(policy)
+            .report(None);
+        assert!(!report.ok);
+        let check = routing_check(&report, "policy");
+        assert_eq!(check.status, Status::Fail);
+        assert!(check.message.contains("model"), "{}", check.message);
     }
 
     #[test]

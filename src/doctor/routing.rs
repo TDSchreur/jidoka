@@ -1,7 +1,7 @@
 //! The model-routing section of `factory doctor`: whether the user's policy can work on this machine.
 //! Only the policy file itself can make the report not ready, because only it stops `factory run start`.
-//! Everything else is a warning or skipped: routing is optional, and without it a stage uses the session's
-//! model. Nothing here changes a file or calls a model; at most it asks an agent for its `--version`.
+//! Everything else is a warning or skipped: model routing is optional, and without it a stage uses the
+//! session's model. Nothing here changes a file or calls a model; at most it asks an agent for its `--version`.
 
 use super::{find_program, read_doc, Check, Machine};
 use crate::routing::{load, policy_path_in, ModelRouting, Resolution, RoutingAgent};
