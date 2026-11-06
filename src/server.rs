@@ -954,11 +954,16 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn cards_show_the_project_name_with_the_path_as_tooltip() {
+    async fn cards_leave_project_names_in_the_swimlane_and_run_details() {
         let script = asset("/assets/app.js").await;
         assert!(script.contains("function projectNames(runs)"));
         assert!(script.contains("title=${path}>${name}"));
-        assert!(!script.contains("${run.project}</p>"));
+        assert!(
+            !script.contains("<p class=\"project\"><${ProjectName} path=${projectOf(run)} /></p>")
+        );
+        assert!(script.contains("><${ProjectName} path=${project} />"));
+        assert!(script
+            .contains("<${Field} label=\"Project\"><${ProjectName} path=${projectOf(run)} /><//>"));
     }
 
     #[rocket::async_test]
