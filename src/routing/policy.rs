@@ -435,10 +435,18 @@ pub(crate) fn read(path: &Path) -> Result<Policy, String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Policy::Off),
         Err(error) => return Err(cannot(error)),
     }
-    // Bounded while reading, not only by the size seen before: the file can grow in between.
+    // Bounded while reading, not only by the size seen before: the file can grow in between. The kind is
+    // checked again on the open file, so a swap after the check above is still caught.
     let mut text = String::new();
-    fs::File::open(path)
-        .and_then(|file| file.take(MAX_POLICY_BYTES + 1).read_to_string(&mut text))
+    let mut file = fs::File::open(path).map_err(cannot)?;
+    if !file.metadata().map_err(cannot)?.is_file() {
+        return Err(fail(
+            "the model-routing policy is not a regular file".into(),
+        ));
+    }
+    (&mut file)
+        .take(MAX_POLICY_BYTES + 1)
+        .read_to_string(&mut text)
         .map_err(cannot)?;
     if text.len() as u64 > MAX_POLICY_BYTES {
         return Err(fail("the model-routing policy is too large".into()));
@@ -532,8 +540,16 @@ pub(crate) fn create_starter(path: &Path, agents: &[RoutingAgent]) -> io::Result
             // A half-written starter would look like the user's own file and block every run start.
             if let Err(error) = file.write_all(starter(agents).as_bytes()) {
                 drop(file);
-                let _ = fs::remove_file(path);
-                return Err(error);
+                return Err(match fs::remove_file(path) {
+                    Ok(()) => error,
+                    Err(_) => io::Error::new(
+                        error.kind(),
+                        format!(
+                            "{error}; remove the partly written {} by hand",
+                            path.display()
+                        ),
+                    ),
+                });
             }
             Ok(true)
         }
