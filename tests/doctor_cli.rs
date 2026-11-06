@@ -11,6 +11,11 @@ fn factory(args: &[&str], dir: &std::path::Path, home: &std::path::Path) -> Outp
         .env("PATH", "")
         .env_remove("CODEX_HOME")
         .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CLAUDE_CODE_SUBAGENT_MODEL_FORCE")
+        .env_remove("CLAUDE_CODE_SUBAGENT_MODEL")
+        .env_remove("CLAUDE_CODE_EFFORT_LEVEL")
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("APPDATA", home.join(".config"))
         .output()
         .unwrap()
 }
@@ -96,6 +101,11 @@ fn doctor_reads_the_repository_it_runs_in() {
         .env("PATH", git_folder())
         .env_remove("CODEX_HOME")
         .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CLAUDE_CODE_SUBAGENT_MODEL_FORCE")
+        .env_remove("CLAUDE_CODE_SUBAGENT_MODEL")
+        .env_remove("CLAUDE_CODE_EFFORT_LEVEL")
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env("APPDATA", home.path().join(".config"))
         .output()
         .unwrap();
     // No agent and no setup docs: not ready, but the repository checks see the real repository.

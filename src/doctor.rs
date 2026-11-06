@@ -1,6 +1,7 @@
 //! `factory doctor`: a read-only report on whether this project and this machine are ready for the factory.
-//! It only reads files, looks on `PATH` and asks `git` read-only questions. It never runs the project's own
-//! commands, installs anything or needs the dashboard.
+//! It only reads files, looks on `PATH` and asks `git` read-only questions, and, when a model-routing policy
+//! exists, asks an agent for its `--version`. It never runs the project's own commands, calls a model,
+//! installs anything or needs the dashboard.
 
 use crate::install::{bundled_skill_files, skills_root};
 use serde::Serialize;
@@ -10,6 +11,8 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+
+mod routing;
 
 pub(crate) const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
 /// Project files are not trusted: anything larger is not read.
@@ -23,6 +26,10 @@ pub(crate) enum Status {
     Missing,
     /// Something is broken or cannot be read.
     Fail,
+    /// A risk to read about that does not stop the factory, such as model routing that will not apply.
+    Warning,
+    /// Not looked at, with the reason, rather than reported as fine.
+    Skipped,
 }
 
 impl Status {
@@ -31,6 +38,8 @@ impl Status {
             Status::Pass => "pass",
             Status::Missing => "missing",
             Status::Fail => "fail",
+            Status::Warning => "warning",
+            Status::Skipped => "skipped",
         }
     }
 }
@@ -68,8 +77,18 @@ impl Check {
     fn fail(id: &'static str, message: impl AsRef<str>, fix: impl Into<String>) -> Self {
         Self::new(id, Status::Fail, message, Some(fix.into()))
     }
+    fn warning(id: &'static str, message: impl AsRef<str>, fix: impl Into<String>) -> Self {
+        Self::new(id, Status::Warning, message, Some(fix.into()))
+    }
+    fn skipped(id: &'static str, message: impl AsRef<str>) -> Self {
+        Self::new(id, Status::Skipped, message, None)
+    }
     fn passed(&self) -> bool {
         self.status == Status::Pass
+    }
+    /// Whether this check makes the factory not ready. Warnings and skipped checks never do.
+    fn blocks(&self) -> bool {
+        matches!(self.status, Status::Missing | Status::Fail)
     }
 }
 
@@ -115,6 +134,9 @@ pub(crate) struct Report {
     pub(crate) ok: bool,
     project: Vec<Check>,
     agents: Vec<AgentReport>,
+    /// Present only when a model-routing policy exists.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    model_routing: Vec<Check>,
 }
 
 /// Everything the checks look at besides the project folder, so tests can supply their own.
@@ -122,6 +144,8 @@ pub(crate) struct Machine<'a> {
     pub(crate) home: PathBuf,
     pub(crate) path: OsString,
     pub(crate) var: &'a dyn Fn(&str) -> Option<OsString>,
+    /// What an agent's program prints for `--version`, if it can be asked.
+    pub(crate) version: &'a dyn Fn(&Path) -> Option<String>,
 }
 
 /// Checks the project at `project` and the listed agents (all of them when `agent` is `None`).
@@ -165,10 +189,12 @@ pub(crate) fn diagnose(
         Some(_) => agents.iter().all(|a| a.usable),
         None => agents.iter().any(|a| a.usable),
     };
+    let model_routing = routing::checks(&root, machine);
     Ok(Report {
-        ok: shared_ok && agents_ok,
+        ok: shared_ok && agents_ok && !model_routing.iter().any(Check::blocks),
         project: project_checks,
         agents,
+        model_routing,
     })
 }
 
@@ -243,11 +269,29 @@ fn conventions_file(root: &Path) -> Option<PathBuf> {
         .find(|path| fs::metadata(path).is_ok_and(|meta| meta.is_file()))
 }
 
+/// Reads a project file. The project is not trusted: only a regular file is read, and never more than
+/// `MAX_DOC_BYTES`, so a device, a pipe or a file that grows cannot make doctor wait or fill memory.
 fn read_doc(path: &Path) -> io::Result<String> {
-    if fs::metadata(path)?.len() > MAX_DOC_BYTES {
+    use io::Read;
+    // Looked at before it is opened, because opening a named pipe waits for a writer. `metadata` follows
+    // symlinks. The opened file is checked again below in case it was swapped in between.
+    if !fs::metadata(path)?.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    let file = fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    if metadata.len() > MAX_DOC_BYTES {
         return Err(io::Error::other("larger than 1 MiB"));
     }
-    fs::read_to_string(path)
+    let mut text = String::new();
+    file.take(MAX_DOC_BYTES + 1).read_to_string(&mut text)?;
+    if text.len() as u64 > MAX_DOC_BYTES {
+        return Err(io::Error::other("larger than 1 MiB"));
+    }
+    Ok(text)
 }
 
 fn setup_docs_check(root: &Path) -> Check {
@@ -495,6 +539,12 @@ pub(crate) fn render(report: &Report) -> String {
             out.push_str(&line(check, "    "));
         }
     }
+    if !report.model_routing.is_empty() {
+        out.push_str("\nModel routing\n");
+        for check in &report.model_routing {
+            out.push_str(&line(check, "  "));
+        }
+    }
     out.push_str(if report.ok {
         "\nReady: the factory can run here.\n"
     } else {
@@ -503,12 +553,28 @@ pub(crate) fn render(report: &Report) -> String {
     out
 }
 
+/// Asks an agent's program for its version. This is the only command doctor runs, and it calls no model.
+fn agent_version(program: &Path) -> Option<String> {
+    // A relative path, such as one found through an empty `PATH` entry, would run a file from the project.
+    if !program.is_absolute() {
+        return None;
+    }
+    let output = Command::new(program).arg("--version").output().ok()?;
+    output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .chars()
+            .take(200)
+            .collect()
+    })
+}
+
 /// Runs the checks for the current folder and prints the report. Returns whether the factory is ready.
 pub(crate) fn run(agent: Option<&str>, json: bool) -> Result<bool, Box<dyn std::error::Error>> {
     let machine = Machine {
         home: crate::install::home_dir()?,
         path: std::env::var_os("PATH").unwrap_or_default(),
         var: &|name| std::env::var_os(name),
+        version: &agent_version,
     };
     let report = diagnose(&std::env::current_dir()?, agent, &machine)?;
     if json {
@@ -557,6 +623,8 @@ mod tests {
         home: TempDir,
         bin: TempDir,
         vars: HashMap<String, OsString>,
+        /// What each agent's program prints for `--version`.
+        versions: HashMap<String, String>,
     }
 
     fn git(dir: &Path, args: &[&str]) {
@@ -601,6 +669,7 @@ mod tests {
                 home: tempfile::tempdir().unwrap(),
                 bin: tempfile::tempdir().unwrap(),
                 vars: HashMap::new(),
+                versions: HashMap::new(),
             };
             let dir = world.project.path();
             git(dir, &["init", "-q"]);
@@ -637,6 +706,10 @@ mod tests {
                 home: self.home.path().to_path_buf(),
                 path: self.bin.path().into(),
                 var: &|name| self.vars.get(name).cloned(),
+                version: &|program| {
+                    let name = program.file_stem()?.to_str()?;
+                    self.versions.get(name).cloned()
+                },
             };
             diagnose(self.project.path(), agent, &machine).unwrap()
         }
@@ -773,6 +846,7 @@ mod tests {
             home: world.home.path().into(),
             path: world.bin.path().into(),
             var: &|_| None,
+            version: &|_| None,
         };
         let report = diagnose(empty.path(), Some("claude"), &machine).unwrap();
         assert!(!report.ok);
@@ -991,5 +1065,386 @@ mod tests {
             Some(vec!["cargo test".into(), "a".into(), "b".into()])
         );
         assert_eq!(documented_commands("# No commands\n"), None);
+    }
+
+    // --- model routing -----------------------------------------------------------------------------
+
+    const CLAUDE_POLICY: &str = r#"{"agent":"claude",
+        "roles":{"strong":{"model":"opus","effort":"high"},"coding":{"model":"sonnet","effort":"medium"}},
+        "tasks":{"build":"coding","check":"strong"}}"#;
+
+    impl World {
+        /// Writes the user's model-routing policy where doctor looks for it, inside the fake home.
+        fn with_policy(mut self, policy: &str) -> Self {
+            let config = self.home.path().join("config");
+            fs::create_dir_all(config.join("tds-factory")).unwrap();
+            fs::write(config.join("tds-factory/model-routing.json"), policy).unwrap();
+            for name in ["XDG_CONFIG_HOME", "APPDATA"] {
+                self.vars.insert(name.into(), config.clone().into());
+            }
+            self
+        }
+
+        fn with_version(mut self, agent: &str, output: &str) -> Self {
+            self.versions.insert(agent.into(), output.into());
+            self
+        }
+
+        fn with_var(mut self, name: &str, value: &str) -> Self {
+            self.vars.insert(name.into(), value.into());
+            self
+        }
+
+        fn claude_ready(self) -> Self {
+            self.with_agent("claude")
+                .with_version("claude", "2.1.318 (Claude Code)")
+        }
+    }
+
+    fn routing_check<'a>(report: &'a Report, id: &str) -> &'a Check {
+        report
+            .model_routing
+            .iter()
+            .find(|check| check.id == id)
+            .unwrap_or_else(|| panic!("no {id} model-routing check in {report:?}"))
+    }
+
+    #[test]
+    fn without_a_policy_there_is_no_model_routing_section() {
+        let report = World::ready().claude_ready().report(None);
+        assert!(report.model_routing.is_empty());
+        let json = serde_json::to_value(&report).unwrap();
+        assert!(json.get("model_routing").is_none());
+        assert!(!render(&report).contains("Model routing"));
+    }
+
+    #[test]
+    fn a_claude_policy_that_fits_passes_every_check() {
+        let report = World::ready()
+            .claude_ready()
+            .with_policy(CLAUDE_POLICY)
+            .report(None);
+        assert!(report.ok, "{}", render(&report));
+        let ids: Vec<_> = report.model_routing.iter().map(|c| c.id).collect();
+        assert_eq!(ids, ["policy", "host", "model", "effort", "overrides"]);
+        assert!(
+            report.model_routing.iter().all(Check::passed),
+            "{}",
+            render(&report)
+        );
+    }
+
+    #[test]
+    fn an_old_or_missing_claude_is_a_warning_and_the_factory_stays_ready() {
+        let old = World::ready()
+            .with_agent("claude")
+            .with_version("claude", "2.1.291 (Claude Code)")
+            .with_policy(CLAUDE_POLICY)
+            .report(None);
+        let host = routing_check(&old, "host");
+        assert_eq!(host.status, Status::Warning);
+        assert!(host.message.contains("2.1.291") && host.message.contains("2.1.292"));
+        assert!(host.fix.as_deref().unwrap().contains("2.1.292"));
+        assert!(old.ok, "{}", render(&old));
+
+        // The command is on PATH for one agent only; for claude it is missing.
+        let missing = World::ready()
+            .with_agent("codex")
+            .with_policy(CLAUDE_POLICY)
+            .report(None);
+        assert_eq!(routing_check(&missing, "host").status, Status::Warning);
+        assert!(routing_check(&missing, "host")
+            .message
+            .contains("not on PATH"));
+
+        // A version that cannot be read is not guessed at.
+        let unreadable = World::ready()
+            .with_agent("claude")
+            .with_version("claude", "something unexpected")
+            .with_policy(CLAUDE_POLICY)
+            .report(None);
+        assert_eq!(routing_check(&unreadable, "host").status, Status::Skipped);
+    }
+
+    #[test]
+    fn models_the_agent_tool_does_not_accept_are_named_per_role() {
+        let policy = r#"{"agent":"claude",
+            "roles":{"strong":{"model":"claude-opus-5-5","effort":"high"},"coding":{"model":"sonnet","effort":"low"}},
+            "tasks":{"build":"coding","check":"strong"}}"#;
+        let report = World::ready()
+            .claude_ready()
+            .with_policy(policy)
+            .report(None);
+        let model = routing_check(&report, "model");
+        assert_eq!(model.status, Status::Warning);
+        assert!(
+            model.message.contains("strong: claude-opus-5-5"),
+            "{}",
+            model.message
+        );
+        assert!(!model.message.contains("coding"), "{}", model.message);
+        // The effort is fine, so it is reported separately.
+        assert_eq!(routing_check(&report, "effort").status, Status::Pass);
+        assert!(report.ok);
+    }
+
+    #[test]
+    fn unsupported_and_missing_efforts_are_reported_apart_from_models() {
+        let policy = r#"{"agent":"claude",
+            "roles":{"strong":{"model":"opus","effort":"extreme"},"coding":{"model":"sonnet"},"routine":{"model":"haiku"}},
+            "tasks":{"build":"coding","check":"strong"}}"#;
+        let report = World::ready()
+            .claude_ready()
+            .with_policy(policy)
+            .report(None);
+        assert_eq!(routing_check(&report, "model").status, Status::Pass);
+        let effort = routing_check(&report, "effort");
+        assert_eq!(effort.status, Status::Warning);
+        assert!(
+            effort.message.contains("strong: extreme"),
+            "{}",
+            effort.message
+        );
+        assert!(effort.message.contains("no effort set") && effort.message.contains("coding"));
+        // A role no task uses is not judged.
+        assert!(!effort.message.contains("routine"), "{}", effort.message);
+    }
+
+    #[test]
+    fn variables_that_override_the_policy_are_found_wherever_they_are_set() {
+        let ready = || World::ready().claude_ready().with_policy(CLAUDE_POLICY);
+        let overrides = |world: &World| routing_check(&world.report(None), "overrides").status;
+
+        // In the environment.
+        let forced = ready()
+            .with_var("CLAUDE_CODE_SUBAGENT_MODEL_FORCE", "1")
+            .with_var("CLAUDE_CODE_SUBAGENT_MODEL", "haiku");
+        let report = forced.report(None);
+        let check = routing_check(&report, "overrides");
+        assert_eq!(check.status, Status::Warning);
+        assert!(
+            check.message.contains("every subagent on haiku"),
+            "{}",
+            check.message
+        );
+        assert!(report.ok);
+
+        let effort = ready().with_var("CLAUDE_CODE_EFFORT_LEVEL", "low");
+        let report = effort.report(None);
+        assert!(routing_check(&report, "overrides")
+            .message
+            .contains("CLAUDE_CODE_EFFORT_LEVEL=low (the environment)"));
+
+        // Neither variable alone on the model side overrides the Agent tool's own choice.
+        assert_eq!(
+            overrides(&ready().with_var("CLAUDE_CODE_SUBAGENT_MODEL", "haiku")),
+            Status::Pass
+        );
+        assert_eq!(
+            overrides(&ready().with_var("CLAUDE_CODE_SUBAGENT_MODEL_FORCE", "1")),
+            Status::Pass
+        );
+        assert_eq!(
+            overrides(
+                &ready()
+                    .with_var("CLAUDE_CODE_SUBAGENT_MODEL_FORCE", "0")
+                    .with_var("CLAUDE_CODE_SUBAGENT_MODEL", "haiku")
+            ),
+            Status::Pass
+        );
+
+        // In Claude Code's user settings and the project's settings files.
+        let world = ready();
+        let claude_dir = world.home.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join("settings.json"),
+            r#"{"env":{"CLAUDE_CODE_EFFORT_LEVEL":"max"}}"#,
+        )
+        .unwrap();
+        let report = world.report(None);
+        assert!(routing_check(&report, "overrides")
+            .message
+            .contains("(user settings)"));
+
+        let world = ready();
+        let project_dir = world.project.path().join(".claude");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            project_dir.join("settings.local.json"),
+            r#"{"env":{"CLAUDE_CODE_SUBAGENT_MODEL_FORCE":"1","CLAUDE_CODE_SUBAGENT_MODEL":"sonnet"}}"#,
+        )
+        .unwrap();
+        let report = world.report(None);
+        assert!(routing_check(&report, "overrides")
+            .message
+            .contains("(local project settings)"));
+    }
+
+    #[test]
+    fn settings_files_that_cannot_be_read_are_skipped_not_passed() {
+        let world = World::ready().claude_ready().with_policy(CLAUDE_POLICY);
+        let project_dir = world.project.path().join(".claude");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(project_dir.join("settings.json"), "{ not json").unwrap();
+        let report = world.report(None);
+        let check = routing_check(&report, "overrides");
+        assert_eq!(check.status, Status::Skipped);
+        assert!(check.message.contains("settings.json"), "{}", check.message);
+    }
+
+    #[test]
+    fn a_codex_policy_reports_what_it_can_and_skips_the_rest() {
+        let policy = r#"{"agent":"codex","roles":{"coding":{"model":"gpt-6.1-sol","effort":"medium"}},"tasks":{"build":"coding"}}"#;
+        let report = World::ready()
+            .with_agent("codex")
+            .with_version("codex", "codex-cli 0.99.1")
+            .with_policy(policy)
+            .report(None);
+        assert!(report.ok, "{}", render(&report));
+        let host = routing_check(&report, "host");
+        assert_eq!(host.status, Status::Skipped);
+        assert!(host.message.contains("0.99.1"), "{}", host.message);
+        assert_eq!(routing_check(&report, "model").status, Status::Skipped);
+        assert_eq!(routing_check(&report, "overrides").status, Status::Skipped);
+        assert!(report
+            .model_routing
+            .iter()
+            .all(|c| c.status != Status::Fail));
+
+        let missing = World::ready().with_policy(policy).report(None);
+        assert_eq!(routing_check(&missing, "host").status, Status::Warning);
+    }
+
+    #[test]
+    fn a_copilot_policy_is_information_and_does_not_change_the_exit_status() {
+        let policy = r#"{"agent":"copilot"}"#;
+        let ready = World::ready().claude_ready();
+        let without = ready.report(None).ok;
+        let report = ready.with_policy(policy).report(None);
+        assert_eq!(report.ok, without);
+        assert_eq!(report.model_routing.len(), 1);
+        let check = routing_check(&report, "policy");
+        assert_eq!(check.status, Status::Pass);
+        assert!(
+            check.message.contains("not supported") && check.message.contains("session"),
+            "{}",
+            check.message
+        );
+        // A policy that is switched off says nothing.
+        let off = World::ready()
+            .claude_ready()
+            .with_policy(r#"{"enabled":false,"agent":"claude"}"#)
+            .report(None);
+        assert!(off.model_routing.is_empty());
+    }
+
+    #[test]
+    fn a_policy_file_that_stops_run_start_makes_the_report_not_ready() {
+        let policy = r#"{"agent":"claude","roles":{},"tasks":{"check":"strong"}}"#;
+        let report = World::ready()
+            .claude_ready()
+            .with_policy(policy)
+            .report(None);
+        assert!(!report.ok);
+        assert_eq!(report.model_routing.len(), 1);
+        let check = routing_check(&report, "policy");
+        assert_eq!(check.status, Status::Fail);
+        assert!(check.message.contains("model-routing.json") && check.message.contains("strong"));
+        assert!(check.fix.as_deref().unwrap().contains("enabled"));
+    }
+
+    #[test]
+    fn the_report_shows_model_routing_in_its_own_section_with_the_new_statuses() {
+        let report = World::ready()
+            .with_agent("claude")
+            .with_version("claude", "2.1.291")
+            .with_policy(CLAUDE_POLICY)
+            .report(None);
+        let text = render(&report);
+        let section = text.split("Model routing\n").nth(1).expect(&text);
+        assert!(section.contains("  pass     policy:"), "{text}");
+        assert!(section.contains("  warning  host:"), "{text}");
+        assert!(
+            section.contains("Fix: Update claude to 2.1.292 or later."),
+            "{text}"
+        );
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["model_routing"][1]["status"], "warning");
+        assert!(text.contains("Ready"), "{text}");
+    }
+
+    /// A repository can name anything as one of the files doctor reads, such as a device that never ends.
+    #[cfg(unix)]
+    #[test]
+    fn only_regular_files_are_read_from_the_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let device = dir.path().join("settings.json");
+        std::os::unix::fs::symlink("/dev/null", &device).unwrap();
+        assert!(read_doc(&device).is_err());
+        assert!(read_doc(dir.path()).is_err());
+        let plain = dir.path().join("plain.json");
+        fs::write(&plain, "{}").unwrap();
+        assert_eq!(read_doc(&plain).unwrap(), "{}");
+        fs::write(&plain, vec![b' '; MAX_DOC_BYTES as usize + 1]).unwrap();
+        assert!(read_doc(&plain).is_err());
+    }
+
+    /// Opening a pipe for reading waits for a writer, so it must be refused before it is opened.
+    #[cfg(unix)]
+    #[test]
+    fn a_named_pipe_in_the_repository_is_refused_without_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let pipe = dir.path().join("settings.local.json");
+        assert!(Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap()
+            .success());
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&pipe, &link).unwrap();
+        for path in [pipe, link] {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            // A thread that is still waiting when the test ends is cleaned up with the process.
+            std::thread::spawn(move || sender.send(read_doc(&path).is_err()));
+            let refused = receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("read_doc waited for a writer on a named pipe");
+            assert!(refused);
+        }
+    }
+
+    #[test]
+    fn a_relative_program_is_never_run_to_ask_its_version() {
+        assert_eq!(agent_version(Path::new("claude")), None);
+        assert_eq!(agent_version(Path::new("./claude")), None);
+    }
+
+    #[test]
+    fn a_role_without_a_model_is_a_policy_failure() {
+        let policy =
+            r#"{"agent":"claude","roles":{"coding":{"effort":"low"}},"tasks":{"build":"coding"}}"#;
+        let report = World::ready()
+            .claude_ready()
+            .with_policy(policy)
+            .report(None);
+        assert!(!report.ok);
+        let check = routing_check(&report, "policy");
+        assert_eq!(check.status, Status::Fail);
+        assert!(check.message.contains("model"), "{}", check.message);
+    }
+
+    #[test]
+    fn versions_are_read_from_the_first_dotted_number() {
+        assert_eq!(
+            routing::parse_version("2.1.318 (Claude Code)"),
+            Some((2, 1, 318))
+        );
+        assert_eq!(
+            routing::parse_version("codex-cli v0.99.1\n"),
+            Some((0, 99, 1))
+        );
+        assert_eq!(routing::parse_version("version 2.1"), None);
+        assert_eq!(routing::parse_version(""), None);
     }
 }
