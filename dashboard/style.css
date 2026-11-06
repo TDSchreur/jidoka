@@ -167,6 +167,9 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 #message { margin: 0 0 var(--spacingVerticalL); }
 #message:empty { margin: 0; }
 #message.error { color: var(--colorPaletteRedForeground1); font-weight: var(--fontWeightSemibold); }
+.hidden-projects { margin-bottom: var(--spacingVerticalL); }
+.hidden-projects li { margin: var(--spacingVerticalS) 0; overflow-wrap: anywhere; }
+.project-heading-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingHorizontalS); }
 .project-row { margin-bottom: var(--spacingVerticalXXL); }
 .project-heading { font-size: var(--fontSizeBase400); overflow-wrap: anywhere; display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingHorizontalS); }
 .project-toggle { font: inherit; font-weight: var(--fontWeightSemibold); color: var(--colorNeutralForeground1); background: none; border: 0; padding: var(--spacingVerticalXS) var(--spacingHorizontalXS); cursor: pointer; text-align: left; }

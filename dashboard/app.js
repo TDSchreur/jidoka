@@ -53,6 +53,16 @@ function storedCollapsed() {
   }
 }
 
+/** Projects hidden in this browser. */
+function storedHiddenProjects() {
+  try {
+    const value = JSON.parse(localStorage.getItem('hidden-projects'));
+    return new Set(Array.isArray(value) ? value.filter((path) => typeof path === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
 /** The Project the page was opened on (`?project=<path>`), or null. */
 function requestedProject() {
   try {
@@ -757,9 +767,23 @@ function App() {
       /* storage is blocked: the choice lasts until the page is reloaded */
     }
   };
-  const waiting = runs ? runs.filter(needsYou).length : 0;
+  const [hiddenProjects, setHiddenProjects] = useState(storedHiddenProjects);
+  const changeHidden = (project, hidden) => {
+    const next = new Set(hiddenProjects);
+    if (hidden) next.add(project);
+    else next.delete(project);
+    setHiddenProjects(next);
+    try {
+      localStorage.setItem('hidden-projects', JSON.stringify([...next]));
+    } catch {
+      /* the choice still applies until the page is reloaded */
+    }
+    setTimeout(() => document.querySelector('main')?.focus());
+  };
+  const visibleRuns = runs?.filter((run) => !hiddenProjects.has(projectOf(run))) ?? null;
+  const waiting = visibleRuns ? visibleRuns.filter(needsYou).length : 0;
   const names = projectNames(runs ?? []);
-  const notifications = useNotifications(runs, names);
+  const notifications = useNotifications(visibleRuns, names);
   useEffect(() => {
     document.title = waiting ? `(${waiting}) ${TITLE}` : TITLE;
   }, [waiting]);
@@ -798,10 +822,11 @@ function App() {
   else if (deleteError) text = deleteError;
   else if (runs) {
     if (!runs.length) text = '';
+    else if (!visibleRuns.length) text = 'All projects are hidden.';
     else if (onlyWaiting && !waiting) text = 'Nothing needs you right now.';
     else text = '';
   }
-  const indexed = (runs ?? [])
+  const indexed = (visibleRuns ?? [])
     .map((run, index) => ({ run, index }))
     .filter((entry) => !onlyWaiting || needsYou(entry.run));
   const stages = GROUPS.map(([id, name, description]) => ({
@@ -820,7 +845,7 @@ function App() {
   // Chosen once, from the first answer that has Runs (whatever the filter), then only the visitor changes it.
   const [picked, setPicked] = useState(null);
   const opening = useRef(null);
-  if (opening.current === null && runs?.length) opening.current = firstStage(runs);
+  if (opening.current === null && visibleRuns?.length) opening.current = firstStage(visibleRuns);
   const current = picked ?? opening.current ?? GROUPS[0][0];
   // The open detail is a Run id; it is looked up in the latest full list, so refreshes update it.
   const [openKey, setOpenKey] = useState(null);
@@ -858,6 +883,11 @@ function App() {
       <${Connection} failed=${failed} lastOk=${lastOk} beat=${beat} now=${now} />
     </div>
     <main tabindex="-1">
+      ${hiddenProjects.size ? html`<details class="hidden-projects">
+        <summary>Hidden projects (${hiddenProjects.size})</summary>
+        <p>Hidden projects are remembered in this browser. Their runs are kept.</p>
+        <ul>${[...hiddenProjects].sort().map((project) => html`<li key=${project}><${ProjectName} path=${project} /> <button type="button" class="toggle" onClick=${() => changeHidden(project, false)} aria-label=${`Restore ${names.get(project) ?? project}`}>Restore</button></li>`)}</ul>
+      </details>` : null}
       <p id="message" role="status" class=${failed || deleteError ? 'error' : ''}>${text}</p>
       ${runs && !runs.length ? html`<${Welcome} onHelp=${() => setHelpOpen(true)} />` : null}
       ${runs?.length ? html`<${StageButtons} stages=${stages} current=${current} onPick=${setPicked} />` : null}
@@ -873,6 +903,7 @@ function App() {
           const groupsId = `project-groups-${projects.indexOf(project)}`;
           const projectWaiting = indexed.filter((entry) => projectOf(entry.run) === project && needsYou(entry.run)).length;
           return html`<section class="project-row" key=${project}>
+          <div class="project-heading-row">
           <h2 class="project-heading">
             <button
               type="button"
@@ -894,6 +925,8 @@ function App() {
                   : null}`
               : null}
           </h2>
+          <button type="button" class="toggle hide-project" onClick=${() => changeHidden(project, true)} aria-label=${`Hide ${names.get(project) ?? project}`}>Hide</button>
+          </div>
           <div class="project-groups" id=${groupsId} hidden=${closed}>
             ${stages.map((item) => {
               const entries = item.entries.filter((entry) => projectOf(entry.run) === project);
