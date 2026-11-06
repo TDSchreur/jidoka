@@ -1081,7 +1081,7 @@ fn a_literal_assignment_in_the_same_command_resolves_the_variable_that_names_the
 }
 
 #[test]
-fn thousands_of_open_substitutions_cost_no_more_than_their_length() {
+fn thousands_of_open_substitutions_do_not_overflow_the_stack() {
     let command = "$(".repeat(20_000) + "git push";
     // The answer is not the point: the call ends, with no overflow of the stack.
     let _ = category_of(&command);
@@ -1131,4 +1131,75 @@ fn the_request_that_starts_a_run_counts_even_though_it_precedes_the_runs_first_m
         rows(&result),
         [(Category::Workspace, 1), (Category::TextOnly, 1)]
     );
+}
+
+#[test]
+fn a_here_document_inside_a_substitution_does_not_swallow_the_rest_of_the_line() {
+    let id = RUN_A;
+    // The usual Claude Code commit: the message sits in a here-document, with an apostrophe.
+    let commit = format!(
+        "git commit -m \"$(cat <<'EOF'\nDon't (stop\nEOF\n)\" && factory run update {id} build running"
+    );
+    assert_eq!(
+        claimed_by(std::slice::from_ref(&commit)).len(),
+        1,
+        "{commit}"
+    );
+    assert_eq!(
+        category_of("echo \"$(cat <<'EOF'\nDon't\nEOF\n)\" && git push"),
+        Category::PrCreationAndPush
+    );
+}
+
+#[test]
+fn only_read_only_filters_and_helpers_are_plumbing() {
+    for (command, expected) in [
+        (
+            "H=$(git rev-parse --short HEAD) && factory run update 1 build running",
+            Category::StandaloneReporting,
+        ),
+        (
+            "factory run update 1 build running 2>&1 | grep -v x | head -3",
+            Category::StandaloneReporting,
+        ),
+        (
+            "D=$(date +%s) && factory run update 1 build running",
+            Category::StandaloneReporting,
+        ),
+        // Work that happens in a pipe or a substitution is still work.
+        (
+            "echo x | git apply && factory run update 1 build running",
+            Category::ReadingEditingAnalysis,
+        ),
+        (
+            "R=$(python3 make_edits.py) && factory run update 1 build running",
+            Category::ReadingEditingAnalysis,
+        ),
+        (
+            "factory run update 1 build running | tee out.txt",
+            Category::ReadingEditingAnalysis,
+        ),
+        (
+            "ls | xargs sed -i s/a/b/ && factory run update 1 build running",
+            Category::ReadingEditingAnalysis,
+        ),
+    ] {
+        assert_eq!(category_of(command), expected, "{command}");
+    }
+}
+
+#[test]
+fn a_run_start_request_near_two_overlapping_runs_is_in_neither() {
+    let world = World::new();
+    // Inside run A, and 30 seconds before run B's first mark.
+    world.session(
+        "s",
+        &[one(420, "start", bash("git worktree add -b x ../y"))],
+    );
+    let a = run(RUN_A, 400, Some(900), &["s"]);
+    let b = run(RUN_B, 450, Some(900), &["s"]);
+    let runs = [a.clone(), b];
+    let first = world.analyze(&a, &runs);
+    assert_eq!(first.total.requests, 0);
+    assert_eq!(first.ambiguous.requests, 1);
 }
