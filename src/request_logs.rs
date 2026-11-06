@@ -449,12 +449,33 @@ fn is_read_only_helper(segment: &str) -> bool {
         "cat", "tail", "head", "grep", "egrep", "fgrep", "rg", "wc", "sort", "uniq", "cut", "tr",
         "jq", "column", "date", "basename", "dirname", "pwd", "whoami", "realpath",
     ];
-    let words = command_words(segment);
+    let mut words = command_words(segment);
     let program = words
         .first()
         .map(|word| word.rsplit('/').next().unwrap_or(word));
+    if program == Some("git") {
+        skip_git_options(&mut words);
+    }
+    let word = |index: usize| words.get(index).copied().unwrap_or("");
     program.is_some_and(|program| HELPERS.contains(&program))
-        || matches!((program, words.get(1)), (Some("git"), Some(&"rev-parse")))
+        || matches!(
+            (program, word(1), word(2)),
+            (
+                Some("git"),
+                "rev-parse" | "log" | "status" | "diff" | "show",
+                _
+            ) | (Some("git"), "branch", "--show-current")
+                | (Some("gh"), "pr" | "issue" | "repo", "view")
+        )
+}
+
+/// Removes the options that come before the subcommand of a git command: `git -C <path> <subcommand>`.
+fn skip_git_options(words: &mut Vec<&str>) {
+    let skipped = words[1..]
+        .chunks(2)
+        .take_while(|pair| pair[0] == "-C" || pair[0] == "-c")
+        .count();
+    words.drain(1..(1 + 2 * skipped).min(words.len()));
 }
 
 /// What one command of a shell line stands for.
@@ -604,8 +625,10 @@ fn substitution_at(chars: &[char], i: usize) -> (String, usize) {
             }
             None => match c {
                 '\'' | '"' => quote = Some(c),
+                // A here-string, `<<<`, has no delimiter.
+                '<' if chars.get(j + 1) == Some(&'<') && chars.get(j + 2) == Some(&'<') => j += 2,
                 // The text of a here-document, such as a commit message, may hold quotes and parentheses.
-                '<' if chars.get(j + 1) == Some(&'<') && chars.get(j + 2) != Some(&'<') => {
+                '<' if chars.get(j + 1) == Some(&'<') => {
                     let (delimiter, after) = heredoc_delimiter(chars, j);
                     heredoc = delimiter;
                     j = after - 1;
@@ -851,13 +874,8 @@ fn hit(segment: &str) -> Hit {
     else {
         return Hit::Neutral;
     };
-    // `git -C <path> <command>`
     if program == "git" {
-        let skipped = words[1..]
-            .chunks(2)
-            .take_while(|pair| pair[0] == "-C" || pair[0] == "-c")
-            .count();
-        words.drain(1..(1 + 2 * skipped).min(words.len()));
+        skip_git_options(&mut words);
     }
     let word = |index: usize| words.get(index).copied().unwrap_or("");
     let has = |text: &str| words.iter().any(|w| w.contains(text));

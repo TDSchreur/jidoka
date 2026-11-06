@@ -1203,3 +1203,39 @@ fn a_run_start_request_near_two_overlapping_runs_is_in_neither() {
     assert_eq!(first.total.requests, 0);
     assert_eq!(first.ambiguous.requests, 1);
 }
+
+#[test]
+fn read_only_git_and_gh_forms_are_helpers_too() {
+    for command in [
+        "H=$(git -C ../wt rev-parse HEAD) && factory run update 1 build running",
+        "B=$(git branch --show-current) && factory run update 1 build running",
+        "S=$(git status --short | head -3) && factory run update 1 build running",
+        "factory run update 1 finish done --activity \"Opened $(gh pr view --json url -q .url)\"",
+        "L=$(git log -1 --format=%s) && factory run update 1 build running",
+    ] {
+        assert_eq!(
+            category_of(command),
+            Category::StandaloneReporting,
+            "{command}"
+        );
+    }
+    // Forms that change something are not helpers.
+    for command in [
+        "B=$(git branch -D old) && factory run update 1 build running",
+        "U=$(gh pr create --title x) && factory run update 1 build running",
+    ] {
+        assert_ne!(
+            category_of(command),
+            Category::StandaloneReporting,
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn a_here_string_inside_a_substitution_is_not_a_here_document() {
+    assert_eq!(
+        category_of("X=$(tr a b <<<abc\ncat)\nfactory run update 1 build running"),
+        Category::StandaloneReporting
+    );
+}
