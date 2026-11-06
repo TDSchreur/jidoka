@@ -26,6 +26,11 @@ const ASSETS: &[(&str, ContentType, &[u8])] = &[
         include_bytes!("../dashboard/app.js"),
     ),
     (
+        "help.js",
+        ContentType::JavaScript,
+        include_bytes!("../dashboard/help.js"),
+    ),
+    (
         "style.css",
         ContentType::CSS,
         include_bytes!("../dashboard/style.css"),
@@ -551,6 +556,7 @@ mod tests {
         let api = client(&dir).await;
         for (path, content_type) in [
             ("/assets/app.js", ContentType::JavaScript),
+            ("/assets/help.js", ContentType::JavaScript),
             ("/assets/style.css", ContentType::CSS),
             ("/assets/vendor/preact.js", ContentType::JavaScript),
             ("/assets/vendor/hooks.js", ContentType::JavaScript),

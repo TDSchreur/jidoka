@@ -198,11 +198,41 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .done-run [hidden] { display: none; }
 .run .toggle { position: relative; z-index: 1; }
 .toggle.danger { border-color: var(--colorPaletteRedBorder2); color: var(--colorPaletteRedForeground1); }
-.help { width: min(36rem, calc(100% - 2 * var(--spacingHorizontalL))); max-height: calc(100% - 2 * var(--spacingVerticalXL)); overflow-y: auto; }
+/* Help: a large modal with tabs. Its height is fixed so a tab change does not resize it; each tab scrolls on its own.
+   `.confirm.help` outranks `.confirm`, which comes later and sets the small width. */
+.confirm.help { width: min(64rem, calc(100% - 2 * var(--spacingHorizontalL))); height: min(46rem, calc(100% - 2 * var(--spacingVerticalXL))); padding-bottom: 0; }
+.help[open] { display: flex; flex-direction: column; }
+.help-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--spacingHorizontalM); flex: none; }
+.help-bar h2 { margin: 0; }
+.help-tabs { display: flex; flex-wrap: wrap; gap: var(--spacingHorizontalXS); flex: none; margin: var(--spacingVerticalM) 0 0; border-bottom: var(--strokeWidthThin) solid var(--colorNeutralStroke2); }
+.help-tab { padding: var(--spacingVerticalS) var(--spacingHorizontalM); border: 0; border-bottom: var(--strokeWidthThick) solid transparent; background: none; font: inherit; color: var(--colorNeutralForeground2); cursor: pointer; }
+.help-tab:hover { color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground1Hover); }
+.help-tab[aria-selected="true"] { color: var(--colorNeutralForeground1); border-bottom-color: var(--colorBrandStroke1); font-weight: var(--fontWeightSemibold); }
+.help-tab:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: calc(-1 * var(--strokeWidthThick)); }
+.help-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: var(--spacingVerticalM) var(--spacingHorizontalS) var(--spacingVerticalXL) 0; }
+.help-panel:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: calc(-1 * var(--strokeWidthThick)); }
+.help-panel > p:first-child { margin-top: 0; }
 .help h3 { margin: var(--spacingVerticalL) 0 var(--spacingVerticalXS); font-size: var(--fontSizeBase300); line-height: var(--lineHeightBase300); font-weight: var(--fontWeightSemibold); }
+.help-panel > section:first-child h3 { margin-top: 0; }
+.help p, .help li { max-width: 60rem; }
+.help ul, .help ol:not(.flow) { margin: var(--spacingVerticalXS) 0; padding-left: var(--spacingHorizontalXL); }
+.help li + li { margin-top: var(--spacingVerticalXS); }
 .help-terms { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--spacingVerticalXS) var(--spacingHorizontalL); margin: 0; }
 .help-terms dt { font-weight: var(--fontWeightSemibold); }
 .help-terms dd { margin: 0; color: var(--colorNeutralForeground2); }
+.help-skills { grid-template-columns: 14rem minmax(0, 1fr); }
+.help-used { display: block; margin-top: var(--spacingVerticalXXS); font-size: var(--fontSizeBase200); color: var(--colorNeutralForeground3); }
+.help-code { margin: var(--spacingVerticalS) 0; padding: var(--spacingVerticalM) var(--spacingHorizontalM); overflow-x: auto; background: var(--colorNeutralBackground3); border-radius: var(--borderRadiusMedium); font-size: var(--fontSizeBase200); }
+.help-table { width: 100%; border-collapse: collapse; font-size: var(--fontSizeBase200); }
+.help-table th, .help-table td { padding: var(--spacingVerticalXS) var(--spacingHorizontalS); text-align: left; vertical-align: top; border-bottom: var(--strokeWidthThin) solid var(--colorNeutralStroke2); }
+.help-table thead th { font-weight: var(--fontWeightSemibold); }
+.help-table tbody th { font-weight: var(--fontWeightSemibold); white-space: nowrap; }
+/* The flow: the Stages in order, with an arrow between them that a screen reader does not read. */
+.flow { display: flex; flex-wrap: wrap; gap: var(--spacingVerticalS) var(--spacingHorizontalXL); margin: var(--spacingVerticalS) 0; padding: 0; list-style: none; }
+.flow li { position: relative; display: flex; flex-direction: column; gap: var(--spacingVerticalXXS); flex: 1 1 9rem; padding: var(--spacingVerticalS) var(--spacingHorizontalM); border: var(--strokeWidthThin) solid var(--colorNeutralStroke2); border-radius: var(--borderRadiusMedium); background: var(--colorNeutralBackground2); }
+.flow li + li::before { content: "\2192"; content: "\2192" / ""; position: absolute; left: calc(-1 * var(--spacingHorizontalXL)); top: 50%; width: var(--spacingHorizontalXL); transform: translateY(-50%); text-align: center; color: var(--colorNeutralForeground3); }
+.flow span { font-size: var(--fontSizeBase200); color: var(--colorNeutralForeground2); }
+@media (max-width: 40rem) { .confirm.help { padding-left: var(--spacingHorizontalM); padding-right: var(--spacingHorizontalM); } .help-terms, .help-skills { grid-template-columns: minmax(0, 1fr); } .flow li + li::before { display: none; } .flow { gap: var(--spacingVerticalS) var(--spacingHorizontalS); } }
 .welcome { max-width: 40rem; padding: var(--spacingVerticalXL) var(--spacingHorizontalXL); background: var(--colorNeutralBackground1); border: var(--strokeWidthThin) solid var(--colorNeutralStroke2); border-radius: var(--borderRadiusLarge); box-shadow: var(--shadow4); }
 .welcome h2 { margin: 0 0 var(--spacingVerticalS); font-size: var(--fontSizeBase500); line-height: var(--lineHeightBase500); font-weight: var(--fontWeightSemibold); }
 .link { padding: 0; border: 0; background: none; font: inherit; color: var(--colorBrandForegroundLink); text-decoration: underline; cursor: pointer; }
