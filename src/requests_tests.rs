@@ -1222,7 +1222,9 @@ fn read_only_git_and_gh_forms_are_helpers_too() {
     // Forms that change something are not helpers.
     for command in [
         "B=$(git branch -D old) && factory run update 1 build running",
-        "U=$(gh pr create --title x) && factory run update 1 build running",
+        "U=$(gh pr merge 5) && factory run update 1 build running",
+        "X=$(git diff --output=/tmp/p) && factory run update 1 build running",
+        "X=$(git -C d log --output=/tmp/p) && factory run update 1 build running",
     ] {
         assert_ne!(
             category_of(command),

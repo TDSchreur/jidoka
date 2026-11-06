@@ -457,6 +457,10 @@ fn is_read_only_helper(segment: &str) -> bool {
         skip_git_options(&mut words);
     }
     let word = |index: usize| words.get(index).copied().unwrap_or("");
+    // `git diff --output=<file>` writes a file.
+    if words.iter().any(|word| word.starts_with("--output")) {
+        return false;
+    }
     program.is_some_and(|program| HELPERS.contains(&program))
         || matches!(
             (program, word(1), word(2)),
