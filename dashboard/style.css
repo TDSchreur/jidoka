@@ -139,6 +139,9 @@ body { box-sizing: border-box; min-height: 100vh; min-height: 100dvh; display: f
 /* A focused element that scrolls into view stops above the footer, not behind it. */
 html { scroll-padding-bottom: calc(var(--lineHeightBase200) + 2 * var(--spacingVerticalS)); }
 header { margin-bottom: var(--spacingVerticalXXL); }
+/* The logo is the visible heading; its text stays for screen readers. The dark parts follow the theme, the blue parts keep their colour. */
+.logo { display: block; height: 2.25rem; width: auto; }
+.logo .ink { fill: var(--colorNeutralForeground1); }
 h1 { font-size: var(--fontSizeBase500); line-height: var(--lineHeightBase500); font-weight: var(--fontWeightSemibold); margin: var(--spacingVerticalXS) 0; }
 p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .connection { display: inline-flex; align-items: center; gap: var(--spacingHorizontalXS); margin: 0 0 0 auto; font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground3); }
