@@ -685,3 +685,39 @@ fn the_text_says_nothing_about_the_base_when_the_pull_request_is_not_open() {
     assert!(text.starts_with("Pull request is not open"));
     assert!(!text.contains("base"), "{text}");
 }
+
+#[test]
+fn the_run_and_repository_are_read_from_real_link_shapes() {
+    let some = |link: &str| run_of_link(link).map(|(id, repo)| (id.to_string(), repo));
+    assert_eq!(
+        some("https://github.com/TDSchreur/tds-factory2/actions/runs/42264460135/job/128054364602"),
+        Some(("42264460135".into(), "TDSchreur/tds-factory2".into()))
+    );
+    // A repository whose name starts with a dot, and a link with a query or a fragment.
+    assert_eq!(
+        some("https://github.com/acme/.github/actions/runs/1/job/2"),
+        Some(("1".into(), "acme/.github".into()))
+    );
+    assert_eq!(
+        some("https://github.com/o/r/actions/runs/123?pr=5"),
+        Some(("123".into(), "o/r".into()))
+    );
+    assert_eq!(
+        some("https://github.com/o/r/actions/runs/123#step"),
+        Some(("123".into(), "o/r".into()))
+    );
+    // Nothing that could be read as an option, a path or another place.
+    for bad in [
+        "https://github.com/-x/r/actions/runs/1",
+        "https://-host/o/r/actions/runs/1",
+        "https://github.com/o/../actions/runs/1",
+        "https://github.com/o/./actions/runs/1",
+        "https://github.com/a/b/c/actions/runs/1",
+        "https://github.com/o/r/actions/runs/",
+        "https://github.com/o/r/actions/runs/x1",
+        "ftp://github.com/o/r/actions/runs/1",
+        "not a link",
+    ] {
+        assert_eq!(some(bad), None, "{bad}");
+    }
+}

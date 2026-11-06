@@ -393,23 +393,31 @@ fn run_of_link(link: &str) -> Option<(&str, String)> {
         .strip_prefix("https://")
         .or_else(|| link.strip_prefix("http://"))?;
     let (place, tail) = rest.split_once("/actions/runs/")?;
-    let id = tail.split('/').next()?;
+    let id = tail.split(['/', '?', '#']).next()?;
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let part_ok = |part: &str| {
-        part.chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphanumeric())
+    let name_ok = |part: &str| {
+        !part.is_empty()
             && part
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || "._-:".contains(c))
+    };
+    // The host and the owner start the `--repo` value, so they must not look like an option; a repository
+    // may start with a dot (`.github`), but `.` and `..` are paths.
+    let starts_plain = |part: &str| {
+        part.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
     };
     let parts: Vec<&str> = place.split('/').collect();
     let [host, owner, repo] = parts[..] else {
         return None;
     };
-    if !(part_ok(host) && part_ok(owner) && part_ok(repo)) {
+    if !(name_ok(host) && starts_plain(host) && name_ok(owner) && starts_plain(owner))
+        || !name_ok(repo)
+        || matches!(repo, "." | "..")
+    {
         return None;
     }
     let repository = if host == "github.com" {
@@ -466,7 +474,6 @@ fn failures(gh: &dyn Gh, checks: &[CheckResult]) -> Vec<Failure> {
 /// Watches the checks of `pull_request` for its current head commit until they have ended, and returns the
 /// CI outcome. `activity` is told what the run is doing, and `progress` how far the checks are. It only
 /// reads: it never merges, pushes or updates the branch.
-/// the branch.
 pub(crate) fn wait(
     pull_request: Option<&str>,
     options: &Options,
