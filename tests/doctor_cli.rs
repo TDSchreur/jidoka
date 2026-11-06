@@ -166,6 +166,55 @@ fn doctor_creates_the_model_routing_policy_once_and_keeps_json_output_valid() {
 }
 
 #[test]
+fn doctor_creates_the_codex_starter_too_and_reports_when_it_cannot_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let output = factory(
+        &["doctor", "--agent", "codex", "--create-model-routing"],
+        dir.path(),
+        home.path(),
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("Created") && text.contains("starter policy for codex"),
+        "{text}"
+    );
+    assert!(
+        text.contains("pass     policy:") && text.contains("routes codex"),
+        "{text}"
+    );
+    let written =
+        std::fs::read_to_string(home.path().join(".config/tds-factory/model-routing.json"))
+            .unwrap();
+    assert!(written.contains("gpt-6-astra"), "{written}");
+
+    // A file where the folder should be: doctor stops with the reason and a way out.
+    let blocked = tempfile::tempdir().unwrap();
+    std::fs::write(blocked.path().join(".config"), "a file").unwrap();
+    let output = factory(
+        &[
+            "doctor",
+            "--agent",
+            "claude",
+            "--create-model-routing",
+            "--json",
+        ],
+        dir.path(),
+        blocked.path(),
+    );
+    assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "no report is printed after a failed write"
+    );
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("cannot create") && error.contains("create the file yourself"),
+        "{error}"
+    );
+}
+
+#[test]
 fn doctor_will_not_create_a_policy_without_a_supported_agent() {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();

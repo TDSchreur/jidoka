@@ -1,7 +1,8 @@
 //! `factory doctor`: a read-only report on whether this project and this machine are ready for the factory.
 //! It only reads files, looks on `PATH` and asks `git` read-only questions, and, when a model-routing policy
 //! exists, asks an agent for its `--version`. It never runs the project's own commands, calls a model,
-//! installs anything or needs the dashboard.
+//! installs anything or needs the dashboard. The one thing it writes is a starter model-routing policy, and
+//! only when `--create-model-routing` asks for it.
 
 use crate::install::{bundled_skill_files, skills_root};
 use crate::routing::{create_starter, policy_path_in, RoutingAgent};
@@ -577,10 +578,14 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
         var: &|name| std::env::var_os(name),
         version: &agent_version,
     };
-    let (agent, json) = (args.agent, args.json);
-    if args.create_routing {
-        // Parsing guarantees an agent here. With `--json` the note goes to stderr: stdout stays JSON.
-        let note = create_model_routing(agent.unwrap_or_default(), &machine)?;
+    let Args {
+        agent,
+        json,
+        create_model_routing: create,
+    } = args;
+    if let Some(create_for) = create {
+        // With `--json` the note goes to stderr: stdout stays JSON.
+        let note = create_model_routing(create_for, &machine)?;
         if json {
             eprintln!("{note}");
         } else {
@@ -601,24 +606,16 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
 pub(crate) struct Args<'a> {
     pub(crate) agent: Option<&'a str>,
     pub(crate) json: bool,
-    /// Write a starter model-routing policy first, when none exists.
-    pub(crate) create_routing: bool,
+    /// Write a starter model-routing policy for this agent first, when none exists.
+    pub(crate) create_model_routing: Option<RoutingAgent>,
 }
 
 /// Writes a starter model-routing policy for `agent` unless a file is already there, and says what it did.
 /// This is the one thing doctor writes, and only when asked.
-fn create_model_routing(agent: &str, machine: &Machine) -> Result<String, String> {
-    let agent = match agent {
-        "claude" => RoutingAgent::Claude,
-        "codex" => RoutingAgent::Codex,
-        other => {
-            return Err(format!(
-                "Model routing is not supported on {other}: there is no policy file to create."
-            ))
-        }
-    };
-    let path = policy_path_in(|name| (machine.var)(name))
-        .ok_or("cannot work out the configuration folder for the model-routing policy")?;
+fn create_model_routing(agent: RoutingAgent, machine: &Machine) -> Result<String, String> {
+    let path = policy_path_in(|name| (machine.var)(name)).ok_or(
+        "cannot work out the configuration folder for the model-routing policy; set XDG_CONFIG_HOME or HOME",
+    )?;
     let shown = printable(&path.display().to_string());
     match create_starter(&path, agent) {
         Ok(true) => Ok(format!(
@@ -626,21 +623,25 @@ fn create_model_routing(agent: &str, machine: &Machine) -> Result<String, String
              It is switched on: edit the models and efforts, or set \"enabled\": false to switch it off.",
             agent.name()
         )),
-        Ok(false) => Ok(format!(
-            "{shown} already exists and was left unchanged."
+        // A link that points nowhere is "there" for creating but not for reading, so say which it is.
+        Ok(false) if fs::metadata(&path).is_err() => Ok(format!(
+            "{shown} is a link that points nowhere, so no policy is read from it. It was left unchanged."
         )),
-        Err(error) => Err(format!("cannot create {shown}: {error}")),
+        Ok(false) => Ok(format!("{shown} already exists and was left unchanged.")),
+        Err(error) => Err(format!(
+            "cannot create {shown}: {error}. Check that the folder can be written, or create the file yourself with the example in the README (Model routing)."
+        )),
     }
 }
 
 /// Reads `[--agent <name>] [--json] [--create-model-routing]` in any order.
 pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
-    let (mut agent, mut json, mut create_routing) = (None, false, false);
+    let (mut agent, mut json, mut create) = (None, false, false);
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match *arg {
             "--json" => json = true,
-            "--create-model-routing" => create_routing = true,
+            "--create-model-routing" => create = true,
             "--agent" => match args.next() {
                 Some(name) if AGENTS.contains(name) && agent.is_none() => agent = Some(*name),
                 Some(name) if AGENTS.contains(name) => {
@@ -656,22 +657,22 @@ pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
             other => return Err(format!("Unknown option {other:?}.")),
         }
     }
-    if create_routing {
-        match agent {
-            Some("claude" | "codex") => {}
-            Some(_) => {
-                return Err(
-                    "--create-model-routing is not supported with copilot: model routing is not supported on Copilot CLI."
-                        .into(),
-                )
-            }
-            None => return Err("--create-model-routing needs --agent claude or --agent codex.".into()),
+    let create_model_routing = match (create, agent) {
+        (false, _) => None,
+        (true, Some("claude")) => Some(RoutingAgent::Claude),
+        (true, Some("codex")) => Some(RoutingAgent::Codex),
+        (true, Some(_)) => return Err(
+            "Model routing is not supported on Copilot CLI, so there is no policy file to create."
+                .into(),
+        ),
+        (true, None) => {
+            return Err("--create-model-routing needs --agent claude or --agent codex.".into())
         }
-    }
+    };
     Ok(Args {
         agent,
         json,
-        create_routing,
+        create_model_routing,
     })
 }
 
@@ -1102,25 +1103,29 @@ mod tests {
 
     #[test]
     fn arguments_accept_an_agent_and_json_in_any_order() {
-        let args = |agent, json, create_routing| {
+        let args = |agent, json, create_model_routing| {
             Ok(Args {
                 agent,
                 json,
-                create_routing,
+                create_model_routing,
             })
         };
-        assert_eq!(parse_args(&[]), args(None, false, false));
+        assert_eq!(parse_args(&[]), args(None, false, None));
         assert_eq!(
             parse_args(&["--json", "--agent", "copilot"]),
-            args(Some("copilot"), true, false)
+            args(Some("copilot"), true, None)
         );
         assert_eq!(
             parse_args(&["--agent", "codex"]),
-            args(Some("codex"), false, false)
+            args(Some("codex"), false, None)
         );
         assert_eq!(
             parse_args(&["--create-model-routing", "--json", "--agent", "claude"]),
-            args(Some("claude"), true, true)
+            args(Some("claude"), true, Some(RoutingAgent::Claude))
+        );
+        assert_eq!(
+            parse_args(&["--agent", "codex", "--create-model-routing"]),
+            args(Some("codex"), false, Some(RoutingAgent::Codex))
         );
         for bad in [
             &["--agent"][..],
@@ -1147,7 +1152,7 @@ mod tests {
 
     impl World {
         /// What `--create-model-routing` does on this fake machine.
-        fn create_routing(&self, agent: &str) -> Result<String, String> {
+        fn create_model_routing(&self, agent: RoutingAgent) -> Result<String, String> {
             let machine = Machine {
                 home: self.home.path().to_path_buf(),
                 path: self.bin.path().into(),
@@ -1161,7 +1166,7 @@ mod tests {
     #[test]
     fn doctor_creates_a_starter_policy_for_the_agent_and_then_checks_it() {
         let world = World::ready().claude_ready().with_config_folder();
-        let message = world.create_routing("claude").unwrap();
+        let message = world.create_model_routing(RoutingAgent::Claude).unwrap();
         let path = world
             .home
             .path()
@@ -1182,7 +1187,7 @@ mod tests {
         );
         // Created for Codex, the policy names Codex.
         let codex = World::ready().with_config_folder();
-        codex.create_routing("codex").unwrap();
+        codex.create_model_routing(RoutingAgent::Codex).unwrap();
         let text = fs::read_to_string(
             codex
                 .home
@@ -1193,6 +1198,25 @@ mod tests {
         assert!(text.contains("\"agent\": \"codex\""), "{text}");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_link_that_points_nowhere_is_left_alone_and_described_as_such() {
+        let world = World::ready().with_config_folder();
+        let folder = world.home.path().join("config/tds-factory");
+        fs::create_dir_all(&folder).unwrap();
+        std::os::unix::fs::symlink(
+            folder.join("missing.json"),
+            folder.join("model-routing.json"),
+        )
+        .unwrap();
+        let message = world.create_model_routing(RoutingAgent::Claude).unwrap();
+        assert!(
+            message.contains("points nowhere") && message.contains("unchanged"),
+            "{message}"
+        );
+        assert!(!folder.join("missing.json").exists());
+    }
+
     #[test]
     fn doctor_leaves_an_existing_policy_alone_and_says_so() {
         let world = World::ready().claude_ready().with_policy(CLAUDE_POLICY);
@@ -1200,7 +1224,7 @@ mod tests {
             .home
             .path()
             .join("config/tds-factory/model-routing.json");
-        let message = world.create_routing("claude").unwrap();
+        let message = world.create_model_routing(RoutingAgent::Claude).unwrap();
         assert!(
             message.contains("already exists") && message.contains("unchanged"),
             "{message}"
@@ -1212,13 +1236,20 @@ mod tests {
     fn doctor_refuses_to_create_a_policy_it_cannot_place_or_that_is_not_supported() {
         // No configuration folder can be worked out.
         let world = World::ready();
-        let error = world.create_routing("claude").unwrap_err();
-        assert!(error.contains("configuration"), "{error}");
-        let copilot = World::ready()
-            .with_config_folder()
-            .create_routing("copilot")
+        let error = world
+            .create_model_routing(RoutingAgent::Claude)
             .unwrap_err();
-        assert!(copilot.contains("not supported"), "{copilot}");
+        assert!(error.contains("configuration folder"), "{error}");
+        // The folder is in the way: a file where the folder should be.
+        let blocked = World::ready().with_config_folder();
+        fs::write(blocked.home.path().join("config"), "a file").unwrap();
+        let error = blocked
+            .create_model_routing(RoutingAgent::Claude)
+            .unwrap_err();
+        assert!(
+            error.contains("cannot create") && error.contains("create the file yourself"),
+            "{error}"
+        );
     }
 
     #[test]

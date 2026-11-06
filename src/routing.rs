@@ -72,7 +72,7 @@ pub(crate) fn model_matches(requested: &str, observed: &str) -> bool {
 
 /// A starting policy for `agent`, written by `factory doctor --create-model-routing`. It defines all three
 /// roles so they can be extended, and routes only `check`, the one task that uses routing so far.
-pub(crate) fn starter(agent: RoutingAgent) -> &'static str {
+fn starter(agent: RoutingAgent) -> &'static str {
     match agent {
         RoutingAgent::Claude => {
             r#"{
@@ -226,10 +226,13 @@ pub(crate) struct Resolution {
 /// Where the user-level policy lives: `$XDG_CONFIG_HOME/tds-factory/` or `~/.config/tds-factory/`,
 /// and `%APPDATA%\tds-factory\` on Windows.
 pub(crate) fn policy_path_in(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    // A relative folder would put the file wherever the command happens to run, so, as the XDG spec says,
+    // it is ignored.
     let set = |name: &str| {
         var(name)
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
     };
     let base = if cfg!(windows) {
         set("APPDATA")?
@@ -517,6 +520,30 @@ mod tests {
             ))
         );
         assert_eq!(path(&[]), None);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_relative_config_folder_is_ignored_as_the_xdg_spec_says() {
+        let path = |vars: &'static [(&'static str, &'static str)]| {
+            policy_path_in(move |name| {
+                vars.iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, v)| (*v).into())
+            })
+        };
+        // A relative XDG_CONFIG_HOME would put the file under whatever folder the command runs in.
+        assert_eq!(
+            path(&[("XDG_CONFIG_HOME", "relative/dir"), ("HOME", "/home/u")]),
+            Some(PathBuf::from(
+                "/home/u/.config/tds-factory/model-routing.json"
+            ))
+        );
+        assert_eq!(
+            path(&[("XDG_CONFIG_HOME", "relative/dir"), ("HOME", "home")]),
+            None
+        );
+        assert_eq!(path(&[("HOME", ".")]), None);
     }
 
     #[cfg(windows)]
