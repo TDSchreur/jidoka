@@ -26,6 +26,11 @@ const ASSETS: &[(&str, ContentType, &[u8])] = &[
         include_bytes!("../dashboard/app.js"),
     ),
     (
+        "help.js",
+        ContentType::JavaScript,
+        include_bytes!("../dashboard/help.js"),
+    ),
+    (
         "style.css",
         ContentType::CSS,
         include_bytes!("../dashboard/style.css"),
@@ -522,6 +527,7 @@ mod tests {
         let api = client(&dir).await;
         for (path, content_type) in [
             ("/assets/app.js", ContentType::JavaScript),
+            ("/assets/help.js", ContentType::JavaScript),
             ("/assets/style.css", ContentType::CSS),
             ("/assets/vendor/preact.js", ContentType::JavaScript),
             ("/assets/vendor/hooks.js", ContentType::JavaScript),
@@ -919,13 +925,16 @@ mod tests {
         assert!(script.contains("runs && !runs.length ? html`<${Welcome}"));
         assert!(script.contains("runs?.length"));
         assert!(script.contains("Read the Help"));
-        // Help is a native modal named by its heading, opened from the header and focused on its Close button.
+        // Help opens from the header. It is a native modal named by its heading, with tabs, and the selected
+        // tab takes focus. It lives in its own module.
         assert!(script.contains("class=\"toggle help-open\""));
-        assert!(script.contains("aria-labelledby=\"help-title\""));
-        assert!(script.contains("autofocus onClick"));
+        let help = asset("/assets/help.js").await;
+        assert!(help.contains("aria-labelledby=\"help-title\""));
+        assert!(help.contains("role=\"tablist\""));
+        assert!(help.contains("autofocus=${id === current}"));
         for term in ["Stages", "Needs you", "Rework"] {
             assert!(
-                script.contains(&format!("<h3>{term}</h3>")),
+                help.contains(&format!("title=\"{term}\"")) || help.contains(&format!("'{term}'")),
                 "missing {term}"
             );
         }

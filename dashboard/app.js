@@ -1,6 +1,7 @@
 import { createContext, h, render } from 'preact';
 import { useContext, useEffect, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
+import { Help } from '/assets/help.js';
 
 const html = htm.bind(h);
 
@@ -511,46 +512,6 @@ function Group({ id, entries, now, selected, onOpen, onDelete, onDeleteAll }) {
   </section>`;
 }
 
-/** What the dashboard's words mean. A native modal: focus moves into it, and back to what opened it on close. */
-function Help({ onClose }) {
-  const dialog = useRef(null);
-  const closing = useRef(onClose);
-  closing.current = onClose;
-  useEffect(() => {
-    const element = dialog.current;
-    if (!element.open) element.showModal();
-    const onNativeClose = () => closing.current();
-    element.addEventListener('close', onNativeClose);
-    return () => element.removeEventListener('close', onNativeClose);
-  }, []);
-  return html`<dialog ref=${dialog} class="confirm help" aria-labelledby="help-title">
-    <h2 id="help-title">Help</h2>
-    <p>
-      A <strong>Run</strong> is one piece of work carried through the factory flow. Each Run sits in the column of its
-      Stage, or in Done once it has finished.
-    </p>
-    <h3>Stages</h3>
-    <dl class="help-terms">
-      ${GROUPS.map(([id, name, description]) => html`<dt key=${id}>${name}</dt><dd>${description}</dd>`)}
-    </dl>
-    <h3>Needs you</h3>
-    <p>
-      A Run that is blocked is waiting for you. Its card says <strong>Needs you</strong> and why, and it comes first in
-      its column. The <em>Needs you</em> button shows only these Runs.
-    </p>
-    <h3>Rework</h3>
-    <p>
-      A <strong>Rework</strong> is a return from Check to Build to fix findings, followed by another Check. A Run gets
-      at most ${REWORK_CAP} Reworks; after that you decide whether to do another, finish with the findings listed in the
-      pull request, or stop. Findings alone never block a Run; it is blocked, and shows <em>Needs you</em>, only while it
-      waits for that decision.
-    </p>
-    <div class="confirm-buttons">
-      <button type="button" class="toggle" autofocus onClick=${() => dialog.current.close()}>Close</button>
-    </div>
-  </dialog>`;
-}
-
 /** Shown instead of the columns while there are no Runs. */
 function Welcome({ onHelp }) {
   return html`<section class="welcome" aria-labelledby="welcome-title">
@@ -951,7 +912,7 @@ function App() {
         </section>`;
         })}
       </div>
-      ${helpOpen ? html`<${Help} onClose=${closeHelp} />` : null}
+      ${helpOpen ? html`<${Help} onClose=${closeHelp} reworkCap=${REWORK_CAP} />` : null}
       ${pending
         ? html`<${Confirm}
             title=${pending.runs.length === 1 ? 'Delete this run?' : `Delete all ${pending.runs.length} done runs in ${names.get(projectOf(pending.runs[0])) ?? projectOf(pending.runs[0])}?`}
