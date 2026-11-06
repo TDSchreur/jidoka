@@ -377,7 +377,7 @@ struct Rollout {
 
 /// The ids on a rollout's `session_meta` line. A rollout of a subagent has its own id and the id of the
 /// root session it belongs to.
-fn codex_meta(text: &str) -> Option<(String, String, bool)> {
+pub(crate) fn codex_meta(text: &str) -> Option<(String, String, bool)> {
     let line = text
         .lines()
         .find(|line| line.contains("\"session_meta\""))?;
@@ -401,6 +401,26 @@ fn codex_meta(text: &str) -> Option<(String, String, bool)> {
 struct TurnSettings {
     model: String,
     effort: Option<String>,
+}
+
+/// The token counts of a Codex `token_usage_record`. Codex counts cached input inside `input_tokens`; the
+/// cached part is moved to cache read, and cache writes are taken out of input too.
+pub(crate) fn codex_tokens(usage: &Value) -> Tokens {
+    let (input, cached, written) = (
+        count(usage.get("input_tokens")),
+        count(usage.get("cached_input_tokens")),
+        count(usage.get("cache_write_input_tokens")),
+    );
+    Tokens {
+        input: input.map(|n| {
+            n.saturating_sub(cached.unwrap_or(0))
+                .saturating_sub(written.unwrap_or(0))
+        }),
+        cache_read: cached,
+        cache_write: written,
+        output: count(usage.get("output_tokens")),
+        reasoning: count(usage.get("reasoning_output_tokens")),
+    }
 }
 
 /// Codex counts cached input inside `input_tokens`; the cached part is moved to cache read, and cache
@@ -441,10 +461,8 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
             parsed.unusable += 1;
             continue;
         };
-        let (input, cached, written, output) = (
+        let (input, output) = (
             count(usage.get("input_tokens")),
-            count(usage.get("cached_input_tokens")),
-            count(usage.get("cache_write_input_tokens")),
             count(usage.get("output_tokens")),
         );
         // The turn's own settings, or the latest ones when the record names no known turn.
@@ -456,16 +474,7 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
             parsed.unusable += 1;
             continue;
         };
-        let tokens = Tokens {
-            input: input.map(|n| {
-                n.saturating_sub(cached.unwrap_or(0))
-                    .saturating_sub(written.unwrap_or(0))
-            }),
-            cache_read: cached,
-            cache_write: written,
-            output,
-            reasoning: count(usage.get("reasoning_output_tokens")),
-        };
+        let tokens = codex_tokens(usage);
         parsed.push(
             payload["response_id"].as_str().map(str::to_string),
             number,
@@ -558,7 +567,7 @@ fn read_codex(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
 }
 
 /// `YYYY-MM-DD` for milliseconds since the epoch, to compare with the day folders.
-fn civil_day(millis: u64) -> String {
+pub(crate) fn civil_day(millis: u64) -> String {
     crate::usage::format_timestamp(millis)[..10].to_string()
 }
 

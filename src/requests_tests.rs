@@ -523,7 +523,7 @@ fn a_session_without_subagent_logs_is_marked_coordinator_only() {
 }
 
 #[test]
-fn codex_and_copilot_requests_are_counted_but_not_categorized() {
+fn copilot_requests_are_counted_but_not_categorized_and_codex_ones_are_categorized() {
     let world = World::new();
     world.file(
         "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-abc.jsonl",
@@ -547,27 +547,32 @@ fn codex_and_copilot_requests_are_counted_but_not_categorized() {
     assert_eq!(
         sources(&result),
         [
-            (Category::NotCategorized, false, 3),
+            (Category::TextOnly, false, 2),
+            (Category::NotCategorized, false, 1),
             (Category::NotCategorized, true, 1)
         ]
     );
-    let row = &result.categories[0].counts;
-    assert_eq!(row.tokens.input, Some(60 + 60 + 40));
-    // Their logs say nothing about tool output: unknown, not zero.
-    assert_eq!(row.tool_output_bytes, None);
+    // The Codex rows know their tool output (none here); the Copilot rows do not.
+    assert_eq!(result.categories[0].counts.tool_output_bytes, Some(0));
+    let copilot = &result.categories[1].counts;
+    assert_eq!(copilot.tokens.input, Some(40));
+    assert_eq!(copilot.tool_output_bytes, None);
     let json = serde_json::to_value(&result).unwrap();
-    assert!(json["categories"][0].get("tool_output_bytes").is_none());
-    assert!(
-        result.notes.iter().any(|n| n.contains("not categorized")),
-        "{:?}",
-        result.notes
-    );
+    assert!(json["categories"][1].get("tool_output_bytes").is_none());
     let table = render_run(&result);
     let line = table
         .lines()
         .find(|l| l.starts_with("  not categorized "))
         .expect(&table);
     assert!(line.contains("n/a"), "{line}");
+    assert!(
+        result
+            .notes
+            .iter()
+            .any(|n| n.contains("Copilot requests are not categorized")),
+        "{:?}",
+        result.notes
+    );
 }
 
 fn codex_usage(at: u64, response: &str) -> String {
@@ -1240,4 +1245,343 @@ fn a_here_string_inside_a_substitution_is_not_a_here_document() {
         category_of("X=$(tr a b <<<abc\ncat)\nfactory run update 1 build running"),
         Category::StandaloneReporting
     );
+}
+
+// --- Codex commands ---------------------------------------------------------------------------------
+
+const CODEX_FILE: &str = "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-abc.jsonl";
+
+fn codex_meta(id: &str, root: Option<&str>) -> String {
+    let mut payload = json!({"id": id, "source": "cli"});
+    if let Some(root) = root {
+        payload["session_id"] = json!(root);
+        payload["source"] = json!({"subagent": {"thread_spawn": {"parent_thread_id": root}}});
+    }
+    json!({"type": "session_meta", "timestamp": iso(0), "payload": payload}).to_string()
+}
+
+/// A `custom_tool_call` whose JavaScript snippet is `snippet`.
+fn codex_exec(call: &str, snippet: &str) -> String {
+    json!({"type": "response_item", "timestamp": iso(5), "payload": {
+        "type": "custom_tool_call", "status": "completed", "call_id": call, "name": "exec", "input": snippet}})
+    .to_string()
+}
+
+/// An `exec` call that runs these commands, as a JSON string literal each, in one `Promise.allSettled`.
+fn codex_exec_commands(call: &str, commands: &[&str]) -> String {
+    let calls: Vec<String> = commands
+        .iter()
+        .map(|c| {
+            format!(
+                "tools.exec_command({{cmd:{},workdir:\"/w\",max_output_tokens:2000}})",
+                serde_json::to_string(c).unwrap()
+            )
+        })
+        .collect();
+    codex_exec(
+        call,
+        &format!(
+            "const r=await Promise.allSettled([{}]);text(JSON.stringify(r));",
+            calls.join(",")
+        ),
+    )
+}
+
+fn codex_function_call(call: &str, name: &str) -> String {
+    json!({"type": "response_item", "timestamp": iso(5), "payload": {
+        "type": "function_call", "status": "completed", "call_id": call, "name": name, "arguments": "{}"}})
+    .to_string()
+}
+
+fn codex_output(kind: &str, call: &str, output: Value) -> String {
+    json!({"type": "response_item", "timestamp": iso(6), "payload": {"type": kind, "call_id": call, "output": output}}).to_string()
+}
+
+/// The category of a lone Codex response whose snippet is `snippet`.
+fn codex_category_of(snippet: &str) -> Category {
+    let world = World::new();
+    world.file(
+        CODEX_FILE,
+        &[
+            codex_meta("abc", None),
+            codex_exec("c1", snippet),
+            codex_usage(10, "r1"),
+        ],
+    );
+    let target = run(RUN_A, 0, Some(100), &["abc"]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    assert_eq!(result.categories.len(), 1, "{snippet}: {result:?}");
+    result.categories[0].category
+}
+
+#[test]
+fn codex_responses_get_the_category_of_their_commands_and_other_tool_calls() {
+    let world = World::new();
+    world.file(
+        CODEX_FILE,
+        &[
+            codex_meta("abc", None),
+            codex_exec_commands("a1", &["git commit -m x"]),
+            codex_usage(10, "r1"),
+            // Two commands in one snippet: a verification and a push; the push wins by priority.
+            codex_exec_commands("a2", &["cargo test", "git push origin x"]),
+            codex_usage(20, "r2"),
+            codex_exec(
+                "a3",
+                "text(await tools.apply_patch(\"*** Begin Patch\\n*** End Patch\"))",
+            ),
+            codex_usage(30, "r3"),
+            codex_function_call("a4", "spawn_agent"),
+            codex_usage(40, "r4"),
+            codex_usage(50, "r5"),
+        ],
+    );
+    let target = run(RUN_A, 0, Some(100), &["abc"]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    assert_eq!(
+        rows(&result),
+        [
+            (Category::Commit, 1),
+            (Category::PrCreationAndPush, 1),
+            (Category::ReadingEditingAnalysis, 2),
+            (Category::TextOnly, 1)
+        ]
+    );
+    assert_eq!(result.several_categories, 1);
+    assert_eq!(result.total.requests, 5);
+}
+
+#[test]
+fn a_codex_command_is_read_from_its_javascript_string_literal() {
+    for (snippet, expected) in [
+        (
+            r#"text(await tools.exec_command({cmd:"git push origin x"}))"#,
+            Category::PrCreationAndPush,
+        ),
+        (
+            r#"text(await tools.exec_command({cmd:'git push origin x',workdir:"/w"}))"#,
+            Category::PrCreationAndPush,
+        ),
+        (
+            "text(await tools.exec_command({workdir:\"/w\", cmd: `git push`}))",
+            Category::PrCreationAndPush,
+        ),
+        (
+            r#"await tools.exec_command({ "cmd" : "cargo test\n" })"#,
+            Category::Verification,
+        ),
+        // Escapes are decoded: the quote and the newline do not end the command early.
+        (
+            r#"await tools.exec_command({cmd:"echo \"a; git push\" && cargo test\ngit commit -m x"})"#,
+            Category::Commit,
+        ),
+        (
+            r#"await tools.exec_command({cmd:"git \u0070ush"})"#,
+            Category::PrCreationAndPush,
+        ),
+        // Not a plain literal: it cannot be read, so it is a tool call that is not a command.
+        (
+            "await tools.exec_command({cmd})",
+            Category::ReadingEditingAnalysis,
+        ),
+        (
+            "await tools.exec_command({cmd: command})",
+            Category::ReadingEditingAnalysis,
+        ),
+        (
+            r#"await tools.exec_command({cmd:"git " + "push"})"#,
+            Category::ReadingEditingAnalysis,
+        ),
+        (
+            "await tools.exec_command({cmd:`git ${what}`})",
+            Category::ReadingEditingAnalysis,
+        ),
+        // Other tools, and a script that runs no command.
+        (
+            r#"await tools.write_stdin({session_id: 1, chars: "git push"})"#,
+            Category::ReadingEditingAnalysis,
+        ),
+        (
+            r#"await tools.web__run({open:[{ref_id:"https://example.com"}]})"#,
+            Category::ReadingEditingAnalysis,
+        ),
+        ("text(String(1+1))", Category::ReadingEditingAnalysis),
+        // A string that is never closed does not run away.
+        (
+            r#"await tools.exec_command({cmd:"git push"#,
+            Category::ReadingEditingAnalysis,
+        ),
+    ] {
+        assert_eq!(codex_category_of(snippet), expected, "{snippet}");
+    }
+}
+
+#[test]
+fn codex_tool_output_is_counted_on_the_request_that_made_the_call_even_when_it_arrives_late() {
+    let world = World::new();
+    world.file(
+        CODEX_FILE,
+        &[
+            codex_meta("abc", None),
+            codex_exec_commands("c1", &["cargo test"]),
+            codex_usage(10, "r1"),
+            codex_exec_commands("c2", &["cargo clippy"]),
+            // The result of the first call arrives after the second response's call.
+            codex_output("custom_tool_call_output", "c1", json!([{"type": "input_text", "text": "a".repeat(100)}])),
+            codex_usage(20, "r2"),
+            codex_output(
+                "custom_tool_call_output",
+                "c2",
+                json!([{"type": "input_text", "text": "é".repeat(15)}, {"type": "input_text", "text": "SECRET"}]),
+            ),
+            codex_function_call("c3", "wait_agent"),
+            codex_usage(30, "r3"),
+            codex_output("function_call_output", "c3", json!("b".repeat(7))),
+        ],
+    );
+    let target = run(RUN_A, 0, Some(100), &["abc"]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    let verification = &result.categories[0];
+    assert_eq!(verification.category, Category::Verification);
+    assert_eq!(verification.counts.tool_output_bytes, Some(100 + 36));
+    assert_eq!(verification.counts.largest_tool_output_bytes, Some(100));
+    let other = &result.categories[1];
+    assert_eq!(other.category, Category::ReadingEditingAnalysis);
+    assert_eq!(other.counts.tool_output_bytes, Some(7));
+    assert!(!serde_json::to_string(&result).unwrap().contains("SECRET"));
+    assert!(!render_run(&result).contains("SECRET"));
+}
+
+#[test]
+fn a_codex_session_claims_a_run_only_through_an_executed_update_or_a_recorded_id() {
+    let world = World::new();
+    let update = format!("factory run update {RUN_A} build running --activity x");
+    world.file(
+        "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-executed.jsonl",
+        &[
+            codex_meta("executed", None),
+            codex_exec_commands("e1", &[&format!("cd /w && {update}")]),
+            codex_usage(10, "e-r1"),
+        ],
+    );
+    world.file(
+        "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-mentioned.jsonl",
+        &[
+            codex_meta("mentioned", None),
+            json!({"type": "response_item", "timestamp": iso(2), "payload": {"type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": update.clone()}]}}).to_string(),
+            codex_exec_commands("m1", &[&format!("grep -n \"{update}\" README.md"), &format!("echo '{update}'")]),
+            codex_output("custom_tool_call_output", "m1", json!([{"type": "input_text", "text": update.clone()}])),
+            codex_usage(10, "m-r1"),
+        ],
+    );
+    world.file(
+        "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-recorded.jsonl",
+        &[codex_meta("recorded", None), codex_usage(10, "x-r1")],
+    );
+    let target = run(RUN_A, 0, Some(100), &["recorded"]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    let mut sessions = result.sessions.clone();
+    sessions.sort();
+    assert_eq!(sessions, ["executed", "recorded"]);
+}
+
+#[test]
+fn a_codex_subagent_rollout_is_categorized_and_shown_on_its_own_lines() {
+    let world = World::new();
+    world.file(
+        CODEX_FILE,
+        &[
+            codex_meta("abc", None),
+            codex_exec_commands("a1", &["cargo test"]),
+            codex_usage(10, "r1"),
+        ],
+    );
+    world.file(
+        "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-30-sub1.jsonl",
+        &[
+            codex_meta("sub1", Some("abc")),
+            codex_exec_commands("s1", &["git log -1"]),
+            codex_usage(20, "s-r1"),
+            codex_usage(30, "s-r2"),
+        ],
+    );
+    let target = run(RUN_A, 0, Some(100), &["abc"]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    assert_eq!(
+        sources(&result),
+        [
+            (Category::Verification, false, 1),
+            (Category::ReadingEditingAnalysis, true, 1),
+            (Category::TextOnly, true, 1)
+        ]
+    );
+    assert_eq!(result.subagents.requests, 2);
+    assert!(result.coordinator_only_sessions.is_empty());
+}
+
+#[test]
+fn a_codex_response_that_is_recorded_twice_counts_once_with_its_largest_counts() {
+    let world = World::new();
+    let mut growing = codex_usage(10, "r1");
+    growing = growing.replace("\"output_tokens\":20", "\"output_tokens\":99");
+    world.file(
+        CODEX_FILE,
+        &[codex_meta("abc", None), codex_usage(10, "r1"), growing],
+    );
+    let target = run(RUN_A, 0, Some(100), &["abc"]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    assert_eq!(result.total.requests, 1);
+    assert_eq!(result.total.tokens.output, Some(99));
+}
+
+fn codex_task_started() -> String {
+    json!({"type": "event_msg", "timestamp": iso(0), "payload": {"type": "task_started", "turn_id": "t"}}).to_string()
+}
+
+#[test]
+fn the_history_a_codex_subagent_inherits_is_not_its_own_work() {
+    let world = World::new();
+    world.file(
+        CODEX_FILE,
+        &[
+            codex_meta("abc", None),
+            codex_exec_commands("a1", &["cargo test"]),
+            codex_usage(10, "r1"),
+        ],
+    );
+    // A subagent rollout opens with a copy of the parent's history: calls and results, no token records.
+    world.file(
+        "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-30-sub1.jsonl",
+        &[
+            codex_meta("sub1", Some("abc")),
+            codex_task_started(),
+            codex_exec_commands("old1", &["git push origin x"]),
+            codex_output(
+                "custom_tool_call_output",
+                "old1",
+                json!([{"type": "input_text", "text": "x".repeat(500)}]),
+            ),
+            // The subagent's own turn starts here.
+            codex_task_started(),
+            codex_exec_commands("s1", &["git log -1"]),
+            codex_usage(20, "s-r1"),
+            codex_output(
+                "custom_tool_call_output",
+                "s1",
+                json!([{"type": "input_text", "text": "y".repeat(10)}]),
+            ),
+        ],
+    );
+    let target = run(RUN_A, 0, Some(100), &["abc"]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    assert_eq!(
+        sources(&result),
+        [
+            (Category::Verification, false, 1),
+            (Category::ReadingEditingAnalysis, true, 1)
+        ]
+    );
+    let subagent = &result.categories[1].counts;
+    assert_eq!(subagent.tool_output_bytes, Some(10));
 }
