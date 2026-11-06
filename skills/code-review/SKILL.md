@@ -59,6 +59,8 @@ Each smell reads *what it is* → *how to fix*; match it against the diff:
 
 Issue both sub-agent calls together, in the foreground, and aggregate the reports they return.
 
+If the caller gives you a model and an effort for the review agents, start both sub-agents with them. On Claude Code, pass them as the Agent tool's `model` and `effort` parameters and start fresh subagents, not forks, because a fork ignores `model`. On another host, use that host's own way of setting a subagent's model and effort. If you cannot set them, start the sub-agents as you would without them and say in your report that the requested model was not applied. Without a model and effort from the caller, start the sub-agents exactly as described here.
+
 **Standards sub-agent prompt** should include:
 
 - The full diff command and commit list.

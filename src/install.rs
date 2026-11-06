@@ -411,6 +411,54 @@ mod tests {
     }
 
     #[test]
+    fn the_model_routing_procedure_says_how_to_read_and_apply_the_selection() {
+        // A Windows checkout may have CRLF line endings.
+        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
+        let section = procedures
+            .split_once("## Model routing\n")
+            .map(|(_, rest)| {
+                rest.split_once("\n## ")
+                    .map_or(rest, |(section, _)| section)
+            })
+            .expect("the procedures have a Model routing section");
+        for needle in [
+            "factory run inspect <id> --json",
+            "`model_routing`",
+            "`overrides.check`",
+            "`tasks.check`",
+            "never a fork",
+            "only the aliases `opus`, `sonnet`, `haiku` and `fable`",
+            "model routing not applied",
+            "Copilot CLI",
+            "do not claim a switch",
+        ] {
+            assert!(section.contains(needle), "Model routing lacks {needle}");
+        }
+        let review = bundled_text("code-review/SKILL.md");
+        for needle in ["model and an effort for the review agents", "not forks"] {
+            assert!(review.contains(needle), "code-review lacks {needle}");
+        }
+    }
+
+    #[test]
+    fn only_the_workflows_with_a_check_point_to_the_model_routing_procedure() {
+        for skill in ["factory-full", "factory-balanced"] {
+            let text = bundled_text(&format!("{skill}/SKILL.md"));
+            assert!(
+                text.contains(
+                    "Model routing in [factory-procedures](../factory-procedures/SKILL.md)"
+                ),
+                "{skill} does not point to Model routing"
+            );
+        }
+        let fast = bundled_text("factory-fast/SKILL.md");
+        assert!(
+            !fast.contains("Model routing"),
+            "factory-fast has no Check to route"
+        );
+    }
+
+    #[test]
     fn bundled_skills_do_not_name_this_repository() {
         let mut offenders = Vec::new();
         for (path, content) in BUNDLED {
