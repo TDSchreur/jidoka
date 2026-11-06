@@ -956,3 +956,31 @@ fn a_retry_before_any_name_was_chosen_keeps_the_branch_that_was_asked_for() {
     let (_, _, retry) = blocked(begin(&project.repo, &wants, &api, None, None));
     assert!(retry.contains("--branch mine"), "{retry}");
 }
+
+// --- rework 3 ---------------------------------------------------------------------------------------
+
+#[test]
+fn a_name_that_is_taken_is_found_before_anything_else_can_fail() {
+    let project = Project::new();
+    let api = FakeApi::default();
+    let mut mine = options("A");
+    mine.branch = Some("feat".into());
+    let a = begin(&project.repo, &mine, &api, None, None).unwrap();
+
+    // The fetch would fail (unknown base), but the name is taken from the start.
+    let api_b = FakeApi::default();
+    let mut wants = options("B work");
+    wants.branch = Some("feat".into());
+    wants.base = Some("nope".into());
+    let (_, reason, retry) = blocked(begin(&project.repo, &wants, &api_b, None, None));
+    assert!(reason.contains("already exists"), "{reason}");
+    assert!(!retry.contains("--branch feat"), "{retry}");
+    assert!(retry.contains("--base nope"), "{retry}");
+
+    // Fixing the base and running the printed retry makes a workspace of its own.
+    let mut fixed = parsed_retry(&retry);
+    fixed.base = Some("develop".into());
+    let resume_api = api_with_run("B work");
+    let begun = begin(&project.repo, &fixed, &resume_api, None, None).unwrap();
+    assert_ne!(begun.worktree, a.worktree);
+}

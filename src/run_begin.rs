@@ -482,6 +482,36 @@ fn workspace(
     run: &str,
     resume: bool,
 ) -> Result<Workspace, Failure> {
+    let parent = main.parent().unwrap_or(main);
+    let repo_name = main
+        .file_name()
+        .map_or_else(|| "repo".to_string(), |n| n.to_string_lossy().into_owned());
+    let folder = parent.join(format!("{repo_name}.worktrees"));
+    let path_of = |branch: &str| folder.join(branch.replace('/', "-"));
+    let taken = |branch: &str| branch_exists(main, branch) || path_of(branch).exists();
+
+    // A name that was asked for and is taken is found before anything else can fail, so that the retry
+    // command printed for any later failure cannot repeat it and take over what holds it.
+    if let (false, Some(wanted)) = (resume, &options.branch) {
+        let reason = if branch_exists(main, wanted) {
+            Some(format!(
+                "The branch {wanted} already exists. Pick another name with --branch."
+            ))
+        } else if path_of(wanted).exists() {
+            Some(format!(
+                "{} already exists. Pick another name with --branch.",
+                path_of(wanted).display()
+            ))
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(Failure {
+                reason,
+                named: Named::Taken,
+            });
+        }
+    }
     git(main, &["remote", "get-url", "origin"]).map_err(|_| {
         "This repository has no remote named origin. Add one with `git remote add origin <url>` and retry."
             .to_string()
@@ -520,13 +550,6 @@ fn workspace(
         )
     })?;
 
-    let parent = main.parent().unwrap_or(main);
-    let repo_name = main
-        .file_name()
-        .map_or_else(|| "repo".to_string(), |n| n.to_string_lossy().into_owned());
-    let folder = parent.join(format!("{repo_name}.worktrees"));
-    let path_of = |branch: &str| folder.join(branch.replace('/', "-"));
-    let taken = |branch: &str| branch_exists(main, branch) || path_of(branch).exists();
     let derived = {
         let name = slug(title);
         if name.is_empty() {
