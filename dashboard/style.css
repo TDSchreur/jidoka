@@ -138,12 +138,13 @@
 body { box-sizing: border-box; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; max-width: 960px; margin: 0 auto; padding: var(--spacingVerticalXXL) var(--spacingHorizontalL) 0; }
 /* A focused element that scrolls into view stops above the footer, not behind it. */
 html { scroll-padding-bottom: calc(var(--lineHeightBase200) + 2 * var(--spacingVerticalS)); }
-header { margin-bottom: var(--spacingVerticalXXL); }
+header.site-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingVerticalS) var(--spacingHorizontalXXL); margin-bottom: var(--spacingVerticalXXL); }
 /* The logo is the visible heading; its text stays for screen readers. The dark parts follow the theme, the blue parts keep their colour. */
 .logo { display: block; height: 2.25rem; width: auto; }
 .logo .ink { fill: var(--colorNeutralForeground1); }
-h1 { font-size: var(--fontSizeBase500); line-height: var(--lineHeightBase500); font-weight: var(--fontWeightSemibold); margin: var(--spacingVerticalXS) 0; }
+h1 { font-size: var(--fontSizeBase500); line-height: var(--lineHeightBase500); font-weight: var(--fontWeightSemibold); margin: 0; }
 p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
+.tagline { flex: 1 1 12rem; margin: 0; }
 .connection { display: inline-flex; align-items: center; gap: var(--spacingHorizontalXS); margin: 0 0 0 auto; font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground3); }
 .connection .pulse { width: .6rem; height: .6rem; border-radius: 50%; background: var(--colorNeutralForeground3); animation: beat 1.2s var(--curveEasyEase) 1; }
 .connection.connected .pulse { background: var(--colorPaletteGreenForeground1); }
