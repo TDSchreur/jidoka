@@ -394,12 +394,30 @@ fn truncate(command: &str) -> &str {
 }
 
 /// The run ids in `ids` that a `factory run update <id>` in `command` names. Only a command that runs
-/// `factory` counts: `grep "factory run update 1" notes.md`, an `echo` or the text of a here-document do not.
-/// An id is digits only.
+/// `factory` counts: `grep "factory run update 1 " notes.md`, an `echo` or the text of a here-document do not.
+/// An id is digits only. The id may be a variable that an earlier command of the same line sets to a literal
+/// (`R=123 && factory run update $R`); a value that comes from a file or another command is not known here.
 fn updated_runs(command: &str, ids: &HashSet<&str>) -> HashSet<String> {
     let mut found = HashSet::new();
-    for segment in segments(command) {
-        let words = command_words(&segment);
+    let mut variables: HashMap<&str, &str> = HashMap::new();
+    for segment in &segments(command) {
+        let words = split_words(&segment.text);
+        let assigned = words.iter().take_while(|word| is_assignment(word)).count();
+        if assigned == words.len() {
+            // Only assignments: the variables hold these values for the commands after them.
+            for word in &words {
+                if let Some((name, value)) = word.split_once('=') {
+                    let value = value.trim_matches(['"', '\'']);
+                    if value.contains(SUBSTITUTION) {
+                        variables.remove(name);
+                    } else {
+                        variables.insert(name, value);
+                    }
+                }
+            }
+            continue;
+        }
+        let words = command_words(&segment.text);
         let program = words
             .first()
             .map(|word| word.rsplit('/').next().unwrap_or(word));
@@ -407,6 +425,13 @@ fn updated_runs(command: &str, ids: &HashSet<&str>) -> HashSet<String> {
             (program, words.get(1), words.get(2), words.get(3))
         {
             let id = id.trim_end_matches([')', '}', ';']);
+            let id = match id.strip_prefix('$') {
+                Some(name) => variables
+                    .get(name.trim_matches(['{', '}']))
+                    .copied()
+                    .unwrap_or(""),
+                None => id,
+            };
             if ids.contains(id) {
                 found.insert(id.to_string());
             }
@@ -416,6 +441,46 @@ fn updated_runs(command: &str, ids: &HashSet<&str>) -> HashSet<String> {
 }
 
 // --- categories -------------------------------------------------------------------------------------
+
+/// Programs that only read or reformat text. In a substitution or after a pipe they support the command they
+/// belong to; any other program there (`git apply`, `xargs`, `tee`, a script) does work of its own.
+fn is_read_only_helper(segment: &str) -> bool {
+    const HELPERS: [&str; 20] = [
+        "cat", "tail", "head", "grep", "egrep", "fgrep", "rg", "wc", "sort", "uniq", "cut", "tr",
+        "jq", "column", "date", "basename", "dirname", "pwd", "whoami", "realpath",
+    ];
+    let mut words = command_words(segment);
+    let program = words
+        .first()
+        .map(|word| word.rsplit('/').next().unwrap_or(word));
+    if program == Some("git") {
+        skip_git_options(&mut words);
+    }
+    let word = |index: usize| words.get(index).copied().unwrap_or("");
+    // `git diff --output=<file>` writes a file.
+    if words.iter().any(|word| word.starts_with("--output")) {
+        return false;
+    }
+    program.is_some_and(|program| HELPERS.contains(&program))
+        || matches!(
+            (program, word(1), word(2)),
+            (
+                Some("git"),
+                "rev-parse" | "log" | "status" | "diff" | "show",
+                _
+            ) | (Some("git"), "branch", "--show-current")
+                | (Some("gh"), "pr" | "issue" | "repo", "view")
+        )
+}
+
+/// Removes the options that come before the subcommand of a git command: `git -C <path> <subcommand>`.
+fn skip_git_options(words: &mut Vec<&str>) {
+    let skipped = words[1..]
+        .chunks(2)
+        .take_while(|pair| pair[0] == "-C" || pair[0] == "-c")
+        .count();
+    words.drain(1..(1 + 2 * skipped).min(words.len()));
+}
 
 /// What one command of a shell line stands for.
 enum Hit {
@@ -447,12 +512,15 @@ pub(crate) fn classify(commands: &[String], other_tool: bool, any_tool: bool) ->
     let (mut reporting, mut other) = (false, other_tool);
     for command in commands {
         for segment in segments(command) {
-            match hit(&segment) {
+            match hit(&segment.text) {
                 Hit::Category(category) => {
                     categories.insert(category);
                 }
                 Hit::Reporting => reporting = true,
                 Hit::Neutral => {}
+                // A read-only helper, such as `cat file` in a substitution or `tail -1` after a pipe, is
+                // not work of its own. Anything else that runs there is.
+                Hit::Other if segment.plumbing && is_read_only_helper(&segment.text) => {}
                 Hit::Other => other = true,
             }
         }
@@ -471,19 +539,165 @@ pub(crate) fn classify(commands: &[String], other_tool: bool, any_tool: bool) ->
     }
 }
 
+/// One command of a shell line.
+struct Segment {
+    text: String,
+    /// It only supports another command: it stands inside a command substitution, or after a `|` where it
+    /// filters the output of the command before it. It still runs, but it is not the line's own work.
+    plumbing: bool,
+}
+
+/// What a command substitution is replaced by in the text of its command, so that it stays one word.
+const SUBSTITUTION: char = '\u{1}';
+
+/// How deep command substitutions are followed. Deeper text is dropped, which bounds the work.
+const MAX_SUBSTITUTION_DEPTH: usize = 4;
+
+/// Whether `chars[i]` starts a command substitution: `$(` (but not the arithmetic `$((`) or a backtick.
+fn substitution_start(chars: &[char], i: usize) -> bool {
+    match chars[i] {
+        '`' => true,
+        '$' => chars.get(i + 1) == Some(&'(') && chars.get(i + 2) != Some(&'('),
+        _ => false,
+    }
+}
+
+/// The delimiter of the here-document that starts with the `<<` at `chars[i]` (`<<EOF`, `<<-EOF`,
+/// `<<'EOF'`, `<<\EOF`), and the index after its word. Arithmetic such as `$((1<<2))` has no delimiter
+/// word, so it starts no here-document.
+fn heredoc_delimiter(chars: &[char], i: usize) -> (Option<String>, usize) {
+    let mut j = i + 2;
+    while chars.get(j).is_some_and(|c| matches!(c, '-' | ' ' | '\t')) {
+        j += 1;
+    }
+    let start = j;
+    while chars
+        .get(j)
+        .is_some_and(|c| !c.is_whitespace() && !";|&<>()".contains(*c))
+    {
+        j += 1;
+    }
+    let word: String = chars[start..j].iter().collect();
+    let word = word.trim_matches(['\'', '"']).trim_start_matches('\\');
+    let valid = word
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    (valid.then(|| word.to_string()), j)
+}
+
+/// The index of the last character of a here-document body: the lines after the line end at `chars[newline]`,
+/// up to and including the delimiter line.
+fn skip_heredoc_body(chars: &[char], newline: usize, delimiter: &str) -> usize {
+    let mut line_start = newline + 1;
+    while line_start < chars.len() {
+        let line_end = chars[line_start..]
+            .iter()
+            .position(|c| *c == '\n')
+            .map_or(chars.len(), |p| line_start + p);
+        let line: String = chars[line_start..line_end].iter().collect();
+        line_start = line_end + 1;
+        if line.trim() == delimiter {
+            break;
+        }
+    }
+    line_start.saturating_sub(1)
+}
+
+/// The text inside the substitution that starts at `chars[i]`, and the index of its last character. An
+/// unterminated substitution runs to the end.
+fn substitution_at(chars: &[char], i: usize) -> (String, usize) {
+    if chars[i] == '`' {
+        let mut j = i + 1;
+        while j < chars.len() && chars[j] != '`' {
+            j += if chars[j] == '\\' { 2 } else { 1 };
+        }
+        let end = j.min(chars.len());
+        return (chars[i + 1..end].iter().collect(), j.min(chars.len() - 1));
+    }
+    let (mut depth, mut quote, mut j) = (1usize, None::<char>, i + 2);
+    let mut heredoc: Option<String> = None;
+    while j < chars.len() {
+        let c = chars[j];
+        match quote {
+            Some(open) => {
+                if c == '\\' && open == '"' {
+                    j += 1;
+                } else if c == open {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '\'' | '"' => quote = Some(c),
+                // A here-string, `<<<`, has no delimiter.
+                '<' if chars.get(j + 1) == Some(&'<') && chars.get(j + 2) == Some(&'<') => j += 2,
+                // The text of a here-document, such as a commit message, may hold quotes and parentheses.
+                '<' if chars.get(j + 1) == Some(&'<') => {
+                    let (delimiter, after) = heredoc_delimiter(chars, j);
+                    heredoc = delimiter;
+                    j = after - 1;
+                }
+                '\n' => {
+                    if let Some(delimiter) = heredoc.take() {
+                        j = skip_heredoc_body(chars, j, &delimiter);
+                    }
+                }
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return (chars[i + 2..j].iter().collect(), j);
+                    }
+                }
+                _ => {}
+            },
+        }
+        j += 1;
+    }
+    (chars[i + 2..].iter().collect(), chars.len() - 1)
+}
+
+/// Replaces the substitution that starts at `chars[i]` by one word in `current`, adds the commands inside it
+/// to `nested` (down to `MAX_SUBSTITUTION_DEPTH`), and returns the index of its last character.
+fn take_substitution(
+    chars: &[char],
+    i: usize,
+    depth: usize,
+    current: &mut String,
+    nested: &mut Vec<Segment>,
+) -> usize {
+    let (inner, end) = substitution_at(chars, i);
+    current.push(SUBSTITUTION);
+    if depth < MAX_SUBSTITUTION_DEPTH {
+        nested.extend(segments_at(&inner, depth + 1));
+    }
+    end
+}
+
 /// The commands of a shell line, split at `&&`, `||`, `;`, `|` and line ends. Text inside quotes stays in
 /// its command; comments, here-strings and the lines of a here-document are text, not commands. A
-/// here-document delimiter may be bare, quoted or backslash-escaped.
-fn segments(command: &str) -> Vec<String> {
+/// here-document delimiter may be bare, quoted or backslash-escaped. A command substitution is one word of
+/// its command, and the commands inside it follow as nested segments.
+fn segments(command: &str) -> Vec<Segment> {
+    segments_at(command, 0)
+}
+
+fn segments_at(command: &str, depth: usize) -> Vec<Segment> {
+    let mut nested: Vec<Segment> = Vec::new();
     let chars: Vec<char> = command.chars().collect();
-    let mut out = Vec::new();
+    let mut out: Vec<Segment> = Vec::new();
     let mut current = String::new();
     let mut quote: Option<char> = None;
     let mut heredoc: Option<String> = None;
-    let mut flush = |current: &mut String| {
+    // Whether the command being read follows a `|`.
+    let mut piped = false;
+    let mut flush = |current: &mut String, piped: bool| {
         let part = current.trim();
         if !part.is_empty() {
-            out.push(part.to_string());
+            out.push(Segment {
+                text: part.to_string(),
+                plumbing: depth > 0 || piped,
+            });
         }
         current.clear();
     };
@@ -491,7 +705,9 @@ fn segments(command: &str) -> Vec<String> {
     while i < chars.len() {
         let c = chars[i];
         let next = chars.get(i + 1).copied();
-        if let Some(open) = quote {
+        if quote == Some('"') && substitution_start(&chars, i) {
+            i = take_substitution(&chars, i, depth, &mut current, &mut nested);
+        } else if let Some(open) = quote {
             current.push(c);
             if c == '\\' && open == '"' {
                 if let Some(escaped) = next {
@@ -514,6 +730,9 @@ fn segments(command: &str) -> Vec<String> {
                     quote = Some(c);
                     current.push(c);
                 }
+                '$' | '`' if substitution_start(&chars, i) => {
+                    i = take_substitution(&chars, i, depth, &mut current, &mut nested);
+                }
                 '#' if current.chars().next_back().is_none_or(char::is_whitespace) => {
                     // A comment runs to the end of the line.
                     while chars.get(i + 1).is_some_and(|c| *c != '\n') {
@@ -526,59 +745,29 @@ fn segments(command: &str) -> Vec<String> {
                     i += 2;
                 }
                 '<' if next == Some('<') => {
-                    // `<<EOF`, `<<-EOF`, `<<'EOF'`: the delimiter ends the text that follows. Arithmetic
-                    // such as `$((1<<2))` has no delimiter word, so it starts no here-document.
-                    let mut j = i + 2;
-                    while chars.get(j).is_some_and(|c| matches!(c, '-' | ' ' | '\t')) {
-                        j += 1;
-                    }
-                    let start = j;
-                    while chars
-                        .get(j)
-                        .is_some_and(|c| !c.is_whitespace() && !";|&<>()".contains(*c))
-                    {
-                        j += 1;
-                    }
-                    let word: String = chars[start..j].iter().collect();
-                    let word = word.trim_matches(['\'', '"']).trim_start_matches('\\');
-                    if word
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-                    {
-                        heredoc = Some(word.to_string());
-                    }
+                    let (delimiter, after) = heredoc_delimiter(&chars, i);
+                    heredoc = delimiter;
                     current.push_str("<<");
-                    i = j - 1;
+                    i = after - 1;
                 }
                 '\n' => {
-                    flush(&mut current);
-                    if let Some(end) = heredoc.take() {
-                        // Skip the lines up to and including the delimiter.
-                        let mut line_start = i + 1;
-                        while line_start < chars.len() {
-                            let line_end = chars[line_start..]
-                                .iter()
-                                .position(|c| *c == '\n')
-                                .map_or(chars.len(), |p| line_start + p);
-                            let line: String = chars[line_start..line_end].iter().collect();
-                            line_start = line_end + 1;
-                            if line.trim() == end {
-                                break;
-                            }
-                        }
-                        i = line_start.saturating_sub(1);
+                    flush(&mut current, piped);
+                    piped = false;
+                    if let Some(delimiter) = heredoc.take() {
+                        i = skip_heredoc_body(&chars, i, &delimiter);
                     }
                 }
                 ';' | '|' => {
-                    flush(&mut current);
-                    // `||`
+                    flush(&mut current, piped);
+                    // `||` is a separator like `;`; a single `|` pipes into the next command.
+                    piped = c == '|' && next != Some('|');
                     if c == '|' && next == Some('|') {
                         i += 1;
                     }
                 }
                 '&' if next == Some('&') => {
-                    flush(&mut current);
+                    flush(&mut current, piped);
+                    piped = false;
                     i += 1;
                 }
                 _ => current.push(c),
@@ -586,7 +775,8 @@ fn segments(command: &str) -> Vec<String> {
         }
         i += 1;
     }
-    flush(&mut current);
+    flush(&mut current, piped);
+    out.extend(nested);
     out
 }
 
@@ -603,14 +793,47 @@ fn is_assignment(word: &str) -> bool {
 /// hostile command of thousands of words costs no more than a normal one.
 const MAX_COMMAND_WORDS: usize = 32;
 
-/// The words of one command, without quotes, env assignments and the words that only wrap it: `sudo`,
+/// The words of a command, split at whitespace outside quotes; the quotes stay in the words. At most
+/// `MAX_COMMAND_WORDS` are read.
+fn split_words(segment: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let (mut start, mut quote) = (None::<usize>, None::<char>);
+    for (at, c) in segment.char_indices() {
+        match quote {
+            Some(open) => {
+                if c == open {
+                    quote = None;
+                }
+            }
+            None if c.is_whitespace() => {
+                if let Some(from) = start.take() {
+                    words.push(&segment[from..at]);
+                    if words.len() >= MAX_COMMAND_WORDS {
+                        return words;
+                    }
+                }
+            }
+            None => {
+                start.get_or_insert(at);
+                if c == '\'' || c == '"' {
+                    quote = Some(c);
+                }
+            }
+        }
+    }
+    if let Some(from) = start {
+        words.push(&segment[from..]);
+    }
+    words
+}
+
+/// The words of one command without quotes, env assignments and the words that only wrap it: `sudo`,
 /// `time`, `command`, `exec`, `nohup`, the shell keywords `if`, `then`, `do`, `else`, `elif`, `while` and
 /// `until`, `!`, an opening parenthesis or brace, and `env` and `timeout` with their options (and, for
 /// `timeout`, the duration).
 fn command_words(segment: &str) -> Vec<&str> {
-    let words: Vec<&str> = segment
-        .split_whitespace()
-        .take(MAX_COMMAND_WORDS)
+    let words: Vec<&str> = split_words(segment)
+        .into_iter()
         .map(|word| {
             word.trim_matches(['"', '\''])
                 .trim_start_matches(['(', '{'])
@@ -655,13 +878,8 @@ fn hit(segment: &str) -> Hit {
     else {
         return Hit::Neutral;
     };
-    // `git -C <path> <command>`
     if program == "git" {
-        let skipped = words[1..]
-            .chunks(2)
-            .take_while(|pair| pair[0] == "-C" || pair[0] == "-c")
-            .count();
-        words.drain(1..(1 + 2 * skipped).min(words.len()));
+        skip_git_options(&mut words);
     }
     let word = |index: usize| words.get(index).copied().unwrap_or("");
     let has = |text: &str| words.iter().any(|w| w.contains(text));
