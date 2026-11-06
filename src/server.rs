@@ -1100,7 +1100,25 @@ mod tests {
         assert!(fetch(&api, &run.id).await.1.unwrap().usage.is_none());
 
         // Moving to Build collects, without delaying the answer, and records what it found.
-        let response = report(&api, &run.id, r#"{"stage":"build","status":"running"}"#).await;
+        let store = api.rocket().state::<RunStore>().unwrap().clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = store.collecting.lock().unwrap();
+            ready_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+        });
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let response = rocket::tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            report(&api, &run.id, r#"{"stage":"build","status":"running"}"#),
+        )
+        .await;
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        let response = response.expect("update should respond while collection is blocked");
         assert_eq!(response.status(), HttpStatus::Ok);
         collector.wait_idle().await;
         let usage = fetch(&api, &run.id)
