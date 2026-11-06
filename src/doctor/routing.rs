@@ -4,7 +4,10 @@
 //! session's model. Nothing here changes a file or calls a model; at most it asks an agent for its `--version`.
 
 use super::{find_program, read_doc, Check, Machine};
-use crate::routing::{load, policy_path_in, ModelRouting, Resolution, RoutingAgent};
+use crate::routing::{
+    policy_path_in, read, Coverage, Host, ModelRouting, NotRouted, Policy, RoutingAgent,
+    COPILOT_NOTICE,
+};
 use std::{collections::BTreeSet, path::Path};
 
 /// The Agent tool's `effort` option first appeared in this Claude Code release.
@@ -13,39 +16,72 @@ const CLAUDE_MIN_VERSION: (u32, u32, u32) = (2, 1, 292);
 const CLAUDE_MODELS: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
 const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
-pub(super) fn checks(root: &Path, machine: &Machine) -> Vec<Check> {
+/// The routing checks for `agent` (all agents when `None`), as `--agent` on `factory doctor` selects. What
+/// the policy does for each agent comes from `Policy::coverage`, the same rule `factory run start` follows;
+/// this only adds what the machine needs.
+pub(super) fn checks(root: &Path, machine: &Machine, agent: Option<&str>) -> Vec<Check> {
     let Some(path) = policy_path_in(|name| (machine.var)(name)) else {
         return Vec::new();
     };
-    match load(&path) {
-        Ok(Resolution {
-            selection: None,
-            notice: None,
-        }) => Vec::new(),
-        // A policy for Copilot CLI: information, never a problem.
-        Ok(Resolution {
-            selection: None,
-            notice: Some(notice),
-        }) => vec![Check::pass("policy", notice)],
-        Ok(Resolution {
-            selection: Some(selection),
-            ..
-        }) => {
-            let mut checks = vec![Check::pass(
+    let policy = match read(&path) {
+        Ok(policy) => policy,
+        Err(problem) => {
+            return vec![Check::fail(
                 "policy",
-                format!("{} routes {}", path.display(), selection.agent.name()),
-            )];
-            checks.extend(match selection.agent {
-                RoutingAgent::Claude => claude_checks(&selection, root, machine),
-                RoutingAgent::Codex => codex_checks(machine),
-            });
-            checks
+                problem,
+                "Correct the file, or set \"enabled\": false to switch model routing off.",
+            )]
         }
-        Err(problem) => vec![Check::fail(
+    };
+    let shown = path.display();
+    // The agents to report on: the one asked for, or those the policy is about.
+    let hosts: Vec<Host> = match (agent.and_then(Host::parse), &policy) {
+        (_, Policy::Off) => return Vec::new(),
+        (Some(host), _) => vec![host],
+        (None, Policy::CopilotOnly) => vec![Host::Copilot],
+        (None, Policy::Single { agent, .. }) => vec![Host::from(*agent)],
+        (None, Policy::Multi { .. }) => policy
+            .configured()
+            .into_iter()
+            .filter_map(Host::parse)
+            .collect(),
+    };
+    // With an entry per agent, every check says which agent it is about.
+    let tagged = matches!(policy, Policy::Multi { .. });
+    let mut checks = Vec::new();
+    if tagged {
+        checks.push(Check::pass(
             "policy",
-            problem,
-            "Correct the file, or set \"enabled\": false to switch model routing off.",
-        )],
+            format!("{shown} configures {}", policy.configured().join(", ")),
+        ));
+    }
+    for host in hosts {
+        let name = host.name();
+        let tag = |check: Check| if tagged { check.for_agent(name) } else { check };
+        match policy.coverage(host) {
+            None => {}
+            Some(Coverage::Routed(selection)) => {
+                if !tagged {
+                    checks.push(Check::pass("policy", format!("{shown} routes {name}")));
+                }
+                checks.extend(agent_checks(&selection, root, machine).into_iter().map(tag));
+            }
+            // Information, never a problem.
+            Some(Coverage::NotRouted(NotRouted::Copilot)) => {
+                checks.push(Check::pass("policy", COPILOT_NOTICE));
+            }
+            Some(Coverage::NotRouted(why)) => {
+                checks.push(tag(Check::skipped("policy", why.text(host))));
+            }
+        }
+    }
+    checks
+}
+
+fn agent_checks(selection: &ModelRouting, root: &Path, machine: &Machine) -> Vec<Check> {
+    match selection.agent {
+        RoutingAgent::Claude => claude_checks(selection, root, machine),
+        RoutingAgent::Codex => codex_checks(machine),
     }
 }
 

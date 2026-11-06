@@ -411,6 +411,41 @@ mod tests {
     }
 
     #[test]
+    fn the_procedures_start_a_run_naming_the_agent_with_an_option_the_cli_accepts() {
+        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
+        let start = procedures
+            .split_once("- **Start:**")
+            .and_then(|(_, rest)| rest.split_once("\n- **Stage:**"))
+            .map(|(start, _)| start)
+            .expect("the procedures have a Start step");
+        assert!(
+            start.contains("factory run start \"<short task title>\" --agent <agent>"),
+            "{start}"
+        );
+        // The three values it names are the ones the command takes.
+        for (word, host) in [
+            ("claude", crate::routing::Host::Claude),
+            ("codex", crate::routing::Host::Codex),
+            ("copilot", crate::routing::Host::Copilot),
+        ] {
+            assert!(
+                start.contains(&format!("`{word}`")),
+                "Start does not name {word}"
+            );
+            assert_eq!(
+                crate::routing::parse_start_options(&["--agent", word]),
+                Ok(Some(host))
+            );
+        }
+        // A policy refusal is passed on to the user, and an older command that lacks the option is reported.
+        assert!(
+            start.contains("tell the user what it says and stop"),
+            "{start}"
+        );
+        assert!(start.contains("including `--agent`"), "{start}");
+    }
+
+    #[test]
     fn the_model_routing_procedure_says_how_to_read_and_apply_the_selection() {
         // A Windows checkout may have CRLF line endings.
         let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
@@ -431,6 +466,8 @@ mod tests {
             "model routing not applied",
             "Copilot CLI",
             "do not claim a switch",
+            "only the entry of the agent named with `--agent`",
+            "never another agent's",
         ] {
             assert!(section.contains(needle), "Model routing lacks {needle}");
         }

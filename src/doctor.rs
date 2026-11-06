@@ -53,6 +53,9 @@ pub(crate) struct Check {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     fix: Option<String>,
+    /// The agent a model-routing check is about, when the policy has an entry for each agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<&'static str>,
 }
 
 impl Check {
@@ -68,7 +71,13 @@ impl Check {
             status,
             message: printable(message.as_ref()),
             fix,
+            agent: None,
         }
+    }
+    /// Says which agent this check is about.
+    fn for_agent(mut self, agent: &'static str) -> Self {
+        self.agent = Some(agent);
+        self
     }
     fn pass(id: &'static str, message: impl AsRef<str>) -> Self {
         Self::new(id, Status::Pass, message, None)
@@ -191,7 +200,7 @@ pub(crate) fn diagnose(
         Some(_) => agents.iter().all(|a| a.usable),
         None => agents.iter().any(|a| a.usable),
     };
-    let model_routing = routing::checks(&root, machine);
+    let model_routing = routing::checks(&root, machine, agent);
     Ok(Report {
         ok: shared_ok && agents_ok && !model_routing.iter().any(Check::blocks),
         project: project_checks,
@@ -515,8 +524,11 @@ fn skills_check(agent: &'static str, machine: &Machine) -> Check {
 /// The human-readable report.
 pub(crate) fn render(report: &Report) -> String {
     fn line(check: &Check, indent: &str) -> String {
+        let tag = check
+            .agent
+            .map_or(String::new(), |agent| format!(" [{agent}]"));
         let mut text = format!(
-            "{indent}{:<8} {}: {}\n",
+            "{indent}{:<8} {}{tag}: {}\n",
             check.status.as_str(),
             check.id,
             check.message
@@ -585,7 +597,7 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
     } = args;
     if let Some(create_for) = create {
         // With `--json` the note goes to stderr: stdout stays JSON.
-        let note = create_model_routing(create_for, &machine)?;
+        let note = create_model_routing(&create_for, &machine)?;
         if json {
             eprintln!("{note}");
         } else {
@@ -606,13 +618,13 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
 pub(crate) struct Args<'a> {
     pub(crate) agent: Option<&'a str>,
     pub(crate) json: bool,
-    /// Write a starter model-routing policy for this agent first, when none exists.
-    pub(crate) create_model_routing: Option<RoutingAgent>,
+    /// Write a starter model-routing policy first, when none exists, with an entry for each of these agents.
+    pub(crate) create_model_routing: Option<Vec<RoutingAgent>>,
 }
 
 /// Writes a starter model-routing policy for `agent` unless a file is already there, and says what it did.
 /// This is the one thing doctor writes, and only when asked.
-fn create_model_routing(agent: RoutingAgent, machine: &Machine) -> Result<String, String> {
+fn create_model_routing(agents: &[RoutingAgent], machine: &Machine) -> Result<String, String> {
     let path = policy_path_in(|name| (machine.var)(name)).ok_or(
         if cfg!(windows) {
             "cannot work out the configuration folder for the model-routing policy; set APPDATA"
@@ -621,11 +633,11 @@ fn create_model_routing(agent: RoutingAgent, machine: &Machine) -> Result<String
         },
     )?;
     let shown = printable(&path.display().to_string());
-    match create_starter(&path, agent) {
+    match create_starter(&path, agents) {
         Ok(true) => Ok(format!(
-            "Created {shown}, a starter policy for {} that routes the check task to the strong role. \
+            "Created {shown}, a starter policy for {} that routes the check task to the strong role of each. \
              It is switched on: edit the models and efforts, or set \"enabled\": false to switch it off.",
-            agent.name()
+            agents.iter().map(|agent| agent.name()).collect::<Vec<_>>().join(" and ")
         )),
         // A link that points nowhere is "there" for creating but not for reading, so say which it is.
         Ok(false) if fs::metadata(&path).is_err() => Ok(format!(
@@ -663,15 +675,14 @@ pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
     }
     let create_model_routing = match (create, agent) {
         (false, _) => None,
-        (true, Some("claude")) => Some(RoutingAgent::Claude),
-        (true, Some("codex")) => Some(RoutingAgent::Codex),
+        (true, Some("claude")) => Some(vec![RoutingAgent::Claude]),
+        (true, Some("codex")) => Some(vec![RoutingAgent::Codex]),
+        // Without an agent the starter has an entry for each, which is what one file for both is for.
+        (true, None) => Some(vec![RoutingAgent::Claude, RoutingAgent::Codex]),
         (true, Some(_)) => return Err(
             "Model routing is not supported on Copilot CLI, so there is no policy file to create."
                 .into(),
         ),
-        (true, None) => {
-            return Err("--create-model-routing needs --agent claude or --agent codex.".into())
-        }
     };
     Ok(Args {
         agent,
@@ -1125,11 +1136,11 @@ mod tests {
         );
         assert_eq!(
             parse_args(&["--create-model-routing", "--json", "--agent", "claude"]),
-            args(Some("claude"), true, Some(RoutingAgent::Claude))
+            args(Some("claude"), true, Some(vec![RoutingAgent::Claude]))
         );
         assert_eq!(
             parse_args(&["--agent", "codex", "--create-model-routing"]),
-            args(Some("codex"), false, Some(RoutingAgent::Codex))
+            args(Some("codex"), false, Some(vec![RoutingAgent::Codex]))
         );
         for bad in [
             &["--agent"][..],
@@ -1143,9 +1154,13 @@ mod tests {
     }
 
     #[test]
-    fn creating_the_policy_needs_an_agent_that_model_routing_supports() {
+    fn creating_the_policy_covers_both_agents_unless_one_is_named_and_refuses_copilot() {
         let error = |args: &[&str]| parse_args(args).unwrap_err();
-        assert!(error(&["--create-model-routing"]).contains("--agent"));
+        let both = parse_args(&["--create-model-routing"]).unwrap();
+        assert_eq!(
+            both.create_model_routing,
+            Some(vec![RoutingAgent::Claude, RoutingAgent::Codex])
+        );
         let copilot = error(&["--create-model-routing", "--agent", "copilot"]);
         assert!(
             copilot.contains("Copilot") && copilot.contains("not supported"),
@@ -1156,21 +1171,21 @@ mod tests {
 
     impl World {
         /// What `--create-model-routing` does on this fake machine.
-        fn create_model_routing(&self, agent: RoutingAgent) -> Result<String, String> {
+        fn create_model_routing(&self, agents: &[RoutingAgent]) -> Result<String, String> {
             let machine = Machine {
                 home: self.home.path().to_path_buf(),
                 path: self.bin.path().into(),
                 var: &|name| self.vars.get(name).cloned(),
                 version: &|_| None,
             };
-            create_model_routing(agent, &machine)
+            create_model_routing(agents, &machine)
         }
     }
 
     #[test]
     fn doctor_creates_a_starter_policy_for_the_agent_and_then_checks_it() {
         let world = World::ready().claude_ready().with_config_folder();
-        let message = world.create_model_routing(RoutingAgent::Claude).unwrap();
+        let message = world.create_model_routing(&[RoutingAgent::Claude]).unwrap();
         // Built part by part, so the separators are the ones the message shows on every system.
         let path = world
             .home
@@ -1193,16 +1208,38 @@ mod tests {
             render(&report)
         );
         // Created for Codex, the policy names Codex.
+        let read = |world: &World| {
+            fs::read_to_string(
+                world
+                    .home
+                    .path()
+                    .join("config/tds-factory/model-routing.json"),
+            )
+            .unwrap()
+        };
+        let text = read(&world);
+        assert!(
+            text.contains("\"claude\"") && !text.contains("\"codex\""),
+            "{text}"
+        );
+        // For Codex only, and for both agents in one file.
         let codex = World::ready().with_config_folder();
-        codex.create_model_routing(RoutingAgent::Codex).unwrap();
-        let text = fs::read_to_string(
-            codex
-                .home
-                .path()
-                .join("config/tds-factory/model-routing.json"),
-        )
-        .unwrap();
-        assert!(text.contains("\"agent\": \"codex\""), "{text}");
+        codex.create_model_routing(&[RoutingAgent::Codex]).unwrap();
+        let text = read(&codex);
+        assert!(
+            text.contains("\"codex\"") && !text.contains("\"claude\""),
+            "{text}"
+        );
+        let both = World::ready().with_config_folder();
+        let message = both
+            .create_model_routing(&[RoutingAgent::Claude, RoutingAgent::Codex])
+            .unwrap();
+        assert!(message.contains("claude and codex"), "{message}");
+        let text = read(&both);
+        assert!(
+            text.contains("\"claude\"") && text.contains("\"codex\""),
+            "{text}"
+        );
     }
 
     #[cfg(unix)]
@@ -1216,7 +1253,7 @@ mod tests {
             folder.join("model-routing.json"),
         )
         .unwrap();
-        let message = world.create_model_routing(RoutingAgent::Claude).unwrap();
+        let message = world.create_model_routing(&[RoutingAgent::Claude]).unwrap();
         assert!(
             message.contains("points nowhere") && message.contains("unchanged"),
             "{message}"
@@ -1231,7 +1268,7 @@ mod tests {
             .home
             .path()
             .join("config/tds-factory/model-routing.json");
-        let message = world.create_model_routing(RoutingAgent::Claude).unwrap();
+        let message = world.create_model_routing(&[RoutingAgent::Claude]).unwrap();
         assert!(
             message.contains("already exists") && message.contains("unchanged"),
             "{message}"
@@ -1244,19 +1281,173 @@ mod tests {
         // No configuration folder can be worked out.
         let world = World::ready();
         let error = world
-            .create_model_routing(RoutingAgent::Claude)
+            .create_model_routing(&[RoutingAgent::Claude])
             .unwrap_err();
         assert!(error.contains("configuration folder"), "{error}");
         // The folder is in the way: a file where the folder should be.
         let blocked = World::ready().with_config_folder();
         fs::write(blocked.home.path().join("config"), "a file").unwrap();
         let error = blocked
-            .create_model_routing(RoutingAgent::Claude)
+            .create_model_routing(&[RoutingAgent::Claude])
             .unwrap_err();
         assert!(
             error.contains("cannot create") && error.contains("create the file yourself"),
             "{error}"
         );
+    }
+
+    // --- one policy file for several agents ---------------------------------------------------------
+
+    /// Claude and Codex in one file, with different models.
+    const BOTH_POLICY: &str = r#"{"agents":{
+        "claude":{"roles":{"strong":{"model":"opus","effort":"high"}},"tasks":{"check":"strong"}},
+        "codex":{"roles":{"strong":{"model":"gpt-6-astra","effort":"high"}},"tasks":{"check":"strong"}}}}"#;
+
+    fn tagged<'a>(report: &'a Report, agent: &str) -> Vec<&'a Check> {
+        report
+            .model_routing
+            .iter()
+            .filter(|c| c.agent == Some(agent))
+            .collect()
+    }
+
+    #[test]
+    fn checking_all_agents_reports_each_configured_entry_tagged_with_its_agent() {
+        let world = World::ready()
+            .claude_ready()
+            .with_agent("codex")
+            .with_version("codex", "codex-cli 0.166.0")
+            .with_policy(BOTH_POLICY);
+        let report = world.report(None);
+        assert!(report.ok, "{}", render(&report));
+        assert_eq!(report.model_routing[0].id, "policy");
+        assert!(report.model_routing[0]
+            .message
+            .contains("configures claude, codex"));
+        assert_eq!(report.model_routing[0].agent, None);
+        let claude: Vec<_> = tagged(&report, "claude").iter().map(|c| c.id).collect();
+        assert_eq!(claude, ["host", "model", "effort", "overrides"]);
+        // Codex has its own checks, which skip what the factory cannot judge.
+        let codex = tagged(&report, "codex");
+        assert_eq!(codex.len(), 3);
+        assert!(codex
+            .iter()
+            .any(|c| c.id == "model" && c.status == Status::Skipped));
+        let text = render(&report);
+        assert!(text.contains("pass     host [claude]:"), "{text}");
+        assert!(text.contains("skipped  model [codex]:"), "{text}");
+        let json = serde_json::to_value(&report).unwrap();
+        assert!(json["model_routing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["agent"] == "codex"));
+    }
+
+    #[test]
+    fn checking_one_agent_checks_only_its_entry() {
+        let world = World::ready()
+            .claude_ready()
+            .with_agent("codex")
+            .with_policy(BOTH_POLICY);
+        let claude = world.report(Some("claude"));
+        assert!(!tagged(&claude, "claude").is_empty() && tagged(&claude, "codex").is_empty());
+        let codex = world.report(Some("codex"));
+        assert!(!tagged(&codex, "codex").is_empty() && tagged(&codex, "claude").is_empty());
+        // Copilot has nothing to route, and says so once.
+        let copilot = world.report(Some("copilot"));
+        assert!(tagged(&copilot, "claude").is_empty() && tagged(&copilot, "codex").is_empty());
+        assert!(copilot
+            .model_routing
+            .iter()
+            .any(|c| c.message.contains("Copilot")));
+    }
+
+    #[test]
+    fn an_agent_without_an_entry_is_skipped_when_asked_for_and_left_out_otherwise() {
+        let only_claude = r#"{"agents":{"claude":{"roles":{"strong":{"model":"opus","effort":"high"}},"tasks":{"check":"strong"}}}}"#;
+        let world = World::ready()
+            .claude_ready()
+            .with_agent("codex")
+            .with_policy(only_claude);
+        let codex = world.report(Some("codex"));
+        let skipped = tagged(&codex, "codex");
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].status, Status::Skipped);
+        assert!(
+            skipped[0].message.contains("no entry for codex"),
+            "{}",
+            skipped[0].message
+        );
+        assert!(codex.ok);
+        assert!(tagged(&world.report(None), "codex").is_empty());
+    }
+
+    #[test]
+    fn a_switched_off_entry_is_skipped_and_an_invalid_one_fails_the_report() {
+        let off = BOTH_POLICY.replace(
+            "\"codex\":{\"roles\"",
+            "\"codex\":{\"enabled\":false,\"roles\"",
+        );
+        let world = World::ready()
+            .claude_ready()
+            .with_agent("codex")
+            .with_policy(&off);
+        for ask in [Some("codex"), None] {
+            let report = world.report(ask);
+            let codex = tagged(&report, "codex");
+            assert_eq!(codex.len(), 1, "{ask:?}");
+            assert_eq!(codex[0].status, Status::Skipped);
+            assert!(codex[0].message.contains("switched off"));
+            assert!(report.ok);
+        }
+        let invalid = BOTH_POLICY.replace("\"check\":\"strong\"}}}}", "\"check\":\"coding\"}}}}");
+        let world = World::ready()
+            .claude_ready()
+            .with_agent("codex")
+            .with_policy(&invalid);
+        for ask in [Some("claude"), Some("codex"), None] {
+            let report = world.report(ask);
+            assert!(!report.ok, "{ask:?}");
+            let check = routing_check(&report, "policy");
+            assert_eq!(check.status, Status::Fail);
+            assert!(check.message.contains("agents.codex"), "{}", check.message);
+        }
+    }
+
+    #[test]
+    fn a_single_agent_policy_is_checked_as_before_and_skipped_for_another_agent() {
+        let world = World::ready()
+            .claude_ready()
+            .with_agent("codex")
+            .with_policy(CLAUDE_POLICY);
+        // Unchanged: the checks carry no agent tag, whichever way doctor is asked.
+        for ask in [None, Some("claude")] {
+            let report = world.report(ask);
+            let ids: Vec<_> = report.model_routing.iter().map(|c| c.id).collect();
+            assert_eq!(
+                ids,
+                ["policy", "host", "model", "effort", "overrides"],
+                "{ask:?}"
+            );
+            assert!(report.model_routing.iter().all(|c| c.agent.is_none()));
+        }
+        let json = serde_json::to_value(world.report(None)).unwrap();
+        assert!(json["model_routing"][0].get("agent").is_none());
+        for other in ["codex", "copilot"] {
+            let report = world.report(Some(other));
+            assert_eq!(report.model_routing.len(), 1, "{other}");
+            // Copilot CLI is never routed, whatever the file says; another agent is skipped.
+            let (status, text) = if other == "copilot" {
+                (Status::Pass, "not supported on Copilot")
+            } else {
+                (Status::Skipped, "is for claude")
+            };
+            assert_eq!(report.model_routing[0].status, status, "{other}");
+            assert!(report.model_routing[0].message.contains(text), "{other}");
+            // Only a missing Copilot command, never the policy, can make that report not ready.
+            assert!(report.model_routing.iter().all(|c| !c.blocks()), "{other}");
+        }
     }
 
     #[test]
