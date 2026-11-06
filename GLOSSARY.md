@@ -31,3 +31,5 @@
 **Request category**: The kind of work a model request did, taken from the commands in its tool calls: workspace, commit, PR creation and push, PR synchronization, CI watch, verification, continuation check, reading/editing/analysis, or text only when it called no tool. Each request has exactly one category. Standalone reporting is a request whose only command updates the run; a run update chained onto another command counts in that command's category and is also counted as chained reporting, which is a count and not a category.
 
 **CI outcome**: The single result of watching a pull request's checks for its current head commit: `passed`, `failed`, `cancelled`, `timeout`, `head-changed`, `no-ci` or `not-open`. Whether the branch is behind its base is reported next to the outcome and is not part of it.
+
+**Workspace**: A run's own git worktree and feature branch, created from the pull request base branch, which the run records as its worktree, branch and base commit. `factory run begin` creates it.
