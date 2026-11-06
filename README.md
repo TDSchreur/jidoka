@@ -202,7 +202,7 @@ The dashboard reads the token counts your agents write to their own session logs
 
 ### Model routing
 
-Model routing lets you say which model and effort each kind of task should use, independently of the workflow mode. For now the factory only records your choices on the run. No workflow reads them yet, and no model is switched. Without a policy file, runs behave as before.
+Model routing lets you say which model and effort each kind of task should use, independently of the workflow mode. The factory records your choices on the run, and the `check` task is applied to the review agents of `factory-full` and `factory-balanced`. Build and Finish are not routed yet and run on the session's model. Without a policy file, runs behave as before.
 
 Write one policy file, `model-routing.json`, in the factory's config folder: `$XDG_CONFIG_HOME/tds-factory/` (or `~/.config/tds-factory/` when unset) on Linux, and `%APPDATA%\tds-factory\` on Windows. For example:
 
