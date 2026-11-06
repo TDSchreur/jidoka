@@ -1171,10 +1171,13 @@ mod tests {
     fn doctor_creates_a_starter_policy_for_the_agent_and_then_checks_it() {
         let world = World::ready().claude_ready().with_config_folder();
         let message = world.create_model_routing(RoutingAgent::Claude).unwrap();
+        // Built part by part, so the separators are the ones the message shows on every system.
         let path = world
             .home
             .path()
-            .join("config/tds-factory/model-routing.json");
+            .join("config")
+            .join("tds-factory")
+            .join("model-routing.json");
         assert!(path.is_file(), "{message}");
         assert!(message.contains(&path.display().to_string()), "{message}");
         assert!(
