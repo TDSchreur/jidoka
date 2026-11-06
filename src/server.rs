@@ -219,7 +219,6 @@ fn update_run(
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err((HttpStatus::BadRequest, "Invalid run id".into()));
     }
-    let before = store.get(id).ok().flatten();
     let updated = store
         .update(id, update.into_inner())
         .map_err(|error| match error.kind() {
@@ -234,8 +233,10 @@ fn update_run(
             }
         })?
         .ok_or((HttpStatus::NotFound, "Not found".into()))?;
-    collector.after_update(store, before.as_ref(), &updated);
-    Ok(Json(updated))
+    if updated.collect_usage {
+        collector.after_update(store, &updated.run.id);
+    }
+    Ok(Json(updated.run))
 }
 
 #[rocket::get("/api/runs/<id>")]
@@ -323,21 +324,12 @@ impl Collector {
         }
     }
 
-    /// Starts collecting for `after` when the update moved it on: a stage, rework or ticket change, a new
-    /// session, or the run finishing. The update has already succeeded; collecting never delays or fails it.
-    fn after_update(&self, store: &RunStore, before: Option<&Run>, after: &Run) {
+    /// Starts background collection after a successful update requires it.
+    fn after_update(&self, store: &RunStore, id: &str) {
         let Some(settings) = self.settings.clone() else {
             return;
         };
-        let moved = before.is_none_or(|b| {
-            b.timeline.len() != after.timeline.len()
-                || b.sessions != after.sessions
-                || (b.finished_at.is_none() && after.finished_at.is_some())
-        });
-        if !moved {
-            return;
-        }
-        let (store, id) = (store.clone(), after.id.clone());
+        let (store, id) = (store.clone(), id.to_owned());
         let chains = self.chains.clone();
         let generation = chains.lock().map_or(0, |mut chains| {
             let latest = chains.entry(id.clone()).or_insert(0);
@@ -1108,7 +1100,25 @@ mod tests {
         assert!(fetch(&api, &run.id).await.1.unwrap().usage.is_none());
 
         // Moving to Build collects, without delaying the answer, and records what it found.
-        let response = report(&api, &run.id, r#"{"stage":"build","status":"running"}"#).await;
+        let store = api.rocket().state::<RunStore>().unwrap().clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = store.collecting.lock().unwrap();
+            ready_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+        });
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let response = rocket::tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            report(&api, &run.id, r#"{"stage":"build","status":"running"}"#),
+        )
+        .await;
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        let response = response.expect("update should respond while collection is blocked");
         assert_eq!(response.status(), HttpStatus::Ok);
         collector.wait_idle().await;
         let usage = fetch(&api, &run.id)
