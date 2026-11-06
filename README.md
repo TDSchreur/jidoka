@@ -174,7 +174,7 @@ flowchart TB
 
 #### Token usage
 
-The dashboard reads the token counts your agents write to their own session logs and shows them per run, stage, model and ticket. It counts tokens only, never money, and it keeps only counts and identifiers: no conversation text, prompts, tool output or credentials are stored.
+The dashboard reads the token counts your agents write to their own session logs and shows them per run, stage, model and ticket. It counts tokens only, never money, and it keeps only counts, identifiers and the reasoning effort of each call: no conversation text, prompts, tool output or credentials are stored.
 
 - `factory run stats <id>` prints the breakdown (stage, model and ticket, with the rework and work with no ticket in their own rows), the totals per model, and what the figures do not cover. `factory run stats --all` adds the totals per model over all runs and names the runs it leaves out.
 - The dashboard shows the fresh tokens on a card and the breakdown in the run's detail.
@@ -233,11 +233,12 @@ Write one policy file, `model-routing.json`, in the factory's config folder: `$X
   - On Claude Code the agents are fresh subagents started with the Agent tool's `model` and `effort`, which accepts only the aliases `opus`, `sonnet`, `haiku` and `fable`. On Codex they use its subagent model and effort settings.
   - A security review that the coordinator runs itself stays on the coordinator's model. The stage summary says what was applied or why routing was not.
   - Without a selection, for a run with no role for `check`, or on Copilot CLI, Check works as before. Build still runs in the coordinator without subagents, and `factory-fast` has no Check to route.
-- `factory run inspect <id>` shows each task's model and effort under "Model routing", marks overridden tasks, and `--json` carries the selection in `model_routing`. Under each routed task it also lists the models the run's [token usage](#token-usage) shows for the stage of the same name, with the reasoning effort the logs recorded and `(+subagents)` where subagents used one:
+- `factory run inspect <id>` shows each task's model and effort under "Model routing", marks overridden tasks, and `--json` carries the selection in `model_routing`. Under each routed task it also lists the models the run's [token usage](#token-usage) shows for the stage of the same name, with the reasoning effort the logs recorded and `+subagents` where a subagent used that model:
   - An alias such as `sonnet` and an observed id such as `claude-sonnet-5-5` differ in form, so both are shown. The request is met when it is a whole part of an observed id used by any session in that stage, subagents included, so Opus review agents satisfy an `opus` request even if the coordinator ran Sonnet.
   - When usage is tracked and the requested model never appears, the line says `MISMATCH`. When usage is only partial it says the model was not observed, because it may be missing, and every observed line notes partial coverage.
   - A stage with no usage rows, or a run whose usage is not tracked, says so.
   - When an effort was requested, it is compared with the efforts recorded for the models that match the request. A different effort is a `MISMATCH` (or "not observed" when usage is partial), and a log that records none says `effort not recorded`. Claude Code and Codex record the effort of each call; Copilot's usage records do not.
+  - The request counts as met when any one of the recorded efforts is the requested one. When the coordinator and the review agents run the same model at different efforts, their efforts land in the same row, so the agents' effort cannot be told apart from the coordinator's. A row keeps at most eight distinct efforts.
   - Runs recorded before this feature, and runs without a selection, show no Model routing section.
 
 Copilot CLI is not supported. It chooses a subagent's model from its own settings per agent name, and nothing documents a way for the main agent to pick a model when it starts a subagent. Supporting it would need extra agent files and behavior that Copilot does not promise, so every stage keeps the session's model. A policy with `"agent": "copilot"` records no selection and prints a notice.

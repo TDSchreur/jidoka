@@ -389,7 +389,9 @@ fn claude_efforts_are_kept_per_model_and_a_subagent_keeps_its_own() {
             .find(|r| r.model == model)
             .unwrap()
             .efforts
-            .clone()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
     };
     assert_eq!(efforts("claude-sonnet-test"), ["high", "medium"]);
     assert_eq!(efforts("claude-opus-test"), ["xhigh"]);
@@ -425,10 +427,95 @@ fn codex_efforts_follow_the_turn_and_a_subagent_rollout_has_its_own() {
             .find(|r| r.model == model)
             .unwrap()
             .efforts
-            .clone()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
     };
     assert_eq!(efforts("gpt-main"), ["medium"]);
     assert_eq!(efforts("gpt-sub"), ["high"]);
+}
+
+fn codex_turn_context(turn: &str, model: &str, effort: Option<&str>) -> String {
+    let mut payload = json!({"model": model, "turn_id": turn});
+    if let Some(effort) = effort {
+        payload["effort"] = json!(effort);
+    }
+    json!({"type": "turn_context", "timestamp": iso(0), "payload": payload}).to_string()
+}
+
+fn codex_turn_usage(at: u64, turn: &str, response: &str) -> String {
+    json!({"type": "token_usage_record", "timestamp": iso(at), "payload": {"response_id": response, "turn_id": turn,
+        "usage": {"input_tokens": 10, "output_tokens": 5}}})
+    .to_string()
+}
+
+#[test]
+fn codex_effort_follows_each_turn_and_an_unknown_turn_takes_the_last_one() {
+    let world = World::new();
+    let target = full_run(RUN_A);
+    world.write(
+        "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-abc.jsonl",
+        &[
+            codex_meta_line("root-1", None),
+            mention(RUN_A),
+            codex_turn_context("turn-1", "gpt-a", Some("medium")),
+            codex_turn_context("turn-2", "gpt-b", Some("high")),
+            // Each usage record belongs to its own turn, whatever came last.
+            codex_turn_usage(10, "turn-1", "resp-1"),
+            // This turn has no context of its own: the last one (gpt-b, high) applies.
+            codex_turn_usage(20, "turn-9", "resp-2"),
+            // A later turn that records no effort resets what is carried over.
+            codex_turn_context("turn-3", "gpt-c", None),
+            codex_turn_usage(30, "turn-3", "resp-3"),
+            codex_turn_usage(40, "turn-8", "resp-4"),
+        ],
+    );
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    let rows = rows_of(&usage, Stage::Define);
+    let efforts = |model: &str| {
+        rows.iter()
+            .find(|r| r.model == model)
+            .unwrap()
+            .efforts
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(efforts("gpt-a"), ["medium"]);
+    assert_eq!(efforts("gpt-b"), ["high"]);
+    assert!(
+        efforts("gpt-c").is_empty(),
+        "no effort is carried over from an older turn"
+    );
+}
+
+#[test]
+fn a_log_cannot_make_a_row_hold_more_than_a_handful_of_efforts() {
+    let world = World::new();
+    let target = full_run(RUN_A);
+    let mut lines = vec![mention(RUN_A)];
+    for n in 0..20 {
+        lines.push(with_effort(
+            claude_line(
+                "S1",
+                10 + n,
+                &format!("m{n}"),
+                &format!("r{n}"),
+                "claude-sonnet-test",
+                (1, 0, 0, 1),
+                0,
+                false,
+            ),
+            &format!("e{n:02}"),
+        ));
+    }
+    world.write("claude/projects/-work/S1.jsonl", &lines);
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    let row = rows_of(&usage, Stage::Define)[0];
+    assert_eq!(row.efforts.len(), MAX_EFFORTS_PER_ROW);
+    assert!(row.efforts.contains("e00") && !row.efforts.contains("e19"));
+    // The tokens are still all counted.
+    assert_eq!(row.tokens.output, Some(20));
 }
 
 #[test]
@@ -455,7 +542,8 @@ fn copilot_rows_have_no_effort_and_old_usage_records_load_without_the_field() {
     let new: UsageRow =
         serde_json::from_value(json!({"stage": "build", "model": "m", "efforts": ["high"]}))
             .unwrap();
-    assert_eq!(new.efforts, ["high"]);
+    assert_eq!(new.efforts.len(), 1);
+    assert!(new.efforts.contains("high"));
 }
 
 #[test]

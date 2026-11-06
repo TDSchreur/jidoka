@@ -11,7 +11,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     time::Instant,
 };
 
@@ -109,9 +109,12 @@ pub(crate) struct UsageRow {
     #[serde(default, skip_serializing_if = "Tokens::is_empty")]
     pub(crate) subagents: Tokens,
     /// The reasoning efforts the agent's log recorded for these calls, sorted. Empty when it recorded none.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) efforts: BTreeSet<String>,
 }
+
+/// Most distinct efforts one row keeps. Real logs show a handful; a made-up log must not grow the record.
+pub(crate) const MAX_EFFORTS_PER_ROW: usize = 8;
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -371,11 +374,11 @@ pub(crate) fn attribute(
                     rework,
                     tokens: Tokens::default(),
                     subagents: Tokens::default(),
-                    efforts: Vec::new(),
+                    efforts: BTreeSet::new(),
                 });
             if let Some(effort) = &entry.effort {
-                if let Err(at) = row.efforts.binary_search(effort) {
-                    row.efforts.insert(at, effort.clone());
+                if row.efforts.len() < MAX_EFFORTS_PER_ROW || row.efforts.contains(effort) {
+                    row.efforts.insert(effort.clone());
                 }
             }
             row.tokens.add(&entry.tokens);

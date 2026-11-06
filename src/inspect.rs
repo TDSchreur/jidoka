@@ -156,15 +156,18 @@ fn observed_line(requested: &RoleChoice, stage: Stage, usage: Option<&Usage>) ->
         .map(|s| {
             let mut notes = Vec::new();
             if !s.efforts.is_empty() {
-                let efforts: Vec<_> = s.efforts.iter().map(|e| shown(e)).collect();
-                notes.push(format!("effort {}", efforts.join("/")));
+                notes.push(format!(
+                    "effort {}",
+                    join_efforts(s.efforts.iter().copied())
+                ));
             }
             if s.subagents {
                 notes.push("+subagents".to_string());
             }
-            match notes.is_empty() {
-                true => shown(s.model),
-                false => format!("{} ({})", shown(s.model), notes.join(", ")),
+            if notes.is_empty() {
+                shown(s.model)
+            } else {
+                format!("{} ({})", shown(s.model), notes.join(", "))
             }
         })
         .collect();
@@ -198,14 +201,7 @@ fn verdict(requested: &RoleChoice, seen: &[Seen], partial: bool) -> String {
         if efforts.is_empty() {
             notes.push("effort not recorded");
         } else if !efforts.iter().any(|e| e.eq_ignore_ascii_case(want)) {
-            let (want, got) = (
-                shown(want),
-                efforts
-                    .iter()
-                    .map(|e| shown(e))
-                    .collect::<Vec<_>>()
-                    .join("/"),
-            );
+            let (want, got) = (shown(want), join_efforts(efforts.iter().copied()));
             return if partial {
                 format!("effort {want} not observed, only {got} (usage is partial, so it may be missing)")
             } else {
@@ -216,10 +212,16 @@ fn verdict(requested: &RoleChoice, seen: &[Seen], partial: bool) -> String {
     if partial {
         notes.push("usage is partial");
     }
-    match notes.is_empty() {
-        true => "matches the request".to_string(),
-        false => format!("matches the request ({})", notes.join("; ")),
+    if notes.is_empty() {
+        "matches the request".to_string()
+    } else {
+        format!("matches the request ({})", notes.join("; "))
     }
+}
+
+/// Efforts as one piece of text, such as `high/medium`.
+fn join_efforts<'a>(efforts: impl IntoIterator<Item = &'a str>) -> String {
+    efforts.into_iter().map(shown).collect::<Vec<_>>().join("/")
 }
 
 pub(crate) fn render(run: &Run) -> String {

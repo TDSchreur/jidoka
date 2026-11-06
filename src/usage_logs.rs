@@ -1,5 +1,5 @@
-//! Readers for the session logs of Claude Code, Codex and Copilot. Each keeps only the model, the reasoning
-//! effort (Claude Code and Codex record it), the token counts and the timestamp of a response, plus which run ids and session ids a log names. No conversation
+//! Readers for the session logs of Claude Code, Codex and Copilot. Each keeps only the model, the
+//! reasoning effort (Claude Code and Codex record it), the token counts and the timestamp of a response, plus which run ids and session ids a log names. No conversation
 //! text, prompt, tool output or credential leaves this module.
 //!
 //! Formats (see the README for what is validated): Claude Code transcripts and their subagent transcripts,
@@ -101,11 +101,15 @@ fn model_name(value: &Value) -> Option<String> {
     .then(|| name.to_string())
 }
 
-/// A reasoning effort that is safe to store and print: a log is written by another program.
+/// Longest effort text kept. The known efforts (`low`, `medium`, `high`, `xhigh`, `max`, `ultra`) are short.
+const MAX_EFFORT_LEN: usize = 16;
+
+/// A reasoning effort that is safe to store and print: a log is written by another program. Claude Code
+/// writes it as `effort` (and `perTurnEffort`, the same value) on each response.
 fn effort_name(value: &Value) -> Option<String> {
     let name = value.as_str()?;
     (!name.is_empty()
-        && name.len() <= 16
+        && name.len() <= MAX_EFFORT_LEN
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
@@ -394,12 +398,17 @@ fn codex_meta(text: &str) -> Option<(String, String, bool)> {
 
 /// Codex counts cached input inside `input_tokens`; the cached part is moved to cache read, and cache
 /// writes are taken out of input too. Reasoning tokens are part of output.
+/// What a Codex `turn_context` line says about the model and effort of a turn.
+#[derive(Clone)]
+struct TurnSettings {
+    model: String,
+    effort: Option<String>,
+}
+
 fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
     let mut parsed = Parsed::default();
-    let mut model_by_turn: BTreeMap<String, String> = BTreeMap::new();
-    let mut last_model: Option<String> = None;
-    let mut effort_by_turn: BTreeMap<String, String> = BTreeMap::new();
-    let mut last_effort: Option<String> = None;
+    let mut by_turn: BTreeMap<String, TurnSettings> = BTreeMap::new();
+    let mut last: Option<TurnSettings> = None;
     for (number, line) in text.lines().enumerate() {
         let is_context = line.contains("\"turn_context\"");
         if !is_context && !line.contains("\"token_usage_record\"") {
@@ -412,15 +421,15 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
         let payload = &data["payload"];
         if is_context && data["type"] == "turn_context" {
             if let Some(model) = model_name(&payload["model"]) {
-                if let Some(turn) = payload["turn_id"].as_str() {
-                    model_by_turn.insert(turn.to_string(), model.clone());
-                }
-                last_model = Some(model);
                 // The effort belongs to the same turn as the model.
-                last_effort = effort_name(&payload["effort"]);
-                if let (Some(turn), Some(effort)) = (payload["turn_id"].as_str(), &last_effort) {
-                    effort_by_turn.insert(turn.to_string(), effort.clone());
+                let settings = TurnSettings {
+                    model,
+                    effort: effort_name(&payload["effort"]),
+                };
+                if let Some(turn) = payload["turn_id"].as_str() {
+                    by_turn.insert(turn.to_string(), settings.clone());
                 }
+                last = Some(settings);
             }
             continue;
         }
@@ -438,20 +447,14 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
             count(usage.get("cache_write_input_tokens")),
             count(usage.get("output_tokens")),
         );
-        let model = payload["turn_id"]
+        // The turn's own settings, or the latest ones when the record names no known turn.
+        let settings = payload["turn_id"]
             .as_str()
-            .and_then(|t| model_by_turn.get(t))
-            .or(last_model.as_ref());
-        let Some(model) = model.filter(|_| input.is_some() || output.is_some()) else {
+            .and_then(|t| by_turn.get(t))
+            .or(last.as_ref());
+        let Some(settings) = settings.filter(|_| input.is_some() || output.is_some()) else {
             parsed.unusable += 1;
             continue;
-        };
-        let known_turn = payload["turn_id"]
-            .as_str()
-            .filter(|turn| model_by_turn.contains_key(*turn));
-        let effort = match known_turn {
-            Some(turn) => effort_by_turn.get(turn).cloned(),
-            None => last_effort.clone(),
         };
         let tokens = Tokens {
             input: input.map(|n| {
@@ -470,10 +473,10 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
             Entry {
                 session: session.to_string(),
                 ts,
-                model: model.clone(),
+                model: settings.model.clone(),
                 tokens,
                 subagent,
-                effort,
+                effort: settings.effort.clone(),
             },
         );
     }
