@@ -1,5 +1,5 @@
 import { createContext, h, render } from 'preact';
-import { useContext, useEffect, useRef, useState } from 'preact/hooks';
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 import { Help } from '/assets/help.js';
 
@@ -645,7 +645,7 @@ function storedNotifications() {
  * load are only remembered; a notification goes out only for a Run that starts waiting after that.
  * `state` is 'unsupported', 'denied', 'off' or 'on'.
  */
-function useNotifications(runs, names) {
+function useNotifications(runs, names, hiddenProjects) {
   const [wanted, setWanted] = useState(storedNotifications);
   const [perm, setPerm] = useState(permission);
   const state = perm === 'unsupported' || perm === 'denied' ? perm : wanted && perm === 'granted' ? 'on' : 'off';
@@ -656,6 +656,7 @@ function useNotifications(runs, names) {
     if (known.current !== null && state === 'on') {
       for (const run of waitingNow) {
         if (known.current.has(runKey(run))) continue;
+        if (hiddenProjects.has(projectOf(run))) continue;
         try {
           const note = new Notification(`Needs you in ${names.get(projectOf(run)) ?? projectOf(run)}: ${run.title}`, { tag: `needs-you-${runKey(run)}` });
           note.onclick = () => window.focus();
@@ -768,22 +769,34 @@ function App() {
     }
   };
   const [hiddenProjects, setHiddenProjects] = useState(storedHiddenProjects);
+  const hiddenFocus = useRef(null);
+  useLayoutEffect(() => {
+    if (!hiddenFocus.current) return;
+    const { project, hidden } = hiddenFocus.current;
+    hiddenFocus.current = null;
+    requestAnimationFrame(() => {
+      const target = hidden
+        ? document.querySelector('.hidden-projects summary')
+        : document.querySelector(`[data-project-toggle="${CSS.escape(project)}"]`) ?? document.querySelector('.hidden-projects summary');
+      (target ?? document.querySelector('.help-open'))?.focus();
+    });
+  }, [hiddenProjects]);
   const changeHidden = (project, hidden) => {
     const next = new Set(hiddenProjects);
     if (hidden) next.add(project);
     else next.delete(project);
+    hiddenFocus.current = { project, hidden };
     setHiddenProjects(next);
     try {
       localStorage.setItem('hidden-projects', JSON.stringify([...next]));
     } catch {
       /* the choice still applies until the page is reloaded */
     }
-    setTimeout(() => document.querySelector('main')?.focus());
   };
   const visibleRuns = runs?.filter((run) => !hiddenProjects.has(projectOf(run))) ?? null;
   const waiting = visibleRuns ? visibleRuns.filter(needsYou).length : 0;
   const names = projectNames(runs ?? []);
-  const notifications = useNotifications(visibleRuns, names);
+  const notifications = useNotifications(runs, names, hiddenProjects);
   useEffect(() => {
     document.title = waiting ? `(${waiting}) ${TITLE}` : TITLE;
   }, [waiting]);
@@ -908,6 +921,7 @@ function App() {
             <button
               type="button"
               class="project-toggle"
+              data-project-toggle=${project}
               aria-expanded=${String(!closed)}
               aria-controls=${groupsId}
               onClick=${() => toggleProject(project)}
