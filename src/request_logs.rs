@@ -394,12 +394,31 @@ fn truncate(command: &str) -> &str {
 }
 
 /// The run ids in `ids` that a `factory run update <id>` in `command` names. Only a command that runs
-/// `factory` counts: `grep "factory run update 1" notes.md`, an `echo` or the text of a here-document do not.
-/// An id is digits only.
+/// `factory` counts: `grep "factory run update 1 " notes.md`, an `echo` or the text of a here-document do not.
+/// An id is digits only. The id may be a variable that an earlier command of the same line sets to a literal
+/// (`R=123 && factory run update $R`); a value that comes from a file or another command is not known here.
 fn updated_runs(command: &str, ids: &HashSet<&str>) -> HashSet<String> {
     let mut found = HashSet::new();
-    for segment in segments(command) {
-        let words = command_words(&segment);
+    let mut variables: HashMap<&str, &str> = HashMap::new();
+    let all = segments(command);
+    for segment in &all {
+        let words = split_words(&segment.text);
+        let assigned = words.iter().take_while(|word| is_assignment(word)).count();
+        if assigned == words.len() {
+            // Only assignments: the variables hold these values for the commands after them.
+            for word in &words {
+                if let Some((name, value)) = word.split_once('=') {
+                    let value = value.trim_matches(['"', '\'']);
+                    if value.contains(SUBSTITUTION) {
+                        variables.remove(name);
+                    } else {
+                        variables.insert(name, value);
+                    }
+                }
+            }
+            continue;
+        }
+        let words = command_words(&segment.text);
         let program = words
             .first()
             .map(|word| word.rsplit('/').next().unwrap_or(word));
@@ -407,6 +426,13 @@ fn updated_runs(command: &str, ids: &HashSet<&str>) -> HashSet<String> {
             (program, words.get(1), words.get(2), words.get(3))
         {
             let id = id.trim_end_matches([')', '}', ';']);
+            let id = match id.strip_prefix('$') {
+                Some(name) => variables
+                    .get(name.trim_matches(['{', '}']))
+                    .copied()
+                    .unwrap_or(""),
+                None => id,
+            };
             if ids.contains(id) {
                 found.insert(id.to_string());
             }
@@ -447,12 +473,15 @@ pub(crate) fn classify(commands: &[String], other_tool: bool, any_tool: bool) ->
     let (mut reporting, mut other) = (false, other_tool);
     for command in commands {
         for segment in segments(command) {
-            match hit(&segment) {
+            match hit(&segment.text) {
                 Hit::Category(category) => {
                     categories.insert(category);
                 }
                 Hit::Reporting => reporting = true,
                 Hit::Neutral => {}
+                // Plumbing, such as `cat file` in a substitution or `tail -1` after a pipe, is not work
+                // of its own.
+                Hit::Other if segment.plumbing => {}
                 Hit::Other => other = true,
             }
         }
@@ -471,19 +500,92 @@ pub(crate) fn classify(commands: &[String], other_tool: bool, any_tool: bool) ->
     }
 }
 
+/// One command of a shell line.
+struct Segment {
+    text: String,
+    /// It only supports another command: it stands inside a command substitution, or after a `|` where it
+    /// filters the output of the command before it. It still runs, but it is not the line's own work.
+    plumbing: bool,
+}
+
+/// What a command substitution is replaced by in the text of its command, so that it stays one word.
+const SUBSTITUTION: char = '\u{1}';
+
+/// How deep command substitutions are followed. Deeper text is dropped, which bounds the work.
+const MAX_SUBSTITUTION_DEPTH: usize = 4;
+
+/// Whether `chars[i]` starts a command substitution: `$(` (but not the arithmetic `$((`) or a backtick.
+fn substitution_start(chars: &[char], i: usize) -> bool {
+    match chars[i] {
+        '`' => true,
+        '$' => chars.get(i + 1) == Some(&'(') && chars.get(i + 2) != Some(&'('),
+        _ => false,
+    }
+}
+
+/// The text inside the substitution that starts at `chars[i]`, and the index of its last character. An
+/// unterminated substitution runs to the end.
+fn substitution_at(chars: &[char], i: usize) -> (String, usize) {
+    if chars[i] == '`' {
+        let mut j = i + 1;
+        while j < chars.len() && chars[j] != '`' {
+            j += if chars[j] == '\\' { 2 } else { 1 };
+        }
+        let end = j.min(chars.len());
+        return (chars[i + 1..end].iter().collect(), j.min(chars.len() - 1));
+    }
+    let (mut depth, mut quote, mut j) = (1usize, None::<char>, i + 2);
+    while j < chars.len() {
+        let c = chars[j];
+        match quote {
+            Some(open) => {
+                if c == '\\' && open == '"' {
+                    j += 1;
+                } else if c == open {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '\'' | '"' => quote = Some(c),
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return (chars[i + 2..j].iter().collect(), j);
+                    }
+                }
+                _ => {}
+            },
+        }
+        j += 1;
+    }
+    (chars[i + 2..].iter().collect(), chars.len() - 1)
+}
+
 /// The commands of a shell line, split at `&&`, `||`, `;`, `|` and line ends. Text inside quotes stays in
 /// its command; comments, here-strings and the lines of a here-document are text, not commands. A
-/// here-document delimiter may be bare, quoted or backslash-escaped.
-fn segments(command: &str) -> Vec<String> {
+/// here-document delimiter may be bare, quoted or backslash-escaped. A command substitution is one word of
+/// its command, and the commands inside it follow as nested segments.
+fn segments(command: &str) -> Vec<Segment> {
+    segments_at(command, 0)
+}
+
+fn segments_at(command: &str, depth: usize) -> Vec<Segment> {
+    let mut nested: Vec<Segment> = Vec::new();
     let chars: Vec<char> = command.chars().collect();
-    let mut out = Vec::new();
+    let mut out: Vec<Segment> = Vec::new();
     let mut current = String::new();
     let mut quote: Option<char> = None;
     let mut heredoc: Option<String> = None;
-    let mut flush = |current: &mut String| {
+    // Whether the command being read follows a `|`.
+    let mut piped = false;
+    let mut flush = |current: &mut String, piped: bool| {
         let part = current.trim();
         if !part.is_empty() {
-            out.push(part.to_string());
+            out.push(Segment {
+                text: part.to_string(),
+                plumbing: depth > 0 || piped,
+            });
         }
         current.clear();
     };
@@ -491,7 +593,14 @@ fn segments(command: &str) -> Vec<String> {
     while i < chars.len() {
         let c = chars[i];
         let next = chars.get(i + 1).copied();
-        if let Some(open) = quote {
+        if quote == Some('"') && substitution_start(&chars, i) {
+            let (inner, end) = substitution_at(&chars, i);
+            current.push(SUBSTITUTION);
+            if depth < MAX_SUBSTITUTION_DEPTH {
+                nested.extend(segments_at(&inner, depth + 1));
+            }
+            i = end;
+        } else if let Some(open) = quote {
             current.push(c);
             if c == '\\' && open == '"' {
                 if let Some(escaped) = next {
@@ -513,6 +622,14 @@ fn segments(command: &str) -> Vec<String> {
                 '\'' | '"' => {
                     quote = Some(c);
                     current.push(c);
+                }
+                '$' | '`' if substitution_start(&chars, i) => {
+                    let (inner, end) = substitution_at(&chars, i);
+                    current.push(SUBSTITUTION);
+                    if depth < MAX_SUBSTITUTION_DEPTH {
+                        nested.extend(segments_at(&inner, depth + 1));
+                    }
+                    i = end;
                 }
                 '#' if current.chars().next_back().is_none_or(char::is_whitespace) => {
                     // A comment runs to the end of the line.
@@ -552,7 +669,8 @@ fn segments(command: &str) -> Vec<String> {
                     i = j - 1;
                 }
                 '\n' => {
-                    flush(&mut current);
+                    flush(&mut current, piped);
+                    piped = false;
                     if let Some(end) = heredoc.take() {
                         // Skip the lines up to and including the delimiter.
                         let mut line_start = i + 1;
@@ -571,14 +689,16 @@ fn segments(command: &str) -> Vec<String> {
                     }
                 }
                 ';' | '|' => {
-                    flush(&mut current);
-                    // `||`
+                    flush(&mut current, piped);
+                    // `||` is a separator like `;`; a single `|` pipes into the next command.
+                    piped = c == '|' && next != Some('|');
                     if c == '|' && next == Some('|') {
                         i += 1;
                     }
                 }
                 '&' if next == Some('&') => {
-                    flush(&mut current);
+                    flush(&mut current, piped);
+                    piped = false;
                     i += 1;
                 }
                 _ => current.push(c),
@@ -586,7 +706,8 @@ fn segments(command: &str) -> Vec<String> {
         }
         i += 1;
     }
-    flush(&mut current);
+    flush(&mut current, piped);
+    out.extend(nested);
     out
 }
 
@@ -603,13 +724,47 @@ fn is_assignment(word: &str) -> bool {
 /// hostile command of thousands of words costs no more than a normal one.
 const MAX_COMMAND_WORDS: usize = 32;
 
-/// The words of one command, without quotes, env assignments and the words that only wrap it: `sudo`,
+/// The words of one command, split at spaces outside quotes, without quotes, env assignments and the words that only wrap it: `sudo`,
 /// `time`, `command`, `exec`, `nohup`, the shell keywords `if`, `then`, `do`, `else`, `elif`, `while` and
 /// `until`, `!`, an opening parenthesis or brace, and `env` and `timeout` with their options (and, for
 /// `timeout`, the duration).
+/// The words of a command, split at whitespace outside quotes; the quotes stay in the words. At most
+/// `MAX_COMMAND_WORDS` are read.
+fn split_words(segment: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let (mut start, mut quote) = (None::<usize>, None::<char>);
+    for (at, c) in segment.char_indices() {
+        match quote {
+            Some(open) => {
+                if c == open {
+                    quote = None;
+                }
+            }
+            None if c.is_whitespace() => {
+                if let Some(from) = start.take() {
+                    words.push(&segment[from..at]);
+                    if words.len() >= MAX_COMMAND_WORDS {
+                        return words;
+                    }
+                }
+            }
+            None => {
+                start.get_or_insert(at);
+                if c == '\'' || c == '"' {
+                    quote = Some(c);
+                }
+            }
+        }
+    }
+    if let Some(from) = start {
+        words.push(&segment[from..]);
+    }
+    words
+}
+
 fn command_words(segment: &str) -> Vec<&str> {
-    let words: Vec<&str> = segment
-        .split_whitespace()
+    let words: Vec<&str> = split_words(segment)
+        .into_iter()
         .take(MAX_COMMAND_WORDS)
         .map(|word| {
             word.trim_matches(['"', '\''])

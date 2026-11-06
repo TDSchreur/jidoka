@@ -86,6 +86,20 @@ fn add(counts: &mut Counts, request: &Request) {
     }
 }
 
+/// How long before a run's first mark the request that starts it may be. The model writes that request
+/// before `factory run start` executes and creates the run, so it always falls just before the first mark.
+const START_GRACE_MS: u64 = 120_000;
+
+/// Whether `request` is the run's work: it falls inside the run's time, or it is workspace work just
+/// before the run's first mark.
+fn in_run(run: &Run, request: &Request) -> bool {
+    mark_at(run, request.ts).is_some()
+        || (request.category == Category::Workspace
+            && run.timeline.first().is_some_and(|first| {
+                request.ts < first.at && first.at - request.ts <= START_GRACE_MS
+            }))
+}
+
 fn claims(run: &Run, session: &SessionRequests) -> bool {
     session.claims.contains(&run.id) || run.sessions.contains(&session.id)
 }
@@ -201,12 +215,10 @@ pub(crate) fn analyze(
         let mut used = false;
         for request in &session.requests {
             // A request from the future cannot be the run's work: a clock is wrong or the log is made up.
-            if request.ts > now.saturating_add(FUTURE_SLACK_MS)
-                || mark_at(target, request.ts).is_none()
-            {
+            if request.ts > now.saturating_add(FUTURE_SLACK_MS) || !in_run(target, request) {
                 continue;
             }
-            if rivals.iter().any(|run| mark_at(run, request.ts).is_some()) {
+            if rivals.iter().any(|run| in_run(run, request)) {
                 add(&mut result.ambiguous, request);
                 continue;
             }

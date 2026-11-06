@@ -996,3 +996,139 @@ fn text_that_is_not_a_command_never_claims_a_run() {
         Category::PrCreationAndPush
     );
 }
+
+// --- commands as agents write them -------------------------------------------------------------------
+
+#[test]
+fn a_report_behind_a_variable_and_a_directory_change_is_standalone_reporting() {
+    for command in [
+        "R=$(cat /tmp/run-id) && cd /repo/wt && factory run update $R build running --activity x",
+        "R=`cat /tmp/run-id`; factory run update \"$R\" build running",
+        "S=/tmp/scratch R=$(cat $S/id) && factory run update ${R} build running",
+    ] {
+        assert_eq!(
+            category_of(command),
+            Category::StandaloneReporting,
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn a_substitution_is_one_word_and_the_commands_inside_it_count() {
+    assert_eq!(
+        category_of("gh pr create --title \"$(git log -1 --format=%s)\" --body x"),
+        Category::PrCreationAndPush
+    );
+    assert_eq!(
+        category_of("echo \"$(git push origin x)\""),
+        Category::PrCreationAndPush
+    );
+    assert_eq!(
+        category_of("echo `git push origin x`"),
+        Category::PrCreationAndPush
+    );
+    assert_eq!(
+        category_of("OUT=$(cargo test 2>&1) && echo done"),
+        Category::Verification
+    );
+    // Separators inside a substitution do not split the command around it.
+    assert_eq!(
+        category_of("git commit -m \"$(date; whoami)\" && ls"),
+        Category::Commit
+    );
+    // Arithmetic is not a command substitution.
+    assert_eq!(
+        category_of("echo $((1+2)) && git push"),
+        Category::PrCreationAndPush
+    );
+    // A substitution inside single quotes is text.
+    assert_eq!(
+        category_of("echo '$(git push)'"),
+        Category::ReadingEditingAnalysis
+    );
+}
+
+#[test]
+fn a_literal_assignment_in_the_same_command_resolves_the_variable_that_names_the_run() {
+    let id = RUN_A;
+    let claiming: Vec<String> = [
+        "R=ID && factory run update $R build running",
+        "R=ID; cd /repo && factory run update \"$R\" build running",
+        "R='ID'\nfactory run update ${R} build running",
+    ]
+    .iter()
+    .map(|c| c.replace("ID", id))
+    .collect();
+    for command in &claiming {
+        assert_eq!(
+            claimed_by(std::slice::from_ref(command)).len(),
+            1,
+            "{command}"
+        );
+    }
+    // A value from a file or another command cannot be resolved, so nothing is claimed.
+    for command in [
+        "R=$(cat /tmp/run-id) && factory run update $R build running".to_string(),
+        "factory run update $R build running".to_string(),
+        format!("R=other && factory run update $R build running # {id}"),
+    ] {
+        assert!(
+            claimed_by(std::slice::from_ref(&command)).is_empty(),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn thousands_of_open_substitutions_cost_no_more_than_their_length() {
+    let command = "$(".repeat(20_000) + "git push";
+    // The answer is not the point: the call ends, with no overflow of the stack.
+    let _ = category_of(&command);
+    let command = "`".repeat(20_000) + "git push";
+    let _ = category_of(&command);
+}
+
+#[test]
+fn a_filter_after_a_pipe_is_plumbing_for_the_command_before_it() {
+    assert_eq!(
+        category_of("factory run update 1 build running --activity x 2>&1 | tail -1"),
+        Category::StandaloneReporting
+    );
+    assert_eq!(
+        category_of("cargo test 2>&1 | tail -5"),
+        Category::Verification
+    );
+    assert_eq!(
+        category_of("ls | grep src | wc -l"),
+        Category::ReadingEditingAnalysis
+    );
+    // A command that follows `&&` after a pipeline is work of its own again.
+    assert_eq!(
+        category_of("factory run update 1 build running | tail -1 && ls"),
+        Category::ReadingEditingAnalysis
+    );
+}
+
+#[test]
+fn the_request_that_starts_a_run_counts_even_though_it_precedes_the_runs_first_mark() {
+    let world = World::new();
+    world.session(
+        "s",
+        &[
+            // 30 seconds before the run's first mark: it runs `factory run start` and makes the worktree.
+            one(370, "start", bash("git fetch -q origin develop && factory run start \"A title\" && git worktree add -b x ../y")),
+            // Also before the first mark, but not workspace work: not the run's.
+            one(375, "before", text()),
+            // Workspace work minutes before the first mark: another piece of work.
+            one(100, "far", bash("git worktree add -b z ../w")),
+            one(420, "inside", text()),
+        ],
+    );
+    let target = run(RUN_A, 400, Some(900), &["s"]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    assert_eq!(
+        rows(&result),
+        [(Category::Workspace, 1), (Category::TextOnly, 1)]
+    );
+}
