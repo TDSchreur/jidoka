@@ -1,4 +1,4 @@
-//! `factory doctor`: a read-only report on whether this project and this machine are ready for the factory.
+//! `factory doctor`: a report on whether this project and this machine are ready for the factory.
 //! It only reads files, looks on `PATH` and asks `git` read-only questions, and, when a model-routing policy
 //! exists, asks an agent for its `--version`. It never runs the project's own commands, calls a model,
 //! installs anything or needs the dashboard. The one thing it writes is a starter model-routing policy, and
@@ -614,7 +614,11 @@ pub(crate) struct Args<'a> {
 /// This is the one thing doctor writes, and only when asked.
 fn create_model_routing(agent: RoutingAgent, machine: &Machine) -> Result<String, String> {
     let path = policy_path_in(|name| (machine.var)(name)).ok_or(
-        "cannot work out the configuration folder for the model-routing policy; set XDG_CONFIG_HOME or HOME",
+        if cfg!(windows) {
+            "cannot work out the configuration folder for the model-routing policy; set APPDATA"
+        } else {
+            "cannot work out the configuration folder for the model-routing policy; set XDG_CONFIG_HOME or HOME"
+        },
     )?;
     let shown = printable(&path.display().to_string());
     match create_starter(&path, agent) {
