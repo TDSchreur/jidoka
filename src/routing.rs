@@ -54,6 +54,21 @@ pub(crate) struct ModelRouting {
     pub(crate) overrides: BTreeMap<Task, Role>,
 }
 
+/// Whether an observed model id is the model that was requested. A requested alias is a whole part of the
+/// id (`sonnet` in `claude-sonnet-5-5`); a version is not cut (`gpt-6` is not in `gpt-6.1-sol`).
+pub(crate) fn model_matches(requested: &str, observed: &str) -> bool {
+    let (requested, observed) = (
+        requested.to_ascii_lowercase(),
+        observed.to_ascii_lowercase(),
+    );
+    let boundary = |c: Option<char>| c.is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '.'));
+    !requested.is_empty()
+        && observed.match_indices(&requested).any(|(start, _)| {
+            boundary(observed[..start].chars().next_back())
+                && boundary(observed[start + requested.len()..].chars().next())
+        })
+}
+
 /// Longest model or effort text. They are shown in a terminal and handed to agents, so they stay short.
 const MAX_TEXT: usize = 64;
 
@@ -246,6 +261,34 @@ mod tests {
         },
         "tasks": {"build": "coding", "check": "strong", "finish": "routine"}
     }"#;
+
+    #[test]
+    fn a_requested_model_matches_an_observed_id_by_whole_parts() {
+        for (requested, observed) in [
+            ("sonnet", "claude-sonnet-5-5"),
+            ("opus", "claude-opus-5-5"),
+            ("OPUS", "claude-opus-4-8"),
+            ("haiku", "claude-haiku-5-5"),
+            ("gpt-6.1-sol", "gpt-6.1-sol"),
+            ("gpt-6-astra", "gpt-6-astra"),
+        ] {
+            assert!(
+                model_matches(requested, observed),
+                "{requested} / {observed}"
+            );
+        }
+        for (requested, observed) in [
+            ("opus", "claude-sonnet-5-5"),
+            ("gpt-6", "gpt-6.1-sol"),
+            ("son", "claude-sonnet-5-5"),
+            ("", "claude-sonnet-5-5"),
+        ] {
+            assert!(
+                !model_matches(requested, observed),
+                "{requested} / {observed}"
+            );
+        }
+    }
 
     #[test]
     fn without_a_policy_file_nothing_is_recorded() {
