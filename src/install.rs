@@ -78,7 +78,7 @@ pub(crate) fn agent_home(
     match agent {
         "codex" => Ok(config_dir("CODEX_HOME", ".codex")),
         "claude" => Ok(config_dir("CLAUDE_CONFIG_DIR", ".claude")),
-        "copilot" => Ok(home.join(".copilot")),
+        "copilot" => Ok(config_dir("COPILOT_HOME", ".copilot")),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unknown agent {agent:?}; use codex, claude, or copilot"),
@@ -216,7 +216,12 @@ mod tests {
         );
         assert_eq!(root("codex", &unset), home.join(".codex/skills"));
         assert_eq!(root("codex", &set), Path::new("/custom/CODEX_HOME/skills"));
-        assert_eq!(root("copilot", &set), home.join(".copilot/skills"));
+        assert_eq!(root("copilot", &unset), home.join(".copilot/skills"));
+        assert_eq!(root("copilot", &empty), home.join(".copilot/skills"));
+        assert_eq!(
+            root("copilot", &set),
+            Path::new("/custom/COPILOT_HOME/skills")
+        );
         assert!(skills_root("other", home, unset).is_err());
     }
     /// Names that belong to this repository, not to the projects the skills are installed in.

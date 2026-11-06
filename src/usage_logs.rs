@@ -47,7 +47,7 @@ pub(crate) struct Roots {
 }
 
 impl Roots {
-    /// The agents' usual folders under `home`, honoring `CLAUDE_CONFIG_DIR` and `CODEX_HOME` as install does.
+    /// The agents' usual folders under `home`, honoring `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `COPILOT_HOME` as install does.
     pub(crate) fn from_home(
         home: &Path,
         var: &dyn Fn(&str) -> Option<OsString>,
