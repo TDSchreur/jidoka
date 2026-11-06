@@ -24,4 +24,4 @@
 
 **Fresh tokens**: The headline token figure of a run: input excluding cache reads, plus cache writes and output. Cache reads are shown beside it, and reasoning is part of output and not added again.
 
-**Token usage**: The tokens a run used, read from the agents' session logs and kept as counts per stage, model and ticket, with the rework and work with no ticket in their own buckets. It is `tracked`, `partial` or `not tracked`, with the reason; unknown usage is never shown as zero.
+**Token usage**: The tokens a run used, read from the agents' session logs and kept as counts per stage, model and ticket (plus the reasoning efforts the logs recorded), with the rework and work with no ticket in their own buckets. It is `tracked`, `partial` or `not tracked`, with the reason; unknown usage is never shown as zero.

@@ -11,7 +11,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     time::Instant,
 };
 
@@ -108,7 +108,13 @@ pub(crate) struct UsageRow {
     /// The part of `tokens` that subagents used.
     #[serde(default, skip_serializing_if = "Tokens::is_empty")]
     pub(crate) subagents: Tokens,
+    /// The reasoning efforts the agent's log recorded for these calls, sorted. Empty when it recorded none.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) efforts: BTreeSet<String>,
 }
+
+/// Most distinct efforts one row keeps. Real logs show a handful; a made-up log must not grow the record.
+pub(crate) const MAX_EFFORTS_PER_ROW: usize = 8;
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -285,6 +291,8 @@ pub(crate) struct Entry {
     pub(crate) tokens: Tokens,
     /// Whether a subagent made the call.
     pub(crate) subagent: bool,
+    /// The reasoning effort the log recorded for the call, when it recorded one.
+    pub(crate) effort: Option<String>,
 }
 
 /// How far ahead of this machine's clock a log entry may be.
@@ -366,7 +374,13 @@ pub(crate) fn attribute(
                     rework,
                     tokens: Tokens::default(),
                     subagents: Tokens::default(),
+                    efforts: BTreeSet::new(),
                 });
+            if let Some(effort) = &entry.effort {
+                if row.efforts.len() < MAX_EFFORTS_PER_ROW || row.efforts.contains(effort) {
+                    row.efforts.insert(effort.clone());
+                }
+            }
             row.tokens.add(&entry.tokens);
             if entry.subagent {
                 row.subagents.add(&entry.tokens);
