@@ -17,8 +17,9 @@ const LEGACY_SKILLS: [&str; 4] = [
 ];
 
 /// Skills maintained in this project, installed without a third-party license.
-const LOCAL_SKILLS: [&str; 6] = [
+const LOCAL_SKILLS: [&str; 7] = [
     "factory",
+    "factory-full",
     "factory-procedures",
     "factory-fast",
     "factory-balanced",
@@ -222,7 +223,7 @@ mod tests {
     /// Concrete commands and branches go in AGENTS.md, README or .github/instructions instead.
     const PROJECT_SPECIFIC: [&str; 3] = ["verify.sh", "tds-factory", "for this project"];
     /// Workflow skills must also not assume this repository's branch name.
-    const WORKFLOW_SKILLS: [&str; 3] = ["factory", "factory-balanced", "factory-fast"];
+    const WORKFLOW_SKILLS: [&str; 3] = ["factory-full", "factory-balanced", "factory-fast"];
 
     fn bundled_text(path: &str) -> String {
         BUNDLED
@@ -230,6 +231,17 @@ mod tests {
             .find(|(bundled, _)| *bundled == path)
             .map(|(_, content)| String::from_utf8_lossy(content).into_owned())
             .unwrap_or_else(|| panic!("{path} is not bundled"))
+    }
+
+    #[test]
+    fn selector_and_execution_workflows_are_bundled() {
+        let selector = bundled_text("factory/SKILL.md");
+        assert!(selector.starts_with("---\nname: factory\n"));
+        for skill in WORKFLOW_SKILLS {
+            let workflow = bundled_text(&format!("{skill}/SKILL.md"));
+            assert!(workflow.starts_with(&format!("---\nname: {skill}\n")));
+            assert!(selector.contains(&format!("../{skill}/SKILL.md")));
+        }
     }
 
     #[test]
@@ -332,7 +344,7 @@ mod tests {
             );
             assert_eq!(
                 text.contains("Saving the plan in [factory-procedures]"),
-                skill != "factory",
+                skill != "factory-full",
                 "{skill} saves a conversational plan only in the lighter workflows"
             );
             assert!(
@@ -504,6 +516,8 @@ mod tests {
             .is_file());
         assert!(root.join("setup-matt-pocock-skills/LICENSE").is_file());
         assert!(root.join("to-spec/SKILL.md").is_file());
+        assert!(root.join("factory-full/SKILL.md").is_file());
+        assert!(!root.join("factory-full/LICENSE").exists());
         assert!(root.join("factory-fast/SKILL.md").is_file());
         assert!(root.join("implement-spec-fast/SKILL.md").is_file());
         assert!(root.join("tdd/mocking.md").is_file());

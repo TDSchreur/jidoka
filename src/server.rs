@@ -1346,7 +1346,7 @@ mod tests {
         let (status, stored) = fetch(&api, &run.id).await;
         assert_eq!(status, HttpStatus::Ok);
         let stored = stored.unwrap();
-        assert_eq!(stored.mode, Some(crate::run::Mode::Factory));
+        assert_eq!(stored.mode, Some(crate::run::Mode::Full));
         assert!(stored.branch.is_none());
         assert_eq!(stored.tickets.len(), 2);
         assert_eq!(

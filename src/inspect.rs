@@ -15,9 +15,9 @@ fn stage_name(stage: Stage) -> &'static str {
 
 fn mode_name(mode: Mode) -> &'static str {
     match mode {
-        Mode::Factory => "factory",
-        Mode::FactoryBalanced => "factory-balanced",
-        Mode::FactoryFast => "factory-fast",
+        Mode::Full => "factory-full",
+        Mode::Balanced => "factory-balanced",
+        Mode::Fast => "factory-fast",
     }
 }
 
