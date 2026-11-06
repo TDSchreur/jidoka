@@ -1,5 +1,5 @@
-//! Readers for the session logs of Claude Code, Codex and Copilot. Each keeps only the model, the token
-//! counts and the timestamp of a response, plus which run ids and session ids a log names. No conversation
+//! Readers for the session logs of Claude Code, Codex and Copilot. Each keeps only the model, the reasoning
+//! effort (Claude Code and Codex record it), the token counts and the timestamp of a response, plus which run ids and session ids a log names. No conversation
 //! text, prompt, tool output or credential leaves this module.
 //!
 //! Formats (see the README for what is validated): Claude Code transcripts and their subagent transcripts,
@@ -98,6 +98,17 @@ fn model_name(value: &Value) -> Option<String> {
     (first.is_ascii_alphanumeric()
         && name.len() <= 100
         && chars.all(|c| c.is_ascii_alphanumeric() || "._:/@+-".contains(c)))
+    .then(|| name.to_string())
+}
+
+/// A reasoning effort that is safe to store and print: a log is written by another program.
+fn effort_name(value: &Value) -> Option<String> {
+    let name = value.as_str()?;
+    (!name.is_empty()
+        && name.len() <= 16
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
     .then(|| name.to_string())
 }
 
@@ -296,6 +307,7 @@ fn parse_claude(text: &str, session: &str, subagent_file: bool) -> Parsed {
                 model,
                 tokens,
                 subagent,
+                effort: effort_name(&data["effort"]),
             },
         );
     }
@@ -386,6 +398,8 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
     let mut parsed = Parsed::default();
     let mut model_by_turn: BTreeMap<String, String> = BTreeMap::new();
     let mut last_model: Option<String> = None;
+    let mut effort_by_turn: BTreeMap<String, String> = BTreeMap::new();
+    let mut last_effort: Option<String> = None;
     for (number, line) in text.lines().enumerate() {
         let is_context = line.contains("\"turn_context\"");
         if !is_context && !line.contains("\"token_usage_record\"") {
@@ -402,6 +416,11 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
                     model_by_turn.insert(turn.to_string(), model.clone());
                 }
                 last_model = Some(model);
+                // The effort belongs to the same turn as the model.
+                last_effort = effort_name(&payload["effort"]);
+                if let (Some(turn), Some(effort)) = (payload["turn_id"].as_str(), &last_effort) {
+                    effort_by_turn.insert(turn.to_string(), effort.clone());
+                }
             }
             continue;
         }
@@ -427,6 +446,13 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
             parsed.unusable += 1;
             continue;
         };
+        let known_turn = payload["turn_id"]
+            .as_str()
+            .filter(|turn| model_by_turn.contains_key(*turn));
+        let effort = match known_turn {
+            Some(turn) => effort_by_turn.get(turn).cloned(),
+            None => last_effort.clone(),
+        };
         let tokens = Tokens {
             input: input.map(|n| {
                 n.saturating_sub(cached.unwrap_or(0))
@@ -447,6 +473,7 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
                 model: model.clone(),
                 tokens,
                 subagent,
+                effort,
             },
         );
     }
@@ -588,6 +615,8 @@ fn parse_copilot(text: &str, session: &str) -> Parsed {
                 model,
                 tokens,
                 subagent: usage["initiator"] == "sub-agent",
+                // Copilot's usage records carry no effort.
+                effort: None,
             },
         );
     }

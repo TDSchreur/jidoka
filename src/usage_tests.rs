@@ -110,6 +110,17 @@ fn mention(run_id: &str) -> String {
     json!({"type": "user", "message": {"content": format!("factory run update {run_id} build running --activity SECRET prompt")}}).to_string()
 }
 
+/// A Claude Code response line that also records the reasoning effort of its turn.
+fn with_effort(line: String, effort: &str) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(&line).unwrap();
+    value["effort"] = json!(effort);
+    value.to_string()
+}
+
+fn codex_context_with_effort(model: &str, effort: &str) -> String {
+    json!({"type": "turn_context", "timestamp": iso(0), "payload": {"model": model, "effort": effort, "turn_id": "turn-1"}}).to_string()
+}
+
 fn codex_meta_line(id: &str, root: Option<&str>) -> String {
     let mut payload = json!({"id": id, "source": "cli"});
     if let Some(root) = root {
@@ -343,6 +354,108 @@ fn claude_usage_is_normalised_deduplicated_and_subagents_are_counted_once() {
         .unwrap();
     assert_eq!(sonnet.tokens.cache_read, Some(0));
     assert_eq!(usage.no_data, [Stage::Build, Stage::Check]);
+}
+
+#[test]
+fn claude_efforts_are_kept_per_model_and_a_subagent_keeps_its_own() {
+    let world = World::new();
+    let target = full_run(RUN_A);
+    let line = |at: u64, id: &str, model: &str, sidechain: bool| {
+        claude_line("S1", at, id, id, model, (10, 0, 0, 5), 0, sidechain)
+    };
+    world.write(
+        "claude/projects/-work/S1.jsonl",
+        &[
+            mention(RUN_A),
+            with_effort(line(10, "m1", "claude-sonnet-test", false), "medium"),
+            with_effort(line(11, "m2", "claude-sonnet-test", false), "high"),
+            // No effort in this response: nothing is guessed.
+            line(12, "m3", "claude-haiku-test", false),
+            // An effort that is not plain text is dropped, not shown.
+            with_effort(line(13, "m4", "claude-fable-test", false), "hi\u{1b}[2Jgh"),
+        ],
+    );
+    world.write(
+        "claude/projects/-work/S1/subagents/agent-a.jsonl",
+        &[with_effort(
+            line(14, "m5", "claude-opus-test", true),
+            "xhigh",
+        )],
+    );
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    let rows = rows_of(&usage, Stage::Define);
+    let efforts = |model: &str| {
+        rows.iter()
+            .find(|r| r.model == model)
+            .unwrap()
+            .efforts
+            .clone()
+    };
+    assert_eq!(efforts("claude-sonnet-test"), ["high", "medium"]);
+    assert_eq!(efforts("claude-opus-test"), ["xhigh"]);
+    assert!(efforts("claude-haiku-test").is_empty());
+    assert!(efforts("claude-fable-test").is_empty());
+}
+
+#[test]
+fn codex_efforts_follow_the_turn_and_a_subagent_rollout_has_its_own() {
+    let world = World::new();
+    let target = full_run(RUN_A);
+    world.write(
+        "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-abc.jsonl",
+        &[
+            codex_meta_line("root-1", None),
+            codex_context_with_effort("gpt-main", "medium"),
+            mention(RUN_A),
+            codex_usage(10, "resp-1", 100, 0, 0, 10, 0),
+        ],
+    );
+    world.write(
+        "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-30-def.jsonl",
+        &[
+            codex_meta_line("sub-1", Some("root-1")),
+            codex_context_with_effort("gpt-sub", "high"),
+            codex_usage(30, "resp-3", 90, 0, 0, 9, 0),
+        ],
+    );
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    let rows = rows_of(&usage, Stage::Define);
+    let efforts = |model: &str| {
+        rows.iter()
+            .find(|r| r.model == model)
+            .unwrap()
+            .efforts
+            .clone()
+    };
+    assert_eq!(efforts("gpt-main"), ["medium"]);
+    assert_eq!(efforts("gpt-sub"), ["high"]);
+}
+
+#[test]
+fn copilot_rows_have_no_effort_and_old_usage_records_load_without_the_field() {
+    let world = World::new();
+    let target = full_run(RUN_A);
+    world.write(
+        "copilot/session-state/c1/events.jsonl",
+        &[
+            mention(RUN_A),
+            copilot_usage(10, "call-1", "gpt-copilot", 100, 10, 0, 5, false),
+        ],
+    );
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert!(rows_of(&usage, Stage::Define)
+        .iter()
+        .all(|r| r.efforts.is_empty()));
+    // The stored form leaves the key out when there is nothing to say, and reads a record without it.
+    let json = serde_json::to_value(&usage.rows[0]).unwrap();
+    assert!(json.get("efforts").is_none(), "{json}");
+    let old: UsageRow =
+        serde_json::from_value(json!({"stage": "build", "model": "m", "input": 1})).unwrap();
+    assert!(old.efforts.is_empty());
+    let new: UsageRow =
+        serde_json::from_value(json!({"stage": "build", "model": "m", "efforts": ["high"]}))
+            .unwrap();
+    assert_eq!(new.efforts, ["high"]);
 }
 
 #[test]

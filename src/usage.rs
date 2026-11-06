@@ -108,6 +108,9 @@ pub(crate) struct UsageRow {
     /// The part of `tokens` that subagents used.
     #[serde(default, skip_serializing_if = "Tokens::is_empty")]
     pub(crate) subagents: Tokens,
+    /// The reasoning efforts the agent's log recorded for these calls, sorted. Empty when it recorded none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) efforts: Vec<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -285,6 +288,8 @@ pub(crate) struct Entry {
     pub(crate) tokens: Tokens,
     /// Whether a subagent made the call.
     pub(crate) subagent: bool,
+    /// The reasoning effort the log recorded for the call, when it recorded one.
+    pub(crate) effort: Option<String>,
 }
 
 /// How far ahead of this machine's clock a log entry may be.
@@ -366,7 +371,13 @@ pub(crate) fn attribute(
                     rework,
                     tokens: Tokens::default(),
                     subagents: Tokens::default(),
+                    efforts: Vec::new(),
                 });
+            if let Some(effort) = &entry.effort {
+                if let Err(at) = row.efforts.binary_search(effort) {
+                    row.efforts.insert(at, effort.clone());
+                }
+            }
             row.tokens.add(&entry.tokens);
             if entry.subagent {
                 row.subagents.add(&entry.tokens);
