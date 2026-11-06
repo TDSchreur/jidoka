@@ -1,4 +1,5 @@
 mod client;
+mod codex_requests;
 mod doctor;
 mod inspect;
 mod install;

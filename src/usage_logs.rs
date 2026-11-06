@@ -20,7 +20,7 @@ use std::{
 
 /// The largest log read: real session logs are a few megabytes, so a bigger one is skipped.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
-const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+pub(crate) const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 pub(crate) const MTIME_SLACK_MS: u64 = 5 * 60 * 1000;
 /// Limits on one pass over the logs, so a huge or hostile log folder cannot exhaust memory or time.
 #[derive(Clone, Copy, Debug)]
@@ -377,7 +377,7 @@ struct Rollout {
 
 /// The ids on a rollout's `session_meta` line. A rollout of a subagent has its own id and the id of the
 /// root session it belongs to.
-fn codex_meta(text: &str) -> Option<(String, String, bool)> {
+pub(crate) fn codex_meta(text: &str) -> Option<(String, String, bool)> {
     let line = text
         .lines()
         .find(|line| line.contains("\"session_meta\""))?;
@@ -403,8 +403,34 @@ struct TurnSettings {
     effort: Option<String>,
 }
 
-/// Codex counts cached input inside `input_tokens`; the cached part is moved to cache read, and cache
-/// writes are taken out of input too. Reasoning tokens are part of output.
+/// Whether a `token_usage_record` usage object reports any input or output count.
+pub(crate) fn has_token_counts(usage: &Value) -> bool {
+    usage.is_object()
+        && (count(usage.get("input_tokens")).is_some()
+            || count(usage.get("output_tokens")).is_some())
+}
+
+/// The token counts of a Codex `token_usage_record`. Codex counts cached input inside `input_tokens`; the
+/// cached part is moved to cache read, and cache writes are taken out of input too.
+pub(crate) fn codex_tokens(usage: &Value) -> Tokens {
+    let (input, cached, written) = (
+        count(usage.get("input_tokens")),
+        count(usage.get("cached_input_tokens")),
+        count(usage.get("cache_write_input_tokens")),
+    );
+    Tokens {
+        input: input.map(|n| {
+            n.saturating_sub(cached.unwrap_or(0))
+                .saturating_sub(written.unwrap_or(0))
+        }),
+        cache_read: cached,
+        cache_write: written,
+        output: count(usage.get("output_tokens")),
+        reasoning: count(usage.get("reasoning_output_tokens")),
+    }
+}
+
+/// Reasoning tokens are part of output; see `codex_tokens` for how the counts are split.
 fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
     let mut parsed = Parsed::default();
     let mut by_turn: BTreeMap<String, TurnSettings> = BTreeMap::new();
@@ -441,31 +467,16 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
             parsed.unusable += 1;
             continue;
         };
-        let (input, cached, written, output) = (
-            count(usage.get("input_tokens")),
-            count(usage.get("cached_input_tokens")),
-            count(usage.get("cache_write_input_tokens")),
-            count(usage.get("output_tokens")),
-        );
         // The turn's own settings, or the latest ones when the record names no known turn.
         let settings = payload["turn_id"]
             .as_str()
             .and_then(|t| by_turn.get(t))
             .or(last.as_ref());
-        let Some(settings) = settings.filter(|_| input.is_some() || output.is_some()) else {
+        let Some(settings) = settings.filter(|_| has_token_counts(usage)) else {
             parsed.unusable += 1;
             continue;
         };
-        let tokens = Tokens {
-            input: input.map(|n| {
-                n.saturating_sub(cached.unwrap_or(0))
-                    .saturating_sub(written.unwrap_or(0))
-            }),
-            cache_read: cached,
-            cache_write: written,
-            output,
-            reasoning: count(usage.get("reasoning_output_tokens")),
-        };
+        let tokens = codex_tokens(usage);
         parsed.push(
             payload["response_id"].as_str().map(str::to_string),
             number,
@@ -558,7 +569,7 @@ fn read_codex(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
 }
 
 /// `YYYY-MM-DD` for milliseconds since the epoch, to compare with the day folders.
-fn civil_day(millis: u64) -> String {
+pub(crate) fn civil_day(millis: u64) -> String {
     crate::usage::format_timestamp(millis)[..10].to_string()
 }
 

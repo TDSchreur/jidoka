@@ -1,6 +1,7 @@
 //! `factory run requests`: the model requests of a run per category, with their tokens.
 
 use crate::{
+    codex_requests::read_codex_requests,
     inspect::shown,
     request_logs::{read_requests, uncategorized, Category, Request, SessionRequests},
     run::Run,
@@ -151,10 +152,12 @@ pub(crate) fn analyze(
         .unwrap_or(first.at);
     let limits = ReadLimits::default();
     let read = read_requests(&roots.claude, &ids, &recorded, from, deadline, limits);
-    // Codex and Copilot: the usage reader finds their requests, which are counted but not categorized.
+    let codex = read_codex_requests(&roots.codex, &ids, &recorded, from, deadline, limits);
+    // Copilot: the usage reader finds its requests, which are counted but not categorized.
     let others = read_sessions(
         &Roots {
             claude: PathBuf::new(),
+            codex: PathBuf::new(),
             ..roots.clone()
         },
         &ids,
@@ -164,11 +167,17 @@ pub(crate) fn analyze(
         limits,
     );
     let (timed_out, truncated) = (
-        read.timed_out || others.timed_out,
-        read.truncated || others.truncated,
+        read.timed_out || codex.timed_out || others.timed_out,
+        read.truncated || codex.truncated || others.truncated,
     );
     result.notes.extend(read.notes.iter().cloned());
+    for note in &codex.notes {
+        if !result.notes.contains(note) {
+            result.notes.push(note.clone());
+        }
+    }
     let mut sessions = read.sessions;
+    sessions.extend(codex.sessions);
     let other_notes = others.notes;
     sessions.extend(uncategorized(others.sessions));
     if timed_out {
@@ -197,7 +206,7 @@ pub(crate) fn analyze(
         }
     }
     if claimed.is_empty() {
-        result.notes.push(if !read.root_found && others.roots_found == 0 {
+        result.notes.push(if !read.root_found && !codex.root_found && others.roots_found == 0 {
             "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()
         } else {
             "no session log executed a factory run update for this run and none was recorded for it"
@@ -270,7 +279,7 @@ pub(crate) fn analyze(
         .any(|row| row.category == Category::NotCategorized)
     {
         result.notes.push(
-            "Codex and Copilot requests are not categorized and have no tool output size, so the tool output totals cover Claude Code requests only; a session counts for a run by the usage reader's rule, which is a recorded session id or a log that names the run".into(),
+            "Copilot requests are not categorized and have no tool output size, so the tool output totals cover Claude Code and Codex requests only; a Copilot session counts for a run by the usage reader's rule, which is a recorded session id or a log that names the run".into(),
         );
     }
     if result.ambiguous.requests > 0 {

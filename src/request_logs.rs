@@ -21,7 +21,7 @@ use std::{
     time::Instant,
 };
 
-const MAX_COMMAND_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_COMMAND_BYTES: usize = 64 * 1024;
 
 /// What a model request did. The order is the priority: a request that fits several categories takes the
 /// first one.
@@ -364,7 +364,7 @@ fn parse_session(
 }
 
 /// The bytes of text in a tool result, which is a string or a list of text blocks.
-fn result_bytes(content: &Value) -> u64 {
+pub(crate) fn result_bytes(content: &Value) -> u64 {
     let bytes = match content {
         Value::String(text) => text.len(),
         Value::Array(blocks) => blocks
@@ -382,7 +382,7 @@ fn is_real_dir(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
 }
 
-fn truncate(command: &str) -> &str {
+pub(crate) fn truncate(command: &str) -> &str {
     if command.len() <= MAX_COMMAND_BYTES {
         return command;
     }
@@ -397,7 +397,7 @@ fn truncate(command: &str) -> &str {
 /// `factory` counts: `grep "factory run update 1 " notes.md`, an `echo` or the text of a here-document do not.
 /// An id is digits only. The id may be a variable that an earlier command of the same line sets to a literal
 /// (`R=123 && factory run update $R`); a value that comes from a file or another command is not known here.
-fn updated_runs(command: &str, ids: &HashSet<&str>) -> HashSet<String> {
+pub(crate) fn updated_runs(command: &str, ids: &HashSet<&str>) -> HashSet<String> {
     let mut found = HashSet::new();
     let mut variables: HashMap<&str, &str> = HashMap::new();
     for segment in &segments(command) {
@@ -920,7 +920,7 @@ fn hit(segment: &str) -> Hit {
     Hit::Category(category)
 }
 
-/// Codex and Copilot requests as the usage reader found them, with no category. A session counts for a run by
+/// Copilot requests as the usage reader found them, with no category. A session counts for a run by
 /// the usage reader's rule: its id was recorded on the run, or its log names the run.
 pub(crate) fn uncategorized(sessions: Vec<crate::usage_logs::SessionData>) -> Vec<SessionRequests> {
     sessions
