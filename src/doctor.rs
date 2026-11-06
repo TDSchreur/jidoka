@@ -742,17 +742,26 @@ mod tests {
         world
             .vars
             .insert("CODEX_HOME".into(), custom.path().join("codex").into());
-        let world = world.with_agent("claude").with_agent("codex");
+        world
+            .vars
+            .insert("COPILOT_HOME".into(), custom.path().join("copilot").into());
+        let world = world
+            .with_agent("claude")
+            .with_agent("codex")
+            .with_agent("copilot");
         assert!(custom
             .path()
             .join("skills")
             .join(bundled_skill_names()[0])
             .is_dir());
         assert!(custom.path().join("codex/skills").is_dir());
+        assert!(custom.path().join("copilot/skills").is_dir());
         assert!(!world.home.path().join(".claude").exists());
+        assert!(!world.home.path().join(".copilot").exists());
         let report = world.report(None);
         assert!(agent(&report, "claude").usable);
         assert!(agent(&report, "codex").usable);
+        assert!(agent(&report, "copilot").usable);
     }
 
     #[test]
