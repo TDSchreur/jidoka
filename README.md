@@ -202,7 +202,7 @@ The dashboard reads the token counts your agents write to their own session logs
 
 ### Model routing
 
-Model routing lets you say which model and effort each kind of task should use, independently of the workflow mode. This first step only reads your choices and records them on the run: no workflow reads the selection yet, and no model is switched. Without a policy file, runs behave exactly as before.
+Model routing lets you say which model and effort each kind of task should use, independently of the workflow mode. For now the factory only records your choices on the run. No workflow reads them yet, and no model is switched. Without a policy file, runs behave as before.
 
 Write one policy file, `model-routing.json`, in the factory's config folder: `$XDG_CONFIG_HOME/tds-factory/` (or `~/.config/tds-factory/` when unset) on Linux, and `%APPDATA%\tds-factory\` on Windows. For example:
 
@@ -224,13 +224,13 @@ Write one policy file, `model-routing.json`, in the factory's config folder: `$X
 ```
 
 - `agent` is `codex` or `claude`. `roles` defines up to three roles (`strong`, `coding`, `routine`), each with a `model` and an optional `effort`. `tasks` maps `build`, `check` and `finish` to one of those roles; a task you leave out is not routed. `enabled` defaults to `true`; set it to `false` to switch routing off without deleting the file.
-- Models and efforts are plain text of up to 64 letters, digits and `. _ : / -`. The factory keeps no list of valid values, so a new model works without a factory release. Which values a host accepts is for you to check.
+- Models and efforts are plain text of up to 64 letters, digits and `. _ : / -`. The factory keeps no list of valid values, so a new model works without a factory release, and checking that your agent accepts a value is up to you.
 - `factory run start` reads the file once and records the result on the run. Continuing a run keeps the recorded selection, so editing the file affects only runs you start afterwards.
 - A file that cannot be read, is not valid JSON, has an unknown field, or maps a task to a role that is not defined stops `factory run start` with the file path and the problem. A policy with `enabled: false` is not checked.
 - To give one task a different role on a running run, use `factory run update <id> <stage> <status> --model-routing check=coding` (repeat the option for more tasks). The options you give replace all earlier overrides, and `--clear-model-routing` removes them. The role must be one the run's policy defines, and a run started without a policy has nothing to override. The policy's own mapping is not changed, and the override is kept when the run is continued.
 - `factory run inspect <id>` shows each task's model and effort under "Model routing", marks overridden tasks, and `--json` carries the selection in `model_routing`. Runs recorded before this feature show nothing.
 
-**Copilot CLI is not supported.** It chooses a subagent's model from its own settings per agent name, and nothing documents a way for the main agent to pick a model when it starts a subagent. Supporting it would need extra agent files and behavior that Copilot does not promise, so every stage keeps the session's model. A policy with `"agent": "copilot"` records no selection and prints a notice.
+Copilot CLI is not supported. It chooses a subagent's model from its own settings per agent name, and nothing documents a way for the main agent to pick a model when it starts a subagent. Supporting it would need extra agent files and behavior that Copilot does not promise, so every stage keeps the session's model. A policy with `"agent": "copilot"` records no selection and prints a notice.
 
 ### Checking readiness
 

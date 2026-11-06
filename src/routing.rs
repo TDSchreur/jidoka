@@ -131,15 +131,6 @@ impl Task {
 /// The policy file is user-owned and could be anything: larger files are not read.
 const MAX_POLICY_BYTES: u64 = 1 << 20;
 
-/// The agent a policy is written for. Copilot CLI parses, but it records no selection.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum PolicyAgent {
-    Codex,
-    Claude,
-    Copilot,
-}
-
 fn enabled_by_default() -> bool {
     true
 }
@@ -151,7 +142,7 @@ struct Policy {
     /// Accepted so the file may spell it out; a switched-off policy never gets this far (see `load`).
     #[serde(default = "enabled_by_default", rename = "enabled")]
     _enabled: bool,
-    agent: PolicyAgent,
+    agent: RoutingAgent,
     roles: BTreeMap<Role, RoleChoice>,
     tasks: BTreeMap<Task, Role>,
 }
@@ -206,23 +197,20 @@ pub(crate) fn load(path: &Path) -> Result<Resolution, String> {
     if value.get("enabled") == Some(&serde_json::Value::Bool(false)) {
         return Ok(Resolution::default());
     }
+    // Copilot CLI records no selection, so the rest of its file is not read.
+    if value.get("agent") == Some(&serde_json::Value::String("copilot".into())) {
+        return Ok(Resolution {
+            selection: None,
+            notice: Some(
+                "Model routing is not supported on Copilot CLI: every stage uses the session's model."
+                    .into(),
+            ),
+        });
+    }
     let policy: Policy = serde_json::from_value(value)
         .map_err(|error| fail(format!("invalid model-routing policy: {error}")))?;
-    let agent = match policy.agent {
-        PolicyAgent::Codex => RoutingAgent::Codex,
-        PolicyAgent::Claude => RoutingAgent::Claude,
-        PolicyAgent::Copilot => {
-            return Ok(Resolution {
-                selection: None,
-                notice: Some(
-                    "Model routing is not supported on Copilot CLI: every stage uses the session's model."
-                        .into(),
-                ),
-            })
-        }
-    };
     let selection = ModelRouting {
-        agent,
+        agent: policy.agent,
         roles: policy.roles,
         tasks: policy.tasks,
         overrides: BTreeMap::new(),
@@ -305,6 +293,18 @@ mod tests {
         assert!(
             notice.contains("Copilot") && notice.contains("session"),
             "{notice}"
+        );
+    }
+
+    #[test]
+    fn a_bare_copilot_policy_gets_the_notice_instead_of_a_parse_error() {
+        let resolution = load_text(r#"{"agent":"copilot"}"#).unwrap();
+        assert_eq!(resolution.selection, None);
+        assert!(resolution.notice.unwrap().contains("Copilot"));
+        // Switched off, it says nothing.
+        assert_eq!(
+            load_text(r#"{"agent":"copilot","enabled":false}"#).unwrap(),
+            Resolution::default()
         );
     }
 
