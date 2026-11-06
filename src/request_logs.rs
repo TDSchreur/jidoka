@@ -83,6 +83,8 @@ pub(crate) struct Request {
 #[derive(Debug)]
 pub(crate) struct SessionRequests {
     pub(crate) id: String,
+    /// Whether the session has subagent logs. Without them its figures cover the coordinator only.
+    pub(crate) has_subagent_logs: bool,
     /// The run ids an executed `factory run update <id>` command in this session names.
     pub(crate) claims: HashSet<String>,
     pub(crate) requests: Vec<Request>,
@@ -111,7 +113,7 @@ struct Pending {
 }
 
 /// Reads the Claude Code logs under `root`: every session that executed `factory run update` for a run in
-/// `ids`, or was recorded for one in `recorded`. Requests of subagents are not read.
+/// `ids`, or was recorded for one in `recorded`, together with the logs of its subagents.
 pub(crate) fn read_requests(
     root: &Path,
     ids: &HashSet<&str>,
@@ -130,7 +132,7 @@ pub(crate) fn read_requests(
     let (mut files, mut bytes) = (0usize, 0u64);
     // A response that two session files hold (a resumed session copies its history) counts once.
     let mut seen: BTreeMap<String, (String, Pending)> = BTreeMap::new();
-    let mut kept: BTreeMap<String, HashSet<String>> = BTreeMap::new();
+    let mut kept: BTreeMap<String, (HashSet<String>, bool)> = BTreeMap::new();
     'logs: for slug in sub_dirs(root) {
         for file in files_in(&slug.path()) {
             let path = file.path();
@@ -178,12 +180,21 @@ pub(crate) fn read_requests(
             if claims.is_empty() && !is_recorded {
                 continue;
             }
-            // The subagents of a session are in its own folder.
-            for sub in files_in(&slug.path().join(&stem).join("subagents")) {
+            // The subagents of a session are in its own folder, which is not followed if it is a link.
+            let session_dir = slug.path().join(&stem);
+            let subagent_dir = session_dir.join("subagents");
+            let subagent_files = if is_real_dir(&session_dir) && is_real_dir(&subagent_dir) {
+                files_in(&subagent_dir)
+            } else {
+                Vec::new()
+            };
+            let mut has_subagent_logs = false;
+            for sub in subagent_files {
                 let sub_path = sub.path();
                 if sub_path.extension().is_none_or(|e| e != "jsonl") {
                     continue;
                 }
+                has_subagent_logs = true;
                 if Instant::now() > deadline {
                     out.timed_out = true;
                 }
@@ -208,7 +219,9 @@ pub(crate) fn read_requests(
                     "{malformed} malformed Claude Code log line(s) were skipped"
                 ));
             }
-            kept.entry(stem.clone()).or_default().extend(claims);
+            let entry = kept.entry(stem.clone()).or_default();
+            entry.0.extend(claims);
+            entry.1 |= has_subagent_logs;
             for (key, pending) in pending {
                 match seen.get_mut(&key) {
                     Some((_, existing)) => {
@@ -239,11 +252,12 @@ pub(crate) fn read_requests(
             subagent: pending.subagent,
         });
     }
-    for (id, claims) in kept {
+    for (id, (claims, has_subagent_logs)) in kept {
         let mut requests = by_session.remove(&id).unwrap_or_default();
         requests.sort_by_key(|request| request.ts);
         out.sessions.push(SessionRequests {
             id,
+            has_subagent_logs,
             claims,
             requests,
         });
@@ -363,6 +377,11 @@ fn result_bytes(content: &Value) -> u64 {
     bytes as u64
 }
 
+/// Whether `path` is a folder itself, not a link to one.
+fn is_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
+}
+
 fn truncate(command: &str) -> &str {
     if command.len() <= MAX_COMMAND_BYTES {
         return command;
@@ -374,14 +393,22 @@ fn truncate(command: &str) -> &str {
     &command[..end]
 }
 
-/// The run ids in `ids` that a `factory run update <id>` in `command` names. An id is digits only.
+/// The run ids in `ids` that a `factory run update <id>` in `command` names. Only a command that runs
+/// `factory` counts: `grep "factory run update 1" notes.md`, an `echo` or the text of a here-document do not.
+/// An id is digits only.
 fn updated_runs(command: &str, ids: &HashSet<&str>) -> HashSet<String> {
     let mut found = HashSet::new();
-    for (at, _) in command.match_indices("run update") {
-        let after = command[at + "run update".len()..].trim_start_matches([' ', '\t', '"', '\'']);
-        let id: String = after.chars().take_while(char::is_ascii_digit).collect();
-        if !id.is_empty() && ids.contains(id.as_str()) {
-            found.insert(id);
+    for segment in segments(command) {
+        let words = command_words(&segment);
+        let program = words
+            .first()
+            .map(|word| word.rsplit('/').next().unwrap_or(word));
+        if let (Some("factory"), Some(&"run"), Some(&"update"), Some(id)) =
+            (program, words.get(1), words.get(2), words.get(3))
+        {
+            if ids.contains(id) {
+                found.insert((*id).to_string());
+            }
         }
     }
     found
@@ -485,16 +512,28 @@ fn is_assignment(word: &str) -> bool {
     })
 }
 
-fn hit(segment: &str) -> Hit {
-    let mut words: Vec<&str> = segment
+/// The most words of a command that are looked at. The program and its subcommand are at the start, so a
+/// hostile command of thousands of words costs no more than a normal one.
+const MAX_COMMAND_WORDS: usize = 32;
+
+/// The words of one command, without quotes, env assignments and wrappers such as `sudo`.
+fn command_words(segment: &str) -> Vec<&str> {
+    let words: Vec<&str> = segment
         .split_whitespace()
+        .take(MAX_COMMAND_WORDS)
         .map(|word| word.trim_matches(['"', '\'']))
         .collect();
-    while words.first().is_some_and(|word| {
-        is_assignment(word) || ["sudo", "time", "command", "exec", "nohup"].contains(word)
-    }) {
-        words.remove(0);
-    }
+    let start = words
+        .iter()
+        .position(|word| {
+            !(is_assignment(word) || ["sudo", "time", "command", "exec", "nohup"].contains(word))
+        })
+        .unwrap_or(words.len());
+    words[start..].to_vec()
+}
+
+fn hit(segment: &str) -> Hit {
+    let mut words = command_words(segment);
     let Some(program) = words
         .first()
         .map(|word| word.rsplit('/').next().unwrap_or(word))
@@ -503,12 +542,11 @@ fn hit(segment: &str) -> Hit {
     };
     // `git -C <path> <command>`
     if program == "git" {
-        while words
-            .get(1)
-            .is_some_and(|word| *word == "-C" || *word == "-c")
-        {
-            words.drain(1..3.min(words.len()));
-        }
+        let skipped = words[1..]
+            .chunks(2)
+            .take_while(|pair| pair[0] == "-C" || pair[0] == "-c")
+            .count();
+        words.drain(1..(1 + 2 * skipped).min(words.len()));
     }
     let word = |index: usize| words.get(index).copied().unwrap_or("");
     let has = |text: &str| words.iter().any(|w| w.contains(text));
@@ -556,6 +594,7 @@ pub(crate) fn uncategorized(sessions: Vec<crate::usage_logs::SessionData>) -> Ve
         .into_iter()
         .map(|session| SessionRequests {
             id: session.id,
+            has_subagent_logs: session.entries.iter().any(|entry| entry.subagent),
             claims: session.mentions,
             requests: session
                 .entries

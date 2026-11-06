@@ -198,7 +198,7 @@ pub(crate) fn analyze(
             .copied()
             .filter(|run| run.id != target.id && claims(run, session))
             .collect();
-        let (mut used, mut had_subagent) = (false, false);
+        let mut used = false;
         for request in &session.requests {
             // A request from the future cannot be the run's work: a clock is wrong or the log is made up.
             if request.ts > now.saturating_add(FUTURE_SLACK_MS)
@@ -219,7 +219,6 @@ pub(crate) fn analyze(
             add(&mut result.total, request);
             if request.subagent {
                 add(&mut result.subagents, request);
-                had_subagent = true;
             }
             result.chained_reporting += u64::from(request.chained_reporting);
             result.several_categories += u64::from(request.several_categories);
@@ -227,7 +226,7 @@ pub(crate) fn analyze(
         }
         if used {
             result.sessions.push(session.id.clone());
-            if !had_subagent {
+            if !session.has_subagent_logs {
                 result.coordinator_only_sessions.push(session.id.clone());
             }
         }

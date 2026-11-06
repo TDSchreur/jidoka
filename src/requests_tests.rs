@@ -781,3 +781,102 @@ fn the_pool_options_come_in_any_order_and_refuse_the_rest() {
         assert!(parse_options(bad).is_err(), "{bad:?}");
     }
 }
+
+// --- rework 1 ---------------------------------------------------------------------------------------
+
+#[test]
+fn only_a_factory_command_claims_a_run_not_a_command_that_names_one() {
+    let world = World::new();
+    world.session(
+        "named",
+        &[
+            one(10, "n1", bash(&format!("grep -n \"factory run update {RUN_A}\" README.md"))),
+            one(20, "n2", bash(&format!("echo \"factory run update {RUN_A} build running\""))),
+            one(
+                30,
+                "n3",
+                bash(&format!("gh pr create --body-file - <<'EOF'\nRun factory run update {RUN_A} to report\nEOF")),
+            ),
+        ],
+    );
+    world.session(
+        "real",
+        &[one(
+            10,
+            "r1",
+            bash(&format!(
+                "cd /repo && factory run update {RUN_A} build running --activity x"
+            )),
+        )],
+    );
+    let target = run(RUN_A, 0, Some(100), &[]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    assert_eq!(result.sessions, ["real"]);
+}
+
+#[test]
+fn a_session_with_subagent_logs_is_not_coordinator_only_even_when_they_fall_outside_the_run() {
+    let world = World::new();
+    world.session("s", &[one(10, "m1", text())]);
+    world.file(
+        "claude/projects/slug/s/subagents/agent-1.jsonl",
+        &[sidechain(one(900, "late", text()))],
+    );
+    let target = run(RUN_A, 0, Some(100), &["s"]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    assert_eq!(result.total.requests, 1);
+    assert!(
+        result.coordinator_only_sessions.is_empty(),
+        "{:?}",
+        result.notes
+    );
+}
+
+#[test]
+fn a_command_of_thousands_of_prefix_words_is_still_classified() {
+    let command = format!("{}cargo test", "sudo ".repeat(12_000));
+    // Only the start of a command can name the program, so a hostile one costs no more than a normal one.
+    assert_eq!(category_of(&command), Category::ReadingEditingAnalysis);
+    let command = format!("git {}commit -m x", "-C x ".repeat(12_000));
+    assert_eq!(category_of(&command), Category::ReadingEditingAnalysis);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_linked_subagent_folder_is_not_followed() {
+    let world = World::new();
+    world.session("s", &[one(10, "m1", text())]);
+    world.file(
+        "elsewhere/agent-1.jsonl",
+        &[sidechain(one(20, "x1", text()))],
+    );
+    let session_dir = world.dir.path().join("claude/projects/slug/s");
+    fs::create_dir_all(&session_dir).unwrap();
+    std::os::unix::fs::symlink(
+        world.dir.path().join("elsewhere"),
+        session_dir.join("subagents"),
+    )
+    .unwrap();
+    let target = run(RUN_A, 0, Some(100), &["s"]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    assert_eq!(result.total.requests, 1);
+    assert_eq!(result.subagents.requests, 0);
+}
+
+#[test]
+fn the_pooled_view_keeps_the_notes_that_say_a_reading_was_cut_short() {
+    let (world, runs) = pooled_world();
+    // A deadline that has already passed: every log read stops at once.
+    let result = pool(
+        &runs,
+        &world.roots(),
+        T0 + 10_000_000,
+        Instant::now(),
+        &PoolOptions::default(),
+    );
+    assert!(
+        result.notes.iter().any(|n| n.contains("took too long")),
+        "{:?}",
+        result.notes
+    );
+}

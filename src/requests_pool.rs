@@ -171,11 +171,19 @@ pub(crate) fn pool(
         if class != Class::Completed && !options.include_partial {
             out.left_out.push(left_out(match class {
                 Class::Open => "the run is still open (--include-partial pools it)".into(),
-                _ => "its token usage is partial or missing (--include-partial pools it)".into(),
+                Class::Partial | Class::Completed => {
+                    "its token usage is partial or missing (--include-partial pools it)".into()
+                }
             }));
             continue;
         }
         let result = analyze(run, runs, roots, now, deadline);
+        // A reading that was cut short undercounts every run after it: say so once.
+        for note in &result.notes {
+            if note.starts_with("reading the session logs") && !out.notes.contains(note) {
+                out.notes.push(note.clone());
+            }
+        }
         if result.total.requests == 0 {
             out.left_out
                 .push(left_out("no requests were found for it".into()));
