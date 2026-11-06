@@ -273,6 +273,11 @@ fn conventions_file(root: &Path) -> Option<PathBuf> {
 /// `MAX_DOC_BYTES`, so a device, a pipe or a file that grows cannot make doctor wait or fill memory.
 fn read_doc(path: &Path) -> io::Result<String> {
     use io::Read;
+    // Looked at before it is opened, because opening a named pipe waits for a writer. `metadata` follows
+    // symlinks. The opened file is checked again below in case it was swapped in between.
+    if !fs::metadata(path)?.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
     let file = fs::File::open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
@@ -1383,6 +1388,30 @@ mod tests {
         assert_eq!(read_doc(&plain).unwrap(), "{}");
         fs::write(&plain, vec![b' '; MAX_DOC_BYTES as usize + 1]).unwrap();
         assert!(read_doc(&plain).is_err());
+    }
+
+    /// Opening a pipe for reading waits for a writer, so it must be refused before it is opened.
+    #[cfg(unix)]
+    #[test]
+    fn a_named_pipe_in_the_repository_is_refused_without_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let pipe = dir.path().join("settings.local.json");
+        assert!(Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap()
+            .success());
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&pipe, &link).unwrap();
+        for path in [pipe, link] {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            // A thread that is still waiting when the test ends is cleaned up with the process.
+            std::thread::spawn(move || sender.send(read_doc(&path).is_err()));
+            let refused = receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("read_doc waited for a writer on a named pipe");
+            assert!(refused);
+        }
     }
 
     #[test]
