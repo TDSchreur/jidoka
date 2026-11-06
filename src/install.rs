@@ -236,10 +236,13 @@ mod tests {
     #[test]
     fn selector_and_execution_workflows_are_bundled() {
         let selector = bundled_text("factory/SKILL.md");
-        assert!(selector.starts_with("---\nname: factory\n"));
+        assert_eq!(selector.lines().nth(1), Some("name: factory"));
         for skill in WORKFLOW_SKILLS {
             let workflow = bundled_text(&format!("{skill}/SKILL.md"));
-            assert!(workflow.starts_with(&format!("---\nname: {skill}\n")));
+            assert_eq!(
+                workflow.lines().nth(1),
+                Some(format!("name: {skill}").as_str())
+            );
             assert!(selector.contains(&format!("../{skill}/SKILL.md")));
         }
     }
