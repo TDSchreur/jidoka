@@ -134,7 +134,10 @@
   color: var(--colorNeutralForeground1);
   background: var(--colorNeutralBackground2);
 }
-body { max-width: 960px; margin: 0 auto; padding: var(--spacingVerticalXXL) var(--spacingHorizontalL); }
+/* The page is a column at least as tall as the window, so the footer is at the bottom of a short page. */
+body { box-sizing: border-box; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; max-width: 960px; margin: 0 auto; padding: var(--spacingVerticalXXL) var(--spacingHorizontalL) 0; }
+/* A focused element that scrolls into view stops above the footer, not behind it. */
+html { scroll-padding-bottom: calc(var(--lineHeightBase200) + 2 * var(--spacingVerticalS)); }
 header { margin-bottom: var(--spacingVerticalXXL); }
 h1 { font-size: var(--fontSizeBase500); line-height: var(--lineHeightBase500); font-weight: var(--fontWeightSemibold); margin: var(--spacingVerticalXS) 0; }
 p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
@@ -287,7 +290,9 @@ main:focus { outline: none; }
 .chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingHorizontalXS); margin-top: var(--spacingVerticalXS); }
 .chips .badge { margin-top: 0; }
 .chip { display: inline-block; padding: var(--spacingVerticalXXS) var(--spacingHorizontalSNudge); border: var(--strokeWidthThin) solid var(--colorNeutralStrokeAccessible); border-radius: var(--borderRadiusSmall); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground3); }
-footer { margin-top: var(--spacingVerticalXXL); }
+/* The footer, and the version in it, stays in view: at the bottom of a short page, and stuck to the bottom of the window while a long page scrolls. */
+#app { margin-bottom: var(--spacingVerticalXL); }
+footer { position: sticky; bottom: 0; margin-top: auto; padding: var(--spacingVerticalS) 0; background: var(--colorNeutralBackground2); border-top: var(--strokeWidthThin) solid var(--colorNeutralStroke2); }
 .build { margin: 0; font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground3); }
 code { font-family: var(--fontFamilyMonospace); }
 a { color: var(--colorBrandForegroundLink); }

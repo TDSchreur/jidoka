@@ -1837,6 +1837,27 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn the_footer_with_the_version_stays_in_view() {
+        let css = stylesheet().await;
+        let rule = |selector: &str| {
+            css.lines()
+                .find(|line| line.starts_with(&format!("{selector} {{")))
+                .unwrap_or_else(|| panic!("no {selector} rule"))
+                .to_string()
+        };
+        // Stuck to the bottom of the window while the page scrolls, with a background so content does not show through.
+        let footer = rule("footer");
+        assert!(footer.contains("position: sticky") && footer.contains("bottom: 0"));
+        assert!(footer.contains("background:"));
+        // At the bottom of a short page: the body is a column at least as tall as the window.
+        let body = rule("body");
+        assert!(body.contains("min-height: 100dvh") && body.contains("flex-direction: column"));
+        assert!(footer.contains("margin-top: auto"));
+        // A focused element is not left behind the footer.
+        assert!(rule("html").contains("scroll-padding-bottom"));
+    }
+
+    #[rocket::async_test]
     async fn dashboard_theme_toggle_is_a_labelled_radio_group_remembered_safely() {
         let page = dashboard_page().await;
         assert!(page.contains("<legend>Theme</legend>"));
