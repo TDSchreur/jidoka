@@ -4,6 +4,16 @@ use super::*;
 use std::{cell::RefCell, fs, path::PathBuf, process::Command};
 use tempfile::TempDir;
 
+/// The real path of `path` in the plain form git prints. On Windows `canonicalize` gives a `\\?\` path, which
+/// git reads as a URL when it is used as a remote.
+fn real_path(path: &Path) -> PathBuf {
+    let real = path.canonicalize().unwrap();
+    match real.to_string_lossy().strip_prefix(r"\\?\") {
+        Some(plain) => PathBuf::from(plain),
+        None => real,
+    }
+}
+
 /// A user's own git settings (a signing key, hooks) must not reach the tests: this file never exists.
 fn no_global_config() -> PathBuf {
     std::env::temp_dir().join("factory-tests-no-such-gitconfig")
@@ -51,7 +61,7 @@ struct Project {
 impl Project {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = real_path(dir.path());
         let remote = root.join("remote.git");
         fs::create_dir(&remote).unwrap();
         git(&remote, &["init", "-q", "--bare", "-b", "develop"]);
