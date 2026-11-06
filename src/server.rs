@@ -1116,7 +1116,7 @@ mod tests {
             };
             store
                 .usage_collection()
-                .collect_paused(&store, "missing", &settings, ready_tx, release_rx)
+                .collect_paused(&store, "missing", &settings, None, ready_tx, release_rx)
                 .unwrap();
         });
         ready_rx

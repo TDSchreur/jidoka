@@ -44,6 +44,7 @@ fn cloned_store_collections_serialize_while_updates_remain_responsive() {
             &first_store,
             &id,
             &first_settings,
+            None,
             entered_tx,
             release_rx,
         )
@@ -54,24 +55,23 @@ fn cloned_store_collections_serialize_while_updates_remain_responsive() {
 
     let (second_entered_tx, second_entered_rx) = mpsc::channel();
     let (second_release_tx, second_release_rx) = mpsc::channel();
-    let (started_tx, started_rx) = mpsc::channel();
+    let (waiting_tx, waiting_rx) = mpsc::channel();
     let second_store = store.clone();
     let id = run.id.clone();
+    let second_settings = settings.clone();
     let second = std::thread::spawn(move || {
-        started_tx.send(()).unwrap();
         second_store.usage_collection().collect_paused(
             &second_store,
             &id,
-            &settings,
+            &second_settings,
+            Some(waiting_tx),
             second_entered_tx,
             second_release_rx,
         )
     });
-    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert!(matches!(
-        second_entered_rx.recv_timeout(Duration::from_millis(100)),
-        Err(mpsc::RecvTimeoutError::Timeout)
-    ));
+    waiting_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("second collection waits for the first");
     let (updated_tx, updated_rx) = mpsc::channel();
     let update_store = store.clone();
     let id = run.id.clone();
@@ -92,6 +92,9 @@ fn cloned_store_collections_serialize_while_updates_remain_responsive() {
         .expect("update should complete while collection is held")
         .unwrap()
         .is_some());
+    assert!(store.delete(&run.id).unwrap());
+    collect_and_store(&store, &run.id, &settings).unwrap();
+    assert!(store.get(&run.id).unwrap().is_none());
 }
 
 fn iso(offset_seconds: u64) -> String {

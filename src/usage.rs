@@ -625,7 +625,28 @@ impl Collection {
         id: &str,
         settings: &UsageSettings,
     ) -> std::io::Result<()> {
-        let _guard = self.lock.lock().map_err(crate::run::lock_error)?;
+        self.collect_with(store, id, settings, || {}, || Ok(()))
+    }
+
+    fn collect_with(
+        &self,
+        store: &crate::run::RunStore,
+        id: &str,
+        settings: &UsageSettings,
+        waiting: impl FnOnce(),
+        acquired: impl FnOnce() -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        let _guard = match self.lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                return Err(crate::run::lock_error(error))
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                waiting();
+                self.lock.lock().map_err(crate::run::lock_error)?
+            }
+        };
+        acquired()?;
         collect_locked(store, id, settings)
     }
 
@@ -635,13 +656,24 @@ impl Collection {
         store: &crate::run::RunStore,
         id: &str,
         settings: &UsageSettings,
+        waiting: Option<std::sync::mpsc::Sender<()>>,
         entered: std::sync::mpsc::Sender<()>,
         release: std::sync::mpsc::Receiver<()>,
     ) -> std::io::Result<()> {
-        let _guard = self.lock.lock().map_err(crate::run::lock_error)?;
-        entered.send(()).map_err(std::io::Error::other)?;
-        release.recv().map_err(std::io::Error::other)?;
-        collect_locked(store, id, settings)
+        self.collect_with(
+            store,
+            id,
+            settings,
+            || {
+                if let Some(waiting) = waiting {
+                    let _ = waiting.send(());
+                }
+            },
+            || {
+                entered.send(()).map_err(std::io::Error::other)?;
+                release.recv().map_err(std::io::Error::other)
+            },
+        )
     }
 }
 
