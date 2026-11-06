@@ -396,8 +396,6 @@ fn codex_meta(text: &str) -> Option<(String, String, bool)> {
     Some((id, root, subagent))
 }
 
-/// Codex counts cached input inside `input_tokens`; the cached part is moved to cache read, and cache
-/// writes are taken out of input too. Reasoning tokens are part of output.
 /// What a Codex `turn_context` line says about the model and effort of a turn.
 #[derive(Clone)]
 struct TurnSettings {
@@ -405,6 +403,8 @@ struct TurnSettings {
     effort: Option<String>,
 }
 
+/// Codex counts cached input inside `input_tokens`; the cached part is moved to cache read, and cache
+/// writes are taken out of input too. Reasoning tokens are part of output.
 fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
     let mut parsed = Parsed::default();
     let mut by_turn: BTreeMap<String, TurnSettings> = BTreeMap::new();
