@@ -135,10 +135,10 @@ fn observed_line(requested: &str, stage: Stage, usage: Option<&Usage>) -> String
         ""
     };
     if models.is_empty() {
-        let why = if usage.no_data.contains(&stage) {
-            " (no session log has entries for it)"
-        } else {
-            partial
+        let why = match (usage.no_data.contains(&stage), partial.is_empty()) {
+            (true, true) => " (no session log has entries for it)",
+            (true, false) => " (no session log has entries for it; usage is partial)",
+            (false, _) => partial,
         };
         return format!("observed: none recorded for this stage{why}");
     }
@@ -404,6 +404,16 @@ mod tests {
         assert_eq!(
             observed(&text, "check"),
             "observed: none recorded for this stage (no session log has entries for it)"
+        );
+    }
+
+    #[test]
+    fn a_no_data_stage_on_a_partial_run_still_says_the_usage_is_partial() {
+        let mut run = with_usage("partial", &[("build", "claude-sonnet-5-5", false)]);
+        run.usage.as_mut().unwrap().no_data = vec![Stage::Check];
+        assert_eq!(
+            observed(&render(&run), "check"),
+            "observed: none recorded for this stage (no session log has entries for it; usage is partial)"
         );
     }
 
