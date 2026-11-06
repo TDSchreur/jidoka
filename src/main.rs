@@ -3,6 +3,7 @@ mod codex_requests;
 mod doctor;
 mod inspect;
 mod install;
+mod pr_wait;
 mod repository;
 mod request_logs;
 mod requests;
@@ -20,7 +21,7 @@ use run::UPDATE_HELP;
 use server::{serve, ADDRESS, DEFAULT_PORT};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -43,8 +44,8 @@ fn current_build() -> String {
 
 fn main() -> ExitCode {
     match run_cli() {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::FAILURE,
+        Ok(0) => ExitCode::SUCCESS,
+        Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("{error}");
             ExitCode::FAILURE
@@ -52,8 +53,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// Runs the command; `false` means it already reported why it did not succeed.
-fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
+/// Runs the command and returns its exit status; a non-zero one means it already reported why.
+fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args().skip(1).collect();
     match args
         .iter()
@@ -82,7 +83,7 @@ fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
         )?,
         ["doctor", options @ ..] => {
             let args = doctor::parse_args(options).map_err(|error| format!("{error}\n{HELP}"))?;
-            return doctor::run(args);
+            return doctor::run(args).map(|ok| u8::from(!ok));
         }
         ["dashboard", options @ ..] => {
             let (port, usage) =
@@ -184,9 +185,58 @@ fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
             report_run(ADDRESS, id, stage, status, &options)?;
             println!("Updated run {id}");
         }
+        ["pr", "wait", id, options @ ..] if !id.starts_with('-') => {
+            return pr_wait_command(id, options);
+        }
         _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
     }
-    Ok(true)
+    Ok(0)
+}
+
+/// `factory pr wait <run-id>`: watches the CI of the run's pull request and prints the outcome. The exit
+/// status is the outcome's; 1 is a problem with the tools or the run.
+fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
+    let (wait_options, json) =
+        pr_wait::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Invalid run id".into());
+    }
+    let gh = pr_wait::RealGh;
+    pr_wait::check_gh(&gh).map_err(|problem| problem.0)?;
+    let run = fetch_run(ADDRESS, id)?;
+    // The run's activity follows the wait, keeping its stage and status. Only a running run is updated.
+    let stage = serde_json::to_value(run.stage)?
+        .as_str()
+        .unwrap_or("finish")
+        .to_string();
+    let running = matches!(run.status, run::RunStatus::Running);
+    let mut reported_failure = false;
+    let mut activity = |text: &str| {
+        if running {
+            if let Err(error) = report_run(ADDRESS, id, &stage, "running", &["--activity", text]) {
+                if !reported_failure {
+                    reported_failure = true;
+                    eprintln!("The run's activity could not be updated: {error}");
+                }
+            }
+        }
+    };
+    let clock = pr_wait::RealClock(std::time::Instant::now());
+    let waited = pr_wait::wait(
+        run.pr.as_deref(),
+        &wait_options,
+        &gh,
+        &clock,
+        &mut activity,
+        &mut |text| eprintln!("{text}"),
+    )
+    .map_err(|problem| problem.0)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&waited)?);
+    } else {
+        print!("{}", pr_wait::render(&waited));
+    }
+    Ok(waited.exit_code)
 }
 
 /// The id of the agent session this command runs in, when the agent exposes it (Claude Code does).

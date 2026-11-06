@@ -200,6 +200,24 @@ The dashboard reads the token counts your agents write to their own session logs
 
 **What has been validated.** Claude Code and Codex logs were inspected on a real machine, and all three formats are covered by fixture tests that need no agent installed. Copilot's `session.usage_record` events could not be checked against real logs (the local sessions held none), so Copilot support is fixture-tested only. Codex's `cache_write_input_tokens` was zero in every sample, so whether it is part of Codex's input is unvalidated; it is treated as included, like Copilot's. Agent log formats are not a stable interface: if one changes, the affected logs show as `partial` or `not tracked` instead of wrong numbers.
 
+#### Watching CI
+
+`factory pr wait <run-id>` watches the checks of the run's pull request and prints one CI outcome, so an agent does not poll with repeated model requests. It reads the pull request URL recorded on the run (`factory run update <id> finish running --pr <url>`) and needs the GitHub CLI (`gh`), signed in with `gh auth login`.
+
+| Outcome | Exit status | Meaning |
+| --- | ---: | --- |
+| `passed` | 0 | Every check of the current head commit passed or was skipped. |
+| `failed` | 2 | A check failed. Each failed check is listed with its link. The first failed check of each Actions run, for at most three runs, also carries the last 40 lines (at most 4 KiB) of that run's failed log; a log that cannot be fetched leaves the name and link. A failure wins over a cancel. |
+| `cancelled` | 3 | Checks were cancelled and none failed. |
+| `timeout` | 4 | Checks were still running at `--timeout` (default 30 minutes, from 1 second to 24 hours, written as `90s`, `30m` or `2h`). |
+| `head-changed` | 5 | The pull request got a new head commit while waiting. No check results are reported; run the command again. |
+| `no-ci` | 6 | No check appeared within 90 seconds, or within `--timeout` when that is shorter. |
+| `not-open` | 7 | The pull request is merged or closed. |
+
+Exit status 1 is a problem with the tools or the run (no `gh`, not signed in, no network, no pull request recorded), with what to do. Checks are asked for every 15 seconds, and the progress goes to standard error. By default it waits until every check has ended; `--fail-fast` returns `failed` at the first failing check and lists the others as still running. `--json` prints the same data.
+
+Next to the outcome it says whether the branch is up to date with its base, behind it, in conflict with it, or not yet known (GitHub is asked again up to five times). The command only reads: it never merges, pushes or updates the branch, and a `passed` outcome does not mark Finish done. While it waits, the run's activity is "Waiting for CI", and it is set to the outcome when the wait ends; a run that is blocked or done is left alone. Names, links and log lines come from the pull request's checks and are printed with control characters replaced. Ctrl-C ends the process; the activity text then stays until the next update of the run. The Finish procedure of the workflows uses this command, and falls back to watching by hand when the installed `factory` does not know it.
+
 #### Request analysis
 
 `factory run requests <id>` shows how a run's model requests split over what they did, so you can see which steps cost the most requests. `factory run requests --all` pools many runs and shows how each category spreads over them. Add `--json` to either for the same figures as data. It reads the session logs when you call it and stores nothing. Of each request it keeps the time, the token counts and a category; no command text, tool output, prompt or path is kept or printed.
