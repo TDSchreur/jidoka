@@ -411,6 +411,25 @@ mod tests {
     }
 
     #[test]
+    fn the_procedures_keep_the_pull_request_current_without_rewriting_history() {
+        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
+        let section = procedures
+            .split_once("## Pull request and CI")
+            .map(|(_, rest)| rest)
+            .expect("the procedures have a Pull request and CI section");
+        for needle in [
+            "gh pr view --json mergeStateStatus",
+            "`BEHIND`",
+            "normal merge commit",
+            "never rebase, amend or force-push",
+            "neither a Rework nor a CI fix",
+            "not behind its base",
+        ] {
+            assert!(section.contains(needle), "missing: {needle}");
+        }
+    }
+
+    #[test]
     fn the_procedures_start_a_run_naming_the_agent_with_an_option_the_cli_accepts() {
         let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
         let start = procedures

@@ -2,7 +2,7 @@
 
 The [old project](https://github.com/TDSchreur/tds-factory) uses `develop` for daily work and its release branch for published code. This project follows the same flow, with `master` as its release branch.
 
-1. Open ordinary pull requests against `develop` and squash-merge them after `ci-ok` passes.
+1. Open ordinary pull requests against `develop` and squash-merge them after `ci-ok` passes. `develop` requires an up-to-date branch, so a pull request that falls behind after another one lands needs the base merged in and CI run again. The factory's agents do this themselves; for your own branches use the Update branch button on the pull request (the repository allows it).
 2. When ready to release, update the version in `Cargo.toml` and `Cargo.lock` on `develop`, through a pull request. Choose a version whose `v<version>` tag does not already exist.
 3. Open a pull request from `develop` to `master`. Once `ci-ok` passes, merge it with a merge commit so the branches retain their shared history.
 4. The release workflow runs from the resulting `master` commit, builds and tests Linux and Windows binaries, and creates the matching version tag and GitHub Release. Check the release has both binaries, both checksums, and both installer scripts. For a transient failure before tag creation, rerun the workflow on `master`; if the tag already exists, investigate before retrying.
