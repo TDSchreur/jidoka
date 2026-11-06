@@ -18,11 +18,23 @@ spec.loader.exec_module(rows)
 rows.CHECK = """
 <script>
 localStorage.setItem('notifications', 'on');
+const originalFetch = window.fetch;
+window.fetch = async (...args) => {
+  const response = await originalFetch(...args);
+  if (args[0] !== '/api/runs') return response;
+  const phase = sessionStorage.getItem('hidden-test');
+  const data = await response.json();
+  if (phase === 'reload') data.find(run => run.id === '3').status = 'running';
+  if (phase === 'watch-hidden' || phase === 'restoring') {
+    sessionStorage.setItem(phase + '-polls', String(Number(sessionStorage.getItem(phase + '-polls') || 0) + 1));
+  }
+  return new Response(JSON.stringify(data), {status: response.status, headers: response.headers});
+};
 window.Notification = class {
   static permission = 'granted';
   constructor() { sessionStorage.setItem('notification-count', String(Number(sessionStorage.getItem('notification-count') || 0) + 1)); }
 };
-setTimeout(() => fetch('/result', {method: 'POST', body: JSON.stringify({diagnostic: sessionStorage.getItem('hidden-test'), focus: document.activeElement.tagName, target: document.querySelectorAll('.project-toggle')[1]?.outerHTML, rows: document.querySelectorAll('.project-row').length})}), 4000);
+setTimeout(() => fetch('/result', {method: 'POST', body: JSON.stringify({diagnostic: sessionStorage.getItem('hidden-test'), focus: document.activeElement.tagName, target: document.querySelectorAll('.project-toggle')[1]?.outerHTML, rows: document.querySelectorAll('.project-row').length})}), 24000);
 const check = setInterval(() => {
   const projects = [...document.querySelectorAll('.project-row')];
   if (!sessionStorage.getItem('hidden-test')) {
@@ -36,11 +48,14 @@ const check = setInterval(() => {
   } else if (sessionStorage.getItem('hidden-test') === 'reload') {
     if (projects.length !== 1 || !document.querySelector('.hidden-projects button')) return;
     sessionStorage.setItem('hidden-waiting', String(document.querySelector('.toolbar').textContent.includes('Needs you (0)')));
+    sessionStorage.setItem('hidden-test', 'watch-hidden');
+  } else if (sessionStorage.getItem('hidden-test') === 'watch-hidden') {
+    if (Number(sessionStorage.getItem('watch-hidden-polls') || 0) < 2) return;
     sessionStorage.setItem('hidden-test', 'restoring');
     document.querySelector('.hidden-projects').open = true;
     document.querySelector('.hidden-projects button').focus();
     document.querySelector('.hidden-projects button').click();
-  } else if (projects.length === 2 && document.activeElement === projects[1].querySelector('.project-toggle')) {
+  } else if (projects.length === 2 && document.activeElement === projects[1].querySelector('.project-toggle') && Number(sessionStorage.getItem('restoring-polls') || 0) >= 2) {
     clearInterval(check);
     fetch('/result', { method: 'POST', body: JSON.stringify({
       names: projects.map(row => row.querySelector('.project-heading').textContent.trim()),
