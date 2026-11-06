@@ -782,7 +782,7 @@ fn the_pool_options_come_in_any_order_and_refuse_the_rest() {
     }
 }
 
-// --- rework 1 ---------------------------------------------------------------------------------------
+// --- which run a command updates, and which subagent logs count ---------------------------------------
 
 #[test]
 fn only_a_factory_command_claims_a_run_not_a_command_that_names_one() {
@@ -883,7 +883,7 @@ fn the_pooled_view_keeps_the_notes_that_say_a_reading_was_cut_short() {
     );
 }
 
-// --- rework 2 ---------------------------------------------------------------------------------------
+// --- quotes and wrapper words around an update command -----------------------------------------------
 
 /// The sessions that claim `RUN_A` among the given commands, one session per command.
 fn claimed_by(commands: &[String]) -> Vec<String> {
@@ -932,7 +932,13 @@ fn a_real_update_command_claims_however_it_is_wrapped() {
     .iter()
     .map(|c| c.replace("ID", id))
     .collect();
-    assert_eq!(claimed_by(&commands).len(), commands.len());
+    for command in &commands {
+        assert_eq!(
+            claimed_by(std::slice::from_ref(command)).len(),
+            1,
+            "{command}"
+        );
+    }
 }
 
 #[test]
@@ -947,7 +953,7 @@ fn words_inside_quotes_do_not_decide_the_category() {
     );
 }
 
-// --- rework 3 ---------------------------------------------------------------------------------------
+// --- comments, here-strings and wrappers with options ------------------------------------------------
 
 #[test]
 fn an_update_claims_after_comments_here_strings_and_wrappers_with_options() {
@@ -966,12 +972,20 @@ fn an_update_claims_after_comments_here_strings_and_wrappers_with_options() {
     .iter()
     .map(|c| c.replace("ID", RUN_A))
     .collect();
-    assert_eq!(claimed_by(&commands).len(), commands.len());
+    for command in &commands {
+        assert_eq!(
+            claimed_by(std::slice::from_ref(command)).len(),
+            1,
+            "{command}"
+        );
+    }
 }
 
 #[test]
-fn a_comment_never_claims_a_run() {
+fn text_that_is_not_a_command_never_claims_a_run() {
     assert!(claimed_by(&[
+        format!("cat <<\\EOF\nfactory run update {RUN_A} b\nEOF"),
+        format!("cat <<\"EOF\"\nfactory run update {RUN_A} b\nEOF"),
         format!("ls # factory run update {RUN_A}"),
         format!("# factory run update {RUN_A}\nls"),
     ])

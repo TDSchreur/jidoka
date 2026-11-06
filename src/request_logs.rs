@@ -472,7 +472,8 @@ pub(crate) fn classify(commands: &[String], other_tool: bool, any_tool: bool) ->
 }
 
 /// The commands of a shell line, split at `&&`, `||`, `;`, `|` and line ends. Text inside quotes stays in
-/// its command, and the lines of a here-document are text, not commands.
+/// its command; comments, here-strings and the lines of a here-document are text, not commands. A
+/// here-document delimiter may be bare, quoted or backslash-escaped.
 fn segments(command: &str) -> Vec<String> {
     let chars: Vec<char> = command.chars().collect();
     let mut out = Vec::new();
@@ -539,7 +540,7 @@ fn segments(command: &str) -> Vec<String> {
                         j += 1;
                     }
                     let word: String = chars[start..j].iter().collect();
-                    let word = word.trim_matches(['\'', '"']);
+                    let word = word.trim_matches(['\'', '"']).trim_start_matches('\\');
                     if word
                         .chars()
                         .next()
@@ -603,7 +604,9 @@ fn is_assignment(word: &str) -> bool {
 const MAX_COMMAND_WORDS: usize = 32;
 
 /// The words of one command, without quotes, env assignments and the words that only wrap it: `sudo`,
-/// `time`, `env`, `timeout <duration>`, `if`, `then`, `!` and an opening parenthesis or brace.
+/// `time`, `command`, `exec`, `nohup`, the shell keywords `if`, `then`, `do`, `else`, `elif`, `while` and
+/// `until`, `!`, an opening parenthesis or brace, and `env` and `timeout` with their options (and, for
+/// `timeout`, the duration).
 fn command_words(segment: &str) -> Vec<&str> {
     let words: Vec<&str> = segment
         .split_whitespace()
