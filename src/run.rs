@@ -144,26 +144,33 @@ pub(crate) struct NewRun {
 impl NewRun {
     fn validate(&self) -> io::Result<()> {
         if self.title.trim().is_empty()
-            || self.project.trim().is_empty()
             || self.title.len() > 500
-            || self.project.len() > 4096
-            || self
-                .session
-                .as_deref()
-                .is_some_and(|id| crate::run::check_session_id(id).is_err())
             || self.title.chars().any(char::is_control)
-            || self.project.chars().any(char::is_control)
-            || self
-                .model_routing
-                .as_ref()
-                .is_some_and(|routing| routing.validate().is_err())
-            || self.repository.as_deref().is_some_and(|repository| {
-                repository.len() > 4096
-                    || repository.chars().any(char::is_control)
-                    || !crate::run::is_absolute_path(repository)
-            })
         {
-            return Err(io_invalid("Invalid run"));
+            return Err(io_invalid(
+                "Title must be nonempty, at most 500 bytes, and contain no control characters",
+            ));
+        }
+        if self.project.trim().is_empty()
+            || self.project.len() > 4096
+            || self.project.chars().any(char::is_control)
+        {
+            return Err(io_invalid(
+                "Project must be nonempty, at most 4096 bytes, and contain no control characters",
+            ));
+        }
+        if let Some(session) = &self.session {
+            check_session_id(session).map_err(io_invalid)?;
+        }
+        if let Some(routing) = &self.model_routing {
+            routing.validate().map_err(io_invalid)?;
+        }
+        if self.repository.as_deref().is_some_and(|repository| {
+            repository.len() > 4096
+                || repository.chars().any(char::is_control)
+                || !is_absolute_path(repository)
+        }) {
+            return Err(io_invalid("Repository must be an absolute path of at most 4096 bytes without control characters"));
         }
         Ok(())
     }
