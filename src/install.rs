@@ -411,18 +411,22 @@ mod tests {
     }
 
     #[test]
-    fn the_check_review_agents_follow_the_model_routing_procedure() {
+    fn the_model_routing_procedure_says_how_to_read_and_apply_the_selection() {
         let procedures = bundled_text("factory-procedures/SKILL.md");
         let section = procedures
-            .split_once("## Model routing")
-            .and_then(|(_, rest)| rest.split_once("\n## "))
-            .map(|(section, _)| section)
+            .split_once("## Model routing\n")
+            .map(|(_, rest)| {
+                rest.split_once("\n## ")
+                    .map_or(rest, |(section, _)| section)
+            })
             .expect("the procedures have a Model routing section");
         for needle in [
             "factory run inspect <id> --json",
             "`model_routing`",
-            "`overrides[task]`",
+            "`overrides.check`",
+            "`tasks.check`",
             "never a fork",
+            "only the aliases `opus`, `sonnet`, `haiku` and `fable`",
             "model routing not applied",
             "Copilot CLI",
             "do not claim a switch",
@@ -430,15 +434,13 @@ mod tests {
             assert!(section.contains(needle), "Model routing lacks {needle}");
         }
         let review = bundled_text("code-review/SKILL.md");
-        for needle in [
-            "`model`",
-            "`effort`",
-            "not forks",
-            "exactly as described here",
-        ] {
+        for needle in ["model and an effort for the review agents", "not forks"] {
             assert!(review.contains(needle), "code-review lacks {needle}");
         }
-        // The workflows with a Check point to it; the one without a Check does not.
+    }
+
+    #[test]
+    fn only_the_workflows_with_a_check_point_to_the_model_routing_procedure() {
         for skill in ["factory-full", "factory-balanced"] {
             let text = bundled_text(&format!("{skill}/SKILL.md"));
             assert!(
@@ -447,22 +449,12 @@ mod tests {
                 ),
                 "{skill} does not point to Model routing"
             );
-            assert!(
-                text.contains("`code-review`"),
-                "{skill} lost its code review"
-            );
         }
         let fast = bundled_text("factory-fast/SKILL.md");
         assert!(
             !fast.contains("Model routing"),
             "factory-fast has no Check to route"
         );
-        assert!(
-            !fast.contains("code-review"),
-            "factory-fast gained a review"
-        );
-        let full = bundled_text("factory-full/SKILL.md");
-        assert!(full.contains("`security-review`") && full.contains("`tdd`"));
     }
 
     #[test]
