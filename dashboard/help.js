@@ -190,8 +190,10 @@ function Stages({ reworkCap }) {
         The agent writes the pull request description (<${Code}>pr<//>), verifies the final commit (reusing the latest
         passing verification when nothing has changed), pushes the branch and opens the pull request against the base
         branch it chose at the start. Then it watches the pull request’s CI until every check has finished. When a
-        check fails it reads the log, fixes the cause in a new commit, verifies again and pushes. These CI fixes are not
-        Reworks. The Run is Done when the pull request is open and CI is green, or when the project has no CI. If the
+        check fails it reads the log, fixes the cause in a new commit, verifies again and pushes. When another pull
+        request lands first and leaves this one behind its base branch, the agent merges the base into the branch
+        with a normal commit and watches CI again. Neither the CI fixes nor the base updates are Reworks. The Run is
+        Done when the pull request is open, up to date and CI is green, or when the project has no CI. If the
         failure cannot be fixed, such as an infrastructure problem or a missing permission, the Run is blocked with that
         reason.
       </p>
