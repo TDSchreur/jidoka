@@ -16,7 +16,11 @@ TABS = ["Overview", "Stages", "Workflows", "Skills", "Dashboard", "Commands", "M
 # Drives the Help like a person with a keyboard and reports what it saw.
 CHECK = """
 <script>
-const wait = (ok) => new Promise((resolve) => { const t = setInterval(() => { const v = ok(); if (v) { clearInterval(t); resolve(v); } }, 20); });
+// Gives up after ten seconds and says which step was waiting, so a hang is not just a timeout.
+const wait = (ok, what = ok.toString().slice(0, 80)) => new Promise((resolve, reject) => {
+  const started = Date.now();
+  const t = setInterval(() => { const v = ok(); if (v) { clearInterval(t); resolve(v); } else if (Date.now() - started > 10000) { clearInterval(t); reject(new Error('timed out waiting for ' + what)); } }, 20);
+});
 const key = (el, k) => el.dispatchEvent(new KeyboardEvent('keydown', {key: k, bubbles: true, cancelable: true}));
 const state = () => {
   const dialog = document.querySelector('dialog.help');
@@ -31,6 +35,7 @@ const state = () => {
     controls: selected.length ? selected[0].getAttribute('aria-controls') === panel?.id : false,
     headings: panel ? [...panel.querySelectorAll('h3')].map((h) => h.textContent.trim()) : [],
     words: panel ? panel.textContent.trim().split(/\\s+/).length : 0,
+    terms: panel ? [...panel.querySelectorAll('dt code')].map((c) => c.textContent.trim()) : [],
     scrolls: panel ? panel.scrollHeight > panel.clientHeight : false,
     panelFocusable: panel ? panel.tabIndex === 0 : false,
     // Words that run into an inline element, such as "as<code>factory</code>": the text before it ends in a
@@ -109,7 +114,7 @@ def run_browser(width, height):
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
     try:
-        with tempfile.TemporaryDirectory() as profile:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile:
             process = subprocess.Popen(
                 ["chromium", "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
                  f"--window-size={width},{height}", "--user-data-dir=" + profile, f"http://127.0.0.1:{server.server_port}/"],
@@ -160,6 +165,15 @@ class HelpTest(unittest.TestCase):
             self.assertEqual(state["glued"], [], tab)
         for tab in ["Stages", "Workflows", "Skills"]:
             self.assertTrue(result["every"][tab]["scrolls"], tab)
+        # The Stages tab covers each Stage, Rework and Needs you; the Skills tab names each skill the flow uses.
+        stages = result["every"]["Stages"]["headings"]
+        for heading in ["Define", "Build", "Check", "Rework", "Finish", "Done", "Needs you"]:
+            self.assertIn(heading, stages)
+        skills = result["every"]["Skills"]["terms"]
+        for name in ["/factory", "/factory-full", "/factory-balanced", "/factory-fast", "factory-procedures", "grill-with-docs",
+                     "to-spec", "to-tickets", "implement-spec", "implement-spec-balanced", "implement-spec-fast", "tdd",
+                     "code-review", "security-review", "pr", "humanizer", "setup-matt-pocock-skills"]:
+            self.assertIn(name, skills)
         self.assertTrue(result["focusBack"])
 
     def test_the_narrow_screen_keeps_every_tab_reachable(self):

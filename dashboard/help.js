@@ -39,14 +39,13 @@ function Overview({ reworkCap }) {
         TDS Factory carries one piece of work, called a <strong>Run</strong>, from an idea to a pull request. You ask
         your coding agent (Codex, Claude Code or GitHub Copilot CLI) to run a workflow skill. The agent does the work in
         its own git worktree and reports each step here with the <${Code}>factory<//> command. This dashboard only shows
-        that progress. It never starts, steers or stops the agent.
+        that progress. It does not start or control the agent.
       </p>
     <//>
     <${Topic} title="The flow">
       <${Flow} reworkCap=${reworkCap} />
       <p>
-        <${Code}>/factory-fast<//> skips Check. Every Run ends in a pull request that the agent never merges: merging
-        stays your decision. The Stages tab explains each step, and the Workflows tab explains how the three workflows
+        <${Code}>/factory-fast<//> skips Check. Every Run ends in a pull request, which only you merge. The Stages tab explains each step, and the Workflows tab explains how the three workflows
         differ.
       </p>
     <//>
@@ -119,7 +118,10 @@ function Stages({ reworkCap }) {
           spec once when the request needs one, makes tickets only for work with several pieces, and interviews you only
           when an ambiguity blocks the work.
         </li>
-        <li><strong>Fast</strong> uses a clear request with a short plan and acceptance criteria.</li>
+        <li>
+          <strong>Fast</strong> uses a clear request with a short plan and acceptance criteria, and reaches for the
+          interview, a spec or tickets only when the work needs them.
+        </li>
       </ul>
       <p>
         A plan that only exists in the chat is saved in a file outside the pull request, and the Run records where, so a
@@ -168,8 +170,8 @@ function Stages({ reworkCap }) {
           With no actionable findings the Run moves to Finish. Otherwise it goes back to Build for a Rework.
         </li>
         <li>
-          If the Run has a model routing policy for Check, the review agents use the model and effort it names. The
-          Model routing tab explains how.
+          If the Run has a model routing policy for Check, the review agents use the model and effort it names. A security review the agent runs itself stays on the
+          agent’s own model. The Model routing tab explains how.
         </li>
       </ul>
     <//>
@@ -220,7 +222,7 @@ function Stages({ reworkCap }) {
   `;
 }
 
-function Workflows() {
+function Workflows({ reworkCap }) {
   return html`
     <${Topic} title="Choosing a workflow">
       <p>
@@ -271,7 +273,7 @@ function Workflows() {
               <th scope="row">Define</th>
               <td>Always an interview, a spec and tickets</td>
               <td>A clear request is the spec; criteria always; tickets only for several pieces</td>
-              <td>A clear request with a short plan and criteria</td>
+              <td>A clear request with a short plan and criteria; an interview, spec or tickets only if needed</td>
             </tr>
             <tr>
               <th scope="row">Build</th>
@@ -299,8 +301,8 @@ function Workflows() {
             </tr>
             <tr>
               <th scope="row">Reworks</th>
-              <td>Up to two</td>
-              <td>Up to two</td>
+              <td>Up to ${reworkCap}</td>
+              <td>Up to ${reworkCap}</td>
               <td>None</td>
             </tr>
             <tr>
@@ -320,7 +322,7 @@ function Workflows() {
           missing tool or a failing check blocks the Run; it is never skipped.
         </li>
         <li>Prose for people (specs, tickets, summaries, commit messages, pull request text) goes through <${Code}>humanizer<//>.</li>
-        <li>A pull request against the base branch, a CI watch, and no merge: that is up to you.</li>
+        <li>A pull request against the base branch, and a CI watch until it is green.</li>
       </ul>
     <//>
     <${Topic} title="Continuing a Run">
@@ -376,7 +378,7 @@ function Skills() {
         ],
         [
           '/factory-balanced',
-          'The middle way: lighter planning, behavior tests after implementing, one code review and security review where it matters.',
+          'Lighter planning than full, behavior tests after implementing, one code review, and a security review where it matters.',
           null,
         ],
         ['/factory-fast', 'The speed workflow: light planning, direct implementation, no Check, and still a pull request with green CI.', null],
@@ -424,7 +426,7 @@ function Skills() {
         [
           'tdd',
           'Test-driven development: write a failing test, make it pass, repeat, with rules for what a good test is and where tests belong.',
-          'Full always; Balanced and Fast borrow its test-quality rules',
+          'Full always; Balanced borrows its test-quality rules',
         ],
       ]}
     />
@@ -469,8 +471,8 @@ function Skills() {
       ]}
     />
     <p>
-      The skills come from <${Code}>mattpocock/skills<//>, <${Code}>github/awesome-copilot<//> and${' '}
-      <${Code}>blader/humanizer<//>. <${Code}>skills/README.md<//> in the repository lists where each one started.
+      Most skills come from <${Code}>mattpocock/skills<//>, <${Code}>github/awesome-copilot<//> and${' '}
+      <${Code}>blader/humanizer<//>; the workflow skills are the factory’s own. <${Code}>skills/README.md<//> in the TDS Factory repository lists where each one started.
     </p>
   `;
 }
@@ -479,8 +481,8 @@ function Dashboard({ reworkCap }) {
   return html`
     <${Topic} title="The board">
       <p>
-        Runs are grouped into one row per project, named after the repository. A row has a column for each Stage:
-        Define, Build, Check, Finish and Done. The project name toggles the row; a collapsed row shows how many Runs it
+        Runs are grouped into one row per project, named after the repository. A row has a column for each Stage, Define, Build, Check and Finish, and one
+        for Done. The project name toggles the row; a collapsed row shows how many Runs it
         has in each Stage, and how many are waiting for you. On a narrow screen the Stage buttons show one column at a
         time. The board refreshes by itself every few seconds.
       </p>
@@ -516,15 +518,15 @@ function Dashboard({ reworkCap }) {
           ],
           ['Pull request, Spec', 'Links, when the Run has recorded them.'],
           ['Activity, Ticket', 'What the agent says it is doing, and the ticket it is working on.'],
-          ['Updated', 'How long ago the agent last reported. It is when the agent last said something, not a sign that it is alive.'],
+          ['Updated', 'How long ago the agent last reported. It is the time of the last report, not a heartbeat.'],
           ['Delete', 'Removes the record of the Run, after you confirm. The worktree, branch and pull request stay.'],
         ]}
       />
     <//>
     <${Topic} title="The Run detail">
       <p>
-        A panel on the right with everything the Run has recorded. It is what a new session reads to continue the Run:
-        its project, Stage, status and the reason when it is blocked, the workflow, branch, worktree, repository and
+        A panel on the right with everything the Run has recorded, the same fields <${Code}>factory run inspect<//> prints, which is what a new session reads to continue the Run:
+        its project, Stage, status and the reason when it is blocked, the workflow mode, branch, worktree, repository and
         base commit, links to the spec and the pull request, every ticket with its progress, a summary per Stage, the
         token usage, the Rework and the Run id. A field the agent never recorded says so. It is never guessed.
       </p>
@@ -532,8 +534,8 @@ function Dashboard({ reworkCap }) {
     <${Topic} title="Token usage">
       <p>
         The dashboard reads the token counts your agents write to their own session logs, and shows them per Stage,
-        model and ticket. It counts tokens only, never money, and keeps only counts and identifiers: no conversation
-        text, prompts, tool output or credentials.
+        model and ticket. It counts tokens only, never money, and keeps only counts, identifiers and the reasoning effort of each call: no
+        conversation text, prompts, tool output or credentials.
       </p>
       <ul>
         <li>
@@ -547,7 +549,7 @@ function Dashboard({ reworkCap }) {
         </li>
         <li>
           Subagent usage is included once, and shown as its own share. Usage is read from Claude Code, Codex and
-          Copilot logs. You can turn it off with <${Code}>factory dashboard --no-usage<//>.
+          Copilot logs. You can turn it off with <${Code}>factory dashboard --no-usage<//> or by starting the dashboard with <${Code}>FACTORY_USAGE=off<//>.
         </li>
       </ul>
     <//>
@@ -574,7 +576,7 @@ function Commands() {
           [html`<${Code}>factory run start "title"<//>`, 'Creates a Run and prints its id. Run it from the Run’s worktree.'],
           [
             html`<${Code}>factory run update ${'<id>'} ${'<stage>'} ${'<status>'}<//>`,
-            html`Stages are define, build, check and finish. Statuses are running, blocked and done. Options leave a field alone when omitted and have a <${Code}>--clear-${'<name>'}<//> form: <${Code}>--activity<//>, <${Code}>--blocking-reason<//>, <${Code}>--rework<//>, <${Code}>--mode<//>, <${Code}>--worktree<//>, <${Code}>--branch<//>, <${Code}>--base-commit<//>, <${Code}>--spec<//>, <${Code}>--pr<//>, <${Code}>--ticket<//>, <${Code}>--summary<//> and more. <${Code}>factory --help<//> lists them.`,
+            html`Stages are define, build, check and finish. Statuses are running, blocked and done. Options leave a field alone when omitted, and most have a <${Code}>--clear-${'<name>'}<//> form (tickets clear with <${Code}>--clear-tickets<//>, summaries with <${Code}>--clear-summary<//>): <${Code}>--activity<//>, <${Code}>--blocking-reason<//>, <${Code}>--rework<//>, <${Code}>--mode<//>, <${Code}>--worktree<//>, <${Code}>--branch<//>, <${Code}>--base-commit<//>, <${Code}>--spec<//>, <${Code}>--pr<//>, <${Code}>--ticket<//>, <${Code}>--summary<//> and more. <${Code}>factory --help<//> lists them.`,
           ],
         ]}
       />
@@ -631,12 +633,13 @@ function ModelRouting() {
       <ul>
         <li>
           <${Code}>factory doctor<//> has a Model routing section. It checks that the file loads, that your agent
-          supports routing, that the models and efforts are ones it accepts, and that nothing in the environment
-          overrides them.
+          supports routing, and for Claude Code that the models and efforts are ones it accepts and that nothing in the
+          environment or settings overrides them. For Codex it reports what it cannot check as skipped. The section
+          appears only when a policy file exists and is switched on.
         </li>
         <li>
           <${Code}>factory run inspect ${'<id>'}<//> shows, per task, the requested model and effort next to the models and
-          efforts the Run’s logs show. A request that was never observed reads <${Code}>MISMATCH<//>.
+          efforts the Run’s logs show. When usage is fully tracked, a model or effort that was never observed reads <${Code}>MISMATCH<//>; with partial usage it reads "not observed", because it may be missing.
         </li>
         <li>
           To give one task another role for one Run, use${' '}
@@ -686,12 +689,12 @@ const TABS = [
  * The tabs follow the WAI-ARIA tabs pattern: arrow keys, Home and End move and select, and only the selected tab
  * is in the tab order. Each tab's content scrolls inside the window.
  */
-export function Help({ onClose, reworkCap, initialTab = 'overview' }) {
+export function Help({ onClose, reworkCap }) {
   const dialog = useRef(null);
   const closing = useRef(onClose);
   closing.current = onClose;
   const tabs = useRef([]);
-  const [current, setCurrent] = useState(TABS.some(([id]) => id === initialTab) ? initialTab : TABS[0][0]);
+  const [current, setCurrent] = useState(TABS[0][0]);
   useEffect(() => {
     const element = dialog.current;
     if (!element.open) element.showModal();

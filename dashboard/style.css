@@ -206,10 +206,10 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .help-bar h2 { margin: 0; }
 .help-tabs { display: flex; flex-wrap: wrap; gap: var(--spacingHorizontalXS); flex: none; margin: var(--spacingVerticalM) 0 0; border-bottom: var(--strokeWidthThin) solid var(--colorNeutralStroke2); }
 .help-tab { padding: var(--spacingVerticalS) var(--spacingHorizontalM); border: 0; border-bottom: var(--strokeWidthThick) solid var(--colorNeutralBackground1); background: none; font: inherit; color: var(--colorNeutralForeground2); cursor: pointer; }
-.help-tab:hover { color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground1Hover); }
+.help-tab:hover { color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground1Hover); border-bottom-color: var(--colorNeutralBackground1Hover); }
 .help-tab[aria-selected="true"] { color: var(--colorNeutralForeground1); border-bottom-color: var(--colorBrandBackground); font-weight: var(--fontWeightSemibold); }
 .help-tab:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: calc(-1 * var(--strokeWidthThick)); }
-.help-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: var(--spacingVerticalM) var(--spacingHorizontalS) var(--spacingVerticalXL) 0; }
+.help-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: var(--spacingVerticalM) var(--spacingHorizontalS) var(--spacingVerticalXL) var(--spacingHorizontalXS); }
 .help-panel:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: calc(-1 * var(--strokeWidthThick)); }
 .help-panel > p:first-child { margin-top: 0; }
 .help h3 { margin: var(--spacingVerticalL) 0 var(--spacingVerticalXS); font-size: var(--fontSizeBase300); line-height: var(--lineHeightBase300); font-weight: var(--fontWeightSemibold); }
@@ -232,6 +232,8 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .flow li { position: relative; display: flex; flex-direction: column; gap: var(--spacingVerticalXXS); flex: 1 1 9rem; padding: var(--spacingVerticalS) var(--spacingHorizontalM); border: var(--strokeWidthThin) solid var(--colorNeutralStroke2); border-radius: var(--borderRadiusMedium); background: var(--colorNeutralBackground2); }
 .flow li + li::before { content: "\2192"; content: "\2192" / ""; position: absolute; left: calc(-1 * var(--spacingHorizontalXL)); top: 50%; width: var(--spacingHorizontalXL); transform: translateY(-50%); text-align: center; color: var(--colorNeutralForeground3); }
 .flow span { font-size: var(--fontSizeBase200); color: var(--colorNeutralForeground2); }
+/* A very short window, such as a zoomed one: the whole dialog scrolls instead of squeezing the panel to nothing. */
+@media (max-height: 30rem) { .confirm.help { height: auto; max-height: calc(100% - 2 * var(--spacingVerticalM)); overflow-y: auto; } .help-panel { overflow-y: visible; } }
 @media (max-width: 40rem) { .confirm.help { padding-left: var(--spacingHorizontalM); padding-right: var(--spacingHorizontalM); } .help-terms, .help-skills { grid-template-columns: minmax(0, 1fr); } .flow li + li::before { display: none; } .flow { gap: var(--spacingVerticalS) var(--spacingHorizontalS); } }
 .welcome { max-width: 40rem; padding: var(--spacingVerticalXL) var(--spacingHorizontalXL); background: var(--colorNeutralBackground1); border: var(--strokeWidthThin) solid var(--colorNeutralStroke2); border-radius: var(--borderRadiusLarge); box-shadow: var(--shadow4); }
 .welcome h2 { margin: 0 0 var(--spacingVerticalS); font-size: var(--fontSizeBase500); line-height: var(--lineHeightBase500); font-weight: var(--fontWeightSemibold); }
