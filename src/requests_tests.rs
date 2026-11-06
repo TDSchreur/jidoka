@@ -946,3 +946,39 @@ fn words_inside_quotes_do_not_decide_the_category() {
         Category::Commit
     );
 }
+
+// --- rework 3 ---------------------------------------------------------------------------------------
+
+#[test]
+fn an_update_claims_after_comments_here_strings_and_wrappers_with_options() {
+    let commands: Vec<String> = [
+        "cargo test # don't skip\nfactory run update ID b",
+        "cat <<< \"x\"\nfactory run update ID b",
+        "cat <<'EOF';\nhi\nEOF\nfactory run update ID b",
+        "echo $((1<<2))\nfactory run update ID b",
+        "(cd x && factory run update ID)",
+        "{ factory run update ID; }",
+        "timeout -s KILL 60 factory run update ID b",
+        "timeout -k 5 60 factory run update ID b",
+        "env -i factory run update ID b",
+        "env -u HOME X=1 factory run update ID b",
+    ]
+    .iter()
+    .map(|c| c.replace("ID", RUN_A))
+    .collect();
+    assert_eq!(claimed_by(&commands).len(), commands.len());
+}
+
+#[test]
+fn a_comment_never_claims_a_run() {
+    assert!(claimed_by(&[
+        format!("ls # factory run update {RUN_A}"),
+        format!("# factory run update {RUN_A}\nls"),
+    ])
+    .is_empty());
+    // `#` inside a word is not a comment.
+    assert_eq!(
+        category_of("echo a#b; git push"),
+        Category::PrCreationAndPush
+    );
+}

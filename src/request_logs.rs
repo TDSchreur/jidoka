@@ -406,8 +406,9 @@ fn updated_runs(command: &str, ids: &HashSet<&str>) -> HashSet<String> {
         if let (Some("factory"), Some(&"run"), Some(&"update"), Some(id)) =
             (program, words.get(1), words.get(2), words.get(3))
         {
+            let id = id.trim_end_matches([')', '}', ';']);
             if ids.contains(id) {
-                found.insert((*id).to_string());
+                found.insert(id.to_string());
             }
         }
     }
@@ -512,19 +513,38 @@ fn segments(command: &str) -> Vec<String> {
                     quote = Some(c);
                     current.push(c);
                 }
-                '<' if next == Some('<') && chars.get(i + 2) != Some(&'<') => {
-                    // `<<EOF`, `<<-EOF`, `<<'EOF'`: the delimiter ends the text that follows.
+                '#' if current.chars().next_back().is_none_or(char::is_whitespace) => {
+                    // A comment runs to the end of the line.
+                    while chars.get(i + 1).is_some_and(|c| *c != '\n') {
+                        i += 1;
+                    }
+                }
+                '<' if next == Some('<') && chars.get(i + 2) == Some(&'<') => {
+                    // A here-string, `<<<`, has no delimiter.
+                    current.push_str("<<<");
+                    i += 2;
+                }
+                '<' if next == Some('<') => {
+                    // `<<EOF`, `<<-EOF`, `<<'EOF'`: the delimiter ends the text that follows. Arithmetic
+                    // such as `$((1<<2))` has no delimiter word, so it starts no here-document.
                     let mut j = i + 2;
                     while chars.get(j).is_some_and(|c| matches!(c, '-' | ' ' | '\t')) {
                         j += 1;
                     }
                     let start = j;
-                    while chars.get(j).is_some_and(|c| !c.is_whitespace()) {
+                    while chars
+                        .get(j)
+                        .is_some_and(|c| !c.is_whitespace() && !";|&<>()".contains(*c))
+                    {
                         j += 1;
                     }
                     let word: String = chars[start..j].iter().collect();
                     let word = word.trim_matches(['\'', '"']);
-                    if !word.is_empty() {
+                    if word
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    {
                         heredoc = Some(word.to_string());
                     }
                     current.push_str("<<");
@@ -594,21 +614,29 @@ fn command_words(segment: &str) -> Vec<&str> {
         })
         .filter(|word| !word.is_empty())
         .collect();
-    const WRAPPERS: [&str; 14] = [
-        "sudo", "time", "command", "exec", "nohup", "env", "if", "then", "do", "else", "elif",
-        "while", "until", "!",
+    const WRAPPERS: [&str; 13] = [
+        "sudo", "time", "command", "exec", "nohup", "if", "then", "do", "else", "elif", "while",
+        "until", "!",
     ];
     let mut start = 0;
     while let Some(word) = words.get(start) {
         if is_assignment(word) || WRAPPERS.contains(word) {
             start += 1;
-        } else if *word == "timeout" {
-            // `timeout [options] <duration> <command>`
+        } else if *word == "env" || *word == "timeout" {
+            // `env [options] [NAME=value]... <command>` and `timeout [options] <duration> <command>`
             start += 1;
-            while words.get(start).is_some_and(|w| w.starts_with('-')) {
+            while let Some(option) = words.get(start).filter(|w| w.starts_with('-')) {
+                // Options that take their value as the next word.
+                start +=
+                    if ["-u", "-s", "-k", "--signal", "--kill-after", "--unset"].contains(option) {
+                        2
+                    } else {
+                        1
+                    };
+            }
+            if *word == "timeout" {
                 start += 1;
             }
-            start += 1;
         } else {
             break;
         }
