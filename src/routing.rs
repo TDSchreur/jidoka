@@ -7,11 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 mod policy;
-#[cfg(test)]
-pub(crate) use policy::Host;
 pub(crate) use policy::{
-    create_starter, load, parse_start_options, policy_path_in, read, AgentPolicy, Policy,
-    Resolution,
+    create_starter, load, parse_start_options, policy_path_in, read, Coverage, Host, NotRouted,
+    Policy, Resolution, COPILOT_NOTICE,
 };
 
 /// The coding agent a selection is for. Copilot CLI is not here: it records no selection.

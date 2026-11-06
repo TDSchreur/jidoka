@@ -4,7 +4,10 @@
 //! session's model. Nothing here changes a file or calls a model; at most it asks an agent for its `--version`.
 
 use super::{find_program, read_doc, Check, Machine};
-use crate::routing::{policy_path_in, read, AgentPolicy, ModelRouting, Policy, RoutingAgent};
+use crate::routing::{
+    policy_path_in, read, Coverage, Host, ModelRouting, NotRouted, Policy, RoutingAgent,
+    COPILOT_NOTICE,
+};
 use std::{collections::BTreeSet, path::Path};
 
 /// The Agent tool's `effort` option first appeared in this Claude Code release.
@@ -12,10 +15,10 @@ const CLAUDE_MIN_VERSION: (u32, u32, u32) = (2, 1, 292);
 /// The only model names the Agent tool accepts.
 const CLAUDE_MODELS: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
 const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
-const COPILOT_NOTICE: &str =
-    "Model routing is not supported on Copilot CLI: every stage uses the session's model.";
 
-/// The routing checks for `agent` (all agents when `None`), as `--agent` on `factory doctor` selects.
+/// The routing checks for `agent` (all agents when `None`), as `--agent` on `factory doctor` selects. What
+/// the policy does for each agent comes from `Policy::coverage`, the same rule `factory run start` follows;
+/// this only adds what the machine needs.
 pub(super) fn checks(root: &Path, machine: &Machine, agent: Option<&str>) -> Vec<Check> {
     let Some(path) = policy_path_in(|name| (machine.var)(name)) else {
         return Vec::new();
@@ -31,85 +34,52 @@ pub(super) fn checks(root: &Path, machine: &Machine, agent: Option<&str>) -> Vec
         }
     };
     let shown = path.display();
-    match policy {
-        Policy::Off => Vec::new(),
-        // A policy for Copilot CLI: information, never a problem.
-        Policy::CopilotOnly => vec![Check::pass("policy", COPILOT_NOTICE)],
-        Policy::Single { agent: policy_agent, policy } => match agent {
-            // The file is for another agent: nothing to check for this one.
-            Some(asked) if asked != policy_agent.name() => vec![Check::skipped(
-                "policy",
-                format!(
-                    "{shown} is for {}, so there is nothing to check for {asked}; {asked} runs are not routed",
-                    policy_agent.name()
-                ),
-            )],
-            _ => {
-                let selection = policy.selection(policy_agent);
-                let mut checks = vec![Check::pass(
-                    "policy",
-                    format!("{shown} routes {}", policy_agent.name()),
-                )];
-                checks.extend(agent_checks(policy_agent, &selection, root, machine));
-                checks
-            }
-        },
-        Policy::Multi { .. } => {
-            let mut checks = vec![Check::pass(
-                "policy",
-                format!("{shown} configures {}", policy.configured().join(", ")),
-            )];
-            if agent == Some("copilot") {
-                checks.push(Check::pass("policy", COPILOT_NOTICE));
-                return checks;
-            }
-            for routing_agent in [RoutingAgent::Claude, RoutingAgent::Codex] {
-                let name = routing_agent.name();
-                if agent.is_some_and(|asked| asked != name) {
-                    continue;
+    // The agents to report on: the one asked for, or those the policy is about.
+    let hosts: Vec<Host> = match (agent.and_then(Host::parse), &policy) {
+        (_, Policy::Off) => return Vec::new(),
+        (Some(host), _) => vec![host],
+        (None, Policy::CopilotOnly) => vec![Host::Copilot],
+        (None, Policy::Single { agent, .. }) => vec![Host::from(*agent)],
+        (None, Policy::Multi { .. }) => policy
+            .configured()
+            .into_iter()
+            .filter_map(Host::parse)
+            .collect(),
+    };
+    // With an entry per agent, every check says which agent it is about.
+    let tagged = matches!(policy, Policy::Multi { .. });
+    let mut checks = Vec::new();
+    if tagged {
+        checks.push(Check::pass(
+            "policy",
+            format!("{shown} configures {}", policy.configured().join(", ")),
+        ));
+    }
+    for host in hosts {
+        let name = host.name();
+        let tag = |check: Check| if tagged { check.for_agent(name) } else { check };
+        match policy.coverage(host) {
+            None => {}
+            Some(Coverage::Routed(selection)) => {
+                if !tagged {
+                    checks.push(Check::pass("policy", format!("{shown} routes {name}")));
                 }
-                checks.extend(match policy.entry(routing_agent) {
-                    // Every agent is checked, but only those with an entry have anything to say.
-                    None if agent.is_none() => Vec::new(),
-                    None => vec![Check::skipped(
-                        "policy",
-                        format!("the policy has no entry for {name}, so {name} runs are not routed"),
-                    )
-                    .for_agent(name)],
-                    Some(entry) => entry_checks(routing_agent, entry, root, machine),
-                });
+                checks.extend(agent_checks(&selection, root, machine).into_iter().map(tag));
             }
-            checks
+            // Information, never a problem.
+            Some(Coverage::NotRouted(NotRouted::Copilot)) => {
+                checks.push(Check::pass("policy", COPILOT_NOTICE));
+            }
+            Some(Coverage::NotRouted(why)) => {
+                checks.push(tag(Check::skipped("policy", why.text(host))));
+            }
         }
     }
+    checks
 }
 
-/// The checks for one entry of the multi-agent form, each tagged with the agent.
-fn entry_checks(
-    agent: RoutingAgent,
-    entry: &AgentPolicy,
-    root: &Path,
-    machine: &Machine,
-) -> Vec<Check> {
-    let name = agent.name();
-    if !entry.enabled {
-        return vec![
-            Check::skipped("policy", format!("the {name} entry is switched off")).for_agent(name),
-        ];
-    }
-    agent_checks(agent, &entry.selection(agent), root, machine)
-        .into_iter()
-        .map(|check| check.for_agent(name))
-        .collect()
-}
-
-fn agent_checks(
-    agent: RoutingAgent,
-    selection: &ModelRouting,
-    root: &Path,
-    machine: &Machine,
-) -> Vec<Check> {
-    match agent {
+fn agent_checks(selection: &ModelRouting, root: &Path, machine: &Machine) -> Vec<Check> {
+    match selection.agent {
         RoutingAgent::Claude => claude_checks(selection, root, machine),
         RoutingAgent::Codex => codex_checks(machine),
     }

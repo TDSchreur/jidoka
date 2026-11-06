@@ -1437,11 +1437,14 @@ mod tests {
         for other in ["codex", "copilot"] {
             let report = world.report(Some(other));
             assert_eq!(report.model_routing.len(), 1, "{other}");
-            assert_eq!(report.model_routing[0].status, Status::Skipped);
-            assert!(
-                report.model_routing[0].message.contains("is for claude"),
-                "{other}"
-            );
+            // Copilot CLI is never routed, whatever the file says; another agent is skipped.
+            let (status, text) = if other == "copilot" {
+                (Status::Pass, "not supported on Copilot")
+            } else {
+                (Status::Skipped, "is for claude")
+            };
+            assert_eq!(report.model_routing[0].status, status, "{other}");
+            assert!(report.model_routing[0].message.contains(text), "{other}");
             // Only a missing Copilot command, never the policy, can make that report not ready.
             assert!(report.model_routing.iter().all(|c| !c.blocks()), "{other}");
         }

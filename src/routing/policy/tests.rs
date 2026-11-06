@@ -351,6 +351,32 @@ fn an_unreadable_or_oversized_file_is_an_error() {
     assert!(load(&big, None).unwrap_err().contains("too large"));
 }
 
+#[test]
+fn a_directory_at_the_policy_path_is_refused_as_not_a_regular_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("model-routing.json");
+    fs::create_dir(&path).unwrap();
+    assert!(read(&path).unwrap_err().contains("not a regular file"));
+}
+
+#[test]
+fn a_broken_policy_cannot_stop_a_copilot_run_but_still_stops_the_others() {
+    let broken = r#"{"agents": {"claude": {"typo": 1}}}"#;
+    let resolution = load_text(broken, Some(Host::Copilot)).unwrap();
+    assert!(resolution.selection.is_none());
+    assert!(load_text(broken, Some(Host::Claude)).is_err());
+    assert!(load_text(broken, None).is_err());
+}
+
+#[test]
+fn a_created_starter_is_the_only_file_written() {
+    // A failing write removes its partial file; that cannot be forced portably, so only the clean path is checked.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("model-routing.json");
+    assert!(create_starter(&path, &[RoutingAgent::Claude]).unwrap());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
 // --- the --agent option -----------------------------------------------------------------------------
 
 #[test]

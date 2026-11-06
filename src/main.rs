@@ -94,7 +94,7 @@ fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
             // without `--agent`, stops the start.
             let resolution = routing::policy_path_in(|name| env::var_os(name)).map_or_else(
                 || Ok(routing::Resolution::default()),
-                |path| routing::load(&path, host),
+                |path| routing::load(&path, host).map_err(|error| inspect::shown(&error)),
             )?;
             if let Some(notice) = &resolution.notice {
                 eprintln!("{notice}");
