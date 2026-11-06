@@ -16,7 +16,7 @@ use run::UPDATE_HELP;
 use server::{serve, ADDRESS, DEFAULT_PORT};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json]\n  factory run start <title>\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title>\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -77,9 +77,8 @@ fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
             env!("FACTORY_BUILD_RELEASE") == "true",
         )?,
         ["doctor", options @ ..] => {
-            let (agent, json) =
-                doctor::parse_args(options).map_err(|error| format!("{error}\n{HELP}"))?;
-            return doctor::run(agent, json);
+            let args = doctor::parse_args(options).map_err(|error| format!("{error}\n{HELP}"))?;
+            return doctor::run(args);
         }
         ["dashboard", options @ ..] => {
             let (port, usage) =

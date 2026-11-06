@@ -125,3 +125,108 @@ fn doctor_reads_the_repository_it_runs_in() {
     assert_eq!(status("base-branch"), "pass");
     assert_eq!(status("setup-docs"), "missing");
 }
+
+#[test]
+fn doctor_creates_the_model_routing_policy_once_and_keeps_json_output_valid() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let policy = home.path().join(".config/tds-factory/model-routing.json");
+    let run = || {
+        factory(
+            &[
+                "doctor",
+                "--agent",
+                "claude",
+                "--create-model-routing",
+                "--json",
+            ],
+            dir.path(),
+            home.path(),
+        )
+    };
+
+    let first = run();
+    // Stdout is still one JSON report, and the note about the file is on stderr.
+    let report: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(report["model_routing"][0]["id"], "policy");
+    assert_eq!(report["model_routing"][0]["status"], "pass");
+    let note = String::from_utf8_lossy(&first.stderr);
+    assert!(
+        note.contains("Created") && note.contains("model-routing.json"),
+        "{note}"
+    );
+    let text = std::fs::read_to_string(&policy).unwrap();
+    assert!(text.contains("\"agent\": \"claude\""), "{text}");
+
+    // A second run, even after an edit, leaves the file as it is.
+    std::fs::write(&policy, "{\"agent\":\"codex\",\"roles\":{},\"tasks\":{}}").unwrap();
+    let second = run();
+    assert!(String::from_utf8_lossy(&second.stderr).contains("already exists"));
+    assert!(std::fs::read_to_string(&policy).unwrap().contains("codex"));
+}
+
+#[test]
+fn doctor_creates_the_codex_starter_too_and_reports_when_it_cannot_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let output = factory(
+        &["doctor", "--agent", "codex", "--create-model-routing"],
+        dir.path(),
+        home.path(),
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("Created") && text.contains("starter policy for codex"),
+        "{text}"
+    );
+    assert!(
+        text.contains("pass     policy:") && text.contains("routes codex"),
+        "{text}"
+    );
+    let written =
+        std::fs::read_to_string(home.path().join(".config/tds-factory/model-routing.json"))
+            .unwrap();
+    assert!(written.contains("gpt-6-astra"), "{written}");
+
+    // A file where the folder should be: doctor stops with the reason and a way out.
+    let blocked = tempfile::tempdir().unwrap();
+    std::fs::write(blocked.path().join(".config"), "a file").unwrap();
+    let output = factory(
+        &[
+            "doctor",
+            "--agent",
+            "claude",
+            "--create-model-routing",
+            "--json",
+        ],
+        dir.path(),
+        blocked.path(),
+    );
+    assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "no report is printed after a failed write"
+    );
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("cannot create") && error.contains("create the file yourself"),
+        "{error}"
+    );
+}
+
+#[test]
+fn doctor_will_not_create_a_policy_without_a_supported_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    for args in [
+        &["doctor", "--create-model-routing"][..],
+        &["doctor", "--create-model-routing", "--agent", "copilot"],
+    ] {
+        let output = factory(args, dir.path(), home.path());
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            !home.path().join(".config").exists(),
+            "{args:?} wrote something"
+        );
+    }
+}
