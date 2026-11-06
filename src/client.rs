@@ -464,6 +464,20 @@ mod tests {
     }
 
     #[test]
+    fn legacy_and_canonical_full_modes_round_trip_through_cli_and_inspect() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let server = TestServer::start(&path);
+        for mode in ["factory", "factory-full"] {
+            let id = start_run(&server.address, "Full run", "/work/repo", None, None).unwrap();
+            report_run(&server.address, &id, "build", "running", &["--mode", mode]).unwrap();
+            let run = fetch_run(&server.address, &id).unwrap();
+            assert!(crate::inspect::render(&run).contains("Mode          factory-full"));
+            assert_eq!(serde_json::to_value(&run).unwrap()["mode"], "factory-full");
+        }
+    }
+
+    #[test]
     fn inspect_shows_unknown_for_a_run_recorded_before_run_context() {
         let dir = TestDir::new();
         let path = dir.0.path().join("runs.json");

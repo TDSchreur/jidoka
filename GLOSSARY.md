@@ -6,9 +6,9 @@
 
 **Needs you**: A run that is blocked and waiting for the user. The dashboard marks its card, sorts it first and counts it in the page title.
 
-**Rework**: A return from Check to Build to fix actionable findings, followed by another Check. `factory` and `factory-balanced` allow at most two per run; after that, the user decides whether to do another Rework, finish with the findings listed in the pull request, or stop. Findings alone never block a run; the run is `blocked` only while it waits for that decision.
+**Rework**: A return from Check to Build to fix actionable findings, followed by another Check. `factory-full` and `factory-balanced` allow at most two per run; after that, the user decides whether to do another Rework, finish with the findings listed in the pull request, or stop. Findings alone never block a run; the run is `blocked` only while it waits for that decision.
 
-**Workflow mode**: The workflow skill that carries a run: `factory` (quality), `factory-balanced`, or `factory-fast` (speed). Modes differ in how much Define, Build, and Check do.
+**Workflow mode**: The workflow skill that carries a run: `factory-full` (quality), `factory-balanced`, or `factory-fast` (speed). Modes differ in how much Define, Build, and Check do.
 
 **Run context**: What a new agent session needs to continue a run: the repository, worktree, branch and base commit it started from, the workflow mode, a reference to the spec, the ordered tickets with their progress, the pull request, a short summary per Stage and the status reason. It holds references and summaries only, never transcripts or secrets, and is changed only through `factory run update`. Anything a run never recorded is shown as unknown, not guessed.
 

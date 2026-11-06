@@ -556,8 +556,8 @@ function Welcome({ onHelp }) {
   return html`<section class="welcome" aria-labelledby="welcome-title">
     <h2 id="welcome-title">Welcome to the factory</h2>
     <p>
-      No Runs yet. In your project, ask your coding agent to run <code>/factory</code>, <code>/factory-balanced</code>
-      or <code>/factory-fast</code> with your task. Its Run appears here and follows the work from Define to a pull
+      No Runs yet. In your project, ask your coding agent to run <code>/factory</code> to select a workflow, or choose
+      <code>/factory-full</code>, <code>/factory-balanced</code>, or <code>/factory-fast</code> directly. Its Run appears here and follows the work from Define to a pull
       request.
     </p>
     <p>Not sure what the Stages, Needs you or Rework mean? <button type="button" class="link" onClick=${onHelp}>Read the Help</button>.</p>

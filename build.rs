@@ -81,6 +81,7 @@ fn main() {
     }
     for name in [
         "factory",
+        "factory-full",
         "factory-fast",
         "factory-balanced",
         "factory-procedures",
