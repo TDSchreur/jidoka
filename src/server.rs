@@ -26,6 +26,11 @@ const ASSETS: &[(&str, ContentType, &[u8])] = &[
         include_bytes!("../dashboard/app.js"),
     ),
     (
+        "favicon.svg",
+        ContentType::SVG,
+        include_bytes!("../dashboard/favicon.svg"),
+    ),
+    (
         "help.js",
         ContentType::JavaScript,
         include_bytes!("../dashboard/help.js"),
@@ -528,6 +533,7 @@ mod tests {
         for (path, content_type) in [
             ("/assets/app.js", ContentType::JavaScript),
             ("/assets/help.js", ContentType::JavaScript),
+            ("/assets/favicon.svg", ContentType::SVG),
             ("/assets/style.css", ContentType::CSS),
             ("/assets/vendor/preact.js", ContentType::JavaScript),
             ("/assets/vendor/hooks.js", ContentType::JavaScript),
@@ -1834,6 +1840,30 @@ mod tests {
             Vec::<&String>::new(),
             "variables no token declares"
         );
+    }
+
+    #[rocket::async_test]
+    async fn the_page_has_a_favicon_and_a_decorative_logo_with_a_readable_heading() {
+        let page = dashboard_page().await;
+        assert!(page
+            .contains("<link rel=\"icon\" href=\"/assets/favicon.svg\" type=\"image/svg+xml\">"));
+        // The logo is drawn inline, hidden from assistive technology, and the heading keeps its text.
+        let heading = page
+            .split("<h1>")
+            .nth(1)
+            .and_then(|rest| rest.split("</h1>").next())
+            .expect("a heading");
+        assert!(heading.contains("<svg class=\"logo\""));
+        assert!(
+            heading.contains("aria-hidden=\"true\"") && heading.contains("focusable=\"false\"")
+        );
+        assert!(heading.contains("<span class=\"visually-hidden\">TDS Factory</span>"));
+        // Its gradient has an id of its own, and only the dark parts follow the theme.
+        assert!(
+            heading.contains("id=\"tds-logo-blue\"") && heading.contains("url(#tds-logo-blue)")
+        );
+        let css = stylesheet().await;
+        assert!(css.contains(".logo .ink { fill: var(--colorNeutralForeground1); }"));
     }
 
     #[rocket::async_test]

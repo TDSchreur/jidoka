@@ -12,6 +12,7 @@
       if (stored === 'light' || stored === 'dark') document.documentElement.dataset.theme = stored;
     } catch { /* storage unavailable: follow the system setting */ }
   </script>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/style.css">
   <script type="importmap">
     {
@@ -25,7 +26,19 @@
 </head>
 <body>
   <header>
-    <h1>TDS Factory</h1>
+    <h1>
+      <svg class="logo" viewBox="285 70 1205 570" aria-hidden="true" focusable="false">
+        <defs><linearGradient id="tds-logo-blue" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1a8cff" /><stop offset="1" stop-color="#0553e0" /></linearGradient></defs>
+        <rect x="584" y="177" width="40" height="40" rx="5" fill="#0a7bff" />
+        <rect x="638" y="124" width="61" height="64" rx="6" fill="#0a7bff" />
+        <rect x="707" y="77" width="50" height="43" rx="5" fill="#3ba6ff" />
+        <path class="ink" d="M287 350 385 291V338L463 291V338L540 291V352H556L563 228H622L627 357H651V431H548V636H400V431H287Z" />
+        <path d="M445 478 416 512 445 547M500 478 531 512 500 547M489 462 462 567" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" />
+        <path d="M669 357H905C1000 357 1066 420 1066 497C1066 575 1000 636 905 636H669V452H767V565H905C935 565 954 535 954 497C954 458 935 431 905 431H669Z" fill="url(#tds-logo-blue)" />
+        <path class="ink" d="M1190 357H1485L1408 433H1190C1170 433 1170 467 1190 467H1390C1450 467 1485 505 1485 548C1485 600 1440 636 1385 636H1052L1125 563H1375C1393 563 1395 535 1375 535H1185C1120 535 1085 500 1085 462C1085 400 1130 357 1190 357Z" />
+      </svg>
+      <span class="visually-hidden">TDS Factory</span>
+    </h1>
     <p>A simple flow from an idea to a pull request.</p>
   </header>
   <div id="app"></div>
