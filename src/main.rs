@@ -3,6 +3,9 @@ mod doctor;
 mod inspect;
 mod install;
 mod repository;
+mod request_logs;
+mod requests;
+mod requests_pool;
 mod routing;
 mod run;
 mod server;
@@ -16,7 +19,7 @@ use run::UPDATE_HELP;
 use server::{serve, ADDRESS, DEFAULT_PORT};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -127,6 +130,48 @@ fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
         ["run", "stats", "--all"] => print!("{}", stats::render_all(&fetch_runs(ADDRESS)?)),
         ["run", "stats", id] if !id.starts_with('-') => {
             print!("{}", stats::render_run(&fetch_run(ADDRESS, id)?))
+        }
+        ["run", "requests", "--all", options @ ..] => {
+            let (pool, json) = requests_pool::parse_options(options)
+                .map_err(|error| format!("{error}\n{HELP}"))?;
+            let runs = fetch_runs(ADDRESS)?;
+            let roots =
+                usage_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
+            let result = requests_pool::pool(
+                &runs,
+                &roots,
+                run::updated_now()?,
+                std::time::Instant::now() + std::time::Duration::from_secs(120),
+                &pool,
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                print!("{}", requests_pool::render_pool(&result));
+            }
+        }
+        ["run", "requests", id, options @ ..] if !id.starts_with('-') => {
+            let json = match options {
+                [] => false,
+                ["--json"] => true,
+                _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
+            };
+            let target = fetch_run(ADDRESS, id)?;
+            let runs = fetch_runs(ADDRESS)?;
+            let roots =
+                usage_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
+            let result = requests::analyze(
+                &target,
+                &runs,
+                &roots,
+                run::updated_now()?,
+                std::time::Instant::now() + std::time::Duration::from_secs(30),
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                print!("{}", requests::render_run(&result));
+            }
         }
         ["run", "update", id, stage, status, options @ ..] => {
             // The agent's own session is recorded with every update, so its token usage can be attributed.

@@ -21,7 +21,7 @@ use std::{
 /// The largest log read: real session logs are a few megabytes, so a bigger one is skipped.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const DAY_MS: u64 = 24 * 60 * 60 * 1000;
-const MTIME_SLACK_MS: u64 = 5 * 60 * 1000;
+pub(crate) const MTIME_SLACK_MS: u64 = 5 * 60 * 1000;
 /// Limits on one pass over the logs, so a huge or hostile log folder cannot exhaust memory or time.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ReadLimits {
@@ -91,7 +91,7 @@ pub(crate) struct ReadResult {
 // --- shared pieces ----------------------------------------------------------------------------------
 
 /// A model name that is safe to store and print: a log is written by another program.
-fn model_name(value: &Value) -> Option<String> {
+pub(crate) fn model_name(value: &Value) -> Option<String> {
     let name = value.as_str()?;
     let mut chars = name.chars();
     let first = chars.next()?;
@@ -117,20 +117,20 @@ fn effort_name(value: &Value) -> Option<String> {
 }
 
 /// A token count, or `None` when the log holds no usable one.
-fn count(value: Option<&Value>) -> Option<u64> {
+pub(crate) fn count(value: Option<&Value>) -> Option<u64> {
     value?.as_u64().filter(|n| *n < (1 << 53))
 }
 
-fn timestamp(value: Option<&Value>) -> Option<u64> {
+pub(crate) fn timestamp(value: Option<&Value>) -> Option<u64> {
     parse_timestamp(value?.as_str()?)
 }
 
-fn modified_ms(path: &Path) -> Option<u64> {
+pub(crate) fn modified_ms(path: &Path) -> Option<u64> {
     let modified = fs::symlink_metadata(path).ok()?.modified().ok()?;
     u64::try_from(modified.duration_since(UNIX_EPOCH).ok()?.as_millis()).ok()
 }
 
-enum LogFile {
+pub(crate) enum LogFile {
     Content(String),
     /// Not a regular file, so not followed.
     Skipped,
@@ -138,7 +138,7 @@ enum LogFile {
 }
 
 /// The text of a regular log file; a link or special file is not followed.
-fn read_text(path: &Path) -> io::Result<LogFile> {
+pub(crate) fn read_text(path: &Path) -> io::Result<LogFile> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.is_file() {
         return Ok(LogFile::Skipped);
@@ -197,21 +197,21 @@ fn sorted_dir(path: &Path) -> Vec<fs::DirEntry> {
 }
 
 /// The folders inside `path`. A link to a folder is not followed, so a link cannot lead out of the log folder.
-fn sub_dirs(path: &Path) -> Vec<fs::DirEntry> {
+pub(crate) fn sub_dirs(path: &Path) -> Vec<fs::DirEntry> {
     let mut entries = sorted_dir(path);
     entries.retain(|e| e.file_type().is_ok_and(|t| t.is_dir()));
     entries
 }
 
 /// The regular files inside `path`; links are not followed.
-fn files_in(path: &Path) -> Vec<fs::DirEntry> {
+pub(crate) fn files_in(path: &Path) -> Vec<fs::DirEntry> {
     let mut entries = sorted_dir(path);
     entries.retain(|e| e.file_type().is_ok_and(|t| t.is_file()));
     entries
 }
 
 /// A response is often written more than once, sometimes with growing counts: the largest of each field wins.
-fn merge_largest(into: &mut Tokens, other: &Tokens) {
+pub(crate) fn merge_largest(into: &mut Tokens, other: &Tokens) {
     let max = |a: Option<u64>, b: Option<u64>| match (a, b) {
         (Some(a), Some(b)) => Some(a.max(b)),
         (a, b) => a.or(b),

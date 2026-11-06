@@ -296,10 +296,10 @@ pub(crate) struct Entry {
 }
 
 /// How far ahead of this machine's clock a log entry may be.
-const FUTURE_SLACK_MS: u64 = 60_000;
+pub(crate) const FUTURE_SLACK_MS: u64 = 60_000;
 
 /// The last mark at or before `ts`, when `ts` is inside the run's window.
-fn mark_at(run: &Run, ts: u64) -> Option<&Mark> {
+pub(crate) fn mark_at(run: &Run, ts: u64) -> Option<&Mark> {
     if run.finished_at.is_some_and(|end| ts > end) {
         return None;
     }
@@ -307,7 +307,7 @@ fn mark_at(run: &Run, ts: u64) -> Option<&Mark> {
 }
 
 /// Whether two runs were active at the same time.
-fn overlaps(a: &Run, b: &Run) -> bool {
+pub(crate) fn overlaps(a: &Run, b: &Run) -> bool {
     let window = |run: &Run| {
         (
             run.timeline.first().map_or(u64::MAX, |m| m.at),
