@@ -127,7 +127,7 @@ In `/factory-full` and `/factory-balanced`, the agent commits the finished imple
 - **`/factory-balanced`**: everyday features and fixes that deserve tests and a review but not a full interview or red-green cycles.
 - **`/factory-fast`**: small, clear, low-risk changes such as documentation, configuration, or obvious fixes. No review stage.
 
-Use `/factory` to assess the request and select a workflow. An explicit workflow choice bypasses selection. `/factory` previously ran Full directly; use `/factory-full` for that behavior. Existing runs recorded with the legacy `factory` mode remain readable as Full and are displayed as `factory-full`.
+Use `/factory` to assess the request and select a workflow. An explicit workflow choice bypasses selection. `/factory` previously ran Full directly; use `/factory-full` for that behavior. Existing runs recorded with the legacy `factory` mode remain readable as Full and are displayed as `factory-full`. Older binaries may not understand the new value, so use the normal update procedure to upgrade the command, dashboard server, and installed skills together.
 
 The diagram shows the skills each mode runs, through Finish and the CI watch. Arrows between stages are labeled with the mode that takes them; `/factory-balanced` and `/factory-fast` run each Define skill only in the cases the table lists. Dotted lines show skills that another skill loads or applies, and the Rework loop from Check back to Build.
 

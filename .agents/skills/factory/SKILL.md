@@ -10,7 +10,7 @@ Assess the request before starting a workflow. Identify the intended outcome and
 Apply these rules in order:
 
 1. If the request is analysis-only or prohibits implementation, respect that scope and provide an assessment without starting a run.
-2. If it continues a run, inspect it with `factory run inspect` and follow [factory-procedures](../factory-procedures/SKILL.md). Preserve its recorded mode and context. Legacy `factory` means Full; an unrecorded mode is unknown, so do not guess or create a replacement run.
+2. If it continues a run, inspect it with `factory run inspect` and follow [factory-procedures](../factory-procedures/SKILL.md). Preserve its recorded mode and context. Legacy `factory` means Full; if the mode was not recorded, report it as unknown, resolve the missing context through the continuation procedure, and stop until it is resolved. Do not guess or create a replacement run.
 3. Honor an explicit choice of execution workflow, subject to project instructions and permissions.
 4. Choose Full for substantial uncertainty, interacting changes, sensitive consequences, or a concrete need for detailed planning and TDD. Authentication, authorization, secrets, destructive operations, and migrations deserve particular attention.
 5. Choose Fast for work that is clearly bounded, understood, easy to verify, and low risk.

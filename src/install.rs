@@ -476,6 +476,35 @@ mod tests {
     }
 
     #[test]
+    fn selector_replaces_full_and_all_entry_points_survive_reinstall_for_each_agent() {
+        let home = tempfile::tempdir().unwrap();
+        let roots = skills_roots("codex,claude,copilot", home.path(), |_: &str| None).unwrap();
+        for root in roots {
+            fs::create_dir_all(root.join("factory")).unwrap();
+            fs::write(
+                root.join("factory/SKILL.md"),
+                bundled_text("factory-full/SKILL.md"),
+            )
+            .unwrap();
+            for _ in 0..2 {
+                install_to(&root).unwrap();
+                for skill in [
+                    "factory",
+                    "factory-full",
+                    "factory-balanced",
+                    "factory-fast",
+                ] {
+                    assert_eq!(
+                        fs::read_to_string(root.join(skill).join("SKILL.md")).unwrap(),
+                        bundled_text(&format!("{skill}/SKILL.md")),
+                        "{root:?}: {skill}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn installs_bundled_skills_and_replaces_existing_ones() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
