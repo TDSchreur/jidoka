@@ -484,7 +484,8 @@ function Dashboard({ reworkCap }) {
         Runs are grouped into one row per project, named after the repository. A row has a column for each Stage (Define, Build, Check and Finish), plus one
         for Done. The project name toggles the row; a collapsed row shows how many Runs it
         has in each Stage, and how many are waiting for you. On a narrow screen the Stage buttons show one column at a
-        time. The board refreshes by itself every few seconds.
+        time. Hide removes a project from the board in this browser; use Hidden projects to restore it. Its Runs are kept.
+        Hidden projects do not contribute to the waiting count or notifications. The board refreshes by itself every few seconds.
       </p>
     <//>
     <${Topic} title="The header">
