@@ -269,11 +269,24 @@ fn conventions_file(root: &Path) -> Option<PathBuf> {
         .find(|path| fs::metadata(path).is_ok_and(|meta| meta.is_file()))
 }
 
+/// Reads a project file. The project is not trusted: only a regular file is read, and never more than
+/// `MAX_DOC_BYTES`, so a device, a pipe or a file that grows cannot make doctor wait or fill memory.
 fn read_doc(path: &Path) -> io::Result<String> {
-    if fs::metadata(path)?.len() > MAX_DOC_BYTES {
+    use io::Read;
+    let file = fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    if metadata.len() > MAX_DOC_BYTES {
         return Err(io::Error::other("larger than 1 MiB"));
     }
-    fs::read_to_string(path)
+    let mut text = String::new();
+    file.take(MAX_DOC_BYTES + 1).read_to_string(&mut text)?;
+    if text.len() as u64 > MAX_DOC_BYTES {
+        return Err(io::Error::other("larger than 1 MiB"));
+    }
+    Ok(text)
 }
 
 fn setup_docs_check(root: &Path) -> Check {
@@ -1354,6 +1367,22 @@ mod tests {
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["model_routing"][1]["status"], "warning");
         assert!(text.contains("Ready"), "{text}");
+    }
+
+    /// A repository can name anything as one of the files doctor reads, such as a device that never ends.
+    #[cfg(unix)]
+    #[test]
+    fn only_regular_files_are_read_from_the_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let device = dir.path().join("settings.json");
+        std::os::unix::fs::symlink("/dev/null", &device).unwrap();
+        assert!(read_doc(&device).is_err());
+        assert!(read_doc(dir.path()).is_err());
+        let plain = dir.path().join("plain.json");
+        fs::write(&plain, "{}").unwrap();
+        assert_eq!(read_doc(&plain).unwrap(), "{}");
+        fs::write(&plain, vec![b' '; MAX_DOC_BYTES as usize + 1]).unwrap();
+        assert!(read_doc(&plain).is_err());
     }
 
     #[test]
