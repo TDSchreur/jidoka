@@ -1,10 +1,9 @@
 use crate::routing::{ModelRouting, Role, Task};
-use crate::usage::{Mark, Usage};
+use crate::usage::{Collection, Mark, Usage};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs, io,
-    ops::Deref,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -139,6 +138,41 @@ pub(crate) struct NewRun {
     pub(crate) session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) model_routing: Option<ModelRouting>,
+}
+
+impl NewRun {
+    fn validate(&self) -> io::Result<()> {
+        if self.title.trim().is_empty()
+            || self.title.len() > 500
+            || self.title.chars().any(char::is_control)
+        {
+            return Err(io_invalid(
+                "Title must be nonempty, at most 500 bytes, and contain no control characters",
+            ));
+        }
+        if self.project.trim().is_empty()
+            || self.project.len() > 4096
+            || self.project.chars().any(char::is_control)
+        {
+            return Err(io_invalid(
+                "Project must be nonempty, at most 4096 bytes, and contain no control characters",
+            ));
+        }
+        if let Some(session) = &self.session {
+            check_session_id(session).map_err(io_invalid)?;
+        }
+        if let Some(routing) = &self.model_routing {
+            routing.validate().map_err(io_invalid)?;
+        }
+        if self.repository.as_deref().is_some_and(|repository| {
+            repository.len() > 4096
+                || repository.chars().any(char::is_control)
+                || !is_absolute_path(repository)
+        }) {
+            return Err(io_invalid("Repository must be an absolute path of at most 4096 bytes without control characters"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -644,18 +678,16 @@ pub(crate) struct RunStore {
     shared: Arc<Shared>,
 }
 
-pub(crate) struct Shared {
+struct Shared {
     path: PathBuf,
     runs: Mutex<Vec<Run>>,
-    /// Held while usage is collected, so two collections never overlap.
-    pub(crate) collecting: Mutex<()>,
+    collection: Collection,
 }
 
-impl Deref for RunStore {
-    type Target = Shared;
-    fn deref(&self) -> &Shared {
-        &self.shared
-    }
+#[derive(Debug)]
+pub(crate) struct UpdateOutcome {
+    pub(crate) run: Run,
+    pub(crate) collect_usage: bool,
 }
 
 impl RunStore {
@@ -664,17 +696,22 @@ impl RunStore {
             shared: Arc::new(Shared {
                 path: path.to_owned(),
                 runs: Mutex::new(load_runs(path)?),
-                collecting: Mutex::new(()),
+                collection: Collection::default(),
             }),
         })
     }
 
+    pub(crate) fn usage_collection(&self) -> &Collection {
+        &self.shared.collection
+    }
+
     pub(crate) fn list(&self) -> io::Result<Vec<Run>> {
-        Ok(self.runs.lock().map_err(lock_error)?.clone())
+        Ok(self.shared.runs.lock().map_err(lock_error)?.clone())
     }
 
     pub(crate) fn get(&self, id: &str) -> io::Result<Option<Run>> {
         Ok(self
+            .shared
             .runs
             .lock()
             .map_err(lock_error)?
@@ -684,7 +721,8 @@ impl RunStore {
     }
 
     pub(crate) fn create(&self, new: NewRun) -> io::Result<Run> {
-        let mut runs = self.runs.lock().map_err(lock_error)?;
+        new.validate()?;
+        let mut runs = self.shared.runs.lock().map_err(lock_error)?;
         let mut id = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?
@@ -722,7 +760,7 @@ impl RunStore {
         let created = run.updated_at.unwrap_or(0);
         mark(&mut run, created);
         runs.push(run.clone());
-        if let Err(error) = save_runs(&self.path, &runs) {
+        if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs.pop();
             return Err(error);
         }
@@ -731,8 +769,9 @@ impl RunStore {
 
     /// Applies an update to a copy first, so an inconsistent update changes nothing, and
     /// restores the stored record when saving fails.
-    pub(crate) fn update(&self, id: &str, update: UpdateRun) -> io::Result<Option<Run>> {
-        let mut runs = self.runs.lock().map_err(lock_error)?;
+    pub(crate) fn update(&self, id: &str, update: UpdateRun) -> io::Result<Option<UpdateOutcome>> {
+        update.validate().map_err(io_invalid)?;
+        let mut runs = self.shared.runs.lock().map_err(lock_error)?;
         let Some(index) = runs.iter().position(|run| run.id == id) else {
             return Ok(None);
         };
@@ -830,22 +869,29 @@ impl RunStore {
             (RunStatus::Done, kept) => kept,
             _ => None,
         };
+        let previous = &runs[index];
+        let collect_usage = previous.timeline.len() != next.timeline.len()
+            || previous.sessions != next.sessions
+            || (previous.finished_at.is_none() && next.finished_at.is_some());
         let old = std::mem::replace(&mut runs[index], next);
-        if let Err(error) = save_runs(&self.path, &runs) {
+        if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs[index] = old;
             return Err(error);
         }
-        Ok(Some(runs[index].clone()))
+        Ok(Some(UpdateOutcome {
+            run: runs[index].clone(),
+            collect_usage,
+        }))
     }
 
     /// Replaces the usage of a run. A failed save leaves the stored usage as it was.
     pub(crate) fn set_usage(&self, id: &str, usage: Usage) -> io::Result<()> {
-        let mut runs = self.runs.lock().map_err(lock_error)?;
+        let mut runs = self.shared.runs.lock().map_err(lock_error)?;
         let Some(run) = runs.iter_mut().find(|run| run.id == id) else {
             return Ok(());
         };
         let old = run.usage.replace(usage);
-        if let Err(error) = save_runs(&self.path, &runs) {
+        if let Err(error) = save_runs(&self.shared.path, &runs) {
             if let Some(run) = runs.iter_mut().find(|run| run.id == id) {
                 run.usage = old;
             }
@@ -856,12 +902,12 @@ impl RunStore {
 
     /// Removes only the Run record. Returns whether a Run with this id existed.
     pub(crate) fn delete(&self, id: &str) -> io::Result<bool> {
-        let mut runs = self.runs.lock().map_err(lock_error)?;
+        let mut runs = self.shared.runs.lock().map_err(lock_error)?;
         let Some(index) = runs.iter().position(|run| run.id == id) else {
             return Ok(false);
         };
         let removed = runs.remove(index);
-        if let Err(error) = save_runs(&self.path, &runs) {
+        if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs.insert(index, removed);
             return Err(error);
         }
@@ -939,6 +985,76 @@ mod tests {
     use crate::test_support::TestDir;
 
     #[test]
+    fn collection_decision_follows_persisted_transition() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let run = store
+            .create(NewRun {
+                title: "task".into(),
+                project: "/work".into(),
+                repository: None,
+                session: None,
+                model_routing: None,
+            })
+            .unwrap();
+        let apply = |stage, status, args: &[&str]| {
+            store
+                .update(&run.id, parse_update(stage, status, args).unwrap())
+                .unwrap()
+                .unwrap()
+        };
+        assert!(!apply("define", "running", &["--activity", "working"]).collect_usage);
+        assert!(apply("build", "running", &[]).collect_usage);
+        assert!(apply("build", "running", &["--session", "11111111-aaaa"]).collect_usage);
+        assert!(!apply("build", "running", &["--session", "11111111-aaaa"]).collect_usage);
+        assert!(apply("build", "done", &[]).collect_usage);
+        assert!(!apply("build", "done", &[]).collect_usage);
+        assert!(store
+            .update("999999", UpdateRun::new(Stage::Build, RunStatus::Running))
+            .unwrap()
+            .is_none());
+        let before = std::fs::read(&path).unwrap();
+        let mut invalid = UpdateRun::new(Stage::Check, RunStatus::Running);
+        invalid.branch = FieldUpdate::Set("invalid branch".into());
+        assert!(store.update(&run.id, invalid).is_err());
+        std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        assert!(store
+            .update(&run.id, UpdateRun::new(Stage::Check, RunStatus::Running))
+            .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(serde_json::to_vec(&store.list().unwrap()).unwrap(), before);
+    }
+
+    #[test]
+    fn invalid_mutations_leave_memory_and_disk_unchanged() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let make_new = |title: &str| NewRun {
+            title: title.into(),
+            project: "/work".into(),
+            repository: None,
+            session: None,
+            model_routing: None,
+        };
+        let run = store.create(make_new("valid")).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(
+            store.create(make_new(" ")).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        let mut update = UpdateRun::new(Stage::Build, RunStatus::Running);
+        update.branch = FieldUpdate::Set("invalid branch".into());
+        assert_eq!(
+            store.update(&run.id, update).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(serde_json::to_vec(&store.list().unwrap()).unwrap(), before);
+    }
+
+    #[test]
     fn concurrent_creates_keep_all_records_and_unique_ids() {
         let dir = TestDir::new();
         let store = std::sync::Arc::new(RunStore::open(&dir.0.path().join("runs.json")).unwrap());
@@ -1002,6 +1118,7 @@ mod tests {
                         .update(&id, UpdateRun::new(stage, RunStatus::Done))
                         .unwrap()
                         .unwrap()
+                        .run
                 })
             })
             .collect();
@@ -1292,7 +1409,8 @@ mod tests {
         let run = store
             .update(&run.id, update(&["--activity", "later"]))
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         assert_eq!(run.model_routing, Some(selection()));
         let reopened = RunStore::open(&path).unwrap();
         let run = reopened.get(&run.id).unwrap().unwrap();
@@ -1332,7 +1450,8 @@ mod tests {
                 ]),
             )
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         assert_eq!(run.mode, Some(Mode::Fast));
         assert_eq!(run.branch.as_deref(), Some("feature/x"));
         assert_eq!(
@@ -1346,7 +1465,8 @@ mod tests {
         let kept = store
             .update(&run.id, update(&["--activity", "Working"]))
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         assert_eq!(kept.worktree, run.worktree);
         assert_eq!(kept.spec, run.spec);
         assert_eq!(kept.pr, run.pr);
@@ -1359,7 +1479,8 @@ mod tests {
                 update(&["--clear-pr", "--clear-mode", "--clear-summary", "define"]),
             )
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         assert!(cleared.pr.is_none() && cleared.mode.is_none() && cleared.summaries.is_empty());
         assert_eq!(cleared.branch.as_deref(), Some("feature/x"));
         assert_eq!(cleared.spec, run.spec);
@@ -1390,7 +1511,8 @@ mod tests {
                 parse_update("finish", "running", &["--summary", "define=Planned again"]).unwrap(),
             )
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         assert!(matches!(run.stage, Stage::Finish));
         assert_eq!(run.summaries[&Stage::Define], "Planned again");
         assert_eq!(run.summaries[&Stage::Build], "Built three tickets");
@@ -1414,7 +1536,8 @@ mod tests {
                 ]),
             )
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         let view = |run: &Run| {
             run.tickets
                 .iter()
@@ -1442,7 +1565,8 @@ mod tests {
                 ]),
             )
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         assert_eq!(
             view(&run),
             [
@@ -1462,13 +1586,15 @@ mod tests {
                 ]),
             )
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         assert_eq!(run.tickets[0].status, TicketStatus::InProgress);
         assert_eq!(run.tickets[1].status, TicketStatus::Done);
         let run = store
             .update(&run.id, update(&["--clear-tickets"]))
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         assert!(run.tickets.is_empty());
     }
 
@@ -1686,7 +1812,8 @@ mod tests {
         let run = store
             .update("7", update(&["--branch", "b"]))
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         assert_eq!(run.blocking_reason.as_deref(), Some("Need input"));
         assert!(run.repository.is_none() && run.worktree.is_none());
         let json = serde_json::to_value(&run).unwrap();
@@ -1870,6 +1997,7 @@ mod tests {
                 .update(&run.id, parse_update(stage, "running", options).unwrap())
                 .unwrap()
                 .unwrap()
+                .run
         };
         // An update that changes nothing about the stage, ticket or rework adds no mark.
         assert_eq!(
@@ -1908,7 +2036,8 @@ mod tests {
         let done = store
             .update(&run.id, parse_update("finish", "done", &[]).unwrap())
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         let end = done.finished_at.expect("closed when done");
         let again = store
             .update(
@@ -1916,7 +2045,8 @@ mod tests {
                 parse_update("finish", "done", &["--activity", "x"]).unwrap(),
             )
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         assert_eq!(
             again.finished_at,
             Some(end),
@@ -1925,7 +2055,8 @@ mod tests {
         let reopened = store
             .update(&run.id, parse_update("build", "running", &[]).unwrap())
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         assert_eq!(reopened.finished_at, None);
     }
 
@@ -1961,12 +2092,14 @@ mod tests {
                 .unwrap(),
             )
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         assert_eq!(run.sessions, ["11111111-aaaa", "22222222-bbbb"]);
         let kept = store
             .update(&created.id, update(&["--activity", "x"]))
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         assert_eq!(kept.sessions, run.sessions);
         for bad in [
             "short",
@@ -2039,7 +2172,8 @@ mod tests {
         let run = store
             .update("7", update(&["--activity", "x"]))
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .run;
         assert_eq!(run.timeline.len(), 1);
         assert_eq!(run.timeline[0].at, run.updated_at.unwrap());
     }

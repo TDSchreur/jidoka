@@ -12,6 +12,91 @@ const T0: u64 = 1_793_872_800_000;
 const RUN_A: &str = "1793872800000000001";
 const RUN_B: &str = "1793872800000000002";
 
+#[test]
+fn cloned_store_collections_serialize_while_updates_remain_responsive() {
+    use crate::run::{NewRun, RunStatus, RunStore, UpdateRun};
+    use std::sync::mpsc;
+
+    let world = World::new();
+    let store = RunStore::open(&world.dir.path().join("runs.json")).unwrap();
+    let run = store
+        .create(NewRun {
+            title: "task".into(),
+            project: "/work".into(),
+            repository: None,
+            session: None,
+            model_routing: None,
+        })
+        .unwrap();
+    let settings = UsageSettings {
+        enabled: false,
+        roots: world.roots(),
+        budget: Duration::from_secs(5),
+        settle: Vec::new(),
+    };
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let first_store = store.clone();
+    let first_settings = settings.clone();
+    let id = run.id.clone();
+    let first = std::thread::spawn(move || {
+        first_store.usage_collection().collect_paused(
+            &first_store,
+            &id,
+            &first_settings,
+            None,
+            entered_tx,
+            release_rx,
+        )
+    });
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first collection entered");
+
+    let (second_entered_tx, second_entered_rx) = mpsc::channel();
+    let (second_release_tx, second_release_rx) = mpsc::channel();
+    let (waiting_tx, waiting_rx) = mpsc::channel();
+    let second_store = store.clone();
+    let id = run.id.clone();
+    let second_settings = settings.clone();
+    let second = std::thread::spawn(move || {
+        second_store.usage_collection().collect_paused(
+            &second_store,
+            &id,
+            &second_settings,
+            Some(waiting_tx),
+            second_entered_tx,
+            second_release_rx,
+        )
+    });
+    waiting_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("second collection waits for the first");
+    let (updated_tx, updated_rx) = mpsc::channel();
+    let update_store = store.clone();
+    let id = run.id.clone();
+    let update = std::thread::spawn(move || {
+        let result = update_store.update(&id, UpdateRun::new(Stage::Build, RunStatus::Running));
+        updated_tx.send(result).unwrap();
+    });
+    let updated = updated_rx.recv_timeout(Duration::from_secs(5));
+    release_tx.send(()).unwrap();
+    first.join().unwrap().unwrap();
+    second_entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("second collection entered after first");
+    second_release_tx.send(()).unwrap();
+    second.join().unwrap().unwrap();
+    update.join().unwrap();
+    assert!(updated
+        .expect("update should complete while collection is held")
+        .unwrap()
+        .is_some());
+    assert!(store.delete(&run.id).unwrap());
+    collect_and_store(&store, &run.id, &settings).unwrap();
+    assert!(store.get(&run.id).unwrap().is_none());
+}
+
 fn iso(offset_seconds: u64) -> String {
     iso_timestamp(T0 + offset_seconds * 1000)
 }

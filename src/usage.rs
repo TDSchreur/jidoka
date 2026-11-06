@@ -612,6 +612,71 @@ fn keep_more(old: Option<&Usage>, new: Usage) -> Usage {
     kept
 }
 
+/// Serializes usage collection for all handles to one run store.
+#[derive(Default)]
+pub(crate) struct Collection {
+    lock: std::sync::Mutex<()>,
+}
+
+impl Collection {
+    fn collect(
+        &self,
+        store: &crate::run::RunStore,
+        id: &str,
+        settings: &UsageSettings,
+    ) -> std::io::Result<()> {
+        self.collect_with(store, id, settings, || {}, || Ok(()))
+    }
+
+    fn collect_with(
+        &self,
+        store: &crate::run::RunStore,
+        id: &str,
+        settings: &UsageSettings,
+        waiting: impl FnOnce(),
+        acquired: impl FnOnce() -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        let _guard = match self.lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                return Err(crate::run::lock_error(error))
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                waiting();
+                self.lock.lock().map_err(crate::run::lock_error)?
+            }
+        };
+        acquired()?;
+        collect_locked(store, id, settings)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn collect_paused(
+        &self,
+        store: &crate::run::RunStore,
+        id: &str,
+        settings: &UsageSettings,
+        waiting: Option<std::sync::mpsc::Sender<()>>,
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) -> std::io::Result<()> {
+        self.collect_with(
+            store,
+            id,
+            settings,
+            || {
+                if let Some(waiting) = waiting {
+                    let _ = waiting.send(());
+                }
+            },
+            || {
+                entered.send(()).map_err(std::io::Error::other)?;
+                release.recv().map_err(std::io::Error::other)
+            },
+        )
+    }
+}
+
 /// Recomputes the usage of one run from the logs and stores it. Collections never overlap. A failure
 /// is returned, never panics, and leaves the stored usage as it was; the caller only reports it.
 pub(crate) fn collect_and_store(
@@ -619,7 +684,14 @@ pub(crate) fn collect_and_store(
     id: &str,
     settings: &UsageSettings,
 ) -> std::io::Result<()> {
-    let _one_at_a_time = store.collecting.lock().map_err(crate::run::lock_error)?;
+    store.usage_collection().collect(store, id, settings)
+}
+
+fn collect_locked(
+    store: &crate::run::RunStore,
+    id: &str,
+    settings: &UsageSettings,
+) -> std::io::Result<()> {
     let runs = store.list()?;
     let Some(target) = runs.iter().find(|run| run.id == id) else {
         return Ok(());
