@@ -222,16 +222,18 @@ fn slug(title: &str) -> String {
 }
 
 /// The command that resumes this run with the same choices.
-fn retry_command(run: &str, options: &Options, branch: Option<&str>) -> String {
+fn retry_command(run: &str, options: &Options, named: &Named) -> String {
+    let branch = match named {
+        Named::Unknown => options.branch.clone(),
+        Named::Chosen(name) => Some(name.clone()),
+        Named::Taken => None,
+    };
     let mut command = format!("factory run begin --run {run}");
     for (flag, value) in [
         ("--agent", &options.agent),
         ("--mode", &options.mode),
         ("--base", &options.base),
-        (
-            "--branch",
-            &branch.map(str::to_string).or(options.branch.clone()),
-        ),
+        ("--branch", &branch),
     ] {
         if let Some(value) = value {
             command.push_str(&format!(" {flag} {value}"));
@@ -326,7 +328,7 @@ pub(crate) fn begin(
                     api,
                     &run,
                     options,
-                    Some(&workspace.branch),
+                    &Named::Chosen(workspace.branch.clone()),
                     format!(
                         "The workspace is at {}, but the run could not be updated: {error}",
                         workspace.worktree
@@ -334,13 +336,7 @@ pub(crate) fn begin(
                 )),
             }
         }
-        Err(failure) => Err(blocked(
-            api,
-            &run,
-            options,
-            failure.branch.as_deref(),
-            failure.reason,
-        )),
+        Err(failure) => Err(blocked(api, &run, options, &failure.named, failure.reason)),
     }
 }
 
@@ -349,7 +345,7 @@ fn blocked(
     api: &dyn RunApi,
     run: &str,
     options: &Options,
-    branch: Option<&str>,
+    named: &Named,
     reason: String,
 ) -> BeginError {
     let reason: String = reason.chars().take(MAX_REASON_CHARS).collect();
@@ -359,7 +355,7 @@ fn blocked(
     BeginError::Blocked {
         run: run.to_string(),
         reason,
-        retry: retry_command(run, options, branch),
+        retry: retry_command(run, options, named),
         marked,
     }
 }
@@ -372,17 +368,27 @@ struct Workspace {
     base_commit: String,
 }
 
-/// Why the workspace was not made, and the branch name that was settled on by then, for the retry command.
+/// What a failed attempt knows about the branch name, for the retry command.
+enum Named {
+    /// No name was settled on yet; nothing was made, so the retry repeats what was asked for.
+    Unknown,
+    /// This name is the attempt's own: the retry takes over what it left.
+    Chosen(String),
+    /// The name asked for belongs to something else. The retry must not repeat it, or it would take that over.
+    Taken,
+}
+
+/// Why the workspace was not made.
 struct Failure {
     reason: String,
-    branch: Option<String>,
+    named: Named,
 }
 
 impl From<String> for Failure {
     fn from(reason: String) -> Self {
         Failure {
             reason,
-            branch: None,
+            named: Named::Unknown,
         }
     }
 }
@@ -553,7 +559,11 @@ fn workspace(
     };
     let fail = |reason: String| Failure {
         reason,
-        branch: Some(branch.clone()),
+        named: Named::Chosen(branch.clone()),
+    };
+    let taken_name = |reason: String| Failure {
+        reason,
+        named: Named::Taken,
     };
     let path = path_of(&branch);
     let path_text = path.display().to_string();
@@ -590,12 +600,12 @@ fn workspace(
 
     if !adopt {
         if exists {
-            return Err(fail(format!(
+            return Err(taken_name(format!(
                 "The branch {branch} already exists. Pick another name with --branch."
             )));
         }
         if path.exists() {
-            return Err(fail(format!(
+            return Err(taken_name(format!(
                 "{path_text} already exists. Pick another name with --branch."
             )));
         }

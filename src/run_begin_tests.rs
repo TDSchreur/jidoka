@@ -898,3 +898,61 @@ fn a_block_that_could_not_be_recorded_says_so() {
 fn git_is_asked_in_english_so_that_its_messages_can_be_told_apart() {
     assert!(include_str!("run_begin.rs").contains(r#".env("LC_ALL", "C")"#));
 }
+
+// --- rework 2 ---------------------------------------------------------------------------------------
+
+/// The options a printed retry command stands for.
+fn parsed_retry(retry: &str) -> Options {
+    let words: Vec<&str> = retry.split_whitespace().collect();
+    assert_eq!(&words[..4], ["factory", "run", "begin", "--run"], "{retry}");
+    parse_resume(words[4], &words[5..]).unwrap()
+}
+
+#[test]
+fn the_retry_after_a_taken_name_never_takes_over_the_workspace_that_holds_it() {
+    let project = Project::new();
+    let api = FakeApi::default();
+    // Run A holds a clean, unused worktree named feat; a plain branch is taken as well.
+    let mut mine = options("A");
+    mine.branch = Some("feat".into());
+    let a = begin(&project.repo, &mine, &api, None, None).unwrap();
+    git(&project.repo, &["branch", "feat2", "origin/develop"]);
+
+    for taken in ["feat", "feat2"] {
+        let api_b = FakeApi::default();
+        let mut wants = options("B work");
+        wants.branch = Some(taken.into());
+        let (_, reason, retry) = blocked(begin(&project.repo, &wants, &api_b, None, None));
+        assert!(reason.contains("already exists"), "{reason}");
+        assert!(!retry.contains(&format!("--branch {taken}")), "{retry}");
+
+        // Running the printed command makes a workspace of its own.
+        let resume_api = api_with_run("B work");
+        let begun = begin(
+            &project.repo,
+            &parsed_retry(&retry),
+            &resume_api,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_ne!(begun.worktree, a.worktree);
+        assert!(begun.branch.starts_with("b-work"), "{}", begun.branch);
+    }
+    // Run A's workspace is untouched.
+    assert_eq!(
+        git(Path::new(&a.worktree), &["branch", "--show-current"]),
+        "feat"
+    );
+}
+
+#[test]
+fn a_retry_before_any_name_was_chosen_keeps_the_branch_that_was_asked_for() {
+    let project = Project::new();
+    let api = FakeApi::default();
+    let mut wants = options("Early");
+    wants.branch = Some("mine".into());
+    wants.base = Some("nope".into());
+    let (_, _, retry) = blocked(begin(&project.repo, &wants, &api, None, None));
+    assert!(retry.contains("--branch mine"), "{retry}");
+}
