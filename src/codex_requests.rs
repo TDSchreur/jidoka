@@ -87,15 +87,15 @@ fn read_snippet(input: &str) -> Snippet {
                     continue;
                 }
                 if name == "exec_command" {
-                    match exec_command_literal(&chars, k + 1) {
+                    // The arguments are read within the call, and scanning goes on after it, so that
+                    // every character is looked at a bounded number of times, however broken the call is.
+                    let end = call_end(&chars, k + 1);
+                    match exec_command_literal(&chars[..end], k + 1) {
                         Some(command) => snippet.commands.push(command),
-                        None => {
-                            // Skip the rest of this call, so that a broken one is scanned only once.
-                            snippet.other_tool = true;
-                            i = call_end(&chars, k + 1);
-                            continue;
-                        }
+                        None => snippet.other_tool = true,
                     }
+                    i = end;
+                    continue;
                 } else {
                     snippet.other_tool = true;
                 }

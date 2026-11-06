@@ -1593,11 +1593,13 @@ fn a_hostile_codex_snippet_is_read_in_one_pass() {
     let calls_open = "tools.exec_command({a:(".repeat(3_000);
     let calls_template = "tools.exec_command({a:`".repeat(3_000);
     let unicode = "tools.exec_command({cmd:\"\\u{".repeat(3_000);
+    let brackets = "tools.exec_command({a:[)".repeat(10_000);
+    let braces = "tools.exec_command({a:{)".repeat(10_000);
     let long_literal = format!(
         "await tools.exec_command({{cmd:\"{}\"}})",
         "a".repeat(200_000)
     );
-    for snippet in [calls_open, calls_template, unicode] {
+    for snippet in [calls_open, calls_template, unicode, brackets, braces] {
         assert_eq!(
             codex_category_of(&snippet),
             Category::ReadingEditingAnalysis
@@ -1607,5 +1609,15 @@ fn a_hostile_codex_snippet_is_read_in_one_pass() {
     assert_eq!(
         codex_category_of(&long_literal),
         Category::ReadingEditingAnalysis
+    );
+}
+
+#[test]
+fn a_call_after_a_broken_one_in_the_same_snippet_is_still_read() {
+    assert_eq!(
+        codex_category_of(
+            "await Promise.allSettled([tools.exec_command({cmd}), tools.exec_command({a:[)}), tools.exec_command({cmd:\"git push\"})])"
+        ),
+        Category::PrCreationAndPush
     );
 }
