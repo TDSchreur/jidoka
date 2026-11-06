@@ -4,7 +4,7 @@
 //! session's model. Nothing here changes a file or calls a model; at most it asks an agent for its `--version`.
 
 use super::{find_program, read_doc, Check, Machine};
-use crate::routing::{load, policy_path_in, ModelRouting, Resolution, RoutingAgent};
+use crate::routing::{policy_path_in, read, AgentPolicy, ModelRouting, Policy, RoutingAgent};
 use std::{collections::BTreeSet, path::Path};
 
 /// The Agent tool's `effort` option first appeared in this Claude Code release.
@@ -12,40 +12,106 @@ const CLAUDE_MIN_VERSION: (u32, u32, u32) = (2, 1, 292);
 /// The only model names the Agent tool accepts.
 const CLAUDE_MODELS: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
 const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+const COPILOT_NOTICE: &str =
+    "Model routing is not supported on Copilot CLI: every stage uses the session's model.";
 
-pub(super) fn checks(root: &Path, machine: &Machine) -> Vec<Check> {
+/// The routing checks for `agent` (all agents when `None`), as `--agent` on `factory doctor` selects.
+pub(super) fn checks(root: &Path, machine: &Machine, agent: Option<&str>) -> Vec<Check> {
     let Some(path) = policy_path_in(|name| (machine.var)(name)) else {
         return Vec::new();
     };
-    match load(&path) {
-        Ok(Resolution {
-            selection: None,
-            notice: None,
-        }) => Vec::new(),
+    let policy = match read(&path) {
+        Ok(policy) => policy,
+        Err(problem) => {
+            return vec![Check::fail(
+                "policy",
+                problem,
+                "Correct the file, or set \"enabled\": false to switch model routing off.",
+            )]
+        }
+    };
+    let shown = path.display();
+    match policy {
+        Policy::Off => Vec::new(),
         // A policy for Copilot CLI: information, never a problem.
-        Ok(Resolution {
-            selection: None,
-            notice: Some(notice),
-        }) => vec![Check::pass("policy", notice)],
-        Ok(Resolution {
-            selection: Some(selection),
-            ..
-        }) => {
+        Policy::CopilotOnly => vec![Check::pass("policy", COPILOT_NOTICE)],
+        Policy::Single { agent: policy_agent, policy } => match agent {
+            // The file is for another agent: nothing to check for this one.
+            Some(asked) if asked != policy_agent.name() => vec![Check::skipped(
+                "policy",
+                format!(
+                    "{shown} is for {}, so there is nothing to check for {asked}; {asked} runs are not routed",
+                    policy_agent.name()
+                ),
+            )],
+            _ => {
+                let selection = policy.selection(policy_agent);
+                let mut checks = vec![Check::pass(
+                    "policy",
+                    format!("{shown} routes {}", policy_agent.name()),
+                )];
+                checks.extend(agent_checks(policy_agent, &selection, root, machine));
+                checks
+            }
+        },
+        Policy::Multi { .. } => {
             let mut checks = vec![Check::pass(
                 "policy",
-                format!("{} routes {}", path.display(), selection.agent.name()),
+                format!("{shown} configures {}", policy.configured().join(", ")),
             )];
-            checks.extend(match selection.agent {
-                RoutingAgent::Claude => claude_checks(&selection, root, machine),
-                RoutingAgent::Codex => codex_checks(machine),
-            });
+            if agent == Some("copilot") {
+                checks.push(Check::pass("policy", COPILOT_NOTICE));
+                return checks;
+            }
+            for routing_agent in [RoutingAgent::Claude, RoutingAgent::Codex] {
+                let name = routing_agent.name();
+                if agent.is_some_and(|asked| asked != name) {
+                    continue;
+                }
+                checks.extend(match policy.entry(routing_agent) {
+                    // Every agent is checked, but only those with an entry have anything to say.
+                    None if agent.is_none() => Vec::new(),
+                    None => vec![Check::skipped(
+                        "policy",
+                        format!("the policy has no entry for {name}, so {name} runs are not routed"),
+                    )
+                    .for_agent(name)],
+                    Some(entry) => entry_checks(routing_agent, entry, root, machine),
+                });
+            }
             checks
         }
-        Err(problem) => vec![Check::fail(
-            "policy",
-            problem,
-            "Correct the file, or set \"enabled\": false to switch model routing off.",
-        )],
+    }
+}
+
+/// The checks for one entry of the multi-agent form, each tagged with the agent.
+fn entry_checks(
+    agent: RoutingAgent,
+    entry: &AgentPolicy,
+    root: &Path,
+    machine: &Machine,
+) -> Vec<Check> {
+    let name = agent.name();
+    if !entry.enabled {
+        return vec![
+            Check::skipped("policy", format!("the {name} entry is switched off")).for_agent(name),
+        ];
+    }
+    agent_checks(agent, &entry.selection(agent), root, machine)
+        .into_iter()
+        .map(|check| check.for_agent(name))
+        .collect()
+}
+
+fn agent_checks(
+    agent: RoutingAgent,
+    selection: &ModelRouting,
+    root: &Path,
+    machine: &Machine,
+) -> Vec<Check> {
+    match agent {
+        RoutingAgent::Claude => claude_checks(selection, root, machine),
+        RoutingAgent::Codex => codex_checks(machine),
     }
 }
 

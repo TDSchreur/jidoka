@@ -56,7 +56,7 @@ The dashboard footer and `factory --version` show which build is running: the ve
 
 ### Reporting runs manually
 
-For manual tracking, `factory run start "Task title"` prints a run ID, and `factory run update <id> build running` updates it. Stages are `define`, `build`, `check`, and `finish`; statuses are `running`, `blocked`, and `done`.
+For manual tracking, `factory run start "Task title"` prints a run ID (add `--agent claude`, `--agent codex` or `--agent copilot` to say which agent the run is in; model routing needs it when the policy file covers several agents), and `factory run update <id> build running` updates it. Stages are `define`, `build`, `check`, and `finish`; statuses are `running`, `blocked`, and `done`.
 
 #### Run context
 
@@ -204,29 +204,41 @@ The dashboard reads the token counts your agents write to their own session logs
 
 Model routing lets you say which model and effort each kind of task should use, independently of the workflow mode. The factory records your choices on the run, and the role mapped to `check` sets the model and effort of the review agents of `factory-full` and `factory-balanced`. The `build` and `finish` tasks are not routed yet and run on the session's model. Without a policy file, runs behave as before.
 
-Write one policy file, `model-routing.json`, in the factory's config folder: `$XDG_CONFIG_HOME/tds-factory/` (or `~/.config/tds-factory/` when unset) on Linux, and `%APPDATA%\tds-factory\` on Windows. A relative `XDG_CONFIG_HOME` is ignored. `factory doctor` can write a starter for you; see [Checking readiness](#checking-readiness). For example:
+Write one policy file, `model-routing.json`, in the factory's config folder: `$XDG_CONFIG_HOME/tds-factory/` (or `~/.config/tds-factory/` when unset) on Linux, and `%APPDATA%\tds-factory\` on Windows. A relative `XDG_CONFIG_HOME` is ignored. One file can hold independent settings for Claude Code and Codex, each under its agent's name in `agents`:
 
 ```json
 {
   "enabled": true,
-  "agent": "claude",
-  "roles": {
-    "strong": { "model": "opus", "effort": "high" },
-    "coding": { "model": "sonnet", "effort": "medium" },
-    "routine": { "model": "haiku", "effort": "low" }
-  },
-  "tasks": {
-    "build": "coding",
-    "check": "strong",
-    "finish": "routine"
+  "agents": {
+    "claude": {
+      "roles": {
+        "strong": { "model": "opus", "effort": "high" },
+        "coding": { "model": "sonnet", "effort": "medium" },
+        "routine": { "model": "haiku", "effort": "low" }
+      },
+      "tasks": { "check": "strong" }
+    },
+    "codex": {
+      "roles": {
+        "strong": { "model": "gpt-6-astra", "effort": "high" }
+      },
+      "tasks": { "check": "strong" }
+    }
   }
 }
 ```
 
-- `agent` is `codex` or `claude`. `roles` defines up to three roles (`strong`, `coding`, `routine`), each with a `model` and an optional `effort`. `tasks` maps `build`, `check` and `finish` to one of those roles; a task you leave out is not routed. `enabled` defaults to `true`; set it to `false` to switch routing off without deleting the file.
+`factory doctor --create-model-routing` writes a starter like this for you, with an entry for each agent (or only one with `--agent claude` or `--agent codex`); see [Checking readiness](#checking-readiness). It never overwrites a file that is already there.
+
+- Each entry under `agents` is `claude` or `codex` and has `roles` and `tasks`, and optionally `enabled`. `roles` defines up to three roles (`strong`, `coding`, `routine`), each with a `model` and an optional `effort`. `tasks` maps `build`, `check` and `finish` to one of those roles; a task you leave out is not routed. `enabled` defaults to `true`; set it to `false` at the top to switch routing off for every agent, or inside an entry to switch off that agent only, without deleting anything.
+- The original single-agent form still works and is never rewritten for you: `agent` (`claude` or `codex`), `roles` and `tasks` at the top of the file, instead of `agents`. Use one form or the other; a file that has both is refused.
 - Models and efforts are plain text of up to 64 letters, digits and `. _ : / -`. The factory keeps no list of valid values, so a new model works without a factory release, and checking that your agent accepts a value is up to you.
-- `factory run start` reads the file once and records the result on the run. Continuing a run keeps the recorded selection, so editing the file affects only runs you start afterwards.
-- A file that cannot be read, is not valid JSON, has an unknown field, or maps a task to a role that is not defined stops `factory run start` with the file path and the problem. A policy with `enabled: false` is not checked.
+- `factory run start "title" --agent <claude|codex|copilot>` names the agent a run is in; the workflow skills pass it for you. The factory reads the file once, records only that agent's policy on the run, and never uses another agent's:
+  - With the `agents` form the option is required, because the file cannot tell which agent is asking. Without it the start stops and names the agents the file configures. An agent with no entry, or a switched-off entry, is not routed; the first also prints a notice that says which entry to add.
+  - With the single-agent form the option is optional, so existing invocations keep working. Without it, or with the policy's own agent, the policy is recorded; for the other agent nothing is recorded and a notice says so.
+  - `--agent copilot` records nothing and prints the Copilot notice, whatever the file holds.
+  - Continuing a run keeps the recorded selection, so editing the file affects only runs you start afterwards.
+- A file that cannot be read, is too large, is not valid JSON, has an unknown field or an unknown agent, repeats a key (an agent, a role or a task), has an empty `agents`, has an `agents.copilot` entry, or maps a task to a role that is not defined stops `factory run start` with the file path and the problem, naming the entry (`agents.codex`) when the mistake is in one. Every enabled entry is checked each time, so a typo in Codex's entry also stops a Claude Code run until it is fixed. A policy with `enabled: false`, and a switched-off entry, are not checked.
 - To give one task a different role on a running run, use `factory run update <id> <stage> <status> --model-routing check=coding` (repeat the option for more tasks). The options you give replace all earlier overrides, and `--clear-model-routing` removes them. The role must be one the run's policy defines, and a run started without a policy has nothing to override. The policy's own mapping is not changed, and the override is kept when the run is continued.
 - When a run's selection maps `check` to a role, the review agents that Check starts use that role's model and effort:
   - The workflow tells the `code-review` skill which model and effort to use, on every Check pass including the one after a Rework. The coordinating session keeps its own model.
@@ -241,7 +253,7 @@ Write one policy file, `model-routing.json`, in the factory's config folder: `$X
   - The request counts as met when any one of the recorded efforts is the requested one. When the coordinator and the review agents run the same model at different efforts, their efforts land in the same row, so the agents' effort cannot be told apart from the coordinator's. A row keeps at most eight distinct efforts.
   - Runs recorded before this feature, and runs without a selection, show no Model routing section.
 
-Copilot CLI is not supported. It chooses a subagent's model from its own settings per agent name, and nothing documents a way for the main agent to pick a model when it starts a subagent. Supporting it would need extra agent files and behavior that Copilot does not promise, so every stage keeps the session's model. A policy with `"agent": "copilot"` records no selection and prints a notice.
+Copilot CLI is not supported. It chooses a subagent's model from its own settings per agent name, and nothing documents a way for the main agent to pick a model when it starts a subagent. Supporting it would need extra agent files and behavior that Copilot does not promise, so every stage keeps the session's model. A single-agent policy with `"agent": "copilot"`, or a run started with `--agent copilot`, records no selection and prints a notice.
 
 ### Checking readiness
 
@@ -251,7 +263,8 @@ Copilot CLI is not supported. It chooses a subagent's model from its own setting
 - each agent (Codex, Claude Code, Copilot): its command is on `PATH`, and every file of every skill `factory install` bundles is installed in the folder `factory install` would use (honoring `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `COPILOT_HOME`).
 
 - the [model routing](#model-routing) policy, only when a `model-routing.json` exists and is switched on. A "Model routing" section follows the agents. Doctor asks the agent for its `--version` there, using the program's absolute path from `PATH`; that is the only agent command it runs, and it calls no model.
-  - `policy`: the file loads. A file that stops `factory run start` is a `fail`, which includes a role without a model.
+  - `policy`: the file loads. A file that stops `factory run start` is a `fail`, which includes a role without a model and a mistake in any enabled entry, named as `agents.<agent>`. With the `agents` form, the line says which agents the file configures, and each agent's checks that follow are tagged with it, as `host [claude]` in the text and an `agent` field in `--json`.
+  - `factory doctor` checks every configured entry. `--agent claude` or `--agent codex` checks only that agent's entry: an agent with no entry, or a switched-off entry, is `skipped` with the reason, and so is a single-agent file written for the other agent. With no `--agent`, an agent without an entry is left out.
   - `host`: for Claude Code, the command is on `PATH` and is version 2.1.292 or later, the first with the Agent tool's `effort` option. For Codex, the command and its version are shown, but the factory does not know which version first supports a model and effort per subagent, so that is `skipped`.
   - `model` and `effort`: for Claude Code, each role a task uses must name `opus`, `sonnet`, `haiku` or `fable`, the only models the Agent tool accepts, and an effort of `low`, `medium`, `high`, `xhigh` or `max`. A role without an effort is flagged, because the model's default applies and differs between models. Which levels a particular model offers is not checked. For Codex the factory keeps no list, so both are `skipped`.
   - `overrides`: for Claude Code, a warning when `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` together with `CLAUDE_CODE_SUBAGENT_MODEL`, or `CLAUDE_CODE_EFFORT_LEVEL`, is set in the environment, your Claude Code `settings.json`, or the project's `.claude/settings.json` or `.claude/settings.local.json` (their `env` entries), because they replace the policy's model or effort. Only string values are read, and enterprise-managed settings are not, so an override set there is missed. A settings file that cannot be read is `skipped`.
@@ -259,7 +272,7 @@ Copilot CLI is not supported. It chooses a subagent's model from its own setting
 
 Each line is `pass`, `missing` (something to supply), `fail` (something broken), `warning` (a risk to read about that does not stop the factory) or `skipped` (not checked, with the reason), with a fix where there is one. Model routing problems other than a policy file that cannot be used are warnings, because model routing is optional and without it a stage uses the session's model. The exit status is 0 when the project checks pass and at least one agent is usable, and the model-routing policy, if there is one, loads. Use `--agent codex|claude|copilot` to check, and require, one agent, and `--json` for structured output.
 
-Doctor writes one file, and only when you ask: a starter model-routing policy. `factory doctor --agent claude --create-model-routing` (or `--agent codex`) creates `model-routing.json` in the config folder, with the three roles for that agent and only the `check` task routed to `strong`, and then runs its checks, so the new file is verified straight away. Giving the option is the confirmation: there is no prompt. The file is switched on, so the next run's review agents use it; edit the models and efforts, or set `"enabled": false`. Doctor never overwrites anything already at that path, and never writes through a symbolic link there. If it cannot write the file, it stops with the reason and does not run its checks. The option is refused with `--agent copilot`, because Copilot CLI is not supported. With `--json`, the note about the file goes to stderr and stdout stays JSON.
+Doctor writes one file, and only when you ask: a starter model-routing policy. `factory doctor --create-model-routing` creates `model-routing.json` in the config folder in the `agents` form, with an entry for Claude Code and one for Codex, each with the three roles and only the `check` task routed to `strong`. Add `--agent claude` or `--agent codex` for an entry for that agent only. Doctor then runs its checks, so the new file is verified straight away. Giving the option is the confirmation: there is no prompt. The file is switched on, so the next run's review agents use it; edit the models and efforts, or set `"enabled": false`. Doctor never overwrites anything already at that path, and never writes through a symbolic link there. If it cannot write the file, it stops with the reason and does not run its checks. The option is refused with `--agent copilot`, because Copilot CLI is not supported. With `--json`, the note about the file goes to stderr and stdout stays JSON.
 
 ### First use in a repository
 

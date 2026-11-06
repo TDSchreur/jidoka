@@ -156,7 +156,10 @@ fn doctor_creates_the_model_routing_policy_once_and_keeps_json_output_valid() {
         "{note}"
     );
     let text = std::fs::read_to_string(&policy).unwrap();
-    assert!(text.contains("\"agent\": \"claude\""), "{text}");
+    assert!(
+        text.contains("\"claude\"") && !text.contains("\"codex\""),
+        "{text}"
+    );
 
     // A second run, even after an edit, leaves the file as it is.
     std::fs::write(&policy, "{\"agent\":\"codex\",\"roles\":{},\"tasks\":{}}").unwrap();
@@ -180,7 +183,7 @@ fn doctor_creates_the_codex_starter_too_and_reports_when_it_cannot_write() {
         "{text}"
     );
     assert!(
-        text.contains("pass     policy:") && text.contains("routes codex"),
+        text.contains("pass     policy:") && text.contains("configures codex"),
         "{text}"
     );
     let written =
@@ -215,18 +218,58 @@ fn doctor_creates_the_codex_starter_too_and_reports_when_it_cannot_write() {
 }
 
 #[test]
-fn doctor_will_not_create_a_policy_without_a_supported_agent() {
+fn doctor_creates_one_file_for_both_agents_and_checks_each_of_them() {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    for args in [
-        &["doctor", "--create-model-routing"][..],
+    let output = factory(
+        &["doctor", "--create-model-routing", "--json"],
+        dir.path(),
+        home.path(),
+    );
+    let note = String::from_utf8_lossy(&output.stderr);
+    assert!(note.contains("claude and codex"), "{note}");
+    let written =
+        std::fs::read_to_string(home.path().join(".config/tds-factory/model-routing.json"))
+            .unwrap();
+    assert!(
+        written.contains("\"claude\"") && written.contains("\"codex\""),
+        "{written}"
+    );
+    // The next report checks both entries, each tagged with its agent.
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let agents: std::collections::BTreeSet<&str> = report["model_routing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|check| check["agent"].as_str())
+        .collect();
+    assert_eq!(agents, ["claude", "codex"].into());
+    // Asking for one agent checks only its entry.
+    let output = factory(
+        &["doctor", "--agent", "codex", "--json"],
+        dir.path(),
+        home.path(),
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(report["model_routing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|check| check["agent"].is_null() || check["agent"] == "codex"));
+}
+
+#[test]
+fn doctor_will_not_create_a_policy_for_copilot() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let output = factory(
         &["doctor", "--create-model-routing", "--agent", "copilot"],
-    ] {
-        let output = factory(args, dir.path(), home.path());
-        assert!(!output.status.success(), "{args:?}");
-        assert!(
-            !home.path().join(".config").exists(),
-            "{args:?} wrote something"
-        );
-    }
+        dir.path(),
+        home.path(),
+    );
+    assert!(!output.status.success());
+    assert!(
+        !home.path().join(".config").exists(),
+        "something was written"
+    );
 }

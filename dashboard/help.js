@@ -610,24 +610,29 @@ function ModelRouting() {
     <${Topic} title="The policy file">
       <p>
         One file, <${Code}>model-routing.json<//>, in the factory’s config folder: <${Code}>$XDG_CONFIG_HOME/tds-factory/<//>
-        ${' '}(or <${Code}>~/.config/tds-factory/<//>) on Linux, and <${Code}>%APPDATA%\\tds-factory\\<//> on Windows. It names
-        the agent, up to three roles (<${Code}>strong<//>, <${Code}>coding<//>, <${Code}>routine<//>) with a model and an
-        effort each, and which role handles <${Code}>build<//>, <${Code}>check<//> and <${Code}>finish<//>. Set${' '}
-        <${Code}>"enabled": false<//> to switch it off without deleting it.
+        ${' '}(or <${Code}>~/.config/tds-factory/<//>) on Linux, and <${Code}>%APPDATA%\\tds-factory\\<//> on Windows. It has an
+        entry for each agent under <${Code}>agents<//> (<${Code}>claude<//> and <${Code}>codex<//>), and each entry has up to
+        three roles (<${Code}>strong<//>, <${Code}>coding<//>, <${Code}>routine<//>) with a model and an effort, and says
+        which role handles <${Code}>build<//>, <${Code}>check<//> and <${Code}>finish<//>. A run records only the entry of
+        the agent it started in, which the workflow names with <${Code}>factory run start --agent<//>. Set${' '}
+        <${Code}>"enabled": false<//> at the top, or inside an entry, to switch routing off without deleting anything.
       </p>
       <pre class="help-code"><code>{
   "enabled": true,
-  "agent": "claude",
-  "roles": {
-    "strong": { "model": "opus", "effort": "high" },
-    "coding": { "model": "sonnet", "effort": "medium" },
-    "routine": { "model": "haiku", "effort": "low" }
-  },
-  "tasks": { "check": "strong" }
+  "agents": {
+    "claude": {
+      "roles": { "strong": { "model": "opus", "effort": "high" } },
+      "tasks": { "check": "strong" }
+    },
+    "codex": {
+      "roles": { "strong": { "model": "gpt-6-astra", "effort": "high" } },
+      "tasks": { "check": "strong" }
+    }
+  }
 }</code></pre>
       <p>
-        <${Code}>factory doctor --agent claude --create-model-routing<//> writes this starter for you (use${' '}
-        <${Code}>--agent codex<//> for Codex). It never overwrites a file that is already there.
+        <${Code}>factory doctor --agent claude --create-model-routing<//> writes a starter like this with an entry for each agent (add${' '}
+        <${Code}>--agent claude<//> or <${Code}>--agent codex<//> for one). It never overwrites a file that is already there.
       </p>
     <//>
     <${Topic} title="Checking that it works">
