@@ -1104,9 +1104,20 @@ mod tests {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let holder = std::thread::spawn(move || {
-            let _guard = store.collecting.lock().unwrap();
-            ready_tx.send(()).unwrap();
-            let _ = release_rx.recv();
+            let settings = UsageSettings {
+                enabled: false,
+                roots: crate::usage_logs::Roots {
+                    claude: Default::default(),
+                    codex: Default::default(),
+                    copilot: Default::default(),
+                },
+                budget: std::time::Duration::from_secs(5),
+                settle: Vec::new(),
+            };
+            store
+                .usage_collection()
+                .collect_paused(&store, "missing", &settings, None, ready_tx, release_rx)
+                .unwrap();
         });
         ready_rx
             .recv_timeout(std::time::Duration::from_secs(5))

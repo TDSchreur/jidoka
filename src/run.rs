@@ -1,10 +1,9 @@
 use crate::routing::{ModelRouting, Role, Task};
-use crate::usage::{Mark, Usage};
+use crate::usage::{Collection, Mark, Usage};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs, io,
-    ops::Deref,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -679,18 +678,10 @@ pub(crate) struct RunStore {
     shared: Arc<Shared>,
 }
 
-pub(crate) struct Shared {
+struct Shared {
     path: PathBuf,
     runs: Mutex<Vec<Run>>,
-    /// Held while usage is collected, so two collections never overlap.
-    pub(crate) collecting: Mutex<()>,
-}
-
-impl Deref for RunStore {
-    type Target = Shared;
-    fn deref(&self) -> &Shared {
-        &self.shared
-    }
+    collection: Collection,
 }
 
 #[derive(Debug)]
@@ -705,17 +696,22 @@ impl RunStore {
             shared: Arc::new(Shared {
                 path: path.to_owned(),
                 runs: Mutex::new(load_runs(path)?),
-                collecting: Mutex::new(()),
+                collection: Collection::default(),
             }),
         })
     }
 
+    pub(crate) fn usage_collection(&self) -> &Collection {
+        &self.shared.collection
+    }
+
     pub(crate) fn list(&self) -> io::Result<Vec<Run>> {
-        Ok(self.runs.lock().map_err(lock_error)?.clone())
+        Ok(self.shared.runs.lock().map_err(lock_error)?.clone())
     }
 
     pub(crate) fn get(&self, id: &str) -> io::Result<Option<Run>> {
         Ok(self
+            .shared
             .runs
             .lock()
             .map_err(lock_error)?
@@ -726,7 +722,7 @@ impl RunStore {
 
     pub(crate) fn create(&self, new: NewRun) -> io::Result<Run> {
         new.validate()?;
-        let mut runs = self.runs.lock().map_err(lock_error)?;
+        let mut runs = self.shared.runs.lock().map_err(lock_error)?;
         let mut id = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?
@@ -764,7 +760,7 @@ impl RunStore {
         let created = run.updated_at.unwrap_or(0);
         mark(&mut run, created);
         runs.push(run.clone());
-        if let Err(error) = save_runs(&self.path, &runs) {
+        if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs.pop();
             return Err(error);
         }
@@ -775,7 +771,7 @@ impl RunStore {
     /// restores the stored record when saving fails.
     pub(crate) fn update(&self, id: &str, update: UpdateRun) -> io::Result<Option<UpdateOutcome>> {
         update.validate().map_err(io_invalid)?;
-        let mut runs = self.runs.lock().map_err(lock_error)?;
+        let mut runs = self.shared.runs.lock().map_err(lock_error)?;
         let Some(index) = runs.iter().position(|run| run.id == id) else {
             return Ok(None);
         };
@@ -878,7 +874,7 @@ impl RunStore {
             || previous.sessions != next.sessions
             || (previous.finished_at.is_none() && next.finished_at.is_some());
         let old = std::mem::replace(&mut runs[index], next);
-        if let Err(error) = save_runs(&self.path, &runs) {
+        if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs[index] = old;
             return Err(error);
         }
@@ -890,12 +886,12 @@ impl RunStore {
 
     /// Replaces the usage of a run. A failed save leaves the stored usage as it was.
     pub(crate) fn set_usage(&self, id: &str, usage: Usage) -> io::Result<()> {
-        let mut runs = self.runs.lock().map_err(lock_error)?;
+        let mut runs = self.shared.runs.lock().map_err(lock_error)?;
         let Some(run) = runs.iter_mut().find(|run| run.id == id) else {
             return Ok(());
         };
         let old = run.usage.replace(usage);
-        if let Err(error) = save_runs(&self.path, &runs) {
+        if let Err(error) = save_runs(&self.shared.path, &runs) {
             if let Some(run) = runs.iter_mut().find(|run| run.id == id) {
                 run.usage = old;
             }
@@ -906,12 +902,12 @@ impl RunStore {
 
     /// Removes only the Run record. Returns whether a Run with this id existed.
     pub(crate) fn delete(&self, id: &str) -> io::Result<bool> {
-        let mut runs = self.runs.lock().map_err(lock_error)?;
+        let mut runs = self.shared.runs.lock().map_err(lock_error)?;
         let Some(index) = runs.iter().position(|run| run.id == id) else {
             return Ok(false);
         };
         let removed = runs.remove(index);
-        if let Err(error) = save_runs(&self.path, &runs) {
+        if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs.insert(index, removed);
             return Err(error);
         }
