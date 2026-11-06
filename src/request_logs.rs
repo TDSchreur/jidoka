@@ -21,7 +21,7 @@ use std::{
     time::Instant,
 };
 
-const MAX_COMMAND_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_COMMAND_BYTES: usize = 64 * 1024;
 
 /// What a model request did. The order is the priority: a request that fits several categories takes the
 /// first one.

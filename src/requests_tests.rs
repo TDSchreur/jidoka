@@ -1585,3 +1585,27 @@ fn the_history_a_codex_subagent_inherits_is_not_its_own_work() {
     let subagent = &result.categories[1].counts;
     assert_eq!(subagent.tool_output_bytes, Some(10));
 }
+
+#[test]
+fn a_hostile_codex_snippet_is_read_in_one_pass() {
+    // None of these may end in a panic or take longer than their length allows; the answer is a tool call
+    // that is not a command.
+    let calls_open = "tools.exec_command({a:(".repeat(3_000);
+    let calls_template = "tools.exec_command({a:`".repeat(3_000);
+    let unicode = "tools.exec_command({cmd:\"\\u{".repeat(3_000);
+    let long_literal = format!(
+        "await tools.exec_command({{cmd:\"{}\"}})",
+        "a".repeat(200_000)
+    );
+    for snippet in [calls_open, calls_template, unicode] {
+        assert_eq!(
+            codex_category_of(&snippet),
+            Category::ReadingEditingAnalysis
+        );
+    }
+    // A very long command is cut, and still classified by its start.
+    assert_eq!(
+        codex_category_of(&long_literal),
+        Category::ReadingEditingAnalysis
+    );
+}

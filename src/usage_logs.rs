@@ -20,7 +20,7 @@ use std::{
 
 /// The largest log read: real session logs are a few megabytes, so a bigger one is skipped.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
-const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+pub(crate) const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 pub(crate) const MTIME_SLACK_MS: u64 = 5 * 60 * 1000;
 /// Limits on one pass over the logs, so a huge or hostile log folder cannot exhaust memory or time.
 #[derive(Clone, Copy, Debug)]
@@ -403,6 +403,13 @@ struct TurnSettings {
     effort: Option<String>,
 }
 
+/// Whether a `token_usage_record` usage object reports any input or output count.
+pub(crate) fn has_token_counts(usage: &Value) -> bool {
+    usage.is_object()
+        && (count(usage.get("input_tokens")).is_some()
+            || count(usage.get("output_tokens")).is_some())
+}
+
 /// The token counts of a Codex `token_usage_record`. Codex counts cached input inside `input_tokens`; the
 /// cached part is moved to cache read, and cache writes are taken out of input too.
 pub(crate) fn codex_tokens(usage: &Value) -> Tokens {
@@ -423,8 +430,7 @@ pub(crate) fn codex_tokens(usage: &Value) -> Tokens {
     }
 }
 
-/// Codex counts cached input inside `input_tokens`; the cached part is moved to cache read, and cache
-/// writes are taken out of input too. Reasoning tokens are part of output.
+/// Reasoning tokens are part of output; see `codex_tokens` for how the counts are split.
 fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
     let mut parsed = Parsed::default();
     let mut by_turn: BTreeMap<String, TurnSettings> = BTreeMap::new();
@@ -461,16 +467,12 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
             parsed.unusable += 1;
             continue;
         };
-        let (input, output) = (
-            count(usage.get("input_tokens")),
-            count(usage.get("output_tokens")),
-        );
         // The turn's own settings, or the latest ones when the record names no known turn.
         let settings = payload["turn_id"]
             .as_str()
             .and_then(|t| by_turn.get(t))
             .or(last.as_ref());
-        let Some(settings) = settings.filter(|_| input.is_some() || output.is_some()) else {
+        let Some(settings) = settings.filter(|_| has_token_counts(usage)) else {
             parsed.unusable += 1;
             continue;
         };

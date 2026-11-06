@@ -8,12 +8,12 @@
 
 use crate::{
     request_logs::{
-        classify, result_bytes, truncate, updated_runs, Request, RequestRead, SessionRequests,
+        classify, result_bytes, updated_runs, Request, RequestRead, SessionRequests,
+        MAX_COMMAND_BYTES,
     },
-    usage::Tokens,
     usage_logs::{
-        civil_day, codex_meta, codex_tokens, count, files_in, merge_largest, modified_ms,
-        read_text, sub_dirs, timestamp, LogFile, ReadLimits, MTIME_SLACK_MS,
+        civil_day, codex_meta, codex_tokens, files_in, has_token_counts, merge_largest,
+        modified_ms, read_text, sub_dirs, timestamp, LogFile, ReadLimits, DAY_MS, MTIME_SLACK_MS,
     },
 };
 use serde_json::Value;
@@ -23,13 +23,8 @@ use std::{
     time::Instant,
 };
 
-const DAY_MS: u64 = 24 * 60 * 60 * 1000;
-
 /// The most of one JavaScript snippet that is read. A patch can carry whole files.
 const MAX_SNIPPET_CHARS: usize = 256 * 1024;
-
-/// The most characters kept of one decoded command.
-const MAX_COMMAND_CHARS: usize = 64 * 1024;
 
 // --- the JavaScript snippet -------------------------------------------------------------------------
 
@@ -94,7 +89,12 @@ fn read_snippet(input: &str) -> Snippet {
                 if name == "exec_command" {
                     match exec_command_literal(&chars, k + 1) {
                         Some(command) => snippet.commands.push(command),
-                        None => snippet.other_tool = true,
+                        None => {
+                            // Skip the rest of this call, so that a broken one is scanned only once.
+                            snippet.other_tool = true;
+                            i = call_end(&chars, k + 1);
+                            continue;
+                        }
                     }
                 } else {
                     snippet.other_tool = true;
@@ -109,6 +109,29 @@ fn read_snippet(input: &str) -> Snippet {
         snippet.other_tool = true;
     }
     snippet
+}
+
+/// The index after the `)` that closes the call whose arguments start at `chars[start]`, or the end.
+fn call_end(chars: &[char], start: usize) -> usize {
+    let (mut depth, mut i) = (1usize, start);
+    while i < chars.len() {
+        match chars[i] {
+            '"' | '\'' | '`' => {
+                i = skip_string(chars, i);
+                continue;
+            }
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    chars.len()
 }
 
 /// The index after the string literal that starts at `chars[start]` (an unterminated one runs to the end).
@@ -163,10 +186,7 @@ fn exec_command_literal(chars: &[char], start: usize) -> Option<String> {
         match chars.get(i)? {
             // `{cmd}` or `{cmd, ...}`: the value is a variable.
             ',' | '}' => {
-                if key == "cmd" {
-                    return None;
-                }
-                if chars[i] == '}' {
+                if key == "cmd" || chars[i] == '}' {
                     return None;
                 }
                 i += 1;
@@ -230,7 +250,7 @@ fn decode_string(chars: &[char], start: usize) -> Option<(String, usize)> {
             return None;
         }
         if c != '\\' {
-            if out.chars().count() < MAX_COMMAND_CHARS {
+            if out.len() < MAX_COMMAND_BYTES {
                 out.push(c);
             }
             i += 1;
@@ -259,7 +279,7 @@ fn decode_string(chars: &[char], start: usize) -> Option<(String, usize)> {
                 char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?
             }
             'u' if chars.get(i) == Some(&'{') => {
-                let close = chars[i..].iter().position(|c| *c == '}')? + i;
+                let close = chars[i..].iter().take(10).position(|c| *c == '}')? + i;
                 let hex: String = chars[i + 1..close].iter().collect();
                 i = close + 1;
                 char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?
@@ -272,7 +292,7 @@ fn decode_string(chars: &[char], start: usize) -> Option<(String, usize)> {
             }
             other => other,
         };
-        if out.chars().count() < MAX_COMMAND_CHARS {
+        if out.len() < MAX_COMMAND_BYTES {
             out.push(decoded);
         }
     }
@@ -338,7 +358,6 @@ fn parse_rollout(text: &str, session: &str, subagent: bool, ids: &HashSet<&str>)
                     if payload["name"] == "exec" {
                         let snippet = read_snippet(payload["input"].as_str().unwrap_or(""));
                         for command in snippet.commands {
-                            let command = truncate(&command).to_string();
                             if !subagent {
                                 rollout.claims.extend(updated_runs(&command, ids));
                             }
@@ -376,12 +395,9 @@ fn parse_rollout(text: &str, session: &str, subagent: bool, ids: &HashSet<&str>)
                 let closed = std::mem::take(&mut open);
                 let calls = std::mem::take(&mut open_calls);
                 let usage = &payload["usage"];
-                let tokens: Tokens = codex_tokens(usage);
+                let tokens = codex_tokens(usage);
                 let ts = timestamp(data.get("timestamp"));
-                let usable = usage.is_object()
-                    && (count(usage.get("input_tokens")).is_some()
-                        || count(usage.get("output_tokens")).is_some());
-                let Some(ts) = ts.filter(|_| usable) else {
+                let Some(ts) = ts.filter(|_| has_token_counts(usage)) else {
                     continue;
                 };
                 let class = classify(&closed.commands, closed.other_tool, closed.any_tool);
@@ -510,6 +526,7 @@ pub(crate) fn read_codex_requests(
         })
         .map(|rollout| rollout.root.clone())
         .collect();
+    let mut malformed = 0;
     let mut by_root: BTreeMap<String, (HashSet<String>, bool)> = BTreeMap::new();
     // A response that two rollouts hold counts once, with the largest counts.
     let mut requests: BTreeMap<String, (String, Request)> = BTreeMap::new();
@@ -527,12 +544,7 @@ pub(crate) fn read_codex_requests(
                 _ => continue,
             },
         };
-        if parsed.malformed > 0 {
-            out.notes.push(format!(
-                "{} malformed Codex log line(s) were skipped",
-                parsed.malformed
-            ));
-        }
+        malformed += parsed.malformed;
         let entry = by_root.entry(rollout.root.clone()).or_default();
         entry.0.extend(parsed.claims);
         entry.1 |= rollout.subagent;
@@ -548,6 +560,11 @@ pub(crate) fn read_codex_requests(
                 }
             }
         }
+    }
+    if malformed > 0 {
+        out.notes.push(format!(
+            "{malformed} malformed Codex log line(s) were skipped"
+        ));
     }
     let mut by_session: BTreeMap<String, Vec<Request>> = BTreeMap::new();
     for (session, request) in requests.into_values() {
