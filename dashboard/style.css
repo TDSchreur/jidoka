@@ -285,7 +285,7 @@ main:focus { outline: none; }
   .detail-close-wide { display: none; }
   .detail-close-compact { display: inline; }
 }
-.project, .updated { font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground3); }
+.updated { font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground3); }
 .badge { display: inline-block; margin-top: var(--spacingVerticalXS); padding: var(--spacingVerticalXXS) var(--spacingHorizontalSNudge); border: var(--strokeWidthThin) solid var(--colorNeutralStrokeAccessible); border-radius: var(--borderRadiusSmall); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); font-weight: var(--fontWeightSemibold); color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground3); text-transform: uppercase; letter-spacing: .04em; }
 .badge.blocked { color: var(--colorNeutralForegroundOnBrand); background: var(--colorPaletteRedBackground3); border-color: var(--colorPaletteRedBackground3); }
 .badge.done { color: var(--colorPaletteGreenForeground1); background: var(--colorPaletteGreenBackground1); border-color: var(--colorPaletteGreenBorder2); }

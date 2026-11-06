@@ -335,7 +335,6 @@ function DoneCard({ run, now, onOpen, onDelete }) {
         </button>
       </div>
       <div id=${detailsId} hidden=${!expanded}>
-        <p class="project"><${ProjectName} path=${projectOf(run)} /></p>
         <div class="chips">
           <span class="badge done">${String(run.status)}</span>
           ${rework !== null
@@ -369,7 +368,6 @@ function Card({ run, now, onOpen, onDelete }) {
           ${run.title}
         </button>
       </h3>
-      <p class="project"><${ProjectName} path=${projectOf(run)} /></p>
       <div class="chips">
         <span class=${known ? `badge ${run.status}` : 'badge'}>${String(run.status)}</span>
         ${rework !== null
