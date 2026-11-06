@@ -65,6 +65,7 @@ fn field(label: &str, value: Option<&str>) -> String {
 /// The model each task is routed to; a task the selection does not map is not routed.
 fn routing_section(routing: &ModelRouting, usage: Option<&Usage>) -> String {
     let mut out = format!("Model routing {}\n", routing.agent.name());
+    let mut observed_any = false;
     for task in Task::ALL {
         let line = match routing.role_for(task) {
             Some(role) => {
@@ -87,13 +88,16 @@ fn routing_section(routing: &ModelRouting, usage: Option<&Usage>) -> String {
             .role_for(task)
             .and_then(|role| routing.roles.get(&role))
         {
+            observed_any = true;
             out.push_str(&format!(
                 "          {}\n",
                 observed_line(&requested.model, stage_of(task), usage)
             ));
         }
     }
-    out.push_str("  Effort observed: unknown (the agents' session logs do not record it)\n");
+    if observed_any {
+        out.push_str("  Effort observed: unknown (the agents' session logs do not record it)\n");
+    }
     out
 }
 
@@ -125,8 +129,18 @@ fn observed_line(requested: &str, stage: Stage, usage: Option<&Usage>) -> String
             None => models.push((&row.model, subagents)),
         }
     }
+    let partial = if usage.status == UsageStatus::Partial {
+        " (usage is partial)"
+    } else {
+        ""
+    };
     if models.is_empty() {
-        return "observed: none recorded for this stage".into();
+        let why = if usage.no_data.contains(&stage) {
+            " (no session log has entries for it)"
+        } else {
+            partial
+        };
+        return format!("observed: none recorded for this stage{why}");
     }
     let list: Vec<String> = models
         .iter()
@@ -142,7 +156,7 @@ fn observed_line(requested: &str, stage: Stage, usage: Option<&Usage>) -> String
         .iter()
         .any(|(model, _)| model_matches(requested, model))
     {
-        "matches the request".to_string()
+        format!("matches the request{partial}")
     } else if usage.status == UsageStatus::Partial {
         format!(
             "{} not observed (usage is partial, so it may be missing)",
@@ -364,6 +378,63 @@ mod tests {
             "observed: claude-sonnet-5-5; opus not observed (usage is partial, so it may be missing)"
         );
         assert!(!text.contains("MISMATCH"), "{text}");
+    }
+
+    #[test]
+    fn partial_usage_is_visible_even_when_the_request_is_met_or_the_stage_is_empty() {
+        let text = render(&with_usage(
+            "partial",
+            &[("build", "claude-sonnet-5-5", false)],
+        ));
+        assert_eq!(
+            observed(&text, "build"),
+            "observed: claude-sonnet-5-5; matches the request (usage is partial)"
+        );
+        assert_eq!(
+            observed(&text, "check"),
+            "observed: none recorded for this stage (usage is partial)"
+        );
+    }
+
+    #[test]
+    fn a_stage_no_log_has_entries_for_is_told_apart_from_one_without_rows() {
+        let mut run = with_usage("tracked", &[("build", "claude-sonnet-5-5", false)]);
+        run.usage.as_mut().unwrap().no_data = vec![Stage::Check];
+        let text = render(&run);
+        assert_eq!(
+            observed(&text, "check"),
+            "observed: none recorded for this stage (no session log has entries for it)"
+        );
+    }
+
+    #[test]
+    fn rework_usage_counts_toward_the_build_task() {
+        let mut run = with_usage("tracked", &[]);
+        let row: crate::usage::UsageRow = serde_json::from_value(serde_json::json!(
+            {"stage": "build", "model": "claude-sonnet-5-5", "rework": true, "input": 1, "output": 1}
+        ))
+        .unwrap();
+        run.usage.as_mut().unwrap().rows.push(row);
+        assert!(observed(&render(&run), "build").ends_with("matches the request"));
+    }
+
+    #[test]
+    fn a_not_tracked_run_without_a_reason_still_says_why_it_has_no_numbers() {
+        let mut run = with_usage("not-tracked", &[]);
+        run.usage.as_mut().unwrap().reason = None;
+        assert_eq!(
+            observed(&render(&run), "build"),
+            "observed: not tracked: no reason recorded"
+        );
+    }
+
+    #[test]
+    fn the_effort_note_appears_only_when_a_task_is_routed() {
+        let mut run = routed_run();
+        run.model_routing.as_mut().unwrap().tasks.clear();
+        let text = render(&run);
+        assert!(text.contains("Model routing claude"), "{text}");
+        assert!(!text.contains("Effort observed"), "{text}");
     }
 
     #[test]
