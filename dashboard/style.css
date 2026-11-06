@@ -233,7 +233,7 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .flow li + li::before { content: "\2192"; content: "\2192" / ""; position: absolute; left: calc(-1 * var(--spacingHorizontalXL)); top: 50%; width: var(--spacingHorizontalXL); transform: translateY(-50%); text-align: center; color: var(--colorNeutralForeground3); }
 .flow span { font-size: var(--fontSizeBase200); color: var(--colorNeutralForeground2); }
 /* A very short window, such as a zoomed one: the whole dialog scrolls instead of squeezing the panel to nothing. */
-@media (max-height: 30rem) { .confirm.help { height: auto; max-height: calc(100% - 2 * var(--spacingVerticalM)); overflow-y: auto; } .help-panel { overflow-y: visible; } }
+@media (max-height: 30rem) { .confirm.help { height: auto; max-height: calc(100% - 2 * var(--spacingVerticalM)); overflow-y: auto; } .help-panel { flex: none; overflow-y: visible; } }
 @media (max-width: 40rem) { .confirm.help { padding-left: var(--spacingHorizontalM); padding-right: var(--spacingHorizontalM); } .help-terms, .help-skills { grid-template-columns: minmax(0, 1fr); } .flow li + li::before { display: none; } .flow { gap: var(--spacingVerticalS) var(--spacingHorizontalS); } }
 .welcome { max-width: 40rem; padding: var(--spacingVerticalXL) var(--spacingHorizontalXL); background: var(--colorNeutralBackground1); border: var(--strokeWidthThin) solid var(--colorNeutralStroke2); border-radius: var(--borderRadiusLarge); box-shadow: var(--shadow4); }
 .welcome h2 { margin: 0 0 var(--spacingVerticalS); font-size: var(--fontSizeBase500); line-height: var(--lineHeightBase500); font-weight: var(--fontWeightSemibold); }

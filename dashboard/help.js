@@ -378,7 +378,7 @@ function Skills() {
         ],
         [
           '/factory-balanced',
-          'Lighter planning than full, behavior tests after implementing, one code review, and a security review where it matters.',
+          'Lighter planning than Full, behavior tests after implementing, one code review, and a security review where it matters.',
           null,
         ],
         ['/factory-fast', 'The speed workflow: light planning, direct implementation, no Check, and still a pull request with green CI.', null],
@@ -481,7 +481,7 @@ function Dashboard({ reworkCap }) {
   return html`
     <${Topic} title="The board">
       <p>
-        Runs are grouped into one row per project, named after the repository. A row has a column for each Stage, Define, Build, Check and Finish, and one
+        Runs are grouped into one row per project, named after the repository. A row has a column for each Stage (Define, Build, Check and Finish), plus one
         for Done. The project name toggles the row; a collapsed row shows how many Runs it
         has in each Stage, and how many are waiting for you. On a narrow screen the Stage buttons show one column at a
         time. The board refreshes by itself every few seconds.
@@ -525,7 +525,7 @@ function Dashboard({ reworkCap }) {
     <//>
     <${Topic} title="The Run detail">
       <p>
-        A panel on the right with everything the Run has recorded, the same fields <${Code}>factory run inspect<//> prints, which is what a new session reads to continue the Run:
+        A panel on the right with everything the Run has recorded. <${Code}>factory run inspect<//> prints most of the same fields, and a new session reads it to continue the Run. The detail shows:
         its project, Stage, status and the reason when it is blocked, the workflow mode, branch, worktree, repository and
         base commit, links to the spec and the pull request, every ticket with its progress, a summary per Stage, the
         token usage, the Rework and the Run id. A field the agent never recorded says so. It is never guessed.
@@ -576,7 +576,7 @@ function Commands() {
           [html`<${Code}>factory run start "title"<//>`, 'Creates a Run and prints its id. Run it from the Run’s worktree.'],
           [
             html`<${Code}>factory run update ${'<id>'} ${'<stage>'} ${'<status>'}<//>`,
-            html`Stages are define, build, check and finish. Statuses are running, blocked and done. Options leave a field alone when omitted, and most have a <${Code}>--clear-${'<name>'}<//> form (tickets clear with <${Code}>--clear-tickets<//>, summaries with <${Code}>--clear-summary<//>): <${Code}>--activity<//>, <${Code}>--blocking-reason<//>, <${Code}>--rework<//>, <${Code}>--mode<//>, <${Code}>--worktree<//>, <${Code}>--branch<//>, <${Code}>--base-commit<//>, <${Code}>--spec<//>, <${Code}>--pr<//>, <${Code}>--ticket<//>, <${Code}>--summary<//> and more. <${Code}>factory --help<//> lists them.`,
+            html`Stages are define, build, check and finish. Statuses are running, blocked and done. Options leave a field alone when omitted, and most have a <${Code}>--clear-${'<name>'}<//> form (tickets clear with <${Code}>--clear-tickets<//>, and a summary with <${Code}>--clear-summary<//> and a Stage name): <${Code}>--activity<//>, <${Code}>--blocking-reason<//>, <${Code}>--rework<//>, <${Code}>--mode<//>, <${Code}>--worktree<//>, <${Code}>--branch<//>, <${Code}>--base-commit<//>, <${Code}>--spec<//>, <${Code}>--pr<//>, <${Code}>--ticket<//>, <${Code}>--summary<//> and more. <${Code}>factory --help<//> lists them.`,
           ],
         ]}
       />
@@ -639,7 +639,7 @@ function ModelRouting() {
         </li>
         <li>
           <${Code}>factory run inspect ${'<id>'}<//> shows, per task, the requested model and effort next to the models and
-          efforts the Run’s logs show. When usage is fully tracked, a model or effort that was never observed reads <${Code}>MISMATCH<//>; with partial usage it reads "not observed", because it may be missing.
+          efforts the Run’s logs show. When usage is fully tracked, a model that was never observed reads <${Code}>MISMATCH<//>, and so does an effort that differs from the one requested. With partial usage it reads "not observed", because the data may be missing, and a log that records no effort reads "effort not recorded".
         </li>
         <li>
           To give one task another role for one Run, use${' '}
