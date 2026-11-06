@@ -422,6 +422,7 @@ mod tests {
             "gh pr view --json mergeStateStatus",
             "`BEHIND`",
             "`DIRTY`",
+            "keep the file list",
             "`UNKNOWN`",
             "normal merge commit",
             "never rebase, amend or force-push",
