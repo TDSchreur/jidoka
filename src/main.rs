@@ -10,6 +10,7 @@ mod requests;
 mod requests_pool;
 mod routing;
 mod run;
+mod run_begin;
 mod server;
 mod stats;
 mod update;
@@ -21,7 +22,7 @@ use run::UPDATE_HELP;
 use server::{serve, ADDRESS, DEFAULT_PORT};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -95,15 +96,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 .map_err(|error| format!("{error}\n{HELP}"))?;
             let dir = env::current_dir()?;
             let repository = repository::canonical_repository(&dir);
-            // Read once, before the run exists: a mistake in the policy, or a policy for several agents
-            // without `--agent`, stops the start.
-            let resolution = routing::policy_path_in(|name| env::var_os(name)).map_or_else(
-                || Ok(routing::Resolution::default()),
-                |path| routing::load(&path, host).map_err(|error| inspect::shown(&error)),
-            )?;
-            if let Some(notice) = &resolution.notice {
-                eprintln!("{notice}");
-            }
+            let resolution = resolve_routing(host)?;
             println!(
                 "{}",
                 start_run(
@@ -115,6 +108,16 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                     resolution.selection
                 )?
             );
+        }
+        ["run", "begin", "--run", id, options @ ..] => {
+            let parsed =
+                run_begin::parse_resume(id, options).map_err(|error| format!("{error}\n{HELP}"))?;
+            return run_begin_command(parsed);
+        }
+        ["run", "begin", title, options @ ..] if !title.starts_with('-') => {
+            let parsed = run_begin::parse_options(title, options)
+                .map_err(|error| format!("{error}\n{HELP}"))?;
+            return run_begin_command(parsed);
         }
         ["run", "inspect", id, options @ ..] => {
             let json = match options {
@@ -237,6 +240,97 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
         print!("{}", pr_wait::render(&waited));
     }
     Ok(waited.exit_code)
+}
+
+/// Reads the model-routing policy once, before a run exists: a mistake in it, or a policy for several
+/// agents without `--agent`, stops the start. Prints the notice, if any.
+fn resolve_routing(
+    host: Option<routing::Host>,
+) -> Result<routing::Resolution, Box<dyn std::error::Error>> {
+    let resolution = routing::policy_path_in(|name| env::var_os(name)).map_or_else(
+        || Ok(routing::Resolution::default()),
+        |path| routing::load(&path, host).map_err(|error| inspect::shown(&error)),
+    )?;
+    if let Some(notice) = &resolution.notice {
+        eprintln!("{notice}");
+    }
+    Ok(resolution)
+}
+
+/// The real factory server for `factory run begin`.
+struct ServerApi;
+
+impl run_begin::RunApi for ServerApi {
+    fn create(
+        &self,
+        title: &str,
+        project: &str,
+        repository: Option<String>,
+        session: Option<String>,
+        routing: Option<routing::ModelRouting>,
+    ) -> Result<String, String> {
+        start_run(ADDRESS, title, project, repository, session, routing).map_err(|e| e.to_string())
+    }
+
+    fn get(&self, id: &str) -> Result<run_begin::RunSummary, String> {
+        let run = fetch_run(ADDRESS, id).map_err(|e| e.to_string())?;
+        Ok(run_begin::RunSummary {
+            title: run.title,
+            finished: matches!(run.status, run::RunStatus::Done),
+            worktree: run.worktree,
+        })
+    }
+
+    fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
+        report_run(ADDRESS, id, stage, status, options).map_err(|e| e.to_string())
+    }
+}
+
+/// `factory run begin <title>`, or `--run <id>` to resume: creates a run and its workspace.
+fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::error::Error>> {
+    let host = parsed.agent.as_deref().and_then(routing::Host::parse);
+    let dir = env::current_dir()?;
+    // A resumed run already has its model routing; the policy is read only when a run is created.
+    let resolution = if parsed.run.is_some() {
+        routing::Resolution::default()
+    } else {
+        resolve_routing(host)?
+    };
+    match run_begin::begin(
+        &dir,
+        &parsed,
+        &ServerApi,
+        current_session(),
+        resolution.selection,
+    ) {
+        Ok(begun) => {
+            if parsed.json {
+                println!("{}", serde_json::to_string_pretty(&begun)?);
+            } else {
+                print!("{}", run_begin::render(&begun));
+            }
+            Ok(0)
+        }
+        Err(run_begin::BeginError::NoRun(text)) => Err(inspect::shown(&text).into()),
+        Err(run_begin::BeginError::Blocked {
+            run,
+            reason,
+            retry,
+            marked,
+        }) => {
+            let state = if marked {
+                "is blocked"
+            } else {
+                "could not be marked blocked (the server did not accept the update)"
+            };
+            eprintln!(
+                "Run {run} {state}: {}\nTo retry: {}",
+                inspect::shown(&reason),
+                inspect::shown(&retry)
+            );
+            Ok(1)
+        }
+    }
 }
 
 /// The id of the agent session this command runs in, when the agent exposes it (Claude Code does).

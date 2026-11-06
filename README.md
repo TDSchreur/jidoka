@@ -200,6 +200,23 @@ The dashboard reads the token counts your agents write to their own session logs
 
 **What has been validated.** Claude Code and Codex logs were inspected on a real machine, and all three formats are covered by fixture tests that need no agent installed. Copilot's `session.usage_record` events could not be checked against real logs (the local sessions held none), so Copilot support is fixture-tested only. Codex's `cache_write_input_tokens` was zero in every sample, so whether it is part of Codex's input is unvalidated; it is treated as included, like Copilot's. Agent log formats are not a stable interface: if one changes, the affected logs show as `partial` or `not tracked` instead of wrong numbers.
 
+#### Starting a run with its workspace
+
+`factory run begin "<title>"` creates a run and its workspace in one command. The workspace is a git worktree on a new branch, made from the pull request base branch. It replaces `factory run start`, the `git worktree add` and the `factory run update` that records them; `factory run start` still works as before.
+
+```text
+factory run begin "<title>" [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>]
+                  [--base <branch>] [--branch <name>] [--json]
+factory run begin --run <run-id> [--base <branch>] [--branch <name>] [--mode ...] [--agent ...] [--json]
+```
+
+- **Base.** `--base` names the branch. Without it the command uses the branch `refs/remotes/origin/HEAD` points to. It fetches that branch from `origin` and creates the worktree from `origin/<base>`; the recorded base commit is that commit. It does not read the project's documentation, so an agent passes the project's documented base itself.
+- **Names.** `--branch` is used as given. Without it the branch is a kebab-case name from the title (ASCII letters and digits, at most 40 characters), with `-2`, `-3` and so on added until neither a branch nor a folder uses the name. The worktree is `<repo-parent>/<repo-name>.worktrees/<branch with / replaced by ->`, beside the main checkout, wherever the command runs. An explicit branch or folder that exists stops the command, and the retry command it prints leaves `--branch` out, so the retry picks a free name and never takes over what exists.
+- **Recorded.** Mode, worktree, branch and base commit, the repository (as `run start` records it) and the agent session, with the stage set to define and the activity "Workspace ready". It prints the run ID first, then worktree, branch, base and base commit; `--json` prints the same.
+- **Failures.** Once the run exists, a missing `origin`, an unknown base, a failed fetch, git that cannot write, or a name that is taken mark the run blocked with the reason, print the reason and the command to retry, and exit with status 1. Outside a repository, inside another `.git` folder (a submodule), or with a bad option, no run is created. Nothing is ever deleted, reset, checked out over or cleaned.
+- **Retry.** `factory run begin --run <id>` resumes that run. The command to retry that a failure prints carries `--branch <name>` as soon as a name was chosen; a resume takes over an existing branch or worktree only when it is given that branch, and without one it picks a free name like a new run, so it never takes over another run's workspace. If nothing was made it does everything; a branch without a worktree gets its worktree; a clean worktree that was made but not recorded is recorded. Anything else (a folder that is not a worktree, a branch with commits of its own, a worktree with uncommitted changes) stops and says exactly what it found. A worktree that git lists but whose folder is gone is reported, and you run `git worktree prune` yourself. A run that is finished, or already has a workspace, is refused.
+- **Dedicated worktrees.** When your agent environment hands you a fresh worktree, the Workspace procedure still uses `factory run start` and `factory run update` by hand; `begin` always makes its own worktree.
+
 #### Watching CI
 
 `factory pr wait <run-id>` watches the checks of the run's pull request and prints one CI outcome, so an agent does not poll with repeated model requests. It reads the pull request URL recorded on the run (`factory run update <id> finish running --pr <url>`) and needs the GitHub CLI (`gh`), signed in with `gh auth login`.
