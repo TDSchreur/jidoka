@@ -202,6 +202,10 @@ fn create_run(
             .is_some_and(|id| crate::run::check_session_id(id).is_err())
         || new.title.chars().any(char::is_control)
         || new.project.chars().any(char::is_control)
+        || new
+            .model_routing
+            .as_ref()
+            .is_some_and(|routing| routing.validate().is_err())
         || new.repository.as_deref().is_some_and(|repository| {
             repository.len() > 4096
                 || repository.chars().any(char::is_control)
@@ -1415,6 +1419,52 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn starting_a_run_validates_its_model_routing_selection() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let with = |routing: &str| {
+            format!(r#"{{"title":"t","project":"/work","model_routing":{routing}}}"#)
+        };
+        let long = "m".repeat(65);
+        for routing in [
+            // A task names a role the selection does not have.
+            r#"{"agent":"claude","roles":{"coding":{"model":"sonnet"}},"tasks":{"check":"strong"}}"#.to_string(),
+            // Empty, oversized and unsafe text.
+            r#"{"agent":"claude","roles":{"coding":{"model":""}},"tasks":{}}"#.to_string(),
+            format!(r#"{{"agent":"claude","roles":{{"coding":{{"model":"{long}"}}}},"tasks":{{}}}}"#),
+            r#"{"agent":"claude","roles":{"coding":{"model":"son net"}},"tasks":{}}"#.to_string(),
+            r#"{"agent":"claude","roles":{"coding":{"model":"sonnet","effort":"hi\u001b[2Jgh"}},"tasks":{}}"#.to_string(),
+            // Unknown field, unknown task, unknown agent (Copilot records no selection).
+            r#"{"agent":"claude","roles":{},"tasks":{},"extra":1}"#.to_string(),
+            r#"{"agent":"claude","roles":{"coding":{"model":"sonnet"}},"tasks":{"deploy":"coding"}}"#.to_string(),
+            r#"{"agent":"copilot","roles":{},"tasks":{}}"#.to_string(),
+        ] {
+            let response = api
+                .post("/api/runs")
+                .header(Header::new("Host", "127.0.0.1:4311"))
+                .header(ContentType::JSON)
+                .body(with(&routing))
+                .dispatch()
+                .await;
+            assert_eq!(response.status(), HttpStatus::BadRequest, "{routing}");
+        }
+        assert!(api
+            .rocket()
+            .state::<RunStore>()
+            .unwrap()
+            .list()
+            .unwrap()
+            .is_empty());
+        let run = start(
+            &api,
+            &with(r#"{"agent":"codex","roles":{"strong":{"model":"gpt-6-astra","effort":"high"}},"tasks":{"check":"strong"}}"#),
+        )
+        .await;
+        let routing = run.model_routing.unwrap();
+        assert_eq!(routing.roles.len(), 1);
+    }
+
+    #[rocket::async_test]
     async fn starting_a_run_validates_its_identity_fields() {
         let dir = TestDir::new();
         let api = client(&dir).await;
@@ -1939,6 +1989,7 @@ mod tests {
             project: "/work".into(),
             repository: None,
             session: None,
+            model_routing: None,
         };
         let kept = store.create(new("kept")).unwrap();
         let token = session_token(&api).await;
@@ -1996,6 +2047,7 @@ mod tests {
                         project: "/work".into(),
                         repository: None,
                         session: None,
+                        model_routing: None,
                     })
                     .unwrap();
                 let update: UpdateRun =
@@ -2022,6 +2074,7 @@ mod tests {
                 project: "/work".into(),
                 repository: None,
                 session: None,
+                model_routing: None,
             })
             .unwrap();
         let token = session_token(&api).await;
@@ -2243,6 +2296,7 @@ mod tests {
                 project: "/work".into(),
                 repository: None,
                 session: None,
+                model_routing: None,
             })
             .unwrap();
         assert!(run.rework.is_none());
@@ -2294,6 +2348,7 @@ mod tests {
                 project: "/work".into(),
                 repository: None,
                 session: None,
+                model_routing: None,
             })
             .unwrap();
         let path = dir.0.path().join("runs.json");

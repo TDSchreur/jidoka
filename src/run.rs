@@ -1,3 +1,4 @@
+use crate::routing::{ModelRouting, Role, Task};
 use crate::usage::{Mark, Usage};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -9,7 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory-full|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\nOmitted fields are preserved; clear flags remove them.";
+pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory-full|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <build|check|finish>=<strong|coding|routine> (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
 const MAX_TICKETS: usize = 100;
@@ -70,6 +71,9 @@ pub(crate) struct Run {
     pub(crate) sessions: Vec<String>,
     #[serde(default)]
     pub(crate) usage: Option<Usage>,
+    /// The model-routing selection resolved when the run started; absent when none applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) model_routing: Option<ModelRouting>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
@@ -133,6 +137,8 @@ pub(crate) struct NewRun {
     /// The agent session the run is started from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) model_routing: Option<ModelRouting>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -172,6 +178,9 @@ pub(crate) struct UpdateRun {
     /// Agent sessions to attribute to this run, added to the ones already recorded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) sessions: Vec<String>,
+    /// The run's whole set of model-routing overrides; null removes them.
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    pub(crate) model_routing: FieldUpdate<BTreeMap<Task, Role>>,
 }
 
 // Missing fields preserve stored values; null clears them; values replace them.
@@ -357,6 +366,7 @@ impl UpdateRun {
             ticket_status: BTreeMap::new(),
             summaries: BTreeMap::new(),
             sessions: Vec::new(),
+            model_routing: FieldUpdate::Keep,
         }
     }
 
@@ -458,6 +468,7 @@ pub(crate) fn parse_update(
         serde_json::from_value(status.into())?,
     );
     let mut tickets: Vec<NewTicket> = Vec::new();
+    let mut overrides: BTreeMap<Task, Role> = BTreeMap::new();
     let mut args = options.iter();
     while let Some(flag) = args.next() {
         let mut next_value = || {
@@ -518,6 +529,32 @@ pub(crate) fn parse_update(
                     return Err(repeated().into());
                 }
                 update.tickets = FieldUpdate::Clear;
+                continue;
+            }
+            "--model-routing" => {
+                if !update.model_routing.is_keep() {
+                    return Err(repeated().into());
+                }
+                let value = next_value()?;
+                let (task, role) = split_pair(flag, value)?;
+                let task: Task = serde_json::from_value(task.into()).map_err(|_| {
+                    format!("Unknown task {task:?} for --model-routing; use build, check or finish")
+                })?;
+                let role: Role = serde_json::from_value(role.into()).map_err(|_| {
+                    format!(
+                        "Unknown role {role:?} for --model-routing; use strong, coding or routine"
+                    )
+                })?;
+                if overrides.insert(task, role).is_some() {
+                    return Err(format!("Role for {} given twice", task.name()).into());
+                }
+                continue;
+            }
+            "--clear-model-routing" => {
+                if !update.model_routing.is_keep() || !overrides.is_empty() {
+                    return Err(repeated().into());
+                }
+                update.model_routing = FieldUpdate::Clear;
                 continue;
             }
             "--session" => {
@@ -585,6 +622,9 @@ pub(crate) fn parse_update(
     }
     if !tickets.is_empty() {
         update.tickets = FieldUpdate::Set(tickets);
+    }
+    if !overrides.is_empty() {
+        update.model_routing = FieldUpdate::Set(overrides);
     }
     update.validate()?;
     Ok(update)
@@ -676,6 +716,7 @@ impl RunStore {
             finished_at: None,
             sessions: new.session.into_iter().collect(),
             usage: None,
+            model_routing: new.model_routing,
         };
         let mut run = run;
         let created = run.updated_at.unwrap_or(0);
@@ -747,6 +788,21 @@ impl RunStore {
             > 1
         {
             return Err(io_invalid("Only one ticket can be in progress at a time"));
+        }
+        match update.model_routing {
+            FieldUpdate::Keep => {}
+            FieldUpdate::Clear => {
+                if let Some(routing) = next.model_routing.as_mut() {
+                    routing.overrides.clear();
+                }
+            }
+            FieldUpdate::Set(overrides) => {
+                let routing = next.model_routing.as_mut().ok_or_else(|| {
+                    io_invalid("This run has no model routing selection to override")
+                })?;
+                routing.overrides = overrides;
+                routing.validate().map_err(io_invalid)?;
+            }
         }
         for (stage, summary) in update.summaries {
             match summary {
@@ -896,6 +952,7 @@ mod tests {
                             project: "/work".into(),
                             repository: None,
                             session: None,
+                            model_routing: None,
                         })
                         .unwrap()
                 })
@@ -923,6 +980,7 @@ mod tests {
                 project: "/work".into(),
                 repository: None,
                 session: None,
+                model_routing: None,
             })
             .unwrap();
         let second = store
@@ -931,6 +989,7 @@ mod tests {
                 project: "/work".into(),
                 repository: None,
                 session: None,
+                model_routing: None,
             })
             .unwrap();
         let updates = [(first.id, Stage::Build), (second.id, Stage::Check)];
@@ -1073,6 +1132,7 @@ mod tests {
                 project: "/work".into(),
                 repository: None,
                 session: None,
+                model_routing: None,
             })
             .unwrap();
         let original = fs::read(&path).unwrap();
@@ -1098,8 +1158,145 @@ mod tests {
                 project: "/work/repo.worktrees/feature".into(),
                 repository: Some("/work/repo".into()),
                 session: None,
+                model_routing: None,
             })
             .unwrap()
+    }
+
+    fn selection() -> crate::routing::ModelRouting {
+        serde_json::from_value(serde_json::json!({
+            "agent": "claude",
+            "roles": {
+                "strong": {"model": "opus", "effort": "high"},
+                "coding": {"model": "sonnet", "effort": "medium"}
+            },
+            "tasks": {"build": "coding", "check": "strong"}
+        }))
+        .unwrap()
+    }
+
+    fn routed_store(dir: &TestDir) -> (RunStore, Run) {
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let run = store
+            .create(NewRun {
+                title: "routed".into(),
+                project: "/work/repo".into(),
+                repository: None,
+                session: None,
+                model_routing: Some(selection()),
+            })
+            .unwrap();
+        (store, run)
+    }
+
+    #[test]
+    fn a_task_override_beats_the_policy_replaces_earlier_ones_clears_and_survives_a_restart() {
+        use crate::routing::{Role, Task};
+        let dir = TestDir::new();
+        let (store, run) = routed_store(&dir);
+        let routing =
+            |store: &RunStore| store.get(&run.id).unwrap().unwrap().model_routing.unwrap();
+        assert_eq!(routing(&store).role_for(Task::Check), Some(Role::Strong));
+
+        store
+            .update(&run.id, update(&["--model-routing", "check=coding"]))
+            .unwrap();
+        assert_eq!(routing(&store).role_for(Task::Check), Some(Role::Coding));
+        assert_eq!(routing(&store).role_for(Task::Build), Some(Role::Coding));
+        // The policy's own mapping is untouched.
+        assert_eq!(routing(&store).tasks[&Task::Check], Role::Strong);
+
+        // A new set of overrides replaces the old one, and an unrelated update keeps it.
+        store
+            .update(&run.id, update(&["--model-routing", "build=strong"]))
+            .unwrap();
+        assert_eq!(routing(&store).role_for(Task::Check), Some(Role::Strong));
+        assert_eq!(routing(&store).role_for(Task::Build), Some(Role::Strong));
+        store
+            .update(&run.id, update(&["--activity", "later"]))
+            .unwrap();
+        assert_eq!(routing(&store).role_for(Task::Build), Some(Role::Strong));
+
+        let reopened = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        assert_eq!(routing(&reopened).role_for(Task::Build), Some(Role::Strong));
+
+        store
+            .update(&run.id, update(&["--clear-model-routing"]))
+            .unwrap();
+        assert_eq!(routing(&store).role_for(Task::Build), Some(Role::Coding));
+        assert!(routing(&store).overrides.is_empty());
+    }
+
+    #[test]
+    fn bad_task_overrides_are_refused_and_change_nothing() {
+        let dir = TestDir::new();
+        let (store, run) = routed_store(&dir);
+        // The command line refuses what cannot be a task or a role.
+        for options in [
+            &["--model-routing", "deploy=coding"][..],
+            &["--model-routing", "check=boss"],
+            &["--model-routing", "check"],
+            &[
+                "--model-routing",
+                "check=coding",
+                "--model-routing",
+                "check=strong",
+            ],
+            &["--model-routing", "check=coding", "--clear-model-routing"],
+        ] {
+            assert!(
+                parse_update("build", "running", options).is_err(),
+                "{options:?}"
+            );
+        }
+        // The run refuses a role it does not have, such as routine here.
+        let error = store
+            .update(&run.id, update(&["--model-routing", "finish=routine"]))
+            .unwrap_err();
+        assert!(error.to_string().contains("routine"), "{error}");
+        assert!(store
+            .get(&run.id)
+            .unwrap()
+            .unwrap()
+            .model_routing
+            .unwrap()
+            .overrides
+            .is_empty());
+        // A run that has no selection has nothing to override.
+        let plain = new_run(&store, "plain");
+        let error = store
+            .update(&plain.id, update(&["--model-routing", "check=coding"]))
+            .unwrap_err();
+        assert!(error.to_string().contains("model routing"), "{error}");
+        // Clearing where there is nothing to clear is harmless.
+        store
+            .update(&plain.id, update(&["--clear-model-routing"]))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_model_routing_selection_recorded_at_start_survives_updates_and_a_restart() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let run = store
+            .create(NewRun {
+                title: "routed".into(),
+                project: "/work/repo".into(),
+                repository: None,
+                session: None,
+                model_routing: Some(selection()),
+            })
+            .unwrap();
+        assert_eq!(run.model_routing, Some(selection()));
+        let run = store
+            .update(&run.id, update(&["--activity", "later"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.model_routing, Some(selection()));
+        let reopened = RunStore::open(&path).unwrap();
+        let run = reopened.get(&run.id).unwrap().unwrap();
+        assert_eq!(run.model_routing, Some(selection()));
     }
 
     fn update(options: &[&str]) -> UpdateRun {
@@ -1484,6 +1681,7 @@ mod tests {
                 && run.pr.is_none()
         );
         assert!(run.tickets.is_empty() && run.summaries.is_empty());
+        assert!(run.model_routing.is_none());
         // Updating it adds context without inventing the rest, and keeps what it had.
         let run = store
             .update("7", update(&["--branch", "b"]))
@@ -1494,6 +1692,7 @@ mod tests {
         let json = serde_json::to_value(&run).unwrap();
         assert_eq!(json["repository"], serde_json::Value::Null);
         assert_eq!(json["tickets"], serde_json::json!([]));
+        assert!(json.get("model_routing").is_none());
     }
 
     #[test]
@@ -1740,6 +1939,7 @@ mod tests {
                 project: "/p".into(),
                 repository: None,
                 session: Some("11111111-aaaa".into()),
+                model_routing: None,
             })
             .unwrap();
         assert_eq!(created.sessions, ["11111111-aaaa"]);
