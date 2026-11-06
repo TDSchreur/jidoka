@@ -141,6 +141,34 @@ pub(crate) struct NewRun {
     pub(crate) model_routing: Option<ModelRouting>,
 }
 
+impl NewRun {
+    fn validate(&self) -> io::Result<()> {
+        if self.title.trim().is_empty()
+            || self.project.trim().is_empty()
+            || self.title.len() > 500
+            || self.project.len() > 4096
+            || self
+                .session
+                .as_deref()
+                .is_some_and(|id| crate::run::check_session_id(id).is_err())
+            || self.title.chars().any(char::is_control)
+            || self.project.chars().any(char::is_control)
+            || self
+                .model_routing
+                .as_ref()
+                .is_some_and(|routing| routing.validate().is_err())
+            || self.repository.as_deref().is_some_and(|repository| {
+                repository.len() > 4096
+                    || repository.chars().any(char::is_control)
+                    || !crate::run::is_absolute_path(repository)
+            })
+        {
+            return Err(io_invalid("Invalid run"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct UpdateRun {
@@ -684,6 +712,7 @@ impl RunStore {
     }
 
     pub(crate) fn create(&self, new: NewRun) -> io::Result<Run> {
+        new.validate()?;
         let mut runs = self.runs.lock().map_err(lock_error)?;
         let mut id = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -732,6 +761,7 @@ impl RunStore {
     /// Applies an update to a copy first, so an inconsistent update changes nothing, and
     /// restores the stored record when saving fails.
     pub(crate) fn update(&self, id: &str, update: UpdateRun) -> io::Result<Option<Run>> {
+        update.validate().map_err(io_invalid)?;
         let mut runs = self.runs.lock().map_err(lock_error)?;
         let Some(index) = runs.iter().position(|run| run.id == id) else {
             return Ok(None);
@@ -937,6 +967,34 @@ pub(crate) fn save_runs(path: &Path, runs: &[Run]) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::test_support::TestDir;
+
+    #[test]
+    fn invalid_mutations_leave_memory_and_disk_unchanged() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let make_new = |title: &str| NewRun {
+            title: title.into(),
+            project: "/work".into(),
+            repository: None,
+            session: None,
+            model_routing: None,
+        };
+        let run = store.create(make_new("valid")).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(
+            store.create(make_new(" ")).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        let mut update = UpdateRun::new(Stage::Build, RunStatus::Running);
+        update.branch = FieldUpdate::Set("invalid branch".into());
+        assert_eq!(
+            store.update(&run.id, update).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(serde_json::to_vec(&store.list().unwrap()).unwrap(), before);
+    }
 
     #[test]
     fn concurrent_creates_keep_all_records_and_unique_ids() {
