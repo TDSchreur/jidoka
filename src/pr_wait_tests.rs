@@ -488,7 +488,7 @@ fn a_failure_comes_with_the_end_of_its_log() {
         gh.calls
             .borrow()
             .iter()
-            .any(|c| c == "run view 555 --log-failed"),
+            .any(|c| c == "run view 555 --repo o/r --log-failed"),
         "{:?}",
         gh.calls.borrow()
     );
@@ -577,4 +577,111 @@ fn the_timeout_option_takes_seconds_minutes_and_hours() {
     assert!(options.fail_fast && json && options.timeout == Duration::from_secs(600));
     assert!(parse_options(&["--fail-fast", "--fail-fast"]).is_err());
     assert_eq!(Options::default().timeout, Duration::from_secs(1800));
+}
+
+// --- rework 1 ---------------------------------------------------------------------------------------
+
+#[test]
+fn a_log_is_asked_for_from_the_repository_of_the_check_link() {
+    for (link, repo) in [
+        ("https://github.com/o/r/actions/runs/9/job/1", "o/r"),
+        (
+            "https://ghe.example.com/team/app/actions/runs/9/job/1",
+            "ghe.example.com/team/app",
+        ),
+    ] {
+        let gh = FakeGh {
+            logs: RefCell::new(VecDeque::from([ok("boom\n")])),
+            ..FakeGh::script(
+                vec![view("aaa", "OPEN", "CLEAN")],
+                vec![linked(&[("build", "fail", link)])],
+            )
+        };
+        run_wait(&gh).0.unwrap();
+        let expected = format!("run view 9 --repo {repo} --log-failed");
+        assert!(
+            gh.calls.borrow().contains(&expected),
+            "{:?}",
+            gh.calls.borrow()
+        );
+    }
+}
+
+#[test]
+fn many_failed_checks_still_fit_the_activity_text() {
+    let names: Vec<String> = (0..60)
+        .map(|n| format!("job-{n:02}-{}", "x".repeat(30)))
+        .collect();
+    let list: Vec<(&str, &str, &str)> = names
+        .iter()
+        .map(|n| {
+            (
+                n.as_str(),
+                "fail",
+                "https://github.com/o/r/actions/runs/1/job/1",
+            )
+        })
+        .collect();
+    let gh = FakeGh::script(vec![view("aaa", "OPEN", "CLEAN")], vec![linked(&list)]);
+    let (result, activity, _) = run_wait(&gh);
+    result.unwrap();
+    let last = activity.last().unwrap();
+    assert!(last.len() <= 500, "{}", last.len());
+    assert!(
+        last.starts_with("CI failed: job-00") && last.contains("and 57 more"),
+        "{last}"
+    );
+}
+
+#[test]
+fn a_timeout_shorter_than_the_grace_period_ends_the_wait_for_checks_too() {
+    let gh = FakeGh::script(vec![view("aaa", "OPEN", "CLEAN")], vec![checks(&[])]);
+    let options = Options {
+        timeout: Duration::from_secs(30),
+        ..Options::default()
+    };
+    let (result, _, clock) = run_wait_with(&gh, &options);
+    assert_eq!(result.unwrap().outcome, Outcome::NoCi);
+    assert!(
+        clock.elapsed() >= Duration::from_secs(30) && clock.elapsed() < Duration::from_secs(60)
+    );
+}
+
+#[test]
+fn names_links_and_log_lines_cannot_write_to_the_terminal() {
+    let evil = "x\u{1b}]52;c;AAAA\u{7}y";
+    let link = "https://github.com/o/r/actions/runs/1/job/\u{1b}[2J";
+    let gh = FakeGh {
+        logs: RefCell::new(VecDeque::from([ok(
+            "\u{1b}[31mred\u{1b}[0m line\nsecond\u{8}\n",
+        )])),
+        ..FakeGh::script(
+            vec![view("aaa", "OPEN", "CLEAN")],
+            vec![linked(&[
+                (evil, "fail", link),
+                ("ok", "pass", "https://github.com/o/r/actions/runs/1/job/2"),
+            ])],
+        )
+    };
+    let (result, activity, _) = run_wait(&gh);
+    let waited = result.unwrap();
+    let text = render(&waited);
+    for output in [text.as_str(), activity.last().unwrap().as_str()] {
+        assert!(
+            !output.chars().any(|c| c.is_control() && c != '\n'),
+            "{output:?}"
+        );
+    }
+    // The visible words are still there.
+    assert!(text.contains("red") && text.contains("second"));
+    // JSON escapes control characters itself.
+    assert!(!serde_json::to_string(&waited).unwrap().contains('\u{1b}'));
+}
+
+#[test]
+fn the_text_says_nothing_about_the_base_when_the_pull_request_is_not_open() {
+    let gh = FakeGh::script(vec![view("aaa", "MERGED", "UNKNOWN")], vec![checks(&[])]);
+    let text = render(&run_wait(&gh).0.unwrap());
+    assert!(text.starts_with("Pull request is not open"));
+    assert!(!text.contains("base"), "{text}");
 }

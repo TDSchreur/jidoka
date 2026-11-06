@@ -207,16 +207,16 @@ The dashboard reads the token counts your agents write to their own session logs
 | Outcome | Exit status | Meaning |
 | --- | ---: | --- |
 | `passed` | 0 | Every check of the current head commit passed or was skipped. |
-| `failed` | 2 | A check failed. Each failed check is listed with its link and the last 40 lines (at most 4 KiB) of its log; a log that cannot be fetched leaves the name and link. A failure wins over a cancel. |
+| `failed` | 2 | A check failed. Each failed check is listed with its link. The first failed check of each Actions run, for at most three runs, also carries the last 40 lines (at most 4 KiB) of that run's failed log; a log that cannot be fetched leaves the name and link. A failure wins over a cancel. |
 | `cancelled` | 3 | Checks were cancelled and none failed. |
 | `timeout` | 4 | Checks were still running at `--timeout` (default 30 minutes, from 1 second to 24 hours, written as `90s`, `30m` or `2h`). |
 | `head-changed` | 5 | The pull request got a new head commit while waiting. No check results are reported; run the command again. |
-| `no-ci` | 6 | No check appeared within 90 seconds. |
+| `no-ci` | 6 | No check appeared within 90 seconds, or within `--timeout` when that is shorter. |
 | `not-open` | 7 | The pull request is merged or closed. |
 
 Exit status 1 is a problem with the tools or the run (no `gh`, not signed in, no network, no pull request recorded), with what to do. Checks are asked for every 15 seconds, and the progress goes to standard error. By default it waits until every check has ended; `--fail-fast` returns `failed` at the first failing check and lists the others as still running. `--json` prints the same data.
 
-Next to the outcome it says whether the branch is up to date with its base, behind it, in conflict with it, or not yet known (GitHub is asked again up to five times). The command only reads: it never merges, pushes or updates the branch, and a `passed` outcome does not mark Finish done. While it waits, the run's activity is "Waiting for CI", and it is set to the outcome when the wait ends. Ctrl-C ends the process; the activity text then stays until the next update of the run. The Finish procedure of the workflows uses this command, and falls back to watching by hand when the installed `factory` does not know it.
+Next to the outcome it says whether the branch is up to date with its base, behind it, in conflict with it, or not yet known (GitHub is asked again up to five times). The command only reads: it never merges, pushes or updates the branch, and a `passed` outcome does not mark Finish done. While it waits, the run's activity is "Waiting for CI", and it is set to the outcome when the wait ends; a run that is blocked or done is left alone. Names, links and log lines come from the pull request's checks and are printed with control characters replaced. Ctrl-C ends the process; the activity text then stays until the next update of the run. The Finish procedure of the workflows uses this command, and falls back to watching by hand when the installed `factory` does not know it.
 
 #### Request analysis
 

@@ -212,7 +212,6 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     let running = matches!(run.status, run::RunStatus::Running);
     let mut reported_failure = false;
     let mut activity = |text: &str| {
-        eprintln!("{text}");
         if running {
             if let Err(error) = report_run(ADDRESS, id, &stage, "running", &["--activity", text]) {
                 if !reported_failure {

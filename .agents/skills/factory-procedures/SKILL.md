@@ -79,14 +79,14 @@ Use the `humanizer` skill for human-facing prose you write or edit in a run: spe
 
 ## Pull request and CI
 
-Once the project's verification has passed on the final commit, push the branch and create a pull request targeting the base branch chosen in Workspace. Record the pull request on the run (`--pr <url>`), then watch its CI with `factory pr wait <run-id>`. It follows the checks of the pull request's current head commit until all of them have ended, keeps the run's activity at "Waiting for CI" itself, and prints one outcome and a matching exit status:
+Once the project's verification has passed on the final commit, push the branch and create a pull request targeting the base branch chosen in Workspace. Record the pull request on the run (`--pr <url>`), then watch its CI with `factory pr wait <run-id>`. It follows the checks of the pull request's current head commit until all of them have ended, sets the activity of a running run to "Waiting for CI" itself, and prints one outcome and a matching exit status:
 
 - `passed` (0): every check passed or was skipped.
-- `failed` (2): a check failed. The output lists each failed check with its link and the end of its log.
+- `failed` (2): a check failed. The output lists each failed check with its link, and the end of the failed log of up to three runs.
 - `cancelled` (3): checks were cancelled and none failed.
 - `timeout` (4): checks were still running at the end of `--timeout` (default 30 minutes).
 - `head-changed` (5): the pull request got a new head commit while waiting, so the results say nothing about it; run the command again.
-- `no-ci` (6): no check appeared within 90 seconds, so the project has no CI.
+- `no-ci` (6): no check appeared within 90 seconds (or within `--timeout` when that is shorter), so the project has no CI.
 - `not-open` (7): the pull request was merged or closed.
 
 Exit status 1 is a problem with the tools or the run (no `gh`, not signed in, no network, no pull request recorded); its message says what to do. Next to the outcome the command says whether the branch is up to date, behind its base or in conflict with it. It only reads: it never merges, pushes or updates the branch, and a `passed` outcome does not mark Finish done. Add `--fail-fast` to get a `failed` outcome as soon as one check fails. If the installed `factory` rejects `pr wait` as an unknown command, report that the factory needs upgrading, then watch the checks yourself: follow every one until all have completed, noticing failures as well as success, with `--activity "Waiting for CI"` on the running run.

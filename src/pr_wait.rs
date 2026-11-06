@@ -1,5 +1,6 @@
 //! `factory pr wait`: watches the checks of a run's pull request and returns one CI outcome.
 
+use crate::inspect::shown;
 use serde::Serialize;
 use std::{
     io,
@@ -249,11 +250,11 @@ fn problem(what: &str, output: &GhOutput) -> ToolProblem {
             "The GitHub CLI is not signed in. Run `gh auth login` and try again.".into(),
         );
     }
-    let detail = first_line(if output.stderr.trim().is_empty() {
+    let detail = shown(first_line(if output.stderr.trim().is_empty() {
         &output.stdout
     } else {
         &output.stderr
-    });
+    }));
     if stderr.contains("error connecting")
         || stderr.contains("could not resolve host")
         || stderr.contains("no such host")
@@ -362,13 +363,20 @@ fn activity_text(waited: &Waited) -> String {
     match waited.outcome {
         Outcome::Passed => "CI passed".into(),
         Outcome::Failed => {
-            let names: Vec<&str> = waited
+            // A few names are enough for the dashboard; a matrix can fail dozens of jobs.
+            let names: Vec<String> = waited
                 .checks
                 .iter()
                 .filter(|check| check.bucket == "fail")
-                .map(|check| check.name.as_str())
+                .map(|check| shown(&check.name).chars().take(50).collect())
                 .collect();
-            format!("CI failed: {}", names.join(", "))
+            let more = names.len().saturating_sub(3);
+            let listed = names[..names.len() - more].join(", ");
+            if more > 0 {
+                format!("CI failed: {listed} and {more} more")
+            } else {
+                format!("CI failed: {listed}")
+            }
         }
         Outcome::Cancelled => "CI cancelled".into(),
         Outcome::Timeout => "CI timed out".into(),
@@ -378,11 +386,38 @@ fn activity_text(waited: &Waited) -> String {
     }
 }
 
-/// The run id in a check link such as `https://github.com/o/r/actions/runs/123/job/4`.
-fn run_id(link: &str) -> Option<&str> {
-    let rest = link.split("/actions/runs/").nth(1)?;
-    let id = rest.split('/').next()?;
-    (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then_some(id)
+/// The run id and the repository of a check link such as `https://github.com/o/r/actions/runs/123/job/4`.
+/// The repository is written as `gh --repo` takes it: `owner/repo`, or `host/owner/repo` away from github.com.
+fn run_of_link(link: &str) -> Option<(&str, String)> {
+    let rest = link
+        .strip_prefix("https://")
+        .or_else(|| link.strip_prefix("http://"))?;
+    let (place, tail) = rest.split_once("/actions/runs/")?;
+    let id = tail.split('/').next()?;
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let part_ok = |part: &str| {
+        part.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-:".contains(c))
+    };
+    let parts: Vec<&str> = place.split('/').collect();
+    let [host, owner, repo] = parts[..] else {
+        return None;
+    };
+    if !(part_ok(host) && part_ok(owner) && part_ok(repo)) {
+        return None;
+    }
+    let repository = if host == "github.com" {
+        format!("{owner}/{repo}")
+    } else {
+        format!("{host}/{owner}/{repo}")
+    };
+    Some((id, repository))
 }
 
 /// The end of a log: its last lines, cut to a size that fits a screen.
@@ -409,11 +444,11 @@ fn failures(gh: &dyn Gh, checks: &[CheckResult]) -> Vec<Failure> {
     let mut out = Vec::new();
     for check in checks.iter().filter(|check| check.bucket == "fail") {
         let mut text = None;
-        if let Some(id) = run_id(&check.link) {
+        if let Some((id, repository)) = run_of_link(&check.link) {
             if !fetched.contains(&id) && fetched.len() < MAX_LOGS {
                 fetched.push(id);
                 text = gh
-                    .run(&["run", "view", id, "--log-failed"])
+                    .run(&["run", "view", id, "--repo", &repository, "--log-failed"])
                     .ok()
                     .filter(|output| output.code == Some(0))
                     .and_then(|output| excerpt(&output.stdout));
@@ -429,7 +464,8 @@ fn failures(gh: &dyn Gh, checks: &[CheckResult]) -> Vec<Failure> {
 }
 
 /// Watches the checks of `pull_request` for its current head commit until they have ended, and returns the
-/// CI outcome. `activity` is told what the run is doing, and `progress` how far the checks are. It only reads: it never merges, pushes or updates
+/// CI outcome. `activity` is told what the run is doing, and `progress` how far the checks are. It only
+/// reads: it never merges, pushes or updates the branch.
 /// the branch.
 pub(crate) fn wait(
     pull_request: Option<&str>,
@@ -476,7 +512,7 @@ pub(crate) fn wait(
         }
         let waited_for = clock.elapsed().saturating_sub(started);
         if checks.is_empty() {
-            if waited_for >= GRACE {
+            if waited_for >= GRACE.min(options.timeout) {
                 let base = base_state(gh, clock, pull_request, view.merge.clone())?;
                 break result(Outcome::NoCi, &view, checks, base);
             }
@@ -524,28 +560,34 @@ pub(crate) fn render(waited: &Waited) -> String {
     let mut out = format!("{}\n", activity_text(waited));
     out.push_str(&format!(
         "  Pull request: {}\n  Head commit: {}\n",
-        waited.pull_request,
-        waited.head.chars().take(7).collect::<String>()
+        shown(&waited.pull_request),
+        shown(&waited.head.chars().take(7).collect::<String>())
     ));
     if let Some(new_head) = &waited.new_head {
         out.push_str(&format!(
             "  Head commit now: {}. Watch the new commit with `factory pr wait` again.\n",
-            new_head.chars().take(7).collect::<String>()
+            shown(&new_head.chars().take(7).collect::<String>())
         ));
     }
     for check in &waited.checks {
         out.push_str(&format!(
             "  {:<9} {}  {}\n",
-            check.bucket, check.name, check.link
+            shown(&check.bucket),
+            shown(&check.name),
+            shown(&check.link)
         ));
     }
     for failure in &waited.failures {
         if let Some(text) = &failure.excerpt {
-            out.push_str(&format!("  End of the log of {}:\n", failure.name));
+            out.push_str(&format!("  End of the log of {}:\n", shown(&failure.name)));
             for line in text.lines() {
-                out.push_str(&format!("    | {line}\n"));
+                out.push_str(&format!("    | {}\n", shown(line)));
             }
         }
+    }
+    // The base state says nothing when the pull request is not open or its head moved.
+    if matches!(waited.outcome, Outcome::NotOpen | Outcome::HeadChanged) {
+        return out;
     }
     out.push_str(match waited.base {
         BaseState::UpToDate => "  The branch is up to date with its base.\n",
