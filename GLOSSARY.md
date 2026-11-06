@@ -10,6 +10,10 @@
 
 **Workflow mode**: The workflow skill that carries a run: `factory-full` (quality), `factory-balanced`, or `factory-fast` (speed). Modes differ in how much Define, Build, and Check do.
 
+**Model routing**: Choosing the model and effort a kind of task runs on, independently of the workflow mode. It is not the same as workflow selection, which `/factory` does. A run records its model-routing selection when it starts. Copilot CLI is not supported: every stage there keeps the session's model.
+
+**Routing policy**: The user-owned file that describes model routing: the agent, the roles (`strong`, `coding`, `routine`) with a model and effort each, and which role handles build, check and finish. The factory reads it once, when a run starts.
+
 **Run context**: What a new agent session needs to continue a run: the repository, worktree, branch and base commit it started from, the workflow mode, a reference to the spec, the ordered tickets with their progress, the pull request, a short summary per Stage and the status reason. It holds references and summaries only, never transcripts or secrets, and is changed only through `factory run update`. Anything a run never recorded is shown as unknown, not guessed.
 
 **Repository**: The canonical main checkout of the project a run belongs to. Every linked worktree of a checkout has the same repository, so the dashboard groups their runs in one row.

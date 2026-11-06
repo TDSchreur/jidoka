@@ -1,4 +1,5 @@
 use crate::{
+    routing::ModelRouting,
     run::{parse_update, NewRun, Run},
     server::Info,
 };
@@ -15,12 +16,14 @@ pub(crate) fn start_run(
     project: &str,
     repository: Option<String>,
     session: Option<String>,
+    model_routing: Option<ModelRouting>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let body = serde_json::to_vec(&NewRun {
         title: title.to_string(),
         project: project.to_string(),
         repository,
         session,
+        model_routing,
     })?;
     let run: Run = serde_json::from_slice(&api_post(server, "/api/runs", &body)?)?;
     Ok(run.id)
@@ -254,7 +257,7 @@ mod tests {
         )
         .unwrap();
         let server = TestServer::start(&path);
-        let id = start_run(&server.address, "Verify slice", "/work", None, None).unwrap();
+        let id = start_run(&server.address, "Verify slice", "/work", None, None, None).unwrap();
         let ticket = "https://github.com/example/repo/issues/7";
         let steps: [(&str, &str, &[&str]); 4] = [
             (
@@ -334,7 +337,7 @@ mod tests {
         assert_eq!(invalid.to_string(), "Invalid run id");
         // Nothing listens on port 1. A port that was just freed could be taken by another test's server.
         let address = NOTHING_LISTENS.to_string();
-        let unreachable = start_run(&address, "task", "/work", None, None).unwrap_err();
+        let unreachable = start_run(&address, "task", "/work", None, None, None).unwrap_err();
         assert!(
             unreachable
                 .to_string()
@@ -381,6 +384,47 @@ mod tests {
     }
 
     #[test]
+    fn a_run_keeps_the_selection_it_started_with_when_the_policy_file_changes() {
+        let dir = TestDir::new();
+        let server = TestServer::start(&dir.0.path().join("runs.json"));
+        let policy = dir.0.path().join("model-routing.json");
+        let write = |model: &str| {
+            fs::write(
+                &policy,
+                format!(
+                    r#"{{"agent":"claude","roles":{{"strong":{{"model":"{model}"}}}},"tasks":{{"check":"strong"}}}}"#
+                ),
+            )
+            .unwrap();
+        };
+        write("opus");
+        let selection = crate::routing::load(&policy).unwrap().selection;
+        let id = start_run(&server.address, "Routed", "/work", None, None, selection).unwrap();
+        write("sonnet");
+        report_run(
+            &server.address,
+            &id,
+            "build",
+            "running",
+            &["--activity", "go"],
+        )
+        .unwrap();
+        let run = fetch_run(&server.address, &id).unwrap();
+        assert_eq!(
+            run.model_routing.unwrap().roles[&crate::routing::Role::Strong].model,
+            "opus"
+        );
+        // A run started now reads the new file.
+        let selection = crate::routing::load(&policy).unwrap().selection;
+        let id = start_run(&server.address, "Next", "/work", None, None, selection).unwrap();
+        let run = fetch_run(&server.address, &id).unwrap();
+        assert_eq!(
+            run.model_routing.unwrap().roles[&crate::routing::Role::Strong].model,
+            "sonnet"
+        );
+    }
+
+    #[test]
     fn inspect_reads_back_the_context_a_session_recorded() {
         let dir = TestDir::new();
         let server = TestServer::start(&dir.0.path().join("runs.json"));
@@ -389,6 +433,7 @@ mod tests {
             "Continue me",
             "/work/repo.worktrees/x",
             Some("/work/repo".into()),
+            None,
             None,
         )
         .unwrap();
@@ -469,7 +514,8 @@ mod tests {
         let path = dir.0.path().join("runs.json");
         let server = TestServer::start(&path);
         for mode in ["factory", "factory-full"] {
-            let id = start_run(&server.address, "Full run", "/work/repo", None, None).unwrap();
+            let id =
+                start_run(&server.address, "Full run", "/work/repo", None, None, None).unwrap();
             report_run(&server.address, &id, "build", "running", &["--mode", mode]).unwrap();
             let run = fetch_run(&server.address, &id).unwrap();
             assert!(crate::inspect::render(&run).contains("Mode          factory-full"));

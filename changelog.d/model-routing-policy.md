@@ -1,0 +1,3 @@
+## Added
+
+- Model routing: an optional `model-routing.json` in the factory's config folder describes which model and effort the `strong`, `coding` and `routine` roles use and which role handles build, check and finish. `factory run start` reads it once and records the selection on the run; `factory run inspect` shows it and `--json` carries it. No workflow reads the selection yet. A policy for Copilot CLI records nothing, because Copilot gives no per-call model choice for subagents. `factory run update` takes `--model-routing <task>=<role>` to override the role for a task on one run, and `--clear-model-routing` to remove the overrides.

@@ -1,5 +1,6 @@
 //! The readable form of a run, for `factory run inspect`: everything a new session needs to continue it.
 
+use crate::routing::{ModelRouting, Task};
 use crate::run::{Mode, Run, RunStatus, Stage, TicketStatus};
 
 const UNKNOWN: &str = "unknown (not recorded)";
@@ -60,6 +61,31 @@ fn field(label: &str, value: Option<&str>) -> String {
     )
 }
 
+/// The model each task is routed to; a task the selection does not map is not routed.
+fn routing_section(routing: &ModelRouting) -> String {
+    let mut out = format!("Model routing {}\n", routing.agent.name());
+    for task in Task::ALL {
+        let line = match routing.role_for(task) {
+            Some(role) => {
+                let choice = routing.roles.get(&role);
+                let model = choice.map_or_else(|| UNKNOWN.to_string(), |c| shown(&c.model));
+                let effort = choice
+                    .and_then(|c| c.effort.as_deref())
+                    .map_or(String::new(), |e| format!(", effort {}", shown(e)));
+                let overridden = if routing.overrides.contains_key(&task) {
+                    " (override)"
+                } else {
+                    ""
+                };
+                format!("{:<7} {model}{effort}{overridden}", role.name())
+            }
+            None => "not routed".to_string(),
+        };
+        out.push_str(&format!("  {:<6}  {line}\n", task.name()));
+    }
+    out
+}
+
 pub(crate) fn render(run: &Run) -> String {
     let mut out = format!("Run {}: {}\n", run.id, shown(&run.title));
     out.push_str(&format!(
@@ -105,6 +131,9 @@ pub(crate) fn render(run: &Run) -> String {
             ));
         }
     }
+    if let Some(routing) = &run.model_routing {
+        out.push_str(&routing_section(routing));
+    }
     if let Some(ticket) = &run.current_ticket {
         out.push_str(&field("Current ticket", Some(ticket)));
     }
@@ -129,6 +158,62 @@ mod tests {
             "summaries": {"define": summary}
         }))
         .unwrap()
+    }
+
+    fn routed_run() -> Run {
+        serde_json::from_value(serde_json::json!({
+            "id": "1", "title": "t", "project": "/p", "stage": "build", "status": "running",
+            "model_routing": {
+                "agent": "claude",
+                "roles": {
+                    "strong": {"model": "opus", "effort": "high"},
+                    "coding": {"model": "sonnet"}
+                },
+                "tasks": {"build": "coding", "check": "strong"}
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn model_routing_is_shown_per_task_only_when_a_selection_exists() {
+        let text = render(&routed_run());
+        let lines: Vec<_> = text
+            .lines()
+            .skip_while(|line| !line.starts_with("Model routing"))
+            .take(4)
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "Model routing claude",
+                "  build   coding  sonnet",
+                "  check   strong  opus, effort high",
+                "  finish  not routed",
+            ],
+            "{text}"
+        );
+        assert!(!render(&run_with_summary("s")).contains("Model routing"));
+        // The machine-readable form is the whole run, so skills can read the selection from it.
+        let json = serde_json::to_value(routed_run()).unwrap();
+        assert_eq!(json["model_routing"]["tasks"]["check"], "strong");
+        assert_eq!(json["model_routing"]["roles"]["strong"]["model"], "opus");
+    }
+
+    #[test]
+    fn an_overridden_task_shows_its_role_and_is_marked() {
+        let mut run = routed_run();
+        run.model_routing
+            .as_mut()
+            .unwrap()
+            .overrides
+            .insert(Task::Check, crate::routing::Role::Coding);
+        let text = render(&run);
+        assert!(
+            text.contains("  check   coding  sonnet (override)\n"),
+            "{text}"
+        );
+        assert!(text.contains("  build   coding  sonnet\n"), "{text}");
     }
 
     #[test]

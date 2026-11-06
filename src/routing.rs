@@ -1,0 +1,388 @@
+//! Model routing: which model and effort each kind of task should use, recorded on a run when it starts.
+//! "Routing" alone already means workflow selection in this repository, so this is always model routing.
+//! The record holds only the roles and the task mapping; no stage reads it yet.
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::{fs, io};
+
+/// The coding agent a selection is for. Copilot CLI is not here: it records no selection.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum RoutingAgent {
+    Codex,
+    Claude,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Role {
+    Strong,
+    Coding,
+    Routine,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Task {
+    Build,
+    Check,
+    Finish,
+}
+
+/// A role's model and effort. Both are free text: the factory keeps no list of valid values.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RoleChoice {
+    pub(crate) model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) effort: Option<String>,
+}
+
+/// The selection recorded on a run.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ModelRouting {
+    pub(crate) agent: RoutingAgent,
+    pub(crate) roles: BTreeMap<Role, RoleChoice>,
+    /// The policy's mapping of tasks to roles, as it was when the run started.
+    pub(crate) tasks: BTreeMap<Task, Role>,
+    /// Roles chosen for this run by hand; they win over `tasks` and leave it untouched.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) overrides: BTreeMap<Task, Role>,
+}
+
+/// Longest model or effort text. They are shown in a terminal and handed to agents, so they stay short.
+const MAX_TEXT: usize = 64;
+
+fn check_text(name: &str, value: &str) -> Result<(), String> {
+    let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-');
+    if value.is_empty() || value.len() > MAX_TEXT || !value.chars().all(allowed) {
+        return Err(format!(
+            "{name} must be 1 to {MAX_TEXT} characters from letters, digits and . _ : / -"
+        ));
+    }
+    Ok(())
+}
+
+impl ModelRouting {
+    /// The role that handles `task`: this run's override if it has one, otherwise the policy's mapping.
+    pub(crate) fn role_for(&self, task: Task) -> Option<Role> {
+        self.overrides
+            .get(&task)
+            .or_else(|| self.tasks.get(&task))
+            .copied()
+    }
+
+    /// The rules every selection follows, whether the CLI resolved it or the API received it.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        for choice in self.roles.values() {
+            check_text("Model", &choice.model)?;
+            if let Some(effort) = &choice.effort {
+                check_text("Effort", effort)?;
+            }
+        }
+        for (task, role) in self.tasks.iter().chain(&self.overrides) {
+            if !self.roles.contains_key(role) {
+                return Err(format!(
+                    "The {} task uses the {} role, which is not defined under roles",
+                    task.name(),
+                    role.name()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl RoutingAgent {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+        }
+    }
+}
+
+impl Role {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Strong => "strong",
+            Self::Coding => "coding",
+            Self::Routine => "routine",
+        }
+    }
+}
+
+impl Task {
+    pub(crate) const ALL: [Task; 3] = [Task::Build, Task::Check, Task::Finish];
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Build => "build",
+            Self::Check => "check",
+            Self::Finish => "finish",
+        }
+    }
+}
+
+/// The policy file is user-owned and could be anything: larger files are not read.
+const MAX_POLICY_BYTES: u64 = 1 << 20;
+
+/// The agent a policy is written for. Copilot CLI parses, but it records no selection.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum PolicyAgent {
+    Codex,
+    Claude,
+    Copilot,
+}
+
+fn enabled_by_default() -> bool {
+    true
+}
+
+/// The policy file as the user writes it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Policy {
+    /// Accepted so the file may spell it out; a switched-off policy never gets this far (see `load`).
+    #[serde(default = "enabled_by_default", rename = "enabled")]
+    _enabled: bool,
+    agent: PolicyAgent,
+    roles: BTreeMap<Role, RoleChoice>,
+    tasks: BTreeMap<Task, Role>,
+}
+
+/// What a policy file means for a new run: the selection to record, if any, and a notice for the user.
+#[derive(Default, PartialEq, Eq, Debug)]
+pub(crate) struct Resolution {
+    pub(crate) selection: Option<ModelRouting>,
+    pub(crate) notice: Option<String>,
+}
+
+/// Where the user-level policy lives: `$XDG_CONFIG_HOME/tds-factory/` or `~/.config/tds-factory/`,
+/// and `%APPDATA%\tds-factory\` on Windows.
+pub(crate) fn policy_path_in(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let set = |name: &str| {
+        var(name)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
+    let base = if cfg!(windows) {
+        set("APPDATA")?
+    } else {
+        set("XDG_CONFIG_HOME").or_else(|| set("HOME").map(|home| home.join(".config")))?
+    };
+    Some(base.join("tds-factory").join("model-routing.json"))
+}
+
+/// Reads the policy for a run that is starting. No file means no routing. A file that cannot be read or
+/// is wrong stops the start with its path, so routing never quietly does less than the user asked for.
+pub(crate) fn load(path: &Path) -> Result<Resolution, String> {
+    let fail = |problem: String| format!("{}: {problem}", path.display());
+    let size = match fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Resolution::default()),
+        Err(error) => {
+            return Err(fail(format!(
+                "cannot read the model-routing policy: {error}"
+            )))
+        }
+    };
+    if size > MAX_POLICY_BYTES {
+        return Err(fail("the model-routing policy is too large".into()));
+    }
+    let text = fs::read_to_string(path)
+        .map_err(|error| fail(format!("cannot read the model-routing policy: {error}")))?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+        fail(format!(
+            "the model-routing policy is not valid JSON: {error}"
+        ))
+    })?;
+    // A switched-off policy is not checked, so a file can be half edited while it is off.
+    if value.get("enabled") == Some(&serde_json::Value::Bool(false)) {
+        return Ok(Resolution::default());
+    }
+    let policy: Policy = serde_json::from_value(value)
+        .map_err(|error| fail(format!("invalid model-routing policy: {error}")))?;
+    let agent = match policy.agent {
+        PolicyAgent::Codex => RoutingAgent::Codex,
+        PolicyAgent::Claude => RoutingAgent::Claude,
+        PolicyAgent::Copilot => {
+            return Ok(Resolution {
+                selection: None,
+                notice: Some(
+                    "Model routing is not supported on Copilot CLI: every stage uses the session's model."
+                        .into(),
+                ),
+            })
+        }
+    };
+    let selection = ModelRouting {
+        agent,
+        roles: policy.roles,
+        tasks: policy.tasks,
+        overrides: BTreeMap::new(),
+    };
+    selection
+        .validate()
+        .map_err(|problem| fail(format!("invalid model-routing policy: {problem}")))?;
+    Ok(Resolution {
+        selection: Some(selection),
+        notice: None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn load_text(text: &str) -> Result<Resolution, String> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model-routing.json");
+        fs::write(&path, text).unwrap();
+        load(&path)
+    }
+
+    const CLAUDE: &str = r#"{
+        "enabled": true,
+        "agent": "claude",
+        "roles": {
+            "strong": {"model": "opus", "effort": "high"},
+            "coding": {"model": "sonnet", "effort": "medium"},
+            "routine": {"model": "haiku", "effort": "low"}
+        },
+        "tasks": {"build": "coding", "check": "strong", "finish": "routine"}
+    }"#;
+
+    #[test]
+    fn without_a_policy_file_nothing_is_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolution = load(&dir.path().join("model-routing.json")).unwrap();
+        assert_eq!(resolution, Resolution::default());
+    }
+
+    #[test]
+    fn a_claude_policy_becomes_the_recorded_selection() {
+        let selection = load_text(CLAUDE).unwrap().selection.unwrap();
+        assert_eq!(selection.agent, RoutingAgent::Claude);
+        assert_eq!(selection.roles[&Role::Strong].model, "opus");
+        assert_eq!(
+            selection.roles[&Role::Routine].effort.as_deref(),
+            Some("low")
+        );
+        assert_eq!(selection.tasks[&Task::Check], Role::Strong);
+        assert_eq!(selection.tasks[&Task::Finish], Role::Routine);
+    }
+
+    #[test]
+    fn a_codex_policy_keeps_its_own_models_and_an_omitted_effort_and_task() {
+        let text = r#"{"agent":"codex","roles":{"coding":{"model":"gpt-6.1-sol"}},"tasks":{"build":"coding"}}"#;
+        let selection = load_text(text).unwrap().selection.unwrap();
+        assert_eq!(selection.agent, RoutingAgent::Codex);
+        assert_eq!(selection.roles[&Role::Coding].effort, None);
+        assert_eq!(selection.tasks.get(&Task::Check), None);
+    }
+
+    #[test]
+    fn a_disabled_policy_records_nothing_even_if_it_has_other_mistakes() {
+        let text = CLAUDE.replace("\"enabled\": true", "\"enabled\": false");
+        assert_eq!(load_text(&text).unwrap(), Resolution::default());
+        let broken = r#"{"enabled":false,"agent":"claude","roles":{},"tasks":{"check":"strong"}}"#;
+        assert_eq!(load_text(broken).unwrap(), Resolution::default());
+    }
+
+    #[test]
+    fn a_copilot_policy_records_nothing_and_says_why() {
+        let text = r#"{"agent":"copilot","roles":{"coding":{"model":"claude-sonnet-5.5"}},"tasks":{"build":"coding"}}"#;
+        let resolution = load_text(text).unwrap();
+        assert_eq!(resolution.selection, None);
+        let notice = resolution.notice.unwrap();
+        assert!(
+            notice.contains("Copilot") && notice.contains("session"),
+            "{notice}"
+        );
+    }
+
+    #[test]
+    fn mistakes_in_the_file_are_errors_that_name_the_file_and_the_problem() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model-routing.json");
+        for (text, problem) in [
+            ("not json", "model-routing.json"),
+            (
+                r#"{"agent":"claude","roles":{},"tasks":{},"extra":1}"#,
+                "extra",
+            ),
+            (r#"{"agent":"gemini","roles":{},"tasks":{}}"#, "gemini"),
+            (r#"{"roles":{},"tasks":{}}"#, "agent"),
+            (
+                r#"{"agent":"claude","roles":{"coding":{"model":"sonnet"}},"tasks":{"check":"strong"}}"#,
+                "strong",
+            ),
+            (
+                r#"{"agent":"claude","roles":{"coding":{"model":"a b"}},"tasks":{}}"#,
+                "Model",
+            ),
+        ] {
+            fs::write(&path, text).unwrap();
+            let error = load(&path).unwrap_err();
+            assert!(error.contains(&path.display().to_string()), "{error}");
+            assert!(error.contains(problem), "{text}: {error}");
+        }
+    }
+
+    #[test]
+    fn an_unreadable_or_oversized_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model-routing.json");
+        fs::create_dir(&path).unwrap();
+        assert!(load(&path).is_err());
+        let big = dir.path().join("big.json");
+        fs::write(&big, " ".repeat(1 << 20) + "{}").unwrap();
+        assert!(load(&big).unwrap_err().contains("too large"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_policy_lives_in_the_factorys_config_directory() {
+        let path = |vars: &'static [(&'static str, &'static str)]| {
+            policy_path_in(move |name| {
+                vars.iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, v)| (*v).into())
+            })
+        };
+        assert_eq!(
+            path(&[("XDG_CONFIG_HOME", "/cfg"), ("HOME", "/home/u")]),
+            Some(PathBuf::from("/cfg/tds-factory/model-routing.json"))
+        );
+        assert_eq!(
+            path(&[("XDG_CONFIG_HOME", ""), ("HOME", "/home/u")]),
+            Some(PathBuf::from(
+                "/home/u/.config/tds-factory/model-routing.json"
+            ))
+        );
+        assert_eq!(path(&[]), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_policy_lives_in_the_factorys_config_directory() {
+        let path = policy_path_in(|name| {
+            (name == "APPDATA").then(|| r"C:\Users\u\AppData\Roaming".into())
+        });
+        assert_eq!(
+            path,
+            Some(
+                PathBuf::from(r"C:\Users\u\AppData\Roaming")
+                    .join("tds-factory")
+                    .join("model-routing.json")
+            )
+        );
+    }
+}

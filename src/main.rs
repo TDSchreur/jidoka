@@ -3,6 +3,7 @@ mod doctor;
 mod inspect;
 mod install;
 mod repository;
+mod routing;
 mod run;
 mod server;
 mod stats;
@@ -88,6 +89,14 @@ fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
         ["run", "start", title] => {
             let dir = env::current_dir()?;
             let repository = repository::canonical_repository(&dir);
+            // Read once, before the run exists: a mistake in the policy stops the start.
+            let resolution = routing::policy_path_in(|name| env::var_os(name)).map_or_else(
+                || Ok(routing::Resolution::default()),
+                |path| routing::load(&path),
+            )?;
+            if let Some(notice) = &resolution.notice {
+                eprintln!("{notice}");
+            }
             println!(
                 "{}",
                 start_run(
@@ -95,7 +104,8 @@ fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
                     title,
                     &dir.display().to_string(),
                     repository,
-                    current_session()
+                    current_session(),
+                    resolution.selection
                 )?
             );
         }
