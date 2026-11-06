@@ -383,24 +383,27 @@ mod tests {
         }
     }
 
+    /// A policy file with an entry for each agent; the models tell the entries apart.
+    fn both_agents(claude_model: &str, codex_model: &str) -> String {
+        format!(
+            r#"{{"agents":{{
+                "claude":{{"roles":{{"strong":{{"model":"{claude_model}"}}}},"tasks":{{"check":"strong"}}}},
+                "codex":{{"roles":{{"strong":{{"model":"{codex_model}","effort":"high"}}}},"tasks":{{"check":"strong"}}}}}}}}"#
+        )
+    }
+
     #[test]
     fn a_run_keeps_the_selection_it_started_with_when_the_policy_file_changes() {
+        use crate::routing::{Host, Role, RoutingAgent, Task};
         let dir = TestDir::new();
         let server = TestServer::start(&dir.0.path().join("runs.json"));
         let policy = dir.0.path().join("model-routing.json");
-        let write = |model: &str| {
-            fs::write(
-                &policy,
-                format!(
-                    r#"{{"agent":"claude","roles":{{"strong":{{"model":"{model}"}}}},"tasks":{{"check":"strong"}}}}"#
-                ),
-            )
-            .unwrap();
-        };
-        write("opus");
-        let selection = crate::routing::load(&policy).unwrap().selection;
-        let id = start_run(&server.address, "Routed", "/work", None, None, selection).unwrap();
-        write("sonnet");
+        fs::write(&policy, both_agents("opus", "gpt-6-astra")).unwrap();
+        let codex = crate::routing::load(&policy, Some(Host::Codex))
+            .unwrap()
+            .selection;
+        let id = start_run(&server.address, "Routed", "/work", None, None, codex).unwrap();
+        fs::write(&policy, both_agents("opus", "gpt-6-luna")).unwrap();
         report_run(
             &server.address,
             &id,
@@ -409,19 +412,48 @@ mod tests {
             &["--activity", "go"],
         )
         .unwrap();
+        // The run holds only the Codex entry as it was at the start, and a continued session sees the same.
         let run = fetch_run(&server.address, &id).unwrap();
-        assert_eq!(
-            run.model_routing.unwrap().roles[&crate::routing::Role::Strong].model,
-            "opus"
-        );
-        // A run started now reads the new file.
-        let selection = crate::routing::load(&policy).unwrap().selection;
-        let id = start_run(&server.address, "Next", "/work", None, None, selection).unwrap();
+        assert!(crate::inspect::render(&run).contains("Model routing codex"));
+        let routing = run.model_routing.unwrap();
+        assert_eq!(routing.agent, RoutingAgent::Codex);
+        assert_eq!(routing.roles[&Role::Strong].model, "gpt-6-astra");
+        assert_eq!(routing.roles.len(), 1);
+        // A per-run override keeps working on the recorded selection.
+        report_run(
+            &server.address,
+            &id,
+            "check",
+            "running",
+            &["--model-routing", "check=strong"],
+        )
+        .unwrap();
         let run = fetch_run(&server.address, &id).unwrap();
+        assert!(run
+            .model_routing
+            .unwrap()
+            .overrides
+            .contains_key(&Task::Check));
+        // A run started now reads the new file, and a Claude run gets the Claude entry, never Codex's.
+        let codex = crate::routing::load(&policy, Some(Host::Codex))
+            .unwrap()
+            .selection;
+        let next = start_run(&server.address, "Next", "/work", None, None, codex).unwrap();
+        let run = fetch_run(&server.address, &next).unwrap();
         assert_eq!(
-            run.model_routing.unwrap().roles[&crate::routing::Role::Strong].model,
-            "sonnet"
+            run.model_routing.unwrap().roles[&Role::Strong].model,
+            "gpt-6-luna"
         );
+        let claude = crate::routing::load(&policy, Some(Host::Claude))
+            .unwrap()
+            .selection;
+        let third = start_run(&server.address, "Claude", "/work", None, None, claude).unwrap();
+        let routing = fetch_run(&server.address, &third)
+            .unwrap()
+            .model_routing
+            .unwrap();
+        assert_eq!(routing.agent, RoutingAgent::Claude);
+        assert_eq!(routing.roles[&Role::Strong].model, "opus");
     }
 
     #[test]

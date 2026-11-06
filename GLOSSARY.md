@@ -12,7 +12,7 @@
 
 **Model routing**: Choosing the model and effort a kind of task runs on, independently of the workflow mode. It is not the same as workflow selection, which `/factory` does. A run records its model-routing selection when it starts. Copilot CLI is not supported: every stage there keeps the session's model.
 
-**Model routing policy**: The user-owned file that describes model routing: the agent, the roles (`strong`, `coding`, `routine`) with a model and effort each, and which role handles build, check and finish. The factory reads it once, when a run starts.
+**Model routing policy**: The user-owned file that describes model routing: for each agent (Claude Code, Codex), the roles (`strong`, `coding`, `routine`) with a model and effort each, and which role handles build, check and finish. A run starts in one agent and records only that agent's part. The factory reads the file once, when a run starts.
 
 **Run context**: What a new agent session needs to continue a run: the repository, worktree, branch and base commit it started from, the workflow mode, a reference to the spec, the ordered tickets with their progress, the pull request, a short summary per Stage and the status reason. It holds references and summaries only, never transcripts or secrets, and is changed only through `factory run update`. Anything a run never recorded is shown as unknown, not guessed.
 

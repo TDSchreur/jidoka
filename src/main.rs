@@ -16,7 +16,7 @@ use run::UPDATE_HELP;
 use server::{serve, ADDRESS, DEFAULT_PORT};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title>\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -85,13 +85,16 @@ fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
                 parse_dashboard_options(options, env::var("FACTORY_USAGE").ok().as_deref())?;
             dashboard(port, usage)?;
         }
-        ["run", "start", title] => {
+        ["run", "start", title, options @ ..] => {
+            let host = routing::parse_start_options(options)
+                .map_err(|error| format!("{error}\n{HELP}"))?;
             let dir = env::current_dir()?;
             let repository = repository::canonical_repository(&dir);
-            // Read once, before the run exists: a mistake in the policy stops the start.
+            // Read once, before the run exists: a mistake in the policy, or a policy for several agents
+            // without `--agent`, stops the start.
             let resolution = routing::policy_path_in(|name| env::var_os(name)).map_or_else(
                 || Ok(routing::Resolution::default()),
-                |path| routing::load(&path),
+                |path| routing::load(&path, host).map_err(|error| inspect::shown(&error)),
             )?;
             if let Some(notice) = &resolution.notice {
                 eprintln!("{notice}");
