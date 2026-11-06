@@ -192,34 +192,16 @@ fn create_run(
     if !request.post_allowed {
         return Err(HttpStatus::Forbidden);
     }
-    if new.title.trim().is_empty()
-        || new.project.trim().is_empty()
-        || new.title.len() > 500
-        || new.project.len() > 4096
-        || new
-            .session
-            .as_deref()
-            .is_some_and(|id| crate::run::check_session_id(id).is_err())
-        || new.title.chars().any(char::is_control)
-        || new.project.chars().any(char::is_control)
-        || new
-            .model_routing
-            .as_ref()
-            .is_some_and(|routing| routing.validate().is_err())
-        || new.repository.as_deref().is_some_and(|repository| {
-            repository.len() > 4096
-                || repository.chars().any(char::is_control)
-                || !crate::run::is_absolute_path(repository)
-        })
-    {
-        return Err(HttpStatus::BadRequest);
-    }
     store
         .create(new.into_inner())
         .map(|run| (HttpStatus::Created, Json(run)))
         .map_err(|error| {
-            eprintln!("Run storage error: {error}");
-            HttpStatus::InternalServerError
+            if error.kind() == io::ErrorKind::InvalidInput {
+                HttpStatus::BadRequest
+            } else {
+                eprintln!("Run storage error: {error}");
+                HttpStatus::InternalServerError
+            }
         })
 }
 
@@ -237,9 +219,6 @@ fn update_run(
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err((HttpStatus::BadRequest, "Invalid run id".into()));
     }
-    update
-        .validate()
-        .map_err(|message| (HttpStatus::BadRequest, message))?;
     let before = store.get(id).ok().flatten();
     let updated = store
         .update(id, update.into_inner())
