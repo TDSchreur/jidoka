@@ -616,6 +616,24 @@ pub(crate) fn open(
             ))
         }
     };
+    if let Some(selected) = &azure {
+        let push_urls = gh
+            .git(dir, &["remote", "get-url", "--push", "--all", "origin"])
+            .map_err(|_| ToolProblem("Cannot read the push destination of origin.".into()))?;
+        if push_urls.is_empty()
+            || push_urls
+                .lines()
+                .any(|url| match AzureRepo::from_remote(url) {
+                    Ok(Some(repo)) => &repo != selected,
+                    Ok(None) => url != remote,
+                    Err(_) => true,
+                })
+        {
+            return Err(ToolProblem(
+                "The push destination of origin does not match the Azure repository.".into(),
+            ));
+        }
+    }
     if azure.is_none() {
         let known = is_github_remote(&remote);
         if !known && provider.as_deref() != Some("github") {

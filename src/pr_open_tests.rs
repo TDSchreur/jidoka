@@ -120,6 +120,7 @@ struct FakeGh {
     create: RefCell<VecDeque<Result<GhOutput, GhError>>>,
     calls: RefCell<Vec<(PathBuf, String)>>,
     remote_url: RefCell<Option<String>>,
+    push_url: RefCell<Option<String>>,
     az_missing: std::cell::Cell<bool>,
 }
 
@@ -162,6 +163,14 @@ impl Gh for FakeGh {
     }
     /// The code under test runs git; the user's own git settings must not reach it.
     fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
+        if args == ["remote", "get-url", "--push", "--all", "origin"] {
+            return Ok(self
+                .push_url
+                .borrow()
+                .clone()
+                .or_else(|| self.remote_url.borrow().clone())
+                .unwrap_or_else(|| "https://github.com/o/r.git".into()));
+        }
         if args == ["remote", "get-url", "origin"] {
             return Ok(self
                 .remote_url
@@ -1028,4 +1037,22 @@ fn azure_explicit_override_uses_confirmed_custom_origin() {
         opened.pull_request,
         "https://dev.azure.com/dutchworkz/Projects/_git/Kahoot/pullrequest/7"
     );
+}
+
+#[test]
+fn azure_rejects_a_push_destination_in_a_different_repository() {
+    let project = Project::new();
+    let gh = FakeGh::default();
+    *gh.remote_url.borrow_mut() =
+        Some("https://dev.azure.com/dutchworkz/Projects/_git/Kahoot".into());
+    *gh.push_url.borrow_mut() = Some("https://dev.azure.com/other/Projects/_git/Kahoot".into());
+    let error = open(
+        &run_of(&project),
+        &options(&project),
+        &gh,
+        &FakeApi::default(),
+    )
+    .unwrap_err();
+    assert!(error.0.contains("push"), "{}", error.0);
+    assert_eq!(project.remote_branch("feature"), None);
 }
