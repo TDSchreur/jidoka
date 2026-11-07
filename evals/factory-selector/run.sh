@@ -22,6 +22,20 @@ die() {
   exit 1
 }
 
+# The throwaway directory; global so the EXIT trap can remove it.
+work=''
+cleanup() {
+  [ -z "$work" ] || rm -rf -- "$work"
+}
+
+# Prints the mode named on the last `MODE:` line of an answer, or nothing.
+# Accepts Markdown around it, such as **MODE:** full or `MODE: full`.
+mode_of() {
+  # shellcheck disable=SC2016 # the backtick is a literal Markdown character.
+  grep -Eio 'MODE[*`]*:[*`[:space:]]*(full|balanced|fast|none)' |
+    tail -n 1 | tr '[:upper:]' '[:lower:]' | grep -Eo '(full|balanced|fast|none)$' || true
+}
+
 # Prints the IDs of every recorded factory run, one per line, sorted.
 run_ids() {
   factory run stats --all | awk '$1 ~ /^[0-9]+$/ { print $1 }' | sort -u
@@ -44,14 +58,14 @@ main() {
       --skills-dir) [ "$#" -ge 2 ] || die '--skills-dir needs a directory'; skills_dir=$2; shift 2 ;;
       --case) [ "$#" -ge 2 ] || die '--case needs an id'; cases+=("$2"); shift 2 ;;
       -h | --help) usage; exit 0 ;;
-      *) usage >&2; exit 1 ;;
+      *) printf 'run.sh: unknown argument: %s\n' "$1" >&2; usage >&2; exit 1 ;;
     esac
   done
   case "$runs" in
     '' | *[!0-9]* | 0) die "--runs must be a positive number, not '$runs'" ;;
   esac
 
-  for tool in claude jq factory git; do
+  for tool in claude jq factory git timeout awk comm; do
     command -v "$tool" >/dev/null 2>&1 || die "$tool is required but not on PATH"
   done
   [ -f "$skills_dir/factory/SKILL.md" ] ||
@@ -70,10 +84,8 @@ main() {
   fi
 
   # Every claude call runs in a throwaway copy of the fixture repository.
-  local work
   work=$(mktemp -d)
-  # shellcheck disable=SC2064 # expand $work now: it is local to main.
-  trap "rm -rf -- '$work'" EXIT
+  trap cleanup EXIT
   trap 'exit 1' HUP INT TERM
   local repo="$work/repo"
   cp -R -- "$here/fixture" "$repo"
@@ -84,8 +96,18 @@ main() {
   local runs_before
   runs_before=$(run_ids) || die 'factory run stats --all failed'
 
-  local model_args=()
-  [ -n "$model" ] && model_args=(--model "$model")
+  # Only reading tools exist in the session, `dontAsk` refuses anything not allowed below,
+  # and the deny list wins over any broader allow rule in the user's own settings, so the
+  # selector cannot start a run, create a worktree or change a file.
+  local claude_args=(
+    --output-format json
+    --add-dir "$skills_dir"
+    --permission-mode dontAsk
+    --tools Read Grep Glob Bash
+    --allowedTools 'Read' 'Grep' 'Glob' 'Bash(factory run inspect:*)' 'Bash(git status:*)' 'Bash(git log:*)'
+    --disallowedTools 'Write' 'Edit' 'Bash(factory run begin:*)' 'Bash(factory run start:*)' 'Bash(factory run update:*)' 'Bash(factory pr:*)' 'Bash(git worktree:*)' 'Bash(git commit:*)' 'Bash(git push:*)'
+  )
+  [ -z "$model" ] || claude_args+=(--model "$model")
 
   local total=0 passed=0 failed_cases=0 cost=0
   printf '%-26s %-7s %s\n' case passed 'modes seen'
@@ -95,17 +117,16 @@ main() {
     accepted=$(jq -r --arg id "$id" '.[] | select(.id == $id) | .accepted | join(" ")' "$case_file")
     local ok=0 seen=() i
     for ((i = 1; i <= runs; i++)); do
-      local out mode result
-      # Only reading tools are allowed, and `factory run inspect`, so the selector cannot start a run.
-      out=$(cd -- "$repo" && timeout 600 claude -p "$(prompt_for "$request")" \
-        --output-format json \
-        --add-dir "$skills_dir" \
-        --allowedTools 'Read' 'Grep' 'Glob' 'Skill' 'Bash(factory run inspect:*)' 'Bash(git status:*)' 'Bash(git log:*)' \
-        "${model_args[@]}" </dev/null) || out='{}'
+      local out mode result err="$work/claude.err"
+      out=$(cd -- "$repo" && timeout 600 claude -p "$(prompt_for "$request")" "${claude_args[@]}" </dev/null 2>"$err") || out='{}'
       result=$(printf '%s' "$out" | jq -r '.result // ""' 2>/dev/null || true)
       cost=$(printf '%s' "$out" | jq -r --argjson sum "$cost" '$sum + (.total_cost_usd // 0)' 2>/dev/null || printf '%s' "$cost")
-      mode=$(printf '%s\n' "$result" | grep -Eio 'MODE:[[:space:]]*\**[a-z]+' | tail -n 1 | tr '[:upper:]' '[:lower:]' | sed -E 's/^mode:[[:space:]]*\**//' || true)
-      [ -n "$mode" ] || mode='?'
+      mode=$(printf '%s\n' "$result" | mode_of)
+      if [ -z "$mode" ]; then
+        mode='?'
+        printf 'run.sh: %s run %d gave no MODE line; claude said:\n' "$id" "$i" >&2
+        { tail -n 5 -- "$err"; printf '%s\n' "$result" | tail -n 3; } | sed 's/^/  /' >&2
+      fi
       seen+=("$mode")
       total=$((total + 1))
       case " $accepted " in
