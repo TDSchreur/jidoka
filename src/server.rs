@@ -1552,10 +1552,8 @@ mod tests {
                 .to_string()
         };
         // Badges read in sentence case.
-        for selector in [".badge"] {
-            let badge = rule(selector);
-            assert!(!badge.contains("text-transform") && !badge.contains("letter-spacing"));
-        }
+        let badge = rule(".badge");
+        assert!(!badge.contains("text-transform") && !badge.contains("letter-spacing"));
         assert!(script.contains("running: 'Running', blocked: 'Blocked', done: 'Shipped'"));
         // Delete on cards and rows is a text button; only the confirm dialog's Delete is red.
         assert_eq!(script.matches("class=\"toggle danger\"").count(), 1);
