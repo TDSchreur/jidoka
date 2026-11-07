@@ -368,6 +368,63 @@ mod tests {
         }
     }
 
+    /// Whether a bundled skill's frontmatter keeps it from being invoked by the model.
+    fn is_user_only(skill: &str) -> bool {
+        let text = bundled_text(&format!("{skill}/SKILL.md")).replace("\r\n", "\n");
+        let frontmatter = text
+            .strip_prefix("---\n")
+            .and_then(|rest| rest.split_once("\n---\n"))
+            .map(|(frontmatter, _)| frontmatter)
+            .unwrap_or_else(|| panic!("{skill} has no frontmatter"));
+        frontmatter
+            .lines()
+            .any(|line| line.trim() == "disable-model-invocation: true")
+    }
+
+    #[test]
+    fn shared_procedures_are_not_invoked_on_their_own() {
+        assert!(is_user_only("factory-procedures"));
+        let codex = bundled_text("factory-procedures/agents/openai.yaml");
+        assert!(
+            codex.contains("allow_implicit_invocation: false"),
+            "{codex}"
+        );
+    }
+
+    #[test]
+    fn workflows_read_the_user_only_skills_they_use() {
+        let user_only: Vec<&str> = bundled_skill_names()
+            .into_iter()
+            .filter(|skill| is_user_only(skill))
+            .collect();
+        for skill in WORKFLOW_SKILLS {
+            let text = bundled_text(&format!("{skill}/SKILL.md")).replace("\r\n", "\n");
+            let (preamble, body) = text
+                .split_once("\n## ")
+                .unwrap_or_else(|| panic!("{skill} has no sections"));
+            let used: Vec<&str> = user_only
+                .iter()
+                .copied()
+                .filter(|name| body.contains(&format!("`{name}`")))
+                .collect();
+            assert!(!used.is_empty(), "{skill} uses no user-only skill");
+            let named: Vec<&str> = user_only
+                .iter()
+                .copied()
+                .filter(|name| preamble.contains(&format!("`{name}`")))
+                .collect();
+            assert_eq!(
+                named, used,
+                "{skill} must name exactly the user-only skills it uses"
+            );
+            assert!(
+                preamble
+                    .contains("read their `SKILL.md` from that location instead of invoking them"),
+                "{skill} does not say how to load its user-only skills"
+            );
+        }
+    }
+
     #[test]
     fn writing_is_routed_through_the_bundled_humanizer() {
         // The writing procedure and `pr` name the skill; it ships in the bundle they are read from.
