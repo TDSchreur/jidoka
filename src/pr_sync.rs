@@ -154,14 +154,14 @@ pub(crate) fn sync(
     }
     if !valid_branch_name(&branch) {
         return Err(problem(format!(
-            "The branch name {} is one this command will not push: it could be read as a git option or a forced refspec. Rename the branch and try again.",
+            "The branch name {} is one this command will not push: it could be read as a git option or a forced refspec. Rename the branch (`git branch -m`) and try again.",
             shown(&branch)
         )));
     }
     if let Some(recorded) = &run.branch {
         if *recorded != branch {
             return Err(problem(format!(
-                "The worktree is on {} but the run records {}.",
+                "The worktree is on {} but the run records {}. Switch it back, or record the right branch with `factory run update`.",
                 shown(&branch),
                 shown(recorded)
             )));
@@ -208,38 +208,85 @@ pub(crate) fn sync(
     }
 
     let base_ref = format!("refs/remotes/origin/{base}");
-    let refspec = format!("+refs/heads/{base}:{base_ref}");
-    git.git(dir, &["fetch", "origin", &refspec])
-        .map_err(|error| {
-            problem(format!(
-                "Fetching {} from origin failed: {}",
-                shown(&base),
-                shown(first_line(&error))
-            ))
-        })?;
-    // What the remote branch is now, without touching any local ref.
-    let pushed = read(
+    git.git(
+        dir,
+        &["fetch", "origin", &format!("+refs/heads/{base}:{base_ref}")],
+    )
+    .map_err(|error| {
+        problem(format!(
+            "Fetching {} from origin failed: {}",
+            shown(&base),
+            shown(first_line(&error))
+        ))
+    })?;
+    // What the remote branch is now. It is fetched too, so that its commits are known here.
+    let remote = read(
         &["ls-remote", "origin", &format!("refs/heads/{branch}")],
         "Asking origin for the branch",
     )?
     .split_whitespace()
     .next()
     .map(str::to_string);
+    if remote.is_some() {
+        let refspec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
+        git.git(dir, &["fetch", "origin", &refspec])
+            .map_err(|error| {
+                problem(format!(
+                    "Fetching {} from origin failed: {}",
+                    shown(&branch),
+                    shown(first_line(&error))
+                ))
+            })?;
+    }
+    if let Some(sha) = &remote {
+        if git
+            .status(dir, &["merge-base", "--is-ancestor", sha, "HEAD"])
+            .map_err(problem)?
+            != 0
+        {
+            return Err(problem(format!(
+                "origin's {} has commits you do not have (someone pushed to it). Merge origin/{} into the branch, rerun the verification, then try again.",
+                shown(&branch),
+                shown(&branch)
+            )));
+        }
+    }
+    // Commits of the branch that neither the remote branch nor the base has: work that is not pushed.
+    let count_unpushed = || -> Result<u64, ToolProblem> {
+        let mut args = vec!["rev-list", "--count", "HEAD", "--not", base_ref.as_str()];
+        if let Some(sha) = &remote {
+            args.push(sha.as_str());
+        }
+        let text = read(&args, "Counting unpushed commits")?;
+        text.parse().map_err(|_| {
+            problem(format!(
+                "`git rev-list --count` gave {}, not a number.",
+                shown(&text)
+            ))
+        })
+    };
+    let files_between = |from: &str, to: &str, what: &str| -> Result<Vec<String>, ToolProblem> {
+        // Without rename detection a renamed file shows under both names, so a rename still overlaps.
+        Ok(lines(&read(
+            &["diff", "--no-renames", "--name-only", from, to],
+            what,
+        )?))
+    };
     let push_refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
     let push = || {
         git.git(dir, &["push", "-u", "origin", &push_refspec])
             .map(|_| ())
-            .map_err(|error| shown(last_line(&error)))
-    };
-    // Commits of the branch that neither the remote branch nor the base has: the agent's own unpushed work.
-    let unpushed_after = |remote: &Option<String>| -> Result<u64, ToolProblem> {
-        let mut args = vec!["rev-list", "--count", "HEAD", "--not", base_ref.as_str()];
-        if let Some(sha) = remote {
-            args.push(sha.as_str());
-        }
-        Ok(read(&args, "Counting unpushed commits")?
-            .parse()
-            .unwrap_or(0))
+            .map_err(|error| {
+                let lower = error.to_lowercase();
+                if lower.contains("rejected") || lower.contains("non-fast-forward") || lower.contains("fetch first") {
+                    format!(
+                        "origin rejected it: the remote branch moved on. Run the command again; it says what the remote has. ({})",
+                        shown(last_line(&error))
+                    )
+                } else {
+                    format!("{}. Run the command again to push it.", shown(last_line(&error)))
+                }
+            })
     };
     let synced = |outcome: Outcome,
                   files: Vec<String>,
@@ -259,48 +306,57 @@ pub(crate) fn sync(
         .map_err(problem)?
     {
         0 => {
-            // Current. A merge of the base that an earlier run could not push is pushed now, but only when
-            // HEAD is that merge: its first parent is what the remote has and its second is in the base, so
-            // nothing else of the agent's goes with it.
-            if let Some(remote) = &pushed {
+            // Current. A merge of the base whose push failed earlier is pushed now, but only when HEAD is
+            // that merge exactly as git makes it without help (no conflict was resolved by hand), on top of
+            // what the remote has, and the base touched none of the change's files: the cases that never
+            // needed verification.
+            if let Some(sha) = &remote {
                 let parents = read(&["rev-list", "--parents", "-n", "1", "HEAD"], "Reading HEAD")?;
                 let parents: Vec<&str> = parents.split_whitespace().collect();
-                let merges_base = parents.len() == 3
-                    && parents[1] == remote
+                if parents.len() == 3
+                    && parents[1] == sha
                     && git
                         .status(dir, &["merge-base", "--is-ancestor", parents[2], &base_ref])
                         .map_err(problem)?
-                        == 0;
-                if merges_base {
-                    push().map_err(|detail| {
-                        problem(format!(
-                            "Pushing the merge of {} failed: {detail}. Run the command again to push it.",
-                            shown(&base)
-                        ))
-                    })?;
-                    record(run, api, &format!("Merged {base} into the branch"));
-                    return Ok(synced(Outcome::Pushed, Vec::new(), Some(parents[0].to_string()), 0));
+                        == 0
+                {
+                    let (ours, theirs) = (parents[1], parents[2]);
+                    let start = read(&["merge-base", ours, theirs], "Finding the merge base")?;
+                    let own = files_between(&start, ours, "Listing the change's files")?;
+                    let base_files = files_between(&start, theirs, "Listing the base's files")?;
+                    let untouched = own.iter().all(|file| !base_files.contains(file));
+                    let automatic = match (
+                        git.git(dir, &["merge-tree", "--write-tree", ours, theirs]),
+                        git.git(dir, &["rev-parse", "HEAD^{tree}"]),
+                    ) {
+                        (Ok(tree), Ok(head_tree)) => first_line(&tree) == head_tree,
+                        _ => false,
+                    };
+                    if untouched && automatic {
+                        push().map_err(|detail| {
+                            problem(format!("Pushing the merge of {} failed: {detail}", shown(&base)))
+                        })?;
+                        record(run, api, &format!("Merged {base} into the branch"));
+                        return Ok(synced(Outcome::Pushed, Vec::new(), Some(parents[0].to_string()), 0));
+                    }
                 }
             }
-            let unpushed = unpushed_after(&pushed)?;
-            Ok(synced(Outcome::Current, Vec::new(), None, unpushed))
+            Ok(synced(Outcome::Current, Vec::new(), None, count_unpushed()?))
         }
         1 => {
+            let unpushed = count_unpushed()?;
             let merge_base = read(&["merge-base", "HEAD", &base_ref], "Finding the merge base")?;
-            let own = lines(&read(
-                &["diff", "--name-only", &merge_base, "HEAD"],
-                "Listing the change's files",
-            )?);
-            let theirs = lines(&read(
-                &["diff", "--name-only", &merge_base, &base_ref],
-                "Listing the base's files",
-            )?);
+            let own = files_between(&merge_base, "HEAD", "Listing the change's files")?;
+            let theirs = files_between(&merge_base, &base_ref, "Listing the base's files")?;
             let message = format!("Merge origin/{base} into {branch}");
             if let Err(error) = git.git(
                 dir,
                 &["merge", "--no-ff", "--no-edit", "-m", &message, &base_ref],
             ) {
-                let conflicts = lines(&git.git(dir, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default());
+                let conflicts = lines(
+                    &git.git(dir, &["diff", "--name-only", "--diff-filter=U"])
+                        .unwrap_or_default(),
+                );
                 if conflicts.is_empty() {
                     return Err(problem(format!(
                         "Merging {} failed: {}",
@@ -309,17 +365,19 @@ pub(crate) fn sync(
                     )));
                 }
                 record(run, api, &format!("Merging {base}: conflicts to resolve"));
-                return Ok(synced(Outcome::Conflict, conflicts, None, 0));
+                return Ok(synced(Outcome::Conflict, conflicts, None, unpushed));
             }
             let merge_commit = read(&["rev-parse", "HEAD"], "Reading the merge commit")?;
             let overlap: Vec<String> = own.into_iter().filter(|file| theirs.contains(file)).collect();
-            if !overlap.is_empty() {
+            // Only a merge on top of exactly what the remote has, touching nothing of the change, is pushed:
+            // commits that are not pushed yet may not be verified.
+            if !overlap.is_empty() || unpushed > 0 || remote.is_none() {
                 record(run, api, &format!("Merged {base}: verification needed"));
-                return Ok(synced(Outcome::NeedsVerification, overlap, Some(merge_commit), 0));
+                return Ok(synced(Outcome::NeedsVerification, overlap, Some(merge_commit), unpushed));
             }
             push().map_err(|detail| {
                 problem(format!(
-                    "{} was merged into the branch as {}, but pushing it failed: {detail}. Run the command again to push it.",
+                    "{} was merged into the branch as {}, but pushing it failed: {detail}",
                     shown(&base),
                     shown(&merge_commit.chars().take(7).collect::<String>())
                 ))
@@ -355,9 +413,14 @@ pub(crate) fn render(synced: &Synced) -> String {
             shown(&synced.branch)
         ),
         Outcome::NeedsVerification => format!(
-            "Needs verification: origin/{} was merged into {}, but it touches files of the change. Rerun the project's verification on the merged code, then push.\n",
+            "Needs verification: origin/{} was merged into {} but not pushed. Rerun the project's verification on the merged code, then push.\n{}",
             shown(&synced.base),
-            shown(&synced.branch)
+            shown(&synced.branch),
+            if synced.files.is_empty() {
+                ""
+            } else {
+                "  The base touched these files of the change:\n"
+            }
         ),
         Outcome::Conflict => format!(
             "Conflict: merging origin/{} into {} conflicts. The merge is left in progress; resolve it, rerun the verification, commit and push.\n",

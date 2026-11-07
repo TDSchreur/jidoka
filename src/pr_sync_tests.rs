@@ -72,7 +72,11 @@ impl Git for TestGit {
     }
 
     fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
-        if self.fail_merge_base && args.first() == Some(&"merge-base") {
+        // Only the behind test: is the base in HEAD?
+        if self.fail_merge_base
+            && args.first() == Some(&"merge-base")
+            && args.get(2) == Some(&"refs/remotes/origin/develop")
+        {
             return Ok(128);
         }
         let mut command = Command::new("git");
@@ -467,4 +471,140 @@ fn nothing_in_the_command_rewrites_history_or_throws_work_away() {
         assert!(!source.contains(forbidden), "{forbidden}");
     }
     assert!(source.contains("\"--no-ff\""));
+}
+
+// --- rework 1 ---------------------------------------------------------------------------------------
+
+#[test]
+fn a_clean_merge_does_not_push_commits_of_the_agent_that_were_not_pushed() {
+    let project = Project::new();
+    fs::write(project.wt.join("c.txt"), "unverified\n").unwrap();
+    run_git(&project.wt, &["add", "c.txt"]);
+    run_git(&project.wt, &["commit", "-q", "-m", "not verified yet"]);
+    project.base_moves("b.txt", "b changed\n");
+    let before = project.remote_branch("feature");
+    let synced = sync_now(&project, &FakeApi::default()).unwrap();
+    assert_eq!(synced.outcome, Outcome::NeedsVerification);
+    assert_eq!(synced.unpushed, 1);
+    assert!(synced.merge_commit.is_some());
+    assert_eq!(
+        project.remote_branch("feature"),
+        before,
+        "nothing was pushed"
+    );
+    assert!(
+        render(&synced).contains("not pushed"),
+        "{}",
+        render(&synced)
+    );
+}
+
+#[test]
+fn a_branch_that_was_never_pushed_is_merged_but_not_pushed() {
+    let project = Project::new();
+    run_git(&project.wt, &["checkout", "-q", "-b", "fresh"]);
+    fs::write(project.wt.join("c.txt"), "new\n").unwrap();
+    run_git(&project.wt, &["add", "c.txt"]);
+    run_git(&project.wt, &["commit", "-q", "-m", "fresh work"]);
+    project.base_moves("b.txt", "b changed\n");
+    let mut run = run_of(&project);
+    run.branch = Some("fresh".into());
+    let synced = sync(&run, &options(), &TestGit::default(), &FakeApi::default()).unwrap();
+    assert_eq!(synced.outcome, Outcome::NeedsVerification);
+    assert!(synced.unpushed >= 1);
+    assert!(
+        run_git(&project.remote, &["branch", "--list", "fresh"]).is_empty(),
+        "not pushed"
+    );
+}
+
+#[test]
+fn running_again_never_pushes_a_merge_that_still_needs_verification() {
+    let project = Project::new();
+    project.base_moves("a.txt", &TEN_LINES.replace("10\n", "ten\n"));
+    let before = project.remote_branch("feature");
+    assert_eq!(
+        sync_now(&project, &FakeApi::default()).unwrap().outcome,
+        Outcome::NeedsVerification
+    );
+    let again = sync_now(&project, &FakeApi::default()).unwrap();
+    assert_eq!(again.outcome, Outcome::Current);
+    assert_eq!(again.unpushed, 1, "the merge is reported, not pushed");
+    assert_eq!(project.remote_branch("feature"), before);
+}
+
+#[test]
+fn running_again_never_pushes_a_conflict_that_was_resolved_by_hand() {
+    let project = Project::new();
+    project.base_moves("a.txt", &TEN_LINES.replacen("1\n", "uno\n", 1));
+    let before = project.remote_branch("feature");
+    assert_eq!(
+        sync_now(&project, &FakeApi::default()).unwrap().outcome,
+        Outcome::Conflict
+    );
+    fs::write(
+        project.wt.join("a.txt"),
+        TEN_LINES.replacen("1\n", "both\n", 1),
+    )
+    .unwrap();
+    run_git(&project.wt, &["commit", "-q", "-am", "resolved"]);
+    let again = sync_now(&project, &FakeApi::default()).unwrap();
+    assert_eq!(again.outcome, Outcome::Current);
+    assert_eq!(
+        project.remote_branch("feature"),
+        before,
+        "the resolution needs verification first"
+    );
+}
+
+#[test]
+fn a_renamed_file_still_counts_as_the_change_touching_it() {
+    let project = Project::new();
+    run_git(&project.wt, &["mv", "a.txt", "moved.txt"]);
+    run_git(&project.wt, &["commit", "-q", "-m", "move a"]);
+    run_git(&project.wt, &["push", "-q", "origin", "feature"]);
+    project.base_moves("a.txt", &TEN_LINES.replace("10\n", "ten\n"));
+    let before = project.remote_branch("feature");
+    let synced = sync_now(&project, &FakeApi::default()).unwrap();
+    assert_eq!(
+        synced.outcome,
+        Outcome::NeedsVerification,
+        "{:?}",
+        synced.files
+    );
+    assert!(
+        synced.files.contains(&"a.txt".to_string()),
+        "{:?}",
+        synced.files
+    );
+    assert_eq!(project.remote_branch("feature"), before);
+}
+
+#[test]
+fn a_remote_branch_that_moved_on_is_reported_before_anything_is_merged() {
+    for base_moved in [false, true] {
+        let project = Project::new();
+        run_git(&project.other, &["fetch", "-q", "origin", "feature"]);
+        run_git(
+            &project.other,
+            &["checkout", "-q", "-b", "feature", "FETCH_HEAD"],
+        );
+        run_git(
+            &project.other,
+            &["commit", "-q", "--allow-empty", "-m", "someone else"],
+        );
+        run_git(&project.other, &["push", "-q", "origin", "feature"]);
+        run_git(&project.other, &["checkout", "-q", "develop"]);
+        if base_moved {
+            project.base_moves("b.txt", "b changed\n");
+        }
+        let head = project.head();
+        let problem = sync_now(&project, &FakeApi::default()).unwrap_err();
+        assert!(
+            problem.0.contains("commits you do not have"),
+            "{}",
+            problem.0
+        );
+        assert_eq!(project.head(), head, "nothing was merged");
+    }
 }
