@@ -41,3 +41,5 @@
 **CI outcome**: The single result of watching a pull request's checks for its current head commit: `passed`, `failed`, `cancelled`, `timeout`, `head-changed`, `no-ci` or `not-open`. Whether the branch is behind its base is reported next to the outcome and is not part of it.
 
 **Workspace**: A run's own git worktree and feature branch, created from the pull request base branch, which the run records as its worktree, branch and base commit. `factory run begin` creates it.
+
+**Ticket report**: A short, agent-reported skill or activity associated with a ticket in a run. Reports may be incomplete and are not independent proof of the work.

@@ -408,6 +408,14 @@ mod tests {
     }
 
     #[test]
+    fn bundled_procedures_explain_ticket_reports() {
+        let procedures = bundled_text("factory-procedures/SKILL.md");
+        assert!(procedures.contains("--ticket-report \"<reference>\" skill"));
+        assert!(procedures.contains("--ticket-report \"<reference>\" activity"));
+        assert!(procedures.contains("may be incomplete"));
+    }
+
+    #[test]
     fn workflows_read_the_user_only_skills_they_use() {
         let user_only: Vec<&str> = bundled_skill_names()
             .into_iter()

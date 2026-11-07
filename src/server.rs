@@ -1565,6 +1565,23 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn ticket_reports_are_recorded_and_rejected_atomically_via_api() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
+        let body = r#"{"stage":"build","status":"running","tickets":[{"reference":"local=42","title":"One"}],"ticket_reports":[{"ticket":"local=42","kind":"skill","text":"tdd"}]}"#;
+        assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
+        let bad = r#"{"stage":"build","status":"running","ticket_reports":[{"ticket":"missing","kind":"activity","text":"oops"}]}"#;
+        assert_eq!(
+            report(&api, &run.id, bad).await.status(),
+            HttpStatus::BadRequest
+        );
+        let saved = fetch(&api, &run.id).await.1.unwrap();
+        assert_eq!(saved.ticket_reports.len(), 1);
+        assert_eq!(saved.ticket_reports[0].text, "tdd");
+    }
+
+    #[rocket::async_test]
     async fn the_header_has_no_dashboard_title_and_a_connection_indicator_follows_the_poll() {
         let dir = TestDir::new();
         let page = client(&dir)
