@@ -202,6 +202,7 @@ fn each_command_lands_in_the_category_the_rules_give_it() {
         ),
         ("FOO=1 cargo test", Category::Verification),
         ("factory run inspect 123", Category::ContinuationCheck),
+        ("factory run check 123 --json", Category::ContinuationCheck),
         ("git worktree list --porcelain", Category::ContinuationCheck),
         (
             "factory run update 1 build running --activity x",

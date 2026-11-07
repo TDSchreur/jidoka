@@ -899,7 +899,7 @@ fn hit(segment: &str) -> Hit {
         ("gh", "api", _) if has("actions/runs") || has("check-runs") => Category::CiWatch,
         ("factory", "run", "start") => Category::Workspace,
         ("factory", "run", "update") => return Hit::Reporting,
-        ("factory", "run", "inspect") => Category::ContinuationCheck,
+        ("factory", "run", "inspect" | "check") => Category::ContinuationCheck,
         ("cargo", "test" | "fmt" | "clippy" | "build" | "check" | "nextest", _) => {
             Category::Verification
         }
