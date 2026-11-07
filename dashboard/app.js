@@ -333,10 +333,12 @@ function LineRow({ run, now, onOpen }) {
 }
 
 /** One labelled value of the Run detail; an empty value reads "Not set". */
-function Field({ label, children, missing = 'Not set' }) {
+/** `wide` puts the label above the value and gives the value the whole width, for the token table. */
+function Field({ label, children, missing = 'Not set', wide = false }) {
   const empty = children === null || children === undefined || children === '';
-  return html`<dt>${label}</dt>
-    <dd class=${empty ? 'not-set' : null}>${empty ? missing : children}</dd>`;
+  const classes = [wide ? 'wide' : null, empty ? 'not-set' : null].filter(Boolean).join(' ') || null;
+  return html`<dt class=${wide ? 'wide' : null}>${label}</dt>
+    <dd class=${classes}>${empty ? missing : children}</dd>`;
 }
 
 /** Every field of a Run in a native modal dialog on the right. The browser handles focus containment and Escape. */
@@ -424,7 +426,7 @@ function Detail({ run, now, onClose, onDelete }) {
               </ol>`
             : null}
         <//>
-        <${Field} label="Token usage" missing="Not tracked">
+        <${Field} label="Token usage" missing="Not tracked" wide>
           ${run.usage ? html`<${UsageDetail} usage=${run.usage} />` : null}
         <//>
         <${Field} label="Stage summaries" missing="None recorded">

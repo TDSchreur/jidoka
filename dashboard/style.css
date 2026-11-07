@@ -228,11 +228,13 @@ body:has(.confirm[open]) { overflow: hidden; }
 .fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-4) var(--space-7); margin: 0; }
 .fields dt { color: var(--color-muted); }
 .fields dd { margin: 0; overflow-wrap: anywhere; }
+.fields .wide { grid-column: 1 / -1; }
+.fields dd.wide { margin-top: calc(-1 * var(--space-2)); }
 .links { margin: var(--space-2) 0 0; font-size: var(--text-xs); line-height: var(--leading-xs); }
 .table-scroll { overflow-x: auto; max-width: 100%; }
 .table-scroll:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline-offset: var(--stroke-thick); }
-.usage-table { border-collapse: collapse; font-size: var(--text-xs); line-height: var(--leading-xs); }
-.usage-table th, .usage-table td { padding: var(--space-2) var(--space-4); border-bottom: var(--stroke-thin) solid var(--color-rule); text-align: right; white-space: nowrap; }
+.usage-table { width: 100%; border-collapse: collapse; font-size: var(--text-xs); line-height: var(--leading-xs); font-variant-numeric: tabular-nums; }
+.usage-table th, .usage-table td { padding: var(--space-2) var(--space-3); border-bottom: var(--stroke-thin) solid var(--color-rule); text-align: right; white-space: nowrap; }
 .usage-table th[scope="col"]:nth-child(-n+3), .usage-table td:nth-child(-n+3), .usage-table th[scope="row"] { text-align: left; }
 .usage-note { color: var(--color-muted); font-size: var(--text-xs); line-height: var(--leading-xs); }
 .ticket-list, .summaries { margin: 0; padding-left: var(--space-7); }

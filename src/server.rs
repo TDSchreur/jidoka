@@ -1456,7 +1456,7 @@ mod tests {
             script.contains("aria-label=\"Token usage by stage, model and ticket\" tabindex=\"0\"")
         );
         assert!(script.contains("n === undefined || n === null ? 'n/a'"));
-        assert!(script.contains("<${Field} label=\"Token usage\" missing=\"Not tracked\">"));
+        assert!(script.contains("<${Field} label=\"Token usage\" missing=\"Not tracked\" wide>"));
         assert!(script.contains(
             "Fresh tokens are input excluding cache reads, plus cache writes and output."
         ));
@@ -2130,6 +2130,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[rocket::async_test]
+    async fn the_token_table_gets_the_full_width_of_the_detail() {
+        // The breakdown has ten columns: beside the field labels it overflowed and scrolled, cutting off the first.
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("<${Field} label=\"Token usage\" missing=\"Not tracked\" wide>"));
+        assert!(script
+            .contains("function Field({ label, children, missing = 'Not set', wide = false }) {"));
+        let css = stylesheet().await;
+        assert!(css.contains(".fields .wide { grid-column: 1 / -1; }"));
+        // The table fills its row and its numbers line up.
+        let table = css
+            .lines()
+            .find(|line| line.starts_with(".usage-table {"))
+            .expect("a usage table rule");
+        assert!(table.contains("width: 100%"));
+        assert!(table.contains("font-variant-numeric: tabular-nums"));
     }
 
     #[rocket::async_test]
