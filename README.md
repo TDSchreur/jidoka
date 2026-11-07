@@ -78,23 +78,23 @@ Options left out keep their value, each has a `--clear-*` form (`--clear-tickets
 
 To continue a run in a new session, ask the agent to continue it by ID. The workflow skills then read the context and check the recorded repository, worktree, branch, base commit and Git state, report any difference, and never reset, clean or discard work to make them match.
 
-`factory run check <run-id>` compares what the run records with the repository, so a new session can see at once whether it is safe to continue. It only reads: it never fetches, resets, cleans, checks out, deletes or commits, and it runs `git status` without optional locks.
+`factory run check <run-id>` compares what the run records with the repository, so a new session can see at once whether it is safe to continue. It only reads: it never fetches, resets, cleans, checks out, deletes or commits. Git runs without optional locks and without lazy fetches in a partial clone, and with `core.fsmonitor` and `log.showSignature` turned off, so a repository's own configuration cannot make the check run a program.
 
 ```text
 factory run check <run-id> [--json]
 ```
 
-It runs five checks and reports each as `matches`, `differs` with what it found, or `unknown` when the run never recorded the field. A check that needs the worktree is `not checked` when the worktree is missing or differs.
+It runs five checks and reports each as `matches`, `differs` with what it found, or `unknown` when the run never recorded the field. A check that needs the worktree is `not-checked` when the worktree is missing or differs. A git command that fails during a check also counts as `differs`, with git's message.
 
 | Check | Matches when |
 | --- | --- |
 | `repository` | The recorded repository exists, and `git rev-parse --git-common-dir` gives the same directory there as in the worktree. |
 | `worktree` | The recorded worktree exists and `git worktree list --porcelain` of the recorded repository lists it. |
 | `branch` | `git branch --show-current` in the worktree is the recorded branch. A detached HEAD differs. |
-| `base-commit` | The recorded base commit is in the repository and `git merge-base --is-ancestor <base commit> HEAD` succeeds. |
+| `base-commit` | The recorded base commit is a commit id (4 to 64 hexadecimal digits), the repository has it, and `git merge-base --is-ancestor <base commit> HEAD` succeeds. |
 | `working-tree` | `git status --porcelain` is empty. Otherwise the changed paths are listed. |
 
-Commits of `HEAD` that no remote-tracking branch has (as of the last fetch) are listed as not pushed. That is information, not a difference. The exit status is 0 when nothing differs, also when some fields are unknown, 2 when a check differs, and 1 for a problem such as bad arguments or an unreachable dashboard. `--json` prints the same data (`run`, `consistent`, `exit_code`, `checks` with `check`, `state`, `recorded` and `found`, `changes` and `unpushed`).
+Commits of `HEAD` that no remote-tracking branch has (as of the last fetch) are listed as not pushed, which does not count as a difference. A repository without remote-tracking branches says the list is not known. The exit status is 0 when nothing differs, also when some fields are unknown, 2 when a check differs, and 1 for a problem such as bad arguments or an unreachable dashboard. `--json` prints the same data (`run`, `consistent`, `exit_code`, `checks` with `check`, `state`, `recorded` and `found`, `changes`, `unpushed` and, when the list is not known, `unpushed_unknown`).
 
 Run updates also accept optional reporting fields:
 

@@ -6,7 +6,7 @@ use tempfile::TempDir;
 
 /// The plain path form git prints; on Windows `canonicalize` gives a `\\?\` path that git reads as a URL.
 fn real_path(path: &Path) -> PathBuf {
-    real(path).unwrap()
+    canonical_dir(path).unwrap()
 }
 
 /// Git without the user's own settings, with a fixed author so that commits can be made.
@@ -246,11 +246,22 @@ fn a_base_commit_unknown_to_git_differs() {
     let report = check(&run, &TestGit::default());
     let base = state(&report, CheckName::BaseCommit);
     assert_eq!(base.state, State::Differs);
-    assert_eq!(base.found, "the commit is not in this repository");
-    // A value that looks like an option is never read as one.
-    run.base_commit = Some("--all".into());
+    assert_eq!(
+        base.found,
+        "not found in this repository, or the abbreviation is ambiguous"
+    );
+    // Anything but a commit id, such as an option, a branch or a search, is refused before git sees it.
+    for value in ["--all", "HEAD", "develop", ":/base", "abc"] {
+        run.base_commit = Some(value.into());
+        let report = check(&run, &TestGit::default());
+        let base = state(&report, CheckName::BaseCommit);
+        assert_eq!(base.state, State::Differs, "{value}");
+        assert!(base.found.starts_with("not a commit id"), "{value}");
+    }
+    // An abbreviated id is fine.
+    run.base_commit = Some(fx.base[..10].to_string());
     let report = check(&run, &TestGit::default());
-    assert_eq!(state(&report, CheckName::BaseCommit).state, State::Differs);
+    assert_eq!(state(&report, CheckName::BaseCommit).state, State::Matches);
 }
 
 #[test]
@@ -262,7 +273,7 @@ fn a_missing_worktree_differs_and_skips_the_checks_that_need_it() {
     assert_eq!(
         states(&report),
         vec![
-            State::Matches,
+            State::NotChecked,
             State::Differs,
             State::NotChecked,
             State::NotChecked,
@@ -384,7 +395,7 @@ fn fields_never_recorded_are_unknown_and_do_not_fail_the_check() {
             State::Unknown,
             State::Unknown,
             State::Unknown,
-            State::NotChecked
+            State::Unknown
         ]
     );
     assert_eq!(
@@ -407,8 +418,12 @@ fn the_check_only_runs_reading_git_commands() {
         "merge-base",
         "--no-optional-locks",
         "log",
+        "for-each-ref",
     ];
     for command in git.commands.borrow().iter() {
+        // Every command starts with the settings that keep repository configuration from running code.
+        assert_eq!(command[..4], SAFE_CONFIG, "{command:?}");
+        let command = &command[4..];
         assert!(allowed.contains(&command[0].as_str()), "{command:?}");
         if command[0] == "worktree" {
             assert_eq!(command[1], "list", "{command:?}");
@@ -485,4 +500,62 @@ fn options_are_checked() {
     assert_eq!(parse_options(&["--json"]), Ok(true));
     assert!(parse_options(&["--json", "--json"]).is_err());
     assert!(parse_options(&["--bogus"]).is_err());
+}
+
+#[test]
+fn another_valid_repository_recorded_differs() {
+    let fx = Fixture::new();
+    let other = fx.root.join("other");
+    fs::create_dir(&other).unwrap();
+    run_git(&other, &["init", "-q", "-b", "develop"]);
+    let mut run = fx.recorded();
+    run.repository = Some(other.display().to_string());
+    let report = check(&run, &TestGit::default());
+    assert_eq!(state(&report, CheckName::Repository).state, State::Differs);
+    // The other repository does not list the run's worktree.
+    let worktree = state(&report, CheckName::Worktree);
+    assert_eq!(worktree.state, State::Differs);
+    assert_eq!(
+        worktree.found,
+        "exists, but git worktree list does not list it"
+    );
+}
+
+#[test]
+fn without_remote_tracking_branches_unpushed_commits_are_not_known() {
+    let fx = Fixture::new();
+    run_git(&fx.repo, &["remote", "remove", "origin"]);
+    let report = check(&fx.recorded(), &TestGit::default());
+    assert!(report.consistent, "{report:#?}");
+    assert!(report.unpushed.is_empty());
+    assert_eq!(
+        report.unpushed_unknown.as_deref(),
+        Some("the repository has no remote-tracking branches")
+    );
+    assert!(render(&report).contains("Commits not pushed: not known"));
+}
+
+#[test]
+fn repository_configuration_cannot_run_a_program_during_the_check() {
+    let fx = Fixture::new();
+    let marker = fx.root.join("ran");
+    let script = fx.root.join("hook.sh");
+    fs::write(
+        &script,
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    run_git(
+        &fx.repo,
+        &["config", "core.fsmonitor", script.to_str().unwrap()],
+    );
+    fs::write(fx.wt.join("b.txt"), "changed\n").unwrap();
+    let report = check(&fx.recorded(), &TestGit::default());
+    assert_eq!(state(&report, CheckName::WorkingTree).state, State::Differs);
+    assert!(!marker.exists(), "the fsmonitor hook ran");
 }

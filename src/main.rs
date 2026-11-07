@@ -258,7 +258,7 @@ fn run_check_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::erro
         branch: run.branch.clone(),
         base_commit: run.base_commit.clone(),
     };
-    let report = run_check::check(&recorded, &pr_sync::RealGit);
+    let report = run_check::check(&recorded, &run_check::ReadOnlyGit);
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {

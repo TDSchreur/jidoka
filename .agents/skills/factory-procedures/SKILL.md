@@ -30,7 +30,7 @@ Options that are left out keep their current value. If the server or an update f
 
 When the user asks you to continue an existing run, or gives you a run ID, read its context with `factory run inspect <id>` (add `--json` for structured output) before changing anything, and check the recorded state against reality. Fields shown as unknown were never recorded: do not guess them.
 
-Run `factory run check <id>` to compare the recorded state with the repository. It only reads, and it reports each of the checks below as matching, differing with what it found, or unknown, and as not checked when it needs a worktree that is missing or differs. Its exit status is 0 when nothing differs and 2 when something does. It counts every uncommitted change as a difference, so judge whether a listed change is expected. If the installed `factory` rejects `run check` as an unknown command, report that it needs upgrading and run these checks by hand:
+Run `factory run check <id>` to compare the recorded state with the repository. It only reads. It reports each of the checks below as matching, differing with what it found, or unknown, and as not checked when it needs a worktree that is missing or differs. It exits with status 0 when nothing differs and 2 when something does. Every uncommitted change counts as a difference, so judge whether a listed change is expected. If the installed `factory` rejects `run check` as an unknown command, report that it needs upgrading and run these checks by hand:
 
 1. The recorded repository exists, and `git -C <repository> rev-parse --git-common-dir` agrees with the worktree's.
 2. The recorded worktree exists and `git worktree list --porcelain` lists it.
