@@ -494,7 +494,10 @@ function Dashboard({ reworkCap }) {
     <${Topic} title="The header">
       <${Terms}
         items=${[
-          ['Needs you', 'Shows only the Runs waiting for you. The button is filled while a Run is waiting, and the number of waiting Runs also appears in the page title.'],
+          [
+            'Andon strip',
+            'The bar at the top of the board. It says "Nothing needs you" and how many Runs are on the line, or turns amber and lists each Run waiting for you with its project and status reason. Select a Run to open its detail. Show only these filters the board to the waiting Runs. The number of waiting Runs also appears in the page title.',
+          ],
           [
             'Notify me',
             'Asks the browser for permission to show a notification when a Run starts waiting for you, while this page is open. If the browser blocks or does not support notifications, the button says so.',

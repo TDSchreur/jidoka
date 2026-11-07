@@ -501,8 +501,8 @@ mod tests {
         }
         assert!(page.contains("Needs you"), "missing Needs you label");
         assert!(
-            page.contains("Needs you (${count})"),
-            "missing Needs you toggle"
+            page.contains("runs need you"),
+            "missing the andon strip's count"
         );
         assert!(
             page.contains("aria-pressed"),
@@ -1655,12 +1655,6 @@ mod tests {
                 .unwrap_or_else(|| panic!("no {selector} rule"))
                 .to_string()
         };
-        // Needs you is filled only while a Run waits; the count is in its text either way.
-        assert!(script.contains("class=${count ? 'toggle waiting' : 'toggle'}"));
-        assert!(script.contains("Needs you (${count})"));
-        assert!(rule(".toggle.waiting").contains("background:"));
-        // Pressed shows in more than colour, because waiting and pressed are both filled.
-        assert!(script.contains("${pressed ? html`<span aria-hidden=\"true\">✓ </span>` : null}"));
         // Badges read in sentence case.
         for selector in [".badge", ".needs-you-label"] {
             let badge = rule(selector);
@@ -1990,7 +1984,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("no {selector} rule"))
                 .to_string()
         };
-        for selector in [".badge.blocked", ".needs-you-label", ".toggle.waiting"] {
+        for selector in [".badge.blocked", ".needs-you-label", ".andon.lit"] {
             let needs_you = rule(selector);
             assert!(needs_you.contains("var(--color-amber)"), "{selector}");
             assert!(
@@ -2004,6 +1998,47 @@ mod tests {
         assert!(!rule(".run").contains("box-shadow"));
         let license = include_str!("../third-party/barlow-LICENSE");
         assert!(license.contains("SIL Open Font License"));
+    }
+
+    #[rocket::async_test]
+    async fn the_andon_strip_says_whether_anything_needs_you() {
+        let script = asset("/assets/app.js").await;
+        let andon = script
+            .split("function Andon(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("an Andon component");
+        // Quiet: one line that says so, with how many Runs are on the line. Lit: how many need you.
+        assert!(andon.contains("Nothing needs you."));
+        assert!(andon.contains("on the line."));
+        assert!(andon.contains("'1 run needs you'"));
+        assert!(andon.contains("`${waiting.length} runs need you`"));
+        // The count is announced; the list is not, so a change is read once.
+        assert!(andon.contains("<p class=\"andon-summary\" role=\"status\">"));
+        // Each waiting Run shows its title, Project and status reason, and opens its detail.
+        assert!(andon.contains("class=\"andon-run\""));
+        assert!(andon.contains("onClick=${() => onOpen(runKey(run))}"));
+        assert!(andon.contains("<${ProjectName} path=${projectOf(run)} />"));
+        assert!(andon.contains("run.blocking_reason"));
+        // The Needs you filter lives in the strip, and stays reachable while it is on.
+        assert!(andon.contains("class=\"toggle andon-filter\""));
+        assert!(andon.contains("aria-pressed=${String(filtered)}"));
+        assert!(andon.contains("waiting.length || filtered"));
+        assert!(
+            !script.contains("NeedsYouToggle"),
+            "the toolbar toggle is gone"
+        );
+        // Hidden Projects stay out of the strip.
+        assert!(script.contains("<${Andon}\n        waiting=${visibleRuns"));
+        // Focus goes back to the control that opened the detail, wherever it was.
+        assert!(script.contains("opener.current = document.activeElement"));
+        let css = stylesheet().await;
+        let lit = css
+            .lines()
+            .find(|line| line.starts_with(".andon.lit {"))
+            .expect("a lit andon rule");
+        assert!(lit.contains("background: var(--color-amber)"));
+        assert!(lit.contains("color: var(--color-on-amber)"));
     }
 
     #[rocket::async_test]

@@ -724,16 +724,40 @@ function NotificationsToggle({ state, onToggle }) {
   </button>`;
 }
 
-/** Filled while a Run is waiting; the count is in the text, so the state never rests on colour. */
-function NeedsYouToggle({ count, pressed, onToggle }) {
-  return html`<button
-    type="button"
-    class=${count ? 'toggle waiting' : 'toggle'}
-    aria-pressed=${String(pressed)}
-    onClick=${onToggle}
-  >
-    ${pressed ? html`<span aria-hidden="true">✓ </span>` : null}Needs you (${count})
-  </button>`;
+/**
+ * The andon strip: the top of the board says whether anything needs you. Quiet, it is one line with how many
+ * Runs are on the line. Lit (amber), it lists each waiting Run with its Project and status reason; selecting one
+ * opens its detail. Only the summary is a live region, so a change is announced once, not the whole list.
+ */
+function Andon({ waiting, active, filtered, onFilter, onOpen }) {
+  const summary = waiting.length
+    ? waiting.length === 1
+      ? '1 run needs you'
+      : `${waiting.length} runs need you`
+    : `Nothing needs you. ${active} ${active === 1 ? 'run' : 'runs'} on the line.`;
+  return html`<section class=${waiting.length ? 'andon lit' : 'andon'} aria-label="Needs you">
+    <div class="andon-head">
+      <p class="andon-summary" role="status">${summary}</p>
+      ${waiting.length || filtered
+        ? html`<button type="button" class="toggle andon-filter" aria-pressed=${String(filtered)} onClick=${onFilter}>
+            Show only these
+          </button>`
+        : null}
+    </div>
+    ${waiting.length
+      ? html`<ul class="andon-list">
+          ${waiting.map(
+            (run) => html`<li key=${runKey(run)}>
+              <button type="button" class="andon-run" data-run-key=${runKey(run)} onClick=${() => onOpen(runKey(run))}>
+                <span class="andon-run-title">${run.title}</span>
+                <span class="andon-run-project"><${ProjectName} path=${projectOf(run)} /></span>
+                ${run.blocking_reason ? html`<span class="andon-run-reason">${run.blocking_reason}</span>` : null}
+              </button>
+            </li>`,
+          )}
+        </ul>`
+      : null}
+  </section>`;
 }
 
 /** The Stage a visitor first sees in compact mode: one with a waiting Run, else the first with any Run. */
@@ -898,9 +922,12 @@ function App() {
   // The open detail is a Run id; it is looked up in the latest full list, so refreshes update it.
   const [openKey, setOpenKey] = useState(null);
   const lastOpened = useRef(null);
+  // The control that opened the detail (a card title or a Run in the andon strip), to give focus back to.
+  const opener = useRef(null);
   const openRun = openKey === null ? null : (runs ?? []).find((run) => runKey(run) === openKey);
   const open = (key) => {
     lastOpened.current = key;
+    opener.current = document.activeElement;
     setOpenKey(key);
   };
   const close = () => setOpenKey(null);
@@ -909,26 +936,36 @@ function App() {
     if (openKey !== null && runs && !openRun) setOpenKey(null);
   }, [openKey, runs]);
   useEffect(() => {
-    // Back to the card that was opened, once the detail is gone.
+    // Back to what opened the detail, once it is gone: the same control, else another for the same Run.
     if (openKey === null && lastOpened.current !== null) {
-      const card = document.querySelector(`[data-run-key="${CSS.escape(String(lastOpened.current))}"]`);
+      const same = opener.current?.isConnected ? opener.current : null;
+      const card = same ?? document.querySelector(`[data-run-key="${CSS.escape(String(lastOpened.current))}"]`);
       card?.focus();
-      // The card is gone or hidden (its Run left, or changed Stage): keep focus on the board.
+      // The control is gone or hidden (its Run left, or changed Stage): keep focus on the board.
       if (!card || document.activeElement !== card) document.querySelector('main')?.focus();
       lastOpened.current = null;
+      opener.current = null;
     }
   }, [openKey]);
   return html`<${ProjectNames.Provider} value=${names}>
     <div class="toolbar">
-      <${NeedsYouToggle}
-        count=${waiting}
-        pressed=${onlyWaiting}
-        onToggle=${() => setOnlyWaiting((current) => !current)}
-      />
       <${NotificationsToggle} state=${notifications.state} onToggle=${notifications.toggle} />
       <button type="button" class="toggle help-open" onClick=${() => setHelpOpen(true)}>Help</button>
       <${Connection} failed=${failed} lastOk=${lastOk} now=${now} />
     </div>
+    ${visibleRuns
+      ? html`<${Andon}
+        waiting=${visibleRuns
+          .map((run, index) => ({ run, index }))
+          .filter((entry) => needsYou(entry.run))
+          .sort(compare)
+          .map((entry) => entry.run)}
+        active=${visibleRuns.filter((run) => run.status !== 'done').length}
+        filtered=${onlyWaiting}
+        onFilter=${() => setOnlyWaiting((current) => !current)}
+        onOpen=${open}
+      />`
+      : null}
     <main tabindex="-1">
       ${hiddenProjects.size ? html`<details class="hidden-projects">
         <summary>Hidden projects (${hiddenProjects.size})</summary>

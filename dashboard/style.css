@@ -121,10 +121,6 @@ p { color: var(--color-slate); margin: var(--space-2) 0; }
 .toggle { padding: var(--space-2) var(--space-5); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-m); background: var(--color-panel); color: var(--color-slate); font: inherit; cursor: pointer; transition: background-color var(--duration-fast) var(--ease); }
 .toggle:hover { background: var(--color-tint); }
 .toggle:active { background: var(--color-floor); }
-/* Needs you while a Run is waiting: filled, so it stands out from the quiet controls. The count says the same in words.
-   It comes before the pressed rules, so a pressed toggle shows it is pressed: in colour, and with a check mark. */
-.toggle.waiting { border-color: var(--color-amber); background: var(--color-amber); color: var(--color-on-amber); font-weight: var(--weight-strong); }
-.toggle.waiting:hover, .toggle.waiting:active { border-color: var(--color-slate); background: var(--color-amber); }
 .toggle[aria-pressed="true"] { border-color: var(--color-blue); background: var(--color-blue); color: var(--color-on-blue); font-weight: var(--weight-strong); }
 .toggle[aria-pressed="true"]:hover { background: var(--color-blue-hover); }
 .toggle[aria-pressed="true"]:active { background: var(--color-blue-hover); }
@@ -143,6 +139,24 @@ p { color: var(--color-slate); margin: var(--space-2) 0; }
 .theme label:has(input:checked):active { background: var(--color-blue-hover); }
 .theme label:has(input:focus-visible) { outline: var(--stroke-thick) solid var(--color-slate); outline-offset: var(--stroke-thick); }
 .theme input { accent-color: var(--color-on-blue); margin: 0; }
+/* The andon strip: quiet on the panel when nothing needs you, amber with dark text when something does. */
+.andon { margin: 0 0 var(--space-6); padding: var(--space-5) var(--space-6); background: var(--color-panel); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-l); }
+.andon.lit { background: var(--color-amber); border-color: var(--color-amber); color: var(--color-on-amber); }
+.andon-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-4) var(--space-6); }
+.andon-summary { margin: 0; color: inherit; font-size: var(--text-m); line-height: var(--leading-s); }
+.andon.lit .andon-summary { font-size: var(--text-l); line-height: var(--leading-l); font-weight: var(--weight-strong); }
+.andon.lit .andon-filter { border-color: var(--color-on-amber); background: none; color: var(--color-on-amber); }
+.andon.lit .andon-filter:hover { background: var(--color-panel); }
+.andon.lit .andon-filter[aria-pressed="true"] { background: var(--color-on-amber); color: var(--color-amber); }
+.andon.lit .andon-filter:focus-visible { outline-color: var(--color-on-amber); }
+.andon-list { display: grid; gap: var(--space-2); margin: var(--space-4) 0 0; padding: 0; list-style: none; }
+.andon-run { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 var(--space-6); width: 100%; padding: var(--space-4) var(--space-5); border: var(--stroke-thin) solid var(--color-on-amber); border-radius: var(--radius-m); background: none; color: var(--color-on-amber); font: inherit; text-align: left; cursor: pointer; }
+.andon-run:hover { background: var(--color-panel); color: var(--color-slate); }
+.andon-run:focus-visible { outline: var(--stroke-thick) solid var(--color-on-amber); outline-offset: var(--stroke-thick); }
+.andon-run-title { font-weight: var(--weight-strong); overflow-wrap: anywhere; }
+.andon-run-project { font-size: var(--text-xs); text-align: right; }
+.andon-run-reason { grid-column: 1 / -1; overflow-wrap: anywhere; }
+@media (max-width: 40rem) { .andon-run { grid-template-columns: minmax(0, 1fr); } .andon-run-project { text-align: left; } }
 #message { margin: 0 0 var(--space-6); }
 #message:empty { margin: 0; }
 #message.error { color: var(--color-red); font-weight: var(--weight-strong); }
