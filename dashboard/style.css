@@ -124,7 +124,7 @@ p { color: var(--color-slate); margin: var(--space-2) 0; }
 @media (prefers-reduced-motion: reduce) { .connection .pulse { animation: none; } }
 .top { position: sticky; top: 0; z-index: 3; box-sizing: border-box; display: flex; flex-direction: column; max-height: 60vh; max-height: 60dvh; padding-top: var(--space-4); background: var(--color-floor); }
 .top > * { flex: none; }
-.top > .line { display: flex; flex: 0 1000 auto; flex-direction: column; min-height: min(8rem, 20dvh); margin-bottom: var(--space-6); }
+.top > .line { display: flex; flex: 0 1000 auto; flex-direction: column; min-height: min(8rem, 20vh); min-height: min(8rem, 20dvh); margin-bottom: var(--space-6); }
 /* When the cap is reached, the line gives up room first, down to its heading and about one row; then the waiting Runs,
    so what needs you stays in view longest. */
 .top > .andon { display: flex; flex: 0 1 auto; flex-direction: column; min-height: 0; }
@@ -132,7 +132,8 @@ p { color: var(--color-slate); margin: var(--space-2) 0; }
 /* Narrow screens: the toolbar scrolls away and the andon strip and the line stay, with the same 60% for them. */
 @media (max-width: 48rem) {
   html { scroll-padding-top: calc(var(--top-height) - var(--toolbar-height)); }
-  .top { top: calc(-1 * (var(--toolbar-height) + var(--space-4))); max-height: calc(60dvh + var(--toolbar-height) + var(--space-4)); }
+  /* The toolbar and its bottom margin scroll away; the top's own padding stays above the strip. */
+  .top { top: calc(-1 * (var(--toolbar-height) + var(--space-6))); max-height: calc(60vh + var(--toolbar-height) + var(--space-6)); max-height: calc(60dvh + var(--toolbar-height) + var(--space-6)); }
 }
 /* A very short window, such as 400% zoom: the top scrolls with the page, so the rest stays reachable. */
 @media (max-height: 30rem) {

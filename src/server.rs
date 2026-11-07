@@ -2474,6 +2474,8 @@ mod tests {
         assert!(
             line.contains("flex: 0 1000 auto") && line.contains("min-height: min(8rem, 20dvh)")
         );
+        // Browsers without dvh fall back to vh rather than dropping the minimum.
+        assert!(line.contains("min-height: min(8rem, 20vh); min-height: min(8rem, 20dvh)"));
         let andon = rule(".top > .andon");
         assert!(andon.contains("flex: 0 1 auto") && andon.contains("min-height: 0"));
         // Above the footer, so the Projects menu panel is never covered.
@@ -2496,7 +2498,8 @@ mod tests {
             })
             .and_then(|block| block.split("\n}").next())
             .expect("a narrow-screen sticky rule");
-        assert!(narrow.contains("top: calc(-1 * (var(--toolbar-height) + var(--space-4)))"));
+        // The toolbar and its bottom margin scroll away, so the strip sits just below the window's top.
+        assert!(narrow.contains("top: calc(-1 * (var(--toolbar-height) + var(--space-6)))"));
         assert!(
             narrow.contains("scroll-padding-top: calc(var(--top-height) - var(--toolbar-height))")
         );
