@@ -43,7 +43,7 @@ run_ids() {
 
 # Builds the analysis-only prompt for one request.
 prompt_for() {
-  printf '/factory Which factory workflow fits this request, and why? Do not start a run, create a worktree or change any file; this is analysis only.\n\nRequest: %s\n\nEnd your answer with one final line that is exactly one of: MODE: full, MODE: balanced, MODE: fast, or MODE: none (when no new run should be started).\n' "$1"
+  printf '/factory Which factory workflow would this request get if it were run for real, and why? Only answer the question: do not start a run, create a worktree or change any file now.\n\nRequest: %s\n\nEnd your answer with one final line that is exactly one of: MODE: full, MODE: balanced, MODE: fast, or MODE: none. Use MODE: none only when the request itself should not start a new run, for example because it continues an existing one. That this question is analysis only does not make the answer none.\n' "$1"
 }
 
 main() {
