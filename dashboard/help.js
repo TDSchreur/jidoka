@@ -25,7 +25,7 @@ function Flow({ reworkCap }) {
     ['Build', 'Implement it and run the project’s checks.'],
     ['Check', `Review the code. Findings go back to Build for a Rework, up to ${reworkCap} times.`],
     ['Finish', 'Open a pull request and watch its CI.'],
-    ['Done', 'The pull request is open and CI is green.'],
+    ['Shipped', 'The pull request is open and CI is green.'],
   ];
   return html`<ol class="flow">
     ${steps.map(([name, text]) => html`<li key=${name}><strong>${name}</strong><span>${text}</span></li>`)}
@@ -178,7 +178,7 @@ function Stages({ reworkCap }) {
     <${Topic} title="Rework">
       <p>
         A <strong>Rework</strong> is a return from Check to Build to fix findings, followed by another Check that covers
-        only the fixes. A Run gets at most ${reworkCap} Reworks; the card shows the current one as${' '}
+        only the fixes. A Run gets at most ${reworkCap} Reworks; its row shows the current one as${' '}
         <em>Rework 1/${reworkCap}</em>. Findings alone never block a Run: the agent fixes them within the
         ${reworkCap} Reworks. When findings remain after the last Rework, or one cannot be resolved, the Run shows${' '}
         <em>Needs you</em> and waits for you to choose: one more Rework, finish with the findings listed in the pull
@@ -192,23 +192,26 @@ function Stages({ reworkCap }) {
         branch it chose at the start. Then it watches the pull request’s CI until every check has finished. When a
         check fails it reads the log, fixes the cause in a new commit, verifies again and pushes. When another pull
         request lands first and leaves this one behind its base branch, the agent merges the base into the branch
-        with a normal commit and watches CI again. Neither the CI fixes nor the base updates are Reworks. The Run is
-        Done when the pull request is open, up to date and CI is green, or when the project has no CI. If the
+        with a normal commit and watches CI again. Neither the CI fixes nor the base updates are Reworks. The Run has
+        shipped when the pull request is open, up to date and CI is green, or when the project has no CI. If the
         failure cannot be fixed, such as an infrastructure problem or a missing permission, the Run is blocked with that
         reason.
       </p>
     <//>
-    <${Topic} title="Done">
+    <${Topic} title="Shipped">
       <p>
-        Finished Runs move to the Done column whatever Stage they ended in. Each shows as one line; <em>Show details</em>
-        ${' '}reveals the rest. Deleting a Run removes its record from the dashboard only. The worktree, the branch and the
-        pull request stay as they are.
+        Finished Runs leave the line and go to the Shipped list below it, whatever Stage they ended in. It is a table,
+        newest first, grouped by the day of the last update, with the project, the pull request, the fresh tokens and
+        how long ago. Select a title to open the detail. <em>Clear shipped…</em> removes the records of all shipped
+        Runs after you confirm, and <em>Delete run</em> in a Run's detail removes one. Deleting removes the record from
+        the dashboard only: the worktree, the branch and the pull request stay as they are. In the command line and
+        the API a shipped Run has the status done.
       </p>
     <//>
     <${Topic} title="Needs you">
       <p>
-        A Run that is blocked is waiting for you. Its card says <strong>Needs you</strong> with the reason, and it comes
-        first in its column. Typical reasons:
+        A Run that is blocked is waiting for you. The andon strip at the top turns amber and lists it with the reason,
+        and its row on the line comes first, marked amber. Typical reasons:
       </p>
       <ul>
         <li>The issue tracker is not set up yet. Run <${Code}>/setup-matt-pocock-skills<//> and start again.</li>
@@ -483,23 +486,32 @@ function Dashboard({ reworkCap }) {
   return html`
     <${Topic} title="The board">
       <p>
-        Runs are grouped into one row per project, named after the repository. A row has a column for each Stage (Define, Build, Check and Finish), plus one
-        for Done. The project name toggles the row; a collapsed row shows how many Runs it
-        has in each Stage, and how many are waiting for you. A project whose Runs are all done starts collapsed until you
-        open it. On a narrow screen the Stage buttons show one column at a time, and projects with no Runs in that Stage
-        are left out. Hide removes a project from the board in this browser; use Hidden projects to restore it. Its Runs are kept. Delete removes the project’s Run records after confirmation; repository files, worktrees, branches and pull requests are kept.
-        Hidden projects do not contribute to the waiting count or notifications. The board refreshes by itself every few seconds.
+        At the top, the andon strip says whether anything needs you. Below it, On the line has one row for each Run that
+        is not done, with a rail of the four Stations (Define, Build, Check and Finish) that shows where the Run is. A
+        blocked Run is marked amber and its position says so, such as Check, blocked. Runs waiting for you come first,
+        then the most recently updated. Finished Runs are listed below the line. The board refreshes by itself every few
+        seconds.
+      </p>
+      <p>
+        Projects in the toolbar lists every project. Hide removes a project's Runs from the board in this browser, and
+        Restore brings them back. Hidden projects do not count towards the waiting count or notifications, and their
+        Runs are kept. Delete removes the project's Run records after you confirm; repository files, worktrees,
+        branches and pull requests are kept.
       </p>
     <//>
     <${Topic} title="The header">
       <${Terms}
         items=${[
-          ['Needs you', 'Shows only the Runs waiting for you. The button is filled while a Run is waiting, and the number of waiting Runs also appears in the page title.'],
+          [
+            'Andon strip',
+            'The bar at the top of the board. It says "Nothing needs you" and how many Runs are on the line, or turns amber and lists each Run waiting for you with its project and status reason. Select a Run to open its detail. Show only these filters the board to the waiting Runs. The number of waiting Runs also appears in the page title.',
+          ],
           [
             'Notify me',
             'Asks the browser for permission to show a notification when a Run starts waiting for you, while this page is open. If the browser blocks or does not support notifications, the button says so.',
           ],
           ['Help', 'Opens this window.'],
+          ['Projects', 'Lists every project, with Hide or Restore and Delete.'],
           [
             'Connection',
             'Shows whether the dashboard is receiving updates from its server, and when the last one arrived.',
@@ -511,12 +523,12 @@ function Dashboard({ reworkCap }) {
         browser.
       </p>
     <//>
-    <${Topic} title="A card">
-      <p>Each Run in a column is a card. Select its title to open the detail.</p>
+    <${Topic} title="A Run on the line">
+      <p>Each Run on the line is a row. Select its title to open the detail.</p>
       <${Terms}
         items=${[
-          ['Needs you', 'Shown first on a blocked Run, with the reason.'],
-          ['Status', 'Running, blocked or done.'],
+          ['Rail', 'The four Stations. Done ones are filled; the marker is on the current one, and turns into an amber diamond when the Run is blocked. The position is also given in words.'],
+          ['Project', 'The project the Run belongs to.'],
           ['Rework', html`<em>Rework 1/${reworkCap}</em>: the current Rework out of the ${reworkCap} a Run gets.`],
           ['Tickets', 'How many of the Run’s tickets are done, such as 2/5.'],
           [
@@ -524,9 +536,8 @@ function Dashboard({ reworkCap }) {
             'The fresh tokens the Run has used, such as 41.2k. It says partial when some of the usage could not be read.',
           ],
           ['Pull request, Spec', 'Links, when the Run has recorded them.'],
-          ['Activity, Ticket', 'What the agent says it is doing, and the ticket it is working on.'],
+          ['Activity', 'What the agent says it is doing.'],
           ['Updated', 'How long ago the agent last reported. It is the time of the last report, not a heartbeat.'],
-          ['Delete', 'Removes the record of the Run, after you confirm. The worktree, branch and pull request stay.'],
         ]}
       />
     <//>
