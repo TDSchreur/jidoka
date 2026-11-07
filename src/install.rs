@@ -311,10 +311,9 @@ mod tests {
         for needle in [
             "factory run inspect",
             "factory run check",
-            "git worktree list",
-            "git branch --show-current",
-            "merge-base --is-ancestor",
-            "git status --porcelain",
+            "recorded branch",
+            "ancestor of `HEAD`",
+            "unexpected changes",
             "Never reset, clean",
         ] {
             assert!(continuing.contains(needle), "continuation lacks {needle}");
@@ -478,11 +477,10 @@ mod tests {
             .map(|(_, rest)| rest)
             .expect("the procedures have a Pull request and CI section");
         for needle in [
-            "git merge-base --is-ancestor origin/<base> HEAD",
+            "factory pr sync <run-id> --base <base>",
             "gh pr view --json mergeStateStatus",
             "`BEHIND`",
             "`DIRTY`",
-            "keep the file list",
             "`UNKNOWN`",
             "normal merge commit",
             "never rebase, amend or force-push",
@@ -490,6 +488,67 @@ mod tests {
             "not behind its base",
         ] {
             assert!(section.contains(needle), "missing: {needle}");
+        }
+    }
+
+    #[test]
+    fn the_procedures_ask_for_an_upgrade_instead_of_working_around_an_outdated_factory() {
+        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
+        // The skills ship with the binary, so a command it lacks means the two are out of step.
+        for gone in [
+            "unknown command",
+            "do it by hand",
+            "checks by hand",
+            "watch the checks yourself",
+            "git worktree add",
+            "gh pr create",
+            "gh pr checks",
+        ] {
+            assert!(
+                !procedures.contains(gone),
+                "the procedures still work around an outdated factory: {gone}"
+            );
+        }
+        for needle in [
+            "needs upgrading with `factory install`",
+            "mark the run blocked with that reason",
+        ] {
+            assert!(procedures.contains(needle), "missing: {needle}");
+        }
+        // Every outcome of the commands the fallbacks used to replace is still handled.
+        for outcome in [
+            "passed",
+            "failed",
+            "cancelled",
+            "timeout",
+            "head-changed",
+            "no-ci",
+            "not-open",
+            "current",
+            "pushed",
+            "needs-verification",
+            "conflict",
+        ] {
+            assert!(
+                procedures.contains(&format!("- `{outcome}` (")),
+                "the procedures lose the {outcome} outcome"
+            );
+        }
+        // Both commands still explain their exit status 1.
+        assert_eq!(
+            procedures.matches("Exit status 1 is a problem").count(),
+            2,
+            "pr wait and pr sync both explain exit status 1"
+        );
+        // So does a host without factory support.
+        assert!(procedures.contains("Watch every check there until all have completed"));
+        // The hard rules say why.
+        for reason in [
+            "the user may be working in it",
+            "The review is pinned to a commit hash",
+            "merging is the human's review decision",
+        ] {
+            assert!(procedures.contains(reason), "missing reason: {reason}");
         }
     }
 
