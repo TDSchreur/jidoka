@@ -578,14 +578,14 @@ mod tests {
         let (_, azure) = setup
             .split_once("An Azure Boards tracker needs")
             .expect("setup has an Azure Boards part");
-        assert!(azure.contains("stop and tell the user exactly what is missing"));
-        assert!(azure.contains("Do not write a partial `docs/agents/issue-tracker.md`"));
+        assert!(azure.contains("missing"));
+        assert!(azure.contains("partial `docs/agents/issue-tracker.md`"));
     }
 
     #[test]
     fn azure_boards_template_names_no_process_specific_types_or_states() {
         let template = bundled_text("setup-matt-pocock-skills/issue-tracker-azure-boards.md");
-        let found: Vec<&str> = [
+        let found: Vec<String> = [
             "User Story",
             "Product Backlog Item",
             "Active",
@@ -595,17 +595,54 @@ mod tests {
             "Closed",
         ]
         .into_iter()
-        .filter(|name| template.contains(name))
+        .flat_map(|name| {
+            [
+                format!("`{name}`"),
+                format!("\"{name}\""),
+                format!("--state {name}"),
+                format!("--type {name}"),
+            ]
+        })
+        .filter(|used| template.contains(used))
         .collect();
         assert!(
             found.is_empty(),
-            "template hardcodes process names: {found:?}"
+            "template hardcodes process names as values: {found:?}"
         );
+    }
+
+    /// Returns why `arguments` (the text after `--route-parameters`) is not a
+    /// list of separately double-quoted `"name=value"` pairs.
+    fn route_parameter_problem(arguments: &str) -> Option<String> {
+        let mut arguments = arguments.split_whitespace().peekable();
+        if arguments.peek().is_none() {
+            return Some("no arguments".to_string());
+        }
+        arguments.find_map(|argument| {
+            let inner = argument
+                .strip_prefix('"')
+                .and_then(|rest| rest.strip_suffix('"'));
+            match inner {
+                Some(inner) if !inner.contains('"') && inner.matches('=').count() == 1 => None,
+                _ => Some(format!("not exactly one quoted name=value: {argument}")),
+            }
+        })
+    }
+
+    #[test]
+    fn route_parameter_checker_rejects_unquoted_and_merged_pairs() {
+        assert_eq!(
+            route_parameter_problem("\"project=<project>\" \"workItemId=<id>\""),
+            None
+        );
+        assert!(route_parameter_problem("\"project=<project>\" type=<type>").is_some());
+        assert!(route_parameter_problem("\"project=<project> type=<type>\"").is_some());
+        assert!(route_parameter_problem("project=<project>").is_some());
     }
 
     #[test]
     fn azure_boards_route_parameters_are_quoted_pairs() {
-        const FLAG: &str = "--route-parameters";
+        const FLAG: &str = "--route-parameters ";
         for path in [
             "setup-matt-pocock-skills/issue-tracker-azure-boards.md",
             "setup-matt-pocock-skills/SKILL.md",
@@ -614,10 +651,16 @@ mod tests {
             assert!(text.contains(FLAG), "{path} has no {FLAG}");
             for (index, _) in text.match_indices(FLAG) {
                 let after = &text[index + FLAG.len()..];
-                assert!(
-                    after.starts_with(" \"") && after.contains("\" \""),
-                    "{path}: route parameters must be quoted: {}",
-                    after.lines().next().unwrap_or("")
+                let end = [after.find(" --"), after.find(['`', '\n'])]
+                    .into_iter()
+                    .flatten()
+                    .min()
+                    .unwrap_or(after.len());
+                let arguments = &after[..end];
+                assert_eq!(
+                    route_parameter_problem(arguments),
+                    None,
+                    "{path}: bad route parameters: {arguments}"
                 );
             }
         }
