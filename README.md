@@ -78,6 +78,24 @@ Options left out keep their value, each has a `--clear-*` form (`--clear-tickets
 
 To continue a run in a new session, ask the agent to continue it by ID. The workflow skills then read the context and check the recorded repository, worktree, branch, base commit and Git state, report any difference, and never reset, clean or discard work to make them match.
 
+`factory run check <run-id>` compares what the run records with the repository, so a new session can see at once whether it is safe to continue. It only reads: it never fetches, resets, cleans, checks out, deletes or commits, and it runs `git status` without optional locks.
+
+```text
+factory run check <run-id> [--json]
+```
+
+It runs five checks and reports each as `matches`, `differs` with what it found, or `unknown` when the run never recorded the field. A check that needs the worktree is `not checked` when the worktree is missing or differs.
+
+| Check | Matches when |
+| --- | --- |
+| `repository` | The recorded repository exists, and `git rev-parse --git-common-dir` gives the same directory there as in the worktree. |
+| `worktree` | The recorded worktree exists and `git worktree list --porcelain` of the recorded repository lists it. |
+| `branch` | `git branch --show-current` in the worktree is the recorded branch. A detached HEAD differs. |
+| `base-commit` | The recorded base commit is in the repository and `git merge-base --is-ancestor <base commit> HEAD` succeeds. |
+| `working-tree` | `git status --porcelain` is empty. Otherwise the changed paths are listed. |
+
+Commits of `HEAD` that no remote-tracking branch has (as of the last fetch) are listed as not pushed. That is information, not a difference. The exit status is 0 when nothing differs, also when some fields are unknown, 2 when a check differs, and 1 for a problem such as bad arguments or an unreachable dashboard. `--json` prints the same data (`run`, `consistent`, `exit_code`, `checks` with `check`, `state`, `recorded` and `found`, `changes` and `unpushed`).
+
 Run updates also accept optional reporting fields:
 
 ```sh
@@ -289,7 +307,7 @@ The counting rules:
   - PR synchronization: `git fetch`, `git merge`, `git merge-base`, `git pull`, and `gh pr view` that asks for `mergeStateStatus`.
   - CI watch: `gh pr checks`, `gh run watch`, `gh run view`, `gh run list`, and `gh api` calls on `actions/runs` or `check-runs`.
   - Verification: `cargo` with `test`, `fmt`, `clippy`, `build`, `check` or `nextest`; `rustfmt`; `pytest`; `npm`, `pnpm`, `yarn` and `bun` with `test`, `lint`, `build` (or `run` followed by `test`, `lint`, `build` or `check`); `go` with `test`, `vet` or `build`; `dotnet` with `test` or `build`; `make` with `test`, `check` or `lint`; and any `verify.sh`.
-  - Continuation check: `factory run inspect`, `git worktree list` and `git rev-parse --git-common-dir`.
+  - Continuation check: `factory run inspect`, `factory run check`, `git worktree list` and `git rev-parse --git-common-dir`.
 
   A request whose only command is `factory run update` is standalone reporting, any other tool call is reading, editing, analysis, and a request with no tool call is text only. Commands are split at `&&`, `||`, `;`, `|` and line ends outside quotes, the lines of a here-document are ignored, and only the first 32 words of a command are read. The words that only wrap a command are skipped: `sudo`, `time`, `command`, `exec`, `nohup`, `env` and `timeout` with their options (and the duration), the shell keywords `if`, `then`, `do`, `else`, `elif`, `while` and `until`, `!`, and an opening parenthesis or brace. Comments are ignored. A command substitution, `$(...)` or backticks, counts as one word of its command, and the commands inside it are classified too, because they run; a read-only helper in a substitution (`cat file`, `date`, `git rev-parse`) or after a pipe (`| tail -1`, `| grep`) does not make a report count as chained, but any other program there (`git apply`, `xargs`, `tee`, a script) is work of its own. The request that runs `factory run start` is written before the run exists, so a workspace request up to two minutes before the run's first mark counts for the run. The reader sees only the commands the agent types: what a script runs (`python3 - <<'EOF'`) is invisible, and syntax such as `case`, functions and aliases is not understood.
 - **Reporting.** A `factory run update` chained to other commands does not decide the category: the request counts in the category of the other work and is also counted as chained reporting. That count sits beside the categories, so the category shares still add up to 100%. The table also gives the number of requests that fit more than one category, so you can see how much the order decides.
