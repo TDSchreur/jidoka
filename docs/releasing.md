@@ -20,3 +20,7 @@ gh api --method POST repos/TDSchreur/tds-factory2/rulesets --input .github/rules
 gh api --method POST repos/TDSchreur/tds-factory2/rulesets --input .github/rulesets/master.json
 gh api --method POST repos/TDSchreur/tds-factory2/rulesets --input .github/rulesets/release-tags.json
 ```
+
+## Clean Windows validation
+
+Validate Windows installer changes on a fresh Windows x64 machine without the Visual C++ Redistributable. Confirm the packaged executable starts with `--version`, then run the installer with Windows PowerShell 5.1 and PowerShell 7. Use isolated user profiles to check interactive selection, `FACTORY_AGENT`, installed skills, and PATH in the current and a new shell. Also check checksum rejection and startup failure reporting. The Windows CI runner includes development tools and does not replace this check.

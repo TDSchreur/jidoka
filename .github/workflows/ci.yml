@@ -37,6 +37,25 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      - name: Build and inspect Windows release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/build-windows-release.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/check-windows-release.ps1 -Executable './target/x86_64-pc-windows-msvc/release/factory.exe'
+      - name: Test Windows installer in Windows PowerShell 5.1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/windows-installer-integration.ps1 -Executable './target/x86_64-pc-windows-msvc/release/factory.exe'
+      - name: Test Windows installer in PowerShell 7
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/windows-installer-integration.ps1 -Executable './target/x86_64-pc-windows-msvc/release/factory.exe'
+      - name: Test Windows installer failures on Linux
+        if: runner.os == 'Linux'
+        shell: pwsh
+        run: ./tests/windows-installer-startup.ps1
   actionlint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
