@@ -78,7 +78,7 @@ Options left out keep their value, each has a `--clear-*` form (`--clear-tickets
 
 To continue a run in a new session, ask the agent to continue it by ID. The workflow skills then read the context and check the recorded repository, worktree, branch, base commit and Git state, report any difference, and never reset, clean or discard work to make them match.
 
-`factory run check <run-id>` compares what the run records with the repository, so a new session can see at once whether it is safe to continue. It only reads: it never fetches, resets, cleans, checks out, deletes or commits. Git runs without optional locks and without lazy fetches in a partial clone, and with `core.fsmonitor` and `log.showSignature` turned off, so a repository's own configuration cannot make the check run a program.
+`factory run check <run-id>` compares what the run records with the repository, so a new session can see at once whether it is safe to continue. It only reads: it never fetches, resets, cleans, checks out, deletes or commits. Git runs without optional locks and without lazy fetches in a partial clone, and with `core.fsmonitor` and `log.showSignature` turned off, so the fsmonitor hook and signature checks do not run. Clean and process filters that the repository sets can still run during `git status`, as they would for any `git status` there, so run the check only on repositories you trust.
 
 ```text
 factory run check <run-id> [--json]

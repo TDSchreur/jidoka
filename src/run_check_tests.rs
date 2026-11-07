@@ -536,7 +536,7 @@ fn without_remote_tracking_branches_unpushed_commits_are_not_known() {
 }
 
 #[test]
-fn repository_configuration_cannot_run_a_program_during_the_check() {
+fn the_fsmonitor_hook_does_not_run_during_the_check() {
     let fx = Fixture::new();
     let marker = fx.root.join("ran");
     let script = fx.root.join("hook.sh");

@@ -99,8 +99,9 @@ pub(crate) const DIFFERS_EXIT: u8 = 2;
 /// The most changed paths and unpushed commits that are listed.
 const LIST_LIMIT: usize = 50;
 
-/// Settings put before every git command, so that a repository's own configuration cannot make a
-/// reading command run a program (an fsmonitor hook, or a signature check through `gpg.program`).
+/// Settings put before every git command, so that the fsmonitor hook and a signature check through
+/// `gpg.program` do not run. Clean and process filters that the repository sets in its attributes can
+/// still run during `git status`, as they do for any `git status` there.
 const SAFE_CONFIG: [&str; 4] = [
     "-c",
     "core.fsmonitor=false",
@@ -520,8 +521,7 @@ fn unpushed_commits(git: &dyn Git, dir: &Path) -> Result<Vec<String>, String> {
 }
 
 /// Runs the five checks of continuing a run. It only reads: no fetch, reset, clean, checkout, delete or
-/// commit; `git status` takes no optional locks, and the repository's configuration cannot make the
-/// commands run a program.
+/// commit. `git status` takes no optional locks, and the fsmonitor hook and signature checks are off.
 pub(crate) fn check(run: &Recorded, git: &dyn Git) -> Report {
     let worktree = Worktree::find(git, run.worktree.as_ref());
     let (repository, repository_dir) = check_repository(git, run, &worktree);
