@@ -459,6 +459,13 @@ function Detail({ run, now, onClose, onDelete }) {
                   (ticket) => html`<li key=${ticket.reference}>
                     <span class="ticket-status">${TICKET_STATUS[ticket.status] ?? String(ticket.status)}</span>${' '}
                     <${TicketLink} value=${String(ticket.reference)} />${' '}${ticket.title}
+                    <p>Agent-reported; entries may be incomplete.</p>
+                    ${Array.isArray(run.ticket_reports) && run.ticket_reports.some((report) => report.ticket === ticket.reference)
+                      ? html`<ul>${run.ticket_reports.filter((report) => report.ticket === ticket.reference).map((report) => html`<li>
+                          <strong>${report.kind === 'skill' ? 'Skill' : 'Activity'}:</strong>${' '}${report.text}${' '}
+                          (${report.stage}, <time datetime=${new Date(report.at).toISOString()}>${new Date(report.at).toLocaleString()}</time>)
+                        </li>`)}</ul>`
+                      : html`<p>No reports recorded.</p>`}
                   </li>`,
                 )}
               </ol>`

@@ -1565,6 +1565,16 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn ticket_reports_are_visible_with_their_ticket_and_a_coverage_note() {
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("run.ticket_reports"));
+        assert!(script.contains("report.ticket === ticket.reference"));
+        assert!(script.contains("Agent-reported; entries may be incomplete"));
+        assert!(script.contains("report.stage"));
+        assert!(script.contains("report.at"));
+    }
+
+    #[rocket::async_test]
     async fn the_header_has_no_dashboard_title_and_a_connection_indicator_follows_the_poll() {
         let dir = TestDir::new();
         let page = client(&dir)

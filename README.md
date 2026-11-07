@@ -71,6 +71,7 @@ Besides its stage and status, a run records the context a new session needs to c
 | `--mode <factory-full\|factory-balanced\|factory-fast>` | The workflow mode. |
 | `--spec <http(s)-url\|path>`, `--pr <http(s)-url>` | The spec (a URL or a local path) and the pull request. URLs with credentials are refused. |
 | `--ticket "<reference> <title>"` (repeat), `--ticket-status <reference>=<pending\|in-progress\|done>` | The ordered ticket list, listed whole each time (statuses of kept tickets are preserved), and its progress. At most one ticket is in progress. |
+| `--ticket-report "<reference>=<skill\|activity>:<text>"` (repeat) | Append a short skill or activity report to a listed ticket, with the current stage and server time. |
 | `--summary <stage>=<text>` | A short summary per stage, kept after later stages begin. |
 | `--blocking-reason <text>` | The status reason of a blocked run. |
 
@@ -102,6 +103,7 @@ Run updates also accept optional reporting fields:
 
 ```sh
 factory run update <id> build running --activity "Implementing ticket #42" --current-ticket "https://github.com/owner/repo/issues/42"
+factory run update <id> build running --ticket-report "https://github.com/owner/repo/issues/42=skill:tdd" --ticket-report "https://github.com/owner/repo/issues/42=activity:Tests passed"
 factory run update <id> build blocked --blocking-reason "Waiting for credentials"
 factory run update <id> build running --clear-blocking-reason
 factory run update <id> build running --rework 1 --activity "Fixing Check findings"
@@ -115,6 +117,8 @@ The API uses `activity`, `current_ticket`, `blocking_reason`, and `rework` on `P
 ```json
 {"stage":"build","status":"running","activity":"Implementing ticket #42","blocking_reason":null}
 ```
+
+Ticket reports are displayed under their ticket in run details. They are agent-reported and may be incomplete; no reports does not mean no work occurred. Reports are limited to 500 bytes each, 100 per update and 1,000 per run. Do not report secrets or transcripts.
 
 Run responses and `runs.json` include these optional fields and `updated_at`, a server-owned Unix timestamp in milliseconds set on creation and each successful update. Callers cannot set `updated_at` through an update. Existing records load with `null` for missing metadata and timestamps; they receive a timestamp on their next update. The timestamp records a run update, not an agent heartbeat. Restart the dashboard with the updated CLI before using the new options. The dashboard shows these fields on each run's row on the line. Finished runs (status `done`) are listed under Shipped, grouped by day. Next to each pull request link the dashboard shows its state (Open, Draft, Merged or Closed). The dashboard server reads it in the background, with `gh` for GitHub and with `az` and its `azure-devops` extension for Azure Repos, stores it on the run as `pr_status`, and reads it again about once a minute until the pull request is merged. Without the tool, or when it is not signed in, the state is unknown and the run's detail says why. Callers cannot set `pr_status`. A run is deleted from its detail, and Clear shipped removes all shipped runs, each after a confirmation; deleting removes only the run record, not its worktree or pull request. The record is removed by `DELETE /api/runs/<id>`, which needs the session token from the dashboard page (sent as `X-Session-Token`), so it works from the dashboard only.
 
