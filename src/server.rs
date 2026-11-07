@@ -840,8 +840,6 @@ mod tests {
             "Stage",
             "Status",
             "Activity",
-            "Ticket",
-            "Status reason",
             "Mode",
             "Branch",
             "Worktree",
@@ -2400,6 +2398,19 @@ mod tests {
         for state in ["open", "draft", "merged", "closed"] {
             assert!(css.contains(&format!(".pr-state.{state} {{")), "{state}");
         }
+    }
+
+    #[rocket::async_test]
+    async fn the_detail_shows_the_current_ticket_and_status_reason_only_while_set() {
+        // Both are cleared by the workflows when the ticket ends and when work resumes, so a shipped Run has neither.
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains(
+            "${run.current_ticket\n          ? html`<${Field} label=\"Current ticket\"><${TicketLink} value=${String(run.current_ticket)} /><//>`\n          : null}"
+        ));
+        assert!(script.contains(
+            "${run.blocking_reason ? html`<${Field} label=\"Status reason\">${run.blocking_reason}<//>` : null}"
+        ));
+        assert!(!script.contains("<${Field} label=\"Ticket\">"));
     }
 
     #[rocket::async_test]

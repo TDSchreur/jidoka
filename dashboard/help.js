@@ -545,7 +545,8 @@ function Dashboard({ reworkCap }) {
     <${Topic} title="The Run detail">
       <p>
         A panel on the right with everything the Run has recorded. <${Code}>factory run inspect<//> prints most of the same fields, and a new session reads it to continue the Run. The detail shows:
-        its project, Stage, status and the reason when it is blocked, the workflow mode, branch, worktree, repository and
+        its project, Stage, status, the current ticket while one is in progress and the status reason while the Run is
+        blocked, the workflow mode, branch, worktree, repository and
         base commit, links to the spec and the pull request, every ticket with its progress, a summary per Stage, the
         token usage, the Rework and the Run id. A field the agent never recorded says so. It is never guessed.
       </p>

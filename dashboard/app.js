@@ -434,10 +434,10 @@ function Detail({ run, now, onClose, onDelete }) {
           >
         <//>
         <${Field} label="Activity">${run.activity}<//>
-        <${Field} label="Ticket">
-          ${run.current_ticket ? html`<${TicketLink} value=${String(run.current_ticket)} />` : null}
-        <//>
-        <${Field} label="Status reason">${run.blocking_reason}<//>
+        ${run.current_ticket
+          ? html`<${Field} label="Current ticket"><${TicketLink} value=${String(run.current_ticket)} /><//>`
+          : null}
+        ${run.blocking_reason ? html`<${Field} label="Status reason">${run.blocking_reason}<//>` : null}
         <${Field} label="Mode" missing="Unknown">${run.mode}<//>
         <${Field} label="Branch" missing="Unknown">${run.branch}<//>
         <${Field} label="Worktree" missing="Unknown">${run.worktree}<//>
