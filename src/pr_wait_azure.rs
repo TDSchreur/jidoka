@@ -1,0 +1,530 @@
+//! Read-only Azure DevOps Services pull request status watching.
+use super::{
+    BaseState, CheckResult, Clock, Failure, Gh, GhError, Options, Outcome, ToolProblem, Waited,
+    GRACE, POLL,
+};
+use serde_json::Value;
+use std::collections::BTreeMap;
+
+struct AzurePr {
+    org: String,
+    project: String,
+    repository: String,
+    id: String,
+}
+
+impl AzurePr {
+    fn parse(url: &str) -> Result<Self, ToolProblem> {
+        let parts: Vec<_> = url
+            .strip_prefix("https://dev.azure.com/")
+            .unwrap_or("")
+            .split('/')
+            .collect();
+        if parts.len() != 6
+            || parts[2] != "_git"
+            || parts[4] != "pullrequest"
+            || parts[5].is_empty()
+            || !parts[5].bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(ToolProblem("Invalid Azure pull request URL.".into()));
+        }
+        let decode = |s: &str| -> Result<String, ToolProblem> {
+            let value = percent_encoding::percent_decode_str(s)
+                .decode_utf8()
+                .map_err(|_| ToolProblem("Invalid Azure pull request URL.".into()))?
+                .into_owned();
+            if value.is_empty()
+                || value.starts_with('-')
+                || value == "."
+                || value == ".."
+                || value
+                    .chars()
+                    .any(|c| c.is_control() || matches!(c, '/' | '\\' | '?' | '#' | '@' | '%'))
+            {
+                return Err(ToolProblem("Invalid Azure pull request URL.".into()));
+            }
+            Ok(value)
+        };
+        let org = decode(parts[0])?;
+        let project = decode(parts[1])?;
+        let repository = decode(parts[3])?;
+        Ok(Self {
+            org: format!(
+                "https://dev.azure.com/{}",
+                percent_encoding::utf8_percent_encode(&org, percent_encoding::NON_ALPHANUMERIC)
+            ),
+            project,
+            repository,
+            id: parts[5].into(),
+        })
+    }
+    fn show(&self, gh: &dyn Gh) -> Result<Value, ToolProblem> {
+        let data = az_json(
+            gh,
+            &[
+                "repos",
+                "pr",
+                "show",
+                "--id",
+                &self.id,
+                "--organization",
+                &self.org,
+                "--output",
+                "json",
+                "--detect",
+                "false",
+            ],
+        )?;
+        if data["repository"]["name"].as_str() != Some(self.repository.as_str())
+            || data["repository"]["project"]["name"]
+                .as_str()
+                .is_some_and(|name| name != self.project)
+        {
+            return Err(ToolProblem(
+                "Azure pull request does not match the recorded repository.".into(),
+            ));
+        }
+        if !data["forkSource"].is_null() {
+            return Err(ToolProblem(
+                "Watching pull requests from Azure forks is not supported yet.".into(),
+            ));
+        }
+        Ok(data)
+    }
+    fn head(&self, gh: &dyn Gh, data: &Value) -> Result<String, ToolProblem> {
+        let reference = required(&data["sourceRefName"], "source branch")?;
+        let branch = reference
+            .strip_prefix("refs/heads/")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                ToolProblem("Azure pull request has an invalid source branch.".into())
+            })?;
+        let repo_id = required(&data["repository"]["id"], "repository ID")?;
+        let filter = format!("--filter=heads/{branch}");
+        let items = az_json(
+            gh,
+            &[
+                "repos",
+                "ref",
+                "list",
+                "--organization",
+                &self.org,
+                "--project",
+                &self.project,
+                "--repository",
+                repo_id,
+                &filter,
+                "--output",
+                "json",
+                "--detect",
+                "false",
+            ],
+        )?;
+        let list = items
+            .as_array()
+            .ok_or_else(|| ToolProblem("Azure refs response is not an array.".into()))?;
+        let found = list
+            .iter()
+            .find(|item| item["name"].as_str() == Some(reference))
+            .ok_or_else(|| ToolProblem("Azure source branch was not found.".into()))?;
+        Ok(required(&found["objectId"], "source head")?.to_string())
+    }
+    fn invoke(
+        &self,
+        gh: &dyn Gh,
+        resource: &str,
+        repository_id: &str,
+        iteration: Option<u64>,
+    ) -> Result<Vec<Value>, ToolProblem> {
+        let project = format!("project={}", self.project);
+        let repo = format!("repositoryId={repository_id}");
+        let id = format!("pullRequestId={}", self.id);
+        let iteration_arg = iteration.map(|value| format!("iterationId={value}"));
+        let mut args = vec![
+            "devops",
+            "invoke",
+            "--organization",
+            &self.org,
+            "--area",
+            "git",
+            "--resource",
+            resource,
+            "--route-parameters",
+            &project,
+            &repo,
+            &id,
+        ];
+        if let Some(value) = &iteration_arg {
+            args.push(value);
+        }
+        args.extend([
+            "--api-version",
+            "7.1",
+            "--output",
+            "json",
+            "--detect",
+            "false",
+        ]);
+        let data = az_json(gh, &args)?;
+        if !data["continuation_token"].is_null() {
+            return Err(ToolProblem(
+                "Azure returned a paginated response; cannot safely evaluate all checks.".into(),
+            ));
+        }
+        data["value"]
+            .as_array()
+            .cloned()
+            .ok_or_else(|| ToolProblem("Azure returned an invalid checks response.".into()))
+    }
+}
+
+fn required<'a>(value: &'a Value, label: &str) -> Result<&'a str, ToolProblem> {
+    value
+        .as_str()
+        .filter(|s| !s.is_empty() && !s.starts_with('-') && !s.chars().any(char::is_control))
+        .ok_or_else(|| ToolProblem(format!("Azure response has no valid {label}.")))
+}
+
+fn az_json(gh: &dyn Gh, args: &[&str]) -> Result<Value, ToolProblem> {
+    let result = gh.az(args).map_err(|error| match error {
+        GhError::NotInstalled => ToolProblem(
+            "Azure CLI (`az`) is not installed; install it and the azure-devops extension.".into(),
+        ),
+        GhError::Other(_) => ToolProblem("Could not start Azure CLI.".into()),
+    })?;
+    if result.code != Some(0) {
+        return Err(ToolProblem(
+            "Azure CLI request failed; check authentication, the extension and repository access."
+                .into(),
+        ));
+    }
+    serde_json::from_str(&result.stdout)
+        .map_err(|_| ToolProblem("Azure CLI returned invalid JSON.".into()))
+}
+
+fn result(
+    url: &str,
+    head: &str,
+    current: &str,
+    outcome: Outcome,
+    checks: Vec<CheckResult>,
+) -> Waited {
+    let failures = checks
+        .iter()
+        .filter(|check| check.bucket == "fail")
+        .map(|check| Failure {
+            name: check.name.clone(),
+            link: check.link.clone(),
+            excerpt: None,
+        })
+        .collect();
+    Waited {
+        outcome,
+        exit_code: outcome.exit_code(),
+        pull_request: url.into(),
+        head: head.into(),
+        new_head: (head != current).then(|| current.into()),
+        base: BaseState::Unknown,
+        checks,
+        failures,
+    }
+}
+
+fn checks_for(
+    pr: &AzurePr,
+    gh: &dyn Gh,
+    data: &Value,
+    head: &str,
+    url: &str,
+) -> Result<(Vec<CheckResult>, bool), ToolProblem> {
+    let repo = required(&data["repository"]["id"], "repository ID")?;
+    let iterations = pr.invoke(gh, "pullRequestIterations", repo, None)?;
+    let latest = iterations
+        .iter()
+        .max_by_key(|item| item["id"].as_u64().unwrap_or(0));
+    let mut checks = Vec::new();
+    let current = latest
+        .is_some_and(|item| item["sourceRefCommit"]["commitId"].as_str() == Some(head))
+        && data["lastMergeSourceCommit"]["commitId"].as_str() == Some(head);
+    if !current {
+        checks.push(CheckResult {
+            name: "Azure is updating the current PR iteration".into(),
+            bucket: "pending".into(),
+            link: url.into(),
+        });
+        return Ok((checks, true));
+    }
+    let iteration = latest
+        .and_then(|item| item["id"].as_u64())
+        .filter(|id| *id > 0)
+        .ok_or_else(|| ToolProblem("Azure PR iteration has no valid ID.".into()))?;
+    let mut policies = Vec::new();
+    const PAGE_SIZE: usize = 100;
+    for page in 0..100 {
+        let skip = (page * PAGE_SIZE).to_string();
+        let response = az_json(
+            gh,
+            &[
+                "repos",
+                "pr",
+                "policy",
+                "list",
+                "--id",
+                &pr.id,
+                "--organization",
+                &pr.org,
+                "--top",
+                "100",
+                "--skip",
+                &skip,
+                "--output",
+                "json",
+                "--detect",
+                "false",
+            ],
+        )?;
+        let items = response
+            .as_array()
+            .ok_or_else(|| ToolProblem("Azure policy response is not an array.".into()))?;
+        policies.extend(items.iter().cloned());
+        if items.len() < PAGE_SIZE {
+            break;
+        }
+        if page == 99 {
+            return Err(ToolProblem(
+                "Azure returned too many policies to evaluate safely.".into(),
+            ));
+        }
+    }
+    let mut applicable = false;
+    for policy in &policies {
+        let enabled = policy["configuration"]["isEnabled"]
+            .as_bool()
+            .ok_or_else(|| {
+                ToolProblem("Azure policy does not say whether it is enabled.".into())
+            })?;
+        if !enabled {
+            continue;
+        }
+        let required_policy = policy["configuration"]["isBlocking"]
+            .as_bool()
+            .ok_or_else(|| {
+                ToolProblem("Azure policy does not say whether it is required.".into())
+            })?;
+        let state = required(&policy["status"], "policy state")?;
+        if required_policy && state != "notApplicable" {
+            applicable = true;
+        }
+        let bucket = if !required_policy || state == "notApplicable" {
+            "skipping"
+        } else if policy["context"]["isExpired"].as_bool() == Some(true)
+            || policy["context"]["buildIsNotCurrent"].as_bool() == Some(true)
+        {
+            "pending"
+        } else {
+            match state {
+                "approved" => "pass",
+                "rejected" if policy["context"]["buildId"].as_u64().is_some() => {
+                    let id = policy["context"]["buildId"]
+                        .as_u64()
+                        .expect("build ID was checked")
+                        .to_string();
+                    let build = az_json(
+                        gh,
+                        &[
+                            "pipelines",
+                            "runs",
+                            "show",
+                            "--id",
+                            &id,
+                            "--organization",
+                            &pr.org,
+                            "--project",
+                            &pr.project,
+                            "--output",
+                            "json",
+                            "--detect",
+                            "false",
+                        ],
+                    )?;
+                    match (build["status"].as_str(), build["result"].as_str()) {
+                        (Some("completed"), Some("canceled" | "cancelled")) => "cancel",
+                        (Some("completed"), Some("failed" | "partiallySucceeded")) => "fail",
+                        _ => "pending",
+                    }
+                }
+                "rejected" | "broken" => "fail",
+                _ => "pending",
+            }
+        };
+        let name = policy["configuration"]["type"]["displayName"]
+            .as_str()
+            .unwrap_or("Azure policy");
+        let link = policy["context"]["buildId"]
+            .as_u64()
+            .map(|id| {
+                format!(
+                    "{}/{}/_build/results?buildId={id}",
+                    pr.org,
+                    percent_encoding::utf8_percent_encode(
+                        &pr.project,
+                        percent_encoding::NON_ALPHANUMERIC
+                    )
+                )
+            })
+            .unwrap_or_else(|| url.into());
+        checks.push(CheckResult {
+            name: if required_policy {
+                name.into()
+            } else {
+                format!("{name} (optional: {state})")
+            },
+            bucket: bucket.into(),
+            link,
+        });
+    }
+    let mut statuses = pr.invoke(gh, "pullRequestStatuses", repo, None)?;
+    statuses.extend(pr.invoke(gh, "pullRequestIterationStatuses", repo, Some(iteration))?);
+    let mut latest_status: BTreeMap<(String, String), Value> = BTreeMap::new();
+    for status in statuses {
+        if status["iterationId"]
+            .as_u64()
+            .is_some_and(|id| id != iteration)
+        {
+            continue;
+        }
+        let name = required(&status["context"]["name"], "status name")?.to_string();
+        let genre = status["context"]["genre"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let id = status["id"]
+            .as_u64()
+            .filter(|id| *id > 0)
+            .ok_or_else(|| ToolProblem("Azure status has no valid ID.".into()))?;
+        let key = (genre, name);
+        if latest_status
+            .get(&key)
+            .and_then(|item| item["id"].as_u64())
+            .unwrap_or(0)
+            < id
+        {
+            latest_status.insert(key, status);
+        }
+    }
+    for ((genre, name), status) in latest_status {
+        let state = required(&status["state"], "status state")?;
+        if state != "notApplicable" {
+            applicable = true;
+        }
+        let bucket = match state {
+            "failed" | "error" => "fail",
+            "canceled" | "cancelled" => "cancel",
+            "notApplicable" => "skipping",
+            "succeeded" if status["iterationId"].as_u64() == Some(iteration) => "pass",
+            _ => "pending",
+        };
+        checks.push(CheckResult {
+            name: if genre.is_empty() {
+                name
+            } else {
+                format!("{genre}: {name}")
+            },
+            bucket: bucket.into(),
+            link: url.into(),
+        });
+    }
+    Ok((checks, applicable))
+}
+
+pub(super) fn wait(
+    url: &str,
+    options: &Options,
+    gh: &dyn Gh,
+    clock: &dyn Clock,
+    activity: &mut dyn FnMut(&str),
+    progress: &mut dyn FnMut(&str),
+) -> Result<Waited, ToolProblem> {
+    let pr = AzurePr::parse(url)?;
+    let first = pr.show(gh)?;
+    let state = required(&first["status"], "pull request status")?;
+    if state != "active" {
+        if !matches!(state, "completed" | "abandoned") {
+            return Err(ToolProblem(
+                "Azure returned an unknown pull request status.".into(),
+            ));
+        }
+        let head = first["lastMergeSourceCommit"]["commitId"]
+            .as_str()
+            .unwrap_or("");
+        activity("Pull request is not open");
+        return Ok(result(url, head, head, Outcome::NotOpen, vec![]));
+    }
+    let head = pr.head(gh, &first)?;
+    activity("Waiting for CI");
+    let started = clock.elapsed();
+    loop {
+        let data = pr.show(gh)?;
+        let state = required(&data["status"], "pull request status")?;
+        if state != "active" {
+            if !matches!(state, "completed" | "abandoned") {
+                return Err(ToolProblem(
+                    "Azure returned an unknown pull request status.".into(),
+                ));
+            }
+            activity("Pull request is not open");
+            return Ok(result(url, &head, &head, Outcome::NotOpen, vec![]));
+        }
+        let current = pr.head(gh, &data)?;
+        if current != head {
+            activity("Head commit changed while waiting for CI");
+            return Ok(result(url, &head, &current, Outcome::HeadChanged, vec![]));
+        }
+        let (checks, applicable) = checks_for(&pr, gh, &data, &head, url)?;
+        let after = pr.show(gh)?;
+        let after_state = required(&after["status"], "pull request status")?;
+        if matches!(after_state, "completed" | "abandoned") {
+            activity("Pull request is not open");
+            return Ok(result(url, &head, &head, Outcome::NotOpen, vec![]));
+        }
+        if after_state != "active" {
+            return Err(ToolProblem(
+                "Azure returned an unknown pull request status.".into(),
+            ));
+        }
+        let current = pr.head(gh, &after)?;
+        if current != head {
+            activity("Head commit changed while waiting for CI");
+            return Ok(result(url, &head, &current, Outcome::HeadChanged, vec![]));
+        }
+        let elapsed = clock.elapsed().saturating_sub(started);
+        let pending = checks.iter().any(|check| check.bucket == "pending");
+        let failed = checks.iter().any(|check| check.bucket == "fail");
+        let outcome = if failed && (options.fail_fast || !pending) {
+            Some(Outcome::Failed)
+        } else if pending && elapsed >= options.timeout {
+            Some(Outcome::Timeout)
+        } else if pending {
+            None
+        } else if !applicable && elapsed >= GRACE.min(options.timeout) {
+            Some(Outcome::NoCi)
+        } else if !applicable {
+            None
+        } else if checks.iter().any(|check| check.bucket == "cancel") {
+            Some(Outcome::Cancelled)
+        } else {
+            Some(Outcome::Passed)
+        };
+        if let Some(outcome) = outcome {
+            let waited = result(url, &head, &head, outcome, checks);
+            activity(&super::activity_text(&waited));
+            return Ok(waited);
+        }
+        progress(if pending {
+            "Azure checks or policy evaluations are pending"
+        } else {
+            "No checks reported yet"
+        });
+        clock.sleep(POLL.min(options.timeout.saturating_sub(elapsed)));
+    }
+}

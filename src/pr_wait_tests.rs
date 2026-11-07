@@ -1,7 +1,7 @@
 //! `factory pr wait` against a scripted `gh` and a clock that never sleeps.
 
 use super::*;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::{cell::RefCell, collections::VecDeque};
 
 const PR: &str = "https://github.com/o/r/pull/7";
@@ -13,6 +13,7 @@ struct FakeGh {
     checks: RefCell<VecDeque<Result<GhOutput, GhError>>>,
     logs: RefCell<VecDeque<Result<GhOutput, GhError>>>,
     calls: RefCell<Vec<String>>,
+    azure: RefCell<VecDeque<Result<GhOutput, GhError>>>,
 }
 
 fn ok(stdout: impl Into<String>) -> Result<GhOutput, GhError> {
@@ -60,6 +61,12 @@ fn next(queue: &RefCell<VecDeque<Result<GhOutput, GhError>>>) -> Result<GhOutput
 }
 
 impl Gh for FakeGh {
+    fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+        self.calls
+            .borrow_mut()
+            .push(format!("az {}", args.join(" ")));
+        next(&self.azure)
+    }
     fn run(&self, args: &[&str]) -> Result<GhOutput, GhError> {
         self.calls.borrow_mut().push(args.join(" "));
         match args {
@@ -720,4 +727,218 @@ fn the_run_and_repository_are_read_from_real_link_shapes() {
     ] {
         assert_eq!(some(bad), None, "{bad}");
     }
+}
+
+#[test]
+fn azure_abandoned_pr_reports_not_open_without_using_gh() {
+    let gh = FakeGh::default();
+    gh.azure.borrow_mut().push_back(ok(json!({"status":"abandoned", "lastMergeSourceCommit":{"commitId":"abc"}, "repository":{"id":"repo","name":"Kahoot"}}).to_string()));
+    let waited = wait(
+        Some("https://dev.azure.com/dutchworkz/Projects/_git/Kahoot/pullrequest/535"),
+        &Options::default(),
+        &gh,
+        &FakeClock::default(),
+        &mut |_| {},
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(waited.outcome, Outcome::NotOpen);
+    assert_eq!(waited.head, "abc");
+    assert!(gh.calls.borrow().iter().all(|call| call.starts_with("az ")));
+}
+
+struct AzureScript;
+impl Gh for AzureScript {
+    fn run(&self, _: &[&str]) -> Result<GhOutput, GhError> {
+        panic!("GitHub CLI must not be called for Azure")
+    }
+    fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+        match args {
+            ["repos", "pr", "show", ..] => ok(json!({"status":"active", "sourceRefName":"refs/heads/feature", "lastMergeSourceCommit":{"commitId":"abc"}, "repository":{"id":"repo","name":"Kahoot"}}).to_string()),
+            ["repos", "ref", "list", ..] => ok(json!([{"name":"refs/heads/feature","objectId":"abc"}]).to_string()),
+            ["repos", "pr", "policy", "list", ..] => ok(json!([{"status":"approved", "configuration":{"isEnabled":true,"isBlocking":true,"type":{"displayName":"Build"}}}]).to_string()),
+            ["devops", "invoke", ..] if args.contains(&"pullRequestIterations") => ok(json!({"value":[{"id":1,"sourceRefCommit":{"commitId":"abc"}}]}).to_string()),
+            ["devops", "invoke", ..] => ok(json!({"value":[]}).to_string()),
+            _ => panic!("unexpected Azure command {args:?}"),
+        }
+    }
+}
+
+#[test]
+fn azure_current_approved_required_policy_passes() {
+    let waited = wait(
+        Some("https://dev.azure.com/dutchworkz/Projects/_git/Kahoot/pullrequest/535"),
+        &Options::default(),
+        &AzureScript,
+        &FakeClock::default(),
+        &mut |_| {},
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(waited.outcome, Outcome::Passed);
+    assert_eq!(waited.head, "abc");
+    assert_eq!(waited.base, BaseState::Unknown);
+}
+
+struct AzureCase {
+    policies: Value,
+    statuses: Value,
+    iteration_statuses: Value,
+    iterations: Value,
+    build: Value,
+    heads: RefCell<VecDeque<&'static str>>,
+}
+impl AzureCase {
+    fn new(policies: Value, statuses: Value) -> Self {
+        Self {
+            policies,
+            statuses,
+            iteration_statuses: json!({"value":[]}),
+            iterations: json!({"value":[{"id":2,"sourceRefCommit":{"commitId":"abc"}}]}),
+            build: json!({"status":"completed","result":"canceled"}),
+            heads: RefCell::new(VecDeque::from(["abc"])),
+        }
+    }
+}
+impl Gh for AzureCase {
+    fn run(&self, _: &[&str]) -> Result<GhOutput, GhError> {
+        panic!("unexpected gh call")
+    }
+    fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+        let data = match args {
+            ["repos", "pr", "show", ..] => {
+                json!({"status":"active", "sourceRefName":"refs/heads/feature", "lastMergeSourceCommit":{"commitId":"abc"}, "repository":{"id":"repo","name":"Kahoot"}})
+            }
+            ["repos", "ref", "list", ..] => {
+                let mut heads = self.heads.borrow_mut();
+                let head = if heads.len() > 1 {
+                    heads.pop_front().unwrap()
+                } else {
+                    *heads.front().unwrap()
+                };
+                json!([{"name":"refs/heads/feature","objectId":head}])
+            }
+            ["repos", "pr", "policy", "list", ..] => self.policies.clone(),
+            ["pipelines", "runs", "show", ..] => self.build.clone(),
+            ["devops", "invoke", ..] if args.contains(&"pullRequestIterations") => {
+                self.iterations.clone()
+            }
+            ["devops", "invoke", ..] if args.contains(&"pullRequestIterationStatuses") => {
+                self.iteration_statuses.clone()
+            }
+            ["devops", "invoke", ..] if args.contains(&"pullRequestStatuses") => {
+                self.statuses.clone()
+            }
+            _ => panic!("unexpected Azure command {args:?}"),
+        };
+        ok(data.to_string())
+    }
+}
+fn azure_policy(state: &str, required: bool) -> Value {
+    json!({"status": state, "configuration":{"isEnabled":true,"isBlocking":required,"type":{"displayName":"Build"}}})
+}
+fn run_azure(case: &AzureCase, seconds: u64) -> Result<Waited, ToolProblem> {
+    wait(
+        Some("https://dev.azure.com/dutchworkz/Projects/_git/Kahoot/pullrequest/535"),
+        &Options {
+            timeout: Duration::from_secs(seconds),
+            fail_fast: false,
+        },
+        case,
+        &FakeClock::default(),
+        &mut |_| {},
+        &mut |_| {},
+    )
+}
+
+#[test]
+fn azure_policy_outcomes_never_treat_pending_or_failure_as_success() {
+    for (state, outcome) in [
+        ("approved", Outcome::Passed),
+        ("rejected", Outcome::Failed),
+        ("broken", Outcome::Failed),
+        ("queued", Outcome::Timeout),
+        ("running", Outcome::Timeout),
+        ("unknown", Outcome::Timeout),
+    ] {
+        let case = AzureCase::new(json!([azure_policy(state, true)]), json!({"value":[]}));
+        assert_eq!(run_azure(&case, 1).unwrap().outcome, outcome, "{state}");
+    }
+}
+
+#[test]
+fn azure_optional_policy_does_not_block_but_absent_checks_are_not_ci() {
+    let case = AzureCase::new(
+        json!([azure_policy("rejected", false)]),
+        json!({"value":[]}),
+    );
+    assert_eq!(run_azure(&case, 1).unwrap().outcome, Outcome::NoCi);
+}
+
+#[test]
+fn azure_unscoped_success_cannot_prove_current_head() {
+    let case = AzureCase::new(
+        json!([]),
+        json!({"value":[{"id":1,"context":{"name":"build"},"state":"succeeded"}]}),
+    );
+    assert_eq!(run_azure(&case, 1).unwrap().outcome, Outcome::Timeout);
+}
+
+#[test]
+fn azure_head_changes_during_poll_are_reported() {
+    let case = AzureCase::new(json!([azure_policy("approved", true)]), json!({"value":[]}));
+    *case.heads.borrow_mut() = VecDeque::from(["abc", "abc", "def"]);
+    let result = run_azure(&case, 1).unwrap();
+    assert_eq!(result.outcome, Outcome::HeadChanged);
+    assert_eq!(result.new_head.as_deref(), Some("def"));
+}
+
+#[test]
+fn azure_cancelled_status_is_not_passed() {
+    let case = AzureCase::new(
+        json!([]),
+        json!({"value":[{"id":1,"iterationId":2,"context":{"name":"build"},"state":"cancelled"}]}),
+    );
+    assert_eq!(run_azure(&case, 1).unwrap().outcome, Outcome::Cancelled);
+}
+
+#[test]
+fn azure_cancelled_build_policy_reports_cancelled() {
+    let mut policy = azure_policy("rejected", true);
+    policy["context"] = json!({"buildId":42});
+    let case = AzureCase::new(json!([policy]), json!({"value":[]}));
+    assert_eq!(run_azure(&case, 1).unwrap().outcome, Outcome::Cancelled);
+}
+
+#[test]
+fn azure_expired_approved_policy_stays_pending() {
+    let mut policy = azure_policy("approved", true);
+    policy["context"] = json!({"isExpired":true});
+    let case = AzureCase::new(json!([policy]), json!({"value":[]}));
+    assert_eq!(run_azure(&case, 1).unwrap().outcome, Outcome::Timeout);
+}
+
+#[test]
+fn azure_stale_iteration_cannot_pass() {
+    let mut case = AzureCase::new(json!([azure_policy("approved", true)]), json!({"value":[]}));
+    case.iterations = json!({"value":[{"id":2,"sourceRefCommit":{"commitId":"old"}}]});
+    assert_eq!(run_azure(&case, 1).unwrap().outcome, Outcome::Timeout);
+}
+
+#[test]
+fn azure_missing_policy_flags_fail_closed() {
+    let case = AzureCase::new(
+        json!([{"status":"approved", "configuration":{}}]),
+        json!({"value":[]}),
+    );
+    assert!(run_azure(&case, 1).unwrap_err().0.contains("enabled"));
+}
+
+#[test]
+fn azure_latest_iteration_status_overrides_an_older_failure() {
+    let case = AzureCase::new(
+        json!([]),
+        json!({"value":[{"id":1,"iterationId":2,"context":{"name":"build"},"state":"failed"},{"id":2,"iterationId":2,"context":{"name":"build"},"state":"succeeded"}]}),
+    );
+    assert_eq!(run_azure(&case, 1).unwrap().outcome, Outcome::Passed);
 }
