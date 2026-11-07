@@ -145,6 +145,21 @@ fn pop(queue: &RefCell<VecDeque<Result<GhOutput, GhError>>>) -> Result<GhOutput,
 }
 
 impl Gh for FakeGh {
+    /// The code under test runs git; the user's own git settings must not reach it.
+    fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
+        let mut command = Command::new("git");
+        command.arg("-C").arg(dir).args(args).env("LC_ALL", "C");
+        let output = isolated(&mut command).output().map_err(|e| e.to_string())?;
+        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_string();
+        if output.status.success() {
+            Ok(text(&output.stdout))
+        } else if output.stderr.is_empty() {
+            Err(text(&output.stdout))
+        } else {
+            Err(text(&output.stderr))
+        }
+    }
+
     fn run(&self, dir: &Path, args: &[&str]) -> Result<GhOutput, GhError> {
         self.calls
             .borrow_mut()
@@ -452,6 +467,8 @@ fn a_missing_gh_or_a_missing_sign_in_stops_before_anything_is_pushed() {
 fn a_failed_creation_or_a_failed_record_says_what_happened_and_a_retry_is_safe() {
     let project = Project::new();
     let gh = FakeGh::default();
+    // Nothing is open before the creation, and still nothing is open after it failed.
+    gh.list.borrow_mut().push_back(ok("[]"));
     gh.list.borrow_mut().push_back(ok("[]"));
     gh.create
         .borrow_mut()
@@ -567,6 +584,7 @@ fn the_text_and_the_json_say_the_same_and_are_printable() {
         branch: "feature".into(),
         base: "develop".into(),
         commit: "0123456789".into(),
+        recorded: true,
     };
     let text = render(&opened);
     assert!(text.starts_with("Pull request opened: "), "{text}");
@@ -575,6 +593,14 @@ fn the_text_and_the_json_say_the_same_and_are_printable() {
     let json = serde_json::to_value(&opened).unwrap();
     assert_eq!(json["created"], true);
     assert_eq!(json["base"], "develop");
+    // Every field of the data is in the text (the commit as its first seven characters).
+    for field in ["branch", "base"] {
+        assert!(
+            text.contains(json[field].as_str().unwrap()),
+            "{field}: {text}"
+        );
+    }
+    assert!(text.contains(&json["commit"].as_str().unwrap()[..7]));
     let again = Opened {
         created: false,
         ..opened
@@ -600,4 +626,139 @@ fn nothing_in_the_command_forces_a_push_or_changes_the_work() {
     ] {
         assert!(!source.contains(forbidden), "{forbidden}");
     }
+}
+
+// --- rework 1 ---------------------------------------------------------------------------------------
+
+#[test]
+fn a_branch_that_git_would_read_as_a_forced_refspec_is_never_pushed() {
+    let project = Project::new();
+    // The remote's develop has a commit that the local develop does not have.
+    let other = project.wt.parent().unwrap().join("other");
+    let mut clone = Command::new("git");
+    clone.args(["clone", "-q"]).arg(&project.remote).arg(&other);
+    assert!(isolated(&mut clone).output().unwrap().status.success());
+    run_git(&other, &["commit", "-q", "--allow-empty", "-m", "teammate"]);
+    run_git(&other, &["push", "-q", "origin", "develop"]);
+    let theirs = project.remote_branch("develop").unwrap();
+
+    // A worktree on `+develop`: git reads `git push origin +develop` as a forced update of develop.
+    let plus = project.wt.parent().unwrap().join("plus");
+    run_git(
+        &project.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "+develop",
+            plus.to_str().unwrap(),
+            "origin/develop",
+        ],
+    );
+    run_git(&plus, &["commit", "-q", "--allow-empty", "-m", "mine"]);
+    let mut run = run_of(&project);
+    run.worktree = Some(plus.display().to_string());
+    run.branch = Some("+develop".into());
+    let problem = open(
+        &run,
+        &options(&project),
+        &FakeGh::new_pr(URL),
+        &FakeApi::default(),
+    )
+    .unwrap_err();
+    assert!(
+        problem.0.contains("+develop") && problem.0.contains("name"),
+        "{}",
+        problem.0
+    );
+    assert_eq!(
+        project.remote_branch("develop"),
+        Some(theirs),
+        "the teammate's commit is still there"
+    );
+}
+
+#[test]
+fn the_branch_is_pushed_by_its_full_name_on_both_sides() {
+    assert!(include_str!("pr_open.rs").contains("refs/heads/{branch}:refs/heads/{branch}"));
+    assert!(!crate::run_begin::valid_branch_name("+main"));
+}
+
+#[test]
+fn a_pull_request_from_a_fork_is_not_ours() {
+    let project = Project::new();
+    let gh = FakeGh::default();
+    gh.list.borrow_mut().push_back(ok(
+        r#"[{"url":"https://github.com/fork/r/pull/3","baseRefName":"develop","isCrossRepository":true}]"#,
+    ));
+    gh.create.borrow_mut().push_back(ok(&format!("{URL}\n")));
+    let opened = open(
+        &run_of(&project),
+        &options(&project),
+        &gh,
+        &FakeApi::default(),
+    )
+    .unwrap();
+    assert!(opened.created);
+    assert_eq!(opened.pull_request, URL);
+}
+
+#[test]
+fn losing_the_race_to_create_the_pull_request_finds_the_one_that_won() {
+    let project = Project::new();
+    let gh = FakeGh::default();
+    gh.list.borrow_mut().push_back(ok("[]"));
+    gh.list.borrow_mut().push_back(ok(&format!(
+        r#"[{{"url":"{URL}","baseRefName":"develop"}}]"#
+    )));
+    gh.create.borrow_mut().push_back(failed(
+        1,
+        &format!(
+            "a pull request for branch \"feature\" into branch \"develop\" already exists:\n{URL}"
+        ),
+    ));
+    let api = FakeApi::default();
+    let opened = open(&run_of(&project), &options(&project), &gh, &api).unwrap();
+    assert_eq!((opened.pull_request.as_str(), opened.created), (URL, false));
+    assert_eq!(api.updates.borrow().len(), 1);
+}
+
+#[test]
+fn an_entry_without_a_url_is_an_error_and_not_a_reason_to_open_a_second_pull_request() {
+    let project = Project::new();
+    let gh = FakeGh::default();
+    gh.list
+        .borrow_mut()
+        .push_back(ok(r#"[{"baseRefName":"develop"}]"#));
+    let problem = open(
+        &run_of(&project),
+        &options(&project),
+        &gh,
+        &FakeApi::default(),
+    )
+    .unwrap_err();
+    assert!(problem.0.contains("URL"), "{}", problem.0);
+    assert_eq!(gh.pr_calls("pr create"), 0);
+}
+
+#[test]
+fn a_run_that_could_not_be_updated_is_told_how_to_record_the_pull_request() {
+    let project = Project::new();
+    let mut run = run_of(&project);
+    run.running = false;
+    let opened = open(
+        &run,
+        &options(&project),
+        &FakeGh::new_pr(URL),
+        &FakeApi::default(),
+    )
+    .unwrap();
+    assert!(!opened.recorded);
+    let text = render(&opened);
+    assert!(
+        text.contains("not updated") && text.contains("--pr"),
+        "{text}"
+    );
+    assert_eq!(serde_json::to_value(&opened).unwrap()["recorded"], false);
 }

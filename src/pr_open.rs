@@ -16,6 +16,11 @@ use std::{
 /// script.
 pub(crate) trait Gh {
     fn run(&self, dir: &Path, args: &[&str]) -> Result<GhOutput, GhError>;
+
+    /// Runs git in a folder. Tests override this to keep the user's own git settings out.
+    fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
+        git(dir, args)
+    }
 }
 
 /// The real `gh`.
@@ -136,6 +141,8 @@ pub(crate) struct Opened {
     pub(crate) base: String,
     /// The commit that was pushed.
     pub(crate) commit: String,
+    /// Whether the run now records the pull request; `false` for a run that is not running.
+    pub(crate) recorded: bool,
 }
 
 fn run_gh(gh: &dyn Gh, dir: &Path, args: &[&str]) -> Result<GhOutput, ToolProblem> {
@@ -177,12 +184,20 @@ fn push_problem(branch: &str, error: &str) -> ToolProblem {
     ToolProblem(format!("Pushing {branch} to origin failed: {detail}"))
 }
 
-/// The first open pull request of `branch`, as its URL and base branch.
+/// An open pull request of the branch.
+struct Existing {
+    url: String,
+    /// Its base branch, when `gh` said.
+    base: Option<String>,
+}
+
+/// The first open pull request of `branch` in this repository. `gh pr list --head` matches by branch name
+/// only, so a pull request from a fork that happens to use the same name is skipped.
 fn open_pull_request(
     gh: &dyn Gh,
     dir: &Path,
     branch: &str,
-) -> Result<Option<(String, String)>, ToolProblem> {
+) -> Result<Option<Existing>, ToolProblem> {
     let args = [
         "pr",
         "list",
@@ -191,7 +206,7 @@ fn open_pull_request(
         "--state",
         "open",
         "--json",
-        "url,baseRefName",
+        "url,baseRefName,isCrossRepository",
     ];
     let output = run_gh(gh, dir, &args)?;
     if output.code != Some(0) {
@@ -203,11 +218,23 @@ fn open_pull_request(
                 "`gh pr list` gave output that is not JSON: {error}"
             ))
         })?;
-    Ok(list.first().and_then(|item| {
-        Some((
-            item["url"].as_str()?.to_string(),
-            item["baseRefName"].as_str().unwrap_or("").to_string(),
-        ))
+    let Some(item) = list
+        .iter()
+        .find(|item| item["isCrossRepository"].as_bool() != Some(true))
+    else {
+        return Ok(None);
+    };
+    let url = item["url"].as_str().ok_or_else(|| {
+        ToolProblem(
+            "`gh pr list` gave an open pull request without a URL, so it was not reused.".into(),
+        )
+    })?;
+    Ok(Some(Existing {
+        url: url.to_string(),
+        base: item["baseRefName"]
+            .as_str()
+            .filter(|base| !base.is_empty())
+            .map(str::to_string),
     }))
 }
 
@@ -234,17 +261,27 @@ pub(crate) fn open(
     }
     run_gh(gh, dir, &["--version"])?;
 
-    let branch = git(dir, &["branch", "--show-current"]).map_err(|error| {
-        ToolProblem(format!(
-            "{} could not be read: {}",
-            shown(worktree),
-            shown(first_line(&error))
-        ))
-    })?;
+    let branch = gh
+        .git(dir, &["branch", "--show-current"])
+        .map_err(|error| {
+            ToolProblem(format!(
+                "{} could not be read: {}",
+                shown(worktree),
+                shown(first_line(&error))
+            ))
+        })?;
     if branch.is_empty() {
         return Err(ToolProblem(format!(
             "The worktree {} is not on a branch (a detached HEAD).",
             shown(worktree)
+        )));
+    }
+    // A branch name that git could read as an option or a refspec (`+main` forces an update of main) is
+    // never handed to git.
+    if !valid_branch_name(&branch) {
+        return Err(ToolProblem(format!(
+            "The branch name {} is one this command will not push: it could be read as a git option or a forced refspec. Rename the branch (`git branch -m`) and try again.",
+            shown(&branch)
         )));
     }
     if let Some(recorded) = &run.branch {
@@ -258,18 +295,19 @@ pub(crate) fn open(
     }
     let base = match &options.base {
         Some(base) => base.clone(),
-        None => git(
-            dir,
-            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-        )
-        .ok()
-        .and_then(|head| head.strip_prefix("origin/").map(str::to_string))
-        .ok_or_else(|| {
-            ToolProblem(
-                "origin/HEAD is not set, so the base branch is not known. Pass it with --base."
-                    .into(),
+        None => gh
+            .git(
+                dir,
+                &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
             )
-        })?,
+            .ok()
+            .and_then(|head| head.strip_prefix("origin/").map(str::to_string))
+            .ok_or_else(|| {
+                ToolProblem(
+                    "origin/HEAD is not set, so the base branch is not known. Pass it with --base."
+                        .into(),
+                )
+            })?,
     };
     if branch == base {
         return Err(ToolProblem(format!(
@@ -277,7 +315,7 @@ pub(crate) fn open(
             shown(&branch)
         )));
     }
-    let status = git(dir, &["status", "--porcelain"]).map_err(|error| {
+    let status = gh.git(dir, &["status", "--porcelain"]).map_err(|error| {
         ToolProblem(format!(
             "The status of {} could not be read: {}",
             shown(worktree),
@@ -290,21 +328,18 @@ pub(crate) fn open(
             status.lines().count()
         )));
     }
-    let ahead = git(
-        dir,
-        &[
-            "rev-list",
-            "--count",
-            &format!("refs/remotes/origin/{base}..HEAD"),
-        ],
-    )
-    .map_err(|_| {
-        ToolProblem(format!(
-            "origin/{} is not known in this repository. Run `git fetch origin {}` and try again.",
-            shown(&base),
-            shown(&base)
-        ))
-    })?;
+    let ahead = gh
+        .git(
+            dir,
+            &["rev-list", "--count", &format!("refs/remotes/origin/{base}..HEAD")],
+        )
+        .map_err(|_| {
+            ToolProblem(format!(
+                "origin/{} is not known in this repository. Run `git fetch origin {}` and try again.",
+                shown(&base),
+                shown(&base)
+            ))
+        })?;
     if ahead == "0" {
         return Err(ToolProblem(format!(
             "{} has no commits beyond origin/{}, so there is nothing to open a pull request for.",
@@ -312,7 +347,7 @@ pub(crate) fn open(
             shown(&base)
         )));
     }
-    let commit = git(dir, &["rev-parse", "HEAD"]).map_err(|error| {
+    let commit = gh.git(dir, &["rev-parse", "HEAD"]).map_err(|error| {
         ToolProblem(format!(
             "HEAD could not be read: {}",
             shown(first_line(&error))
@@ -321,18 +356,13 @@ pub(crate) fn open(
 
     // Look for the pull request before pushing: it also shows whether `gh` is signed in.
     let existing = open_pull_request(gh, dir, &branch)?;
-    git(dir, &["push", "-u", "origin", &branch]).map_err(|error| push_problem(&branch, &error))?;
+    // The branch is pushed by its full name on both sides, so that no name is read as a refspec.
+    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    gh.git(dir, &["push", "-u", "origin", &refspec])
+        .map_err(|error| push_problem(&branch, &error))?;
 
     let (pull_request, created, base) = match existing {
-        Some((url, existing_base)) => (
-            url,
-            false,
-            if existing_base.is_empty() {
-                base
-            } else {
-                existing_base
-            },
-        ),
+        Some(found) => (found.url, false, found.base.unwrap_or(base)),
         None => {
             let body = options.body_file.display().to_string();
             let output = run_gh(
@@ -352,7 +382,19 @@ pub(crate) fn open(
                 ],
             )?;
             if output.code != Some(0) {
-                return Err(problem("pr create", &output));
+                // Someone may have opened it between the look and now: use theirs.
+                return match open_pull_request(gh, dir, &branch) {
+                    Ok(Some(found)) => finish(
+                        run,
+                        api,
+                        branch,
+                        found.base.unwrap_or(base),
+                        commit,
+                        found.url,
+                        false,
+                    ),
+                    _ => Err(problem("pr create", &output)),
+                };
             }
             let url = output
                 .stdout
@@ -370,6 +412,19 @@ pub(crate) fn open(
             (url, true, base)
         }
     };
+    finish(run, api, branch, base, commit, pull_request, created)
+}
+
+/// Records the pull request on a running run and returns the result.
+fn finish(
+    run: &RunInfo,
+    api: &dyn RunApi,
+    branch: String,
+    base: String,
+    commit: String,
+    pull_request: String,
+    created: bool,
+) -> Result<Opened, ToolProblem> {
     if run.running {
         api.update(
             &run.id,
@@ -390,12 +445,13 @@ pub(crate) fn open(
         branch,
         base,
         commit,
+        recorded: run.running,
     })
 }
 
 /// The result as text.
 pub(crate) fn render(opened: &Opened) -> String {
-    format!(
+    let mut text = format!(
         "{}: {}\n  Branch: {}\n  Base: {}\n  Pushed commit: {}\n",
         if opened.created {
             "Pull request opened"
@@ -406,7 +462,11 @@ pub(crate) fn render(opened: &Opened) -> String {
         shown(&opened.branch),
         shown(&opened.base),
         shown(&opened.commit.chars().take(7).collect::<String>())
-    )
+    );
+    if !opened.recorded {
+        text.push_str("  The run was not updated (it is not running). Record the pull request with `factory run update <id> <stage> <status> --pr <url>`.\n");
+    }
+    text
 }
 
 #[cfg(test)]

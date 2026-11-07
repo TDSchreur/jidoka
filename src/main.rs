@@ -200,10 +200,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
     Ok(0)
 }
 
-/// The run server for `factory pr open`.
-struct PrApi;
-
-impl pr_open::RunApi for PrApi {
+impl pr_open::RunApi for ServerApi {
     fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
         report_run(ADDRESS, id, stage, status, options).map_err(|e| e.to_string())
     }
@@ -228,7 +225,7 @@ fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
             .to_string(),
         running: matches!(run.status, run::RunStatus::Running),
     };
-    let opened = pr_open::open(&info, &parsed, &pr_open::RealGh, &PrApi)
+    let opened = pr_open::open(&info, &parsed, &pr_open::RealGh, &ServerApi)
         .map_err(|problem| inspect::shown(&problem.0))?;
     if parsed.json {
         println!("{}", serde_json::to_string_pretty(&opened)?);

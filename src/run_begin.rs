@@ -46,7 +46,7 @@ pub(crate) struct Options {
 /// control characters, none of the characters git refuses, and no `..`, `@{`, `.lock` ending or edge slash.
 pub(crate) fn valid_branch_name(name: &str) -> bool {
     !name.is_empty()
-        && !name.starts_with(['-', '/', '.'])
+        && !name.starts_with(['-', '/', '.', '+'])
         && !name.ends_with(['/', '.'])
         && !name.ends_with(".lock")
         && !name.contains("..")
