@@ -51,16 +51,15 @@ pub(crate) fn read(tool: &dyn Gh, url: &str) -> Result<PrState, ToolProblem> {
             ))),
         };
     }
-    // GitHub and GitHub Enterprise pull requests end in /pull/<number>; no other host has a state here.
-    let github = url.rsplit_once("/pull/").is_some_and(|(_, number)| {
-        !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
-    });
-    if !github {
+    let Some(pull_request) = github_pull_request(url) else {
         return Err(ToolProblem(
             "Only GitHub and Azure Repos pull requests have a state on the dashboard.".into(),
         ));
-    }
-    let output = run_gh(tool, &["pr", "view", url, "--json", "state,isDraft"])?;
+    };
+    let output = run_gh(
+        tool,
+        &["pr", "view", &pull_request, "--json", "state,isDraft"],
+    )?;
     if output.code != Some(0) {
         return Err(problem("pr view", &output));
     }
@@ -79,6 +78,17 @@ pub(crate) fn read(tool: &dyn Gh, url: &str) -> Result<PrState, ToolProblem> {
             other.unwrap_or("none")
         ))),
     }
+}
+
+/// The GitHub (or GitHub Enterprise) pull request a link points to, as `<repository>/pull/<number>`: a link to
+/// one of its tabs (`/files`) or comments (`#issuecomment-1`) is cut back to the pull request. None for a link
+/// that is not a pull request.
+fn github_pull_request(url: &str) -> Option<String> {
+    let page = url.split(['?', '#']).next().unwrap_or(url);
+    let (repository, rest) = page.split_once("/pull/")?;
+    let number = rest.split('/').next().unwrap_or("");
+    (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| format!("{repository}/pull/{number}"))
 }
 
 /// Whether the stored state of a Run's pull request `url` should be read again at `now`.

@@ -115,6 +115,19 @@ fn problems_say_what_to_do() {
         read(&enterprise, "https://github.example.com/o/r/pull/9").unwrap(),
         PrState::Merged
     );
+    // A link to a tab or a comment of a GitHub pull request reads the pull request itself.
+    for link in [
+        "https://github.com/o/r/pull/7/files",
+        "https://github.com/o/r/pull/7#issuecomment-123",
+        "https://github.com/o/r/pull/7?w=1",
+    ] {
+        let tabbed = ScriptedGh::new(vec![view("OPEN", false)]);
+        assert_eq!(read(&tabbed, link).unwrap(), PrState::Open, "{link}");
+        assert_eq!(
+            tabbed.calls(),
+            [format!("pr view {PR} --json state,isDraft")]
+        );
+    }
     // Only http(s) URLs are pull request links; anything else is never handed to a tool.
     let unused = ScriptedGh::new(vec![view("OPEN", false)]);
     assert!(read(&unused, "--help").is_err());
