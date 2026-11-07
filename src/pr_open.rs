@@ -61,8 +61,14 @@ pub(crate) struct RunInfo {
     pub(crate) worktree: Option<String>,
     pub(crate) branch: Option<String>,
     pub(crate) stage: String,
-    /// Only a running run is updated.
-    pub(crate) running: bool,
+    /// `running`, `blocked` or `done`. Only a running run is updated.
+    pub(crate) status: String,
+}
+
+impl RunInfo {
+    fn running(&self) -> bool {
+        self.status == "running"
+    }
 }
 
 /// The longest title and body file that are accepted.
@@ -425,7 +431,7 @@ fn finish(
     pull_request: String,
     created: bool,
 ) -> Result<Opened, ToolProblem> {
-    if run.running {
+    if run.running() {
         api.update(
             &run.id,
             &run.stage,
@@ -445,12 +451,12 @@ fn finish(
         branch,
         base,
         commit,
-        recorded: run.running,
+        recorded: run.running(),
     })
 }
 
 /// The result as text.
-pub(crate) fn render(opened: &Opened) -> String {
+pub(crate) fn render(opened: &Opened, run: &RunInfo) -> String {
     let mut text = format!(
         "{}: {}\n  Branch: {}\n  Base: {}\n  Pushed commit: {}\n",
         if opened.created {
@@ -464,7 +470,14 @@ pub(crate) fn render(opened: &Opened) -> String {
         shown(&opened.commit.chars().take(7).collect::<String>())
     );
     if !opened.recorded {
-        text.push_str("  The run was not updated (it is not running). Record the pull request with `factory run update <id> <stage> <status> --pr <url>`.\n");
+        text.push_str(&format!(
+            "  The run was not updated (it is {}). Record the pull request with `factory run update {} {} {} --pr {}`.\n",
+            shown(&run.status),
+            shown(&run.id),
+            shown(&run.stage),
+            shown(&run.status),
+            shown(&opened.pull_request)
+        ));
     }
     text
 }

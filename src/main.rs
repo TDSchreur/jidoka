@@ -223,14 +223,17 @@ fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
             .as_str()
             .unwrap_or("finish")
             .to_string(),
-        running: matches!(run.status, run::RunStatus::Running),
+        status: serde_json::to_value(run.status)?
+            .as_str()
+            .unwrap_or("running")
+            .to_string(),
     };
     let opened = pr_open::open(&info, &parsed, &pr_open::RealGh, &ServerApi)
         .map_err(|problem| inspect::shown(&problem.0))?;
     if parsed.json {
         println!("{}", serde_json::to_string_pretty(&opened)?);
     } else {
-        print!("{}", pr_open::render(&opened));
+        print!("{}", pr_open::render(&opened, &info));
     }
     Ok(0)
 }

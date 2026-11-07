@@ -226,7 +226,7 @@ fn run_of(project: &Project) -> RunInfo {
         worktree: Some(project.wt.display().to_string()),
         branch: Some("feature".into()),
         stage: "finish".into(),
-        running: true,
+        status: "running".into(),
     }
 }
 
@@ -500,7 +500,7 @@ fn a_failed_creation_or_a_failed_record_says_what_happened_and_a_retry_is_safe()
 
     // A run that is not running is not updated, and the pull request is still reported.
     let mut run = run_of(&project);
-    run.running = false;
+    run.status = "done".into();
     let api = FakeApi::default();
     open(&run, &options(&project), &FakeGh::new_pr(URL), &api).unwrap();
     assert!(api.updates.borrow().is_empty());
@@ -586,7 +586,7 @@ fn the_text_and_the_json_say_the_same_and_are_printable() {
         commit: "0123456789".into(),
         recorded: true,
     };
-    let text = render(&opened);
+    let text = render(&opened, &run_of(&Project::new()));
     assert!(text.starts_with("Pull request opened: "), "{text}");
     assert!(text.contains("0123456") && !text.contains("0123456789"));
     assert!(!text.chars().any(|c| c.is_control() && c != '\n'));
@@ -605,7 +605,7 @@ fn the_text_and_the_json_say_the_same_and_are_printable() {
         created: false,
         ..opened
     };
-    assert!(render(&again).starts_with("Pull request already open: "));
+    assert!(render(&again, &run_of(&Project::new())).starts_with("Pull request already open: "));
 }
 
 #[test]
@@ -746,7 +746,7 @@ fn an_entry_without_a_url_is_an_error_and_not_a_reason_to_open_a_second_pull_req
 fn a_run_that_could_not_be_updated_is_told_how_to_record_the_pull_request() {
     let project = Project::new();
     let mut run = run_of(&project);
-    run.running = false;
+    run.status = "done".into();
     let opened = open(
         &run,
         &options(&project),
@@ -755,9 +755,11 @@ fn a_run_that_could_not_be_updated_is_told_how_to_record_the_pull_request() {
     )
     .unwrap();
     assert!(!opened.recorded);
-    let text = render(&opened);
+    let text = render(&opened, &run);
+    assert!(text.contains("not updated"), "{text}");
+    // The command to run is complete: the run, its stage and status, and the pull request.
     assert!(
-        text.contains("not updated") && text.contains("--pr"),
+        text.contains(&format!("factory run update 100 finish done --pr {URL}")),
         "{text}"
     );
     assert_eq!(serde_json::to_value(&opened).unwrap()["recorded"], false);
