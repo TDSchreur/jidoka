@@ -299,7 +299,7 @@ pub(crate) fn problem(what: &str, output: &GhOutput) -> ToolProblem {
     ToolProblem(format!("`gh {what}` failed: {detail}"))
 }
 
-fn run_gh(gh: &dyn Gh, args: &[&str]) -> Result<GhOutput, ToolProblem> {
+pub(crate) fn run_gh(gh: &dyn Gh, args: &[&str]) -> Result<GhOutput, ToolProblem> {
     gh.run(args).map_err(|error| match error {
         GhError::NotInstalled => ToolProblem(
             "The GitHub CLI (`gh`) is not installed or not on PATH. Install it from https://cli.github.com, run `gh auth login`, and try again."

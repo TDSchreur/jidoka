@@ -1,5 +1,6 @@
 use crate::{
-    current_build,
+    current_build, pr_state,
+    pr_wait::RealGh,
     run::{NewRun, Run, RunStore, UpdateRun},
     usage::{collect_and_store, UsageSettings},
 };
@@ -446,6 +447,30 @@ pub(crate) fn build_rocket_with(
         )))
 }
 
+/// How often the dashboard server looks for pull requests whose state is due to be read again.
+const PR_STATE_PASS: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Reads the state of the Runs' pull requests from their hosts, one pass at a time, on a blocking thread so
+/// a slow or missing tool never holds up a request. Merged pull requests are not read again.
+fn watch_pr_states(store: RunStore) {
+    rocket::tokio::spawn(async move {
+        loop {
+            let store = store.clone();
+            let _ = rocket::tokio::task::spawn_blocking(move || {
+                let now = match crate::run::updated_now() {
+                    Ok(now) => now,
+                    Err(error) => return eprintln!("Pull request states were not read: {error}"),
+                };
+                if let Err(error) = pr_state::refresh(&store, &RealGh, now) {
+                    eprintln!("Pull request states were not stored: {error}");
+                }
+            })
+            .await;
+            rocket::tokio::time::sleep(PR_STATE_PASS).await;
+        }
+    });
+}
+
 pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> io::Result<()> {
     let runtime = rocket::tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -457,6 +482,16 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
             .map_err(|error| {
                 io::Error::new(error.kind(), format!("could not open run storage: {error}"))
             })?
+            .attach(rocket::fairing::AdHoc::on_liftoff(
+                "Pull request state",
+                |rocket| {
+                    Box::pin(async move {
+                        if let Some(store) = rocket.state::<RunStore>() {
+                            watch_pr_states(store.clone());
+                        }
+                    })
+                },
+            ))
             .launch()
             .await
             .map(|_| ())
@@ -2207,6 +2242,120 @@ mod tests {
         }
         // A screen reader hears "Ticket #202", not just "#202".
         assert!(script.contains("<span class=\"visually-hidden\">Ticket </span>${shortRef(url)}"));
+    }
+
+    #[rocket::async_test]
+    async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
+        use crate::pr_state::{PrState, PrStatus};
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let run = store
+            .create(NewRun {
+                title: "t".into(),
+                project: "/work".into(),
+                repository: None,
+                session: None,
+                model_routing: None,
+            })
+            .unwrap();
+        let pr = "https://github.com/o/r/pull/7";
+        store
+            .update(
+                &run.id,
+                serde_json::from_str(&format!(
+                    r#"{{"stage":"finish","status":"done","pr":"{pr}"}}"#
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        store
+            .set_pr_status(
+                &run.id,
+                PrStatus {
+                    url: pr.into(),
+                    state: PrState::Merged,
+                    reason: None,
+                    checked_at: 42,
+                },
+            )
+            .unwrap();
+        drop(store);
+        let api = Client::tracked(build_rocket(&path, DEFAULT_PORT).unwrap())
+            .await
+            .unwrap();
+        let list: serde_json::Value = api
+            .get("/api/runs")
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .dispatch()
+            .await
+            .into_json()
+            .await
+            .unwrap();
+        assert_eq!(
+            list[0]["pr_status"],
+            serde_json::json!({"url": pr, "state": "merged", "checked_at": 42})
+        );
+        // An update through the API cannot set it.
+        let response = api
+            .post(format!("/api/runs/{}", run.id))
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .header(ContentType::JSON)
+            .body(r#"{"stage":"finish","status":"done","pr_status":{"state":"open"}}"#)
+            .dispatch()
+            .await;
+        assert_ne!(response.status(), HttpStatus::Ok);
+    }
+
+    #[test]
+    fn the_dashboard_server_refreshes_pull_request_states_in_the_background() {
+        // The pass runs off the request path, on a blocking thread, from a loop started at lift-off.
+        let source = include_str!("server.rs");
+        let serve = source
+            .split("pub(crate) fn serve(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .unwrap();
+        assert!(serve.contains("watch_pr_states"));
+        let watch = source
+            .split("fn watch_pr_states(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a watch_pr_states function");
+        assert!(watch.contains("spawn_blocking"));
+        assert!(watch.contains("pr_state::refresh(&store, &RealGh, now)"));
+    }
+
+    #[rocket::async_test]
+    async fn the_dashboard_shows_each_pull_requests_state_in_words() {
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains(
+            "const PR_STATE = { open: 'Open', draft: 'Draft', merged: 'Merged', closed: 'Closed' };"
+        ));
+        let label = script
+            .split("function PrStateLabel(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a PrStateLabel component");
+        // Only a state read for the pull request the Run records now, and never an unknown one, gets a label.
+        assert!(label.contains("status.url !== run.pr"));
+        assert!(label.contains("!PR_STATE[status.state]"));
+        assert!(label.contains("<span class=${`pr-state ${status.state}`}>"));
+        // Beside the link on the line and in the Shipped log, and as a field in the detail.
+        assert!(script.contains("<${ContextLinks} run=${run} /><${PrStateLabel} run=${run} />"));
+        assert!(script.contains("<${PrStateLabel} run=${run} /></td>"));
+        assert!(script.contains("<${Field} label=\"Pull request state\""));
+        let detail = script
+            .split("function PrStateDetail(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a PrStateDetail component");
+        assert!(detail.contains("status.reason"));
+        assert!(detail.contains("checked ${ago(now - status.checked_at)}"));
+        let css = stylesheet().await;
+        for state in ["open", "draft", "merged", "closed"] {
+            assert!(css.contains(&format!(".pr-state.{state} {{")), "{state}");
+        }
     }
 
     #[rocket::async_test]

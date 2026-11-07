@@ -1,3 +1,4 @@
+use crate::pr_state::PrStatus;
 use crate::routing::{ModelRouting, Role, Task};
 use crate::usage::{Collection, Mark, Usage};
 use serde::{Deserialize, Serialize};
@@ -70,6 +71,9 @@ pub(crate) struct Run {
     pub(crate) sessions: Vec<String>,
     #[serde(default)]
     pub(crate) usage: Option<Usage>,
+    /// The state of the pull request, read from its host by the dashboard server. Callers cannot set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pr_status: Option<PrStatus>,
     /// The model-routing selection resolved when the run started; absent when none applied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) model_routing: Option<ModelRouting>,
@@ -754,6 +758,7 @@ impl RunStore {
             finished_at: None,
             sessions: new.session.into_iter().collect(),
             usage: None,
+            pr_status: None,
             model_routing: new.model_routing,
         };
         let mut run = run;
@@ -894,6 +899,26 @@ impl RunStore {
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             if let Some(run) = runs.iter_mut().find(|run| run.id == id) {
                 run.usage = old;
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Stores the state of a Run's pull request, only while the Run still records that pull request: an update
+    /// that changed it in the meantime wins. A failed save leaves the stored state as it was.
+    pub(crate) fn set_pr_status(&self, id: &str, status: PrStatus) -> io::Result<()> {
+        let mut runs = self.shared.runs.lock().map_err(lock_error)?;
+        let Some(run) = runs.iter_mut().find(|run| run.id == id) else {
+            return Ok(());
+        };
+        if run.pr.as_deref() != Some(status.url.as_str()) {
+            return Ok(());
+        }
+        let old = run.pr_status.replace(status);
+        if let Err(error) = save_runs(&self.shared.path, &runs) {
+            if let Some(run) = runs.iter_mut().find(|run| run.id == id) {
+                run.pr_status = old;
             }
             return Err(error);
         }
