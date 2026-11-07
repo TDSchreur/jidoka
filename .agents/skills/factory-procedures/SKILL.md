@@ -65,6 +65,20 @@ When a run's plan and acceptance criteria exist only in the conversation, save t
 2. Record it with `factory run update <id> <stage> <status> --spec <absolute path>`. This is the same context option as a tracker spec, so no tracker is involved.
 3. When the plan changes, rewrite the file. Never save secrets or a transcript.
 
+## Verification
+
+Find the project's verification in its agent instructions, contributing docs or build files: the commands to run before merging, which should match CI. Run all of it at the cadence set by the workflow. Reuse a passing result only while the checked code and relevant inputs are unchanged, and honor stricter project requirements. A missing tool or failing check blocks the run: fix it or mark the run blocked, and never skip it. If no verification can be found, ask the user once, or say so in the pull request when running unattended.
+
+## Committing for Check
+
+Before Check, commit the completed implementation: make sure the full verification has passed on exactly this code (rerun it if anything changed since it ran), then commit everything that belongs to the change, including new files but not scratch or generated files (ignore or remove those), with a normal commit (never amend), so `git status --porcelain` is empty. `code-review` diffs committed work only, so uncommitted changes would be missed. Pin the review: the baseline is the base commit recorded for the run (`--base-commit`; read it with `factory run inspect`), and the reviewed commit is `HEAD`; record the reviewed commit's short hash with `--summary check="Review pinned at <hash>"` so a new session can find it, and repeat the latest reviewed hash in the Check summary you write when the stage ends, because a new summary replaces the old one.
+
+## Reworks
+
+When Check sends the run back to Build, report it as a Rework: `factory run update <id> build running --rework <n> --activity "Rework <n>: <findings being fixed>"`, numbering Reworks from 1 within the run and leaving the count set when Check runs again. A run gets at most two Reworks.
+
+Fix actionable findings yourself within the Rework allowance; findings alone never block a run. When findings remain after the second Rework, or a finding cannot be resolved, the run needs a decision from the user, so report it as blocked: `factory run update <id> check blocked --blocking-reason "Decision needed on remaining Check findings"`. List the remaining findings and ask the user whether to do one more Rework, finish with the findings listed in the pull request, or stop. Follow their choice, and when work resumes clear the reason with `factory run update <id> <build|finish> running --clear-blocking-reason`. If they stop the run, leave it blocked.
+
 ## Model routing
 
 How a run's model-routing selection applies to the agents that Check starts is in [references/model-routing.md](references/model-routing.md). The workflows with a Check stage read it at the start of every Check pass; nothing else uses it.

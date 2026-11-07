@@ -1,6 +1,6 @@
 ---
 name: factory-full
-description: Take a software change from an idea to a pull request through define, build, check, and finish. Use when the user asks to run factory-full.
+description: Test-first factory workflow with verification after each ticket and both reviews. Usually entered from `factory`; use directly only when the user names factory-full.
 ---
 
 # TDS Factory Full
@@ -11,7 +11,6 @@ Take the user's request through these stages in order. Tell the user what each s
 
 Report progress to the factory dashboard as described under Run reporting in [factory-procedures](../factory-procedures/SKILL.md), with `--mode factory-full`. This workflow has the stages define, build, check and finish.
 
-When Check sends the run back to Build, report it as a Rework: `factory run update <id> build running --rework <n> --activity "Rework <n>: <findings being fixed>"`, numbering Reworks from 1 within the run and leaving the count set when Check runs again.
 
 ## Continuing a run
 
@@ -37,17 +36,16 @@ Store the spec and tickets in the tracker configured in `docs/agents/issue-track
 
 ## Build
 
-Use `implement-spec` to implement the tickets on the run's feature branch, building each ticket test-first with `tdd`. Work sequentially in the run's worktree. Run the project's relevant checks and fix failures before moving on. Find the project's verification: the commands its agent instructions (`AGENTS.md`, `CLAUDE.md`), contributing docs or build files say to run before merging, which should match what its CI runs. Run all of them after each ticket, not only the relevant ones; reuse a passing result only while the checked code and its relevant inputs are unchanged, and always honor stricter checks the project requires. A missing tool or a failing check blocks the run, so fix it or mark the run blocked, and never skip it. If you cannot find any, ask the user once, or say so in the pull request when running unattended.
+Use `implement-spec` to implement the tickets on the run's feature branch, building each ticket test-first with `tdd`. Work sequentially in the run's worktree. Run the project's relevant checks and fix failures before moving on. Run the full verification after every ticket; follow Verification in [factory-procedures](../factory-procedures/SKILL.md).
 
 ## Check
 
-Before Check, commit the completed implementation: make sure the full verification has passed on exactly this code (rerun it if anything changed since it ran), then commit everything that belongs to the change, including new files but not scratch or generated files (ignore or remove those), with a normal commit (never amend), so `git status --porcelain` is empty. `code-review` diffs committed work only, so uncommitted changes would be missed. Pin the review: the baseline is the base commit recorded for the run (`--base-commit`; read it with `factory run inspect`), and the reviewed commit is `HEAD`; record the reviewed commit's short hash with `--summary check="Review pinned at <hash>"` so a new session can find it, and repeat the latest reviewed hash in the Check summary you write when the stage ends, because a new summary replaces the old one.
+Before Check, follow Committing for Check in [factory-procedures](../factory-procedures/SKILL.md).
 
 Use `code-review` with the base commit as the fixed point, and with the spec, then use `security-review` on the same range (base commit to `HEAD`). Tell `code-review` which model and effort its agents use: at the start of every Check pass, including after a Rework, read [Model routing](../factory-procedures/references/model-routing.md) and follow it. When there are no actionable findings, go to Finish.
 
-When there are actionable findings, start a Rework: return to Build, fix the findings test-first with `tdd`, run the relevant checks and then the full verification, and commit the fixes together with any new files. Then run Check again with both reviews (`code-review` and `security-review`), each using the previously reviewed commit as the fixed point so the review covers exactly the Rework's changes, together with the findings it addressed. Pin the new `HEAD` as the reviewed commit, replacing the earlier pin. A run gets at most two Reworks.
+When there are actionable findings, start a Rework: return to Build, fix the findings test-first with `tdd`, run the relevant checks and then the full verification, and commit the fixes together with any new files. Then run Check again with both reviews (`code-review` and `security-review`), each using the previously reviewed commit as the fixed point so the review covers exactly the Rework's changes, together with the findings it addressed. Pin the new `HEAD` as the reviewed commit, replacing the earlier pin. Follow Reworks in [factory-procedures](../factory-procedures/SKILL.md).
 
-Fix actionable findings yourself within the Rework allowance; findings alone never block a run. When findings remain after the second Rework, or a finding cannot be resolved, the run needs a decision from the user, so report it as blocked: `factory run update <id> check blocked --blocking-reason "Decision needed on remaining Check findings"`. List the remaining findings and ask the user whether to do one more Rework, finish with the findings listed in the pull request, or stop. Follow their choice, and when work resumes clear the reason with `factory run update <id> <build|finish> running --clear-blocking-reason`. If they stop the run, leave it blocked.
 
 ## Finish
 
