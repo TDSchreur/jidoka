@@ -1944,11 +1944,13 @@ mod tests {
             "the toolbar toggle is gone"
         );
         // Hidden Projects stay out of the strip.
-        assert!(script.contains("<${Andon}\n        waiting=${visibleRuns"));
+        assert!(script.contains("<${Andon}\n            waiting=${visibleRuns"));
         // Focus goes back to the control that opened the detail, wherever it was; failing that, to the Run's
         // row on the board before its entry in the strip.
         assert!(script.contains("opener.current = document.activeElement"));
-        assert!(script.contains("document.querySelector(`main [data-run-key=\"${key}\"]`)"));
+        assert!(script.contains(
+            "document.querySelector(`.line [data-run-key=\"${key}\"], .shipped [data-run-key=\"${key}\"]`)"
+        ));
         let css = stylesheet().await;
         let lit = css
             .lines()
@@ -2411,6 +2413,115 @@ mod tests {
             "${run.blocking_reason ? html`<${Field} label=\"Status reason\">${run.blocking_reason}<//>` : null}"
         ));
         assert!(!script.contains("<${Field} label=\"Ticket\">"));
+    }
+
+    #[rocket::async_test]
+    async fn the_toolbar_andon_strip_and_line_stay_in_view_without_taking_the_screen() {
+        let script = asset("/assets/app.js").await;
+        // One sticky block inside the main landmark: the toolbar, the andon strip, the message and the line.
+        let top = script
+            .split("<div class=\"top\" ref=${top}>")
+            .nth(1)
+            .expect("a sticky top block")
+            .split("${runs && !runs.length ? html`<${Welcome}")
+            .next()
+            .unwrap();
+        for part in [
+            "<div class=\"toolbar\">",
+            "<${Andon}",
+            "<p id=\"message\"",
+            "<section class=\"line\"",
+        ] {
+            assert!(top.contains(part), "the top holds {part}");
+        }
+        assert!(
+            !top.contains("<${ShippedLog}"),
+            "the Shipped log scrolls under it"
+        );
+        assert!(
+            script.find("<main tabindex=\"-1\">").unwrap()
+                < script.find("<div class=\"top\"").unwrap()
+        );
+        // Its height is published, so focus below it is scrolled into view under it, not behind it.
+        assert!(script.contains("new ResizeObserver("));
+        assert!(script.contains("setProperty('--top-height', `${element.offsetHeight}px`)"));
+        assert!(script.contains("setProperty('--toolbar-height', `${toolbar.offsetHeight}px`)"));
+        let css = stylesheet().await;
+        let (_, rules) = split_tokens(&css);
+        let rule = |selector: &str| {
+            rules
+                .lines()
+                .find(|line| line.starts_with(&format!("{selector} {{")))
+                .unwrap_or_else(|| panic!("no {selector} rule"))
+                .to_string()
+        };
+        let sticky = rule(".top");
+        assert!(sticky.contains("position: sticky; top: 0;"));
+        assert!(
+            sticky.contains("background: var(--color-floor)"),
+            "content does not show through"
+        );
+        // Never more than 60% of the window: the rows and the waiting Runs scroll inside instead.
+        assert!(sticky.contains("max-height: 60dvh"));
+        assert!(
+            sticky.contains("box-sizing: border-box"),
+            "the cap includes the padding"
+        );
+        assert!(rule(".line-rows").contains("overflow-y: auto"));
+        assert!(rule(".andon-list").contains("overflow-y: auto"));
+        // At the cap the line gives up room first, down to about one row; then the waiting Runs.
+        let line = rule(".top > .line");
+        assert!(
+            line.contains("flex: 0 1000 auto") && line.contains("min-height: min(8rem, 20dvh)")
+        );
+        // Browsers without dvh fall back to vh rather than dropping the minimum.
+        assert!(line.contains("min-height: min(8rem, 20vh); min-height: min(8rem, 20dvh)"));
+        let andon = rule(".top > .andon");
+        assert!(andon.contains("flex: 0 1 auto") && andon.contains("min-height: 0"));
+        // Above the footer, so the Projects menu panel is never covered.
+        assert!(sticky.contains("z-index: 3"));
+        // Focus rings inside the scrolling lists sit inside their control, where the list cannot clip them.
+        assert!(rule(".andon-run:focus-visible")
+            .contains("outline-offset: calc(-2 * var(--stroke-thick))"));
+        assert!(rule(".line-open:focus-visible::after")
+            .contains("outline-offset: calc(-1 * var(--stroke-thick))"));
+        assert!(rule(".line-row .meta a:focus-visible").contains("outline-offset: 0"));
+        // Narrow screens: the toolbar scrolls away, the andon strip and the line stay.
+        let narrow = rules
+            .split("@media (max-width: 48rem) {\n")
+            .skip(1)
+            .find(|block| {
+                block
+                    .split("\n}")
+                    .next()
+                    .is_some_and(|body| body.contains(".top {"))
+            })
+            .and_then(|block| block.split("\n}").next())
+            .expect("a narrow-screen sticky rule");
+        // The toolbar and its bottom margin scroll away, so the strip sits just below the window's top.
+        assert!(narrow.contains("top: calc(-1 * (var(--toolbar-height) + var(--space-6)))"));
+        assert!(
+            narrow.contains("scroll-padding-top: calc(var(--top-height) - var(--toolbar-height))")
+        );
+        assert!(
+            rule("html").contains("scroll-padding-top: calc(var(--top-height) + var(--space-4))")
+        );
+        // In a very short window, such as at 400% zoom, it scrolls with the page.
+        let short = rules
+            .split("@media (max-height: 30rem) {\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("a short-window block");
+        assert!(short.contains(".top { position: static; max-height: none; }"));
+        assert!(short.contains("html { scroll-padding-top: 0; }"));
+        // On a phone the Shipped table keeps readable columns and scrolls sideways in its own region.
+        assert!(rule(".shipped-table").contains("min-width: 36rem"));
+        // The page column may be narrower than that table, so only the table's region scrolls, not the page.
+        assert!(rule("#app").contains("min-width: 0"));
+        // A closed Projects menu does not lay out its panel, which would otherwise widen the page on a phone.
+        assert!(rules.contains(".projects-menu:not([open]) .projects-panel { display: none; }"));
+        // Visually hidden labels in a scrolled table are positioned inside it, so they cannot widen the page.
+        assert!(rule(".table-scroll").contains("position: relative"));
     }
 
     #[rocket::async_test]
