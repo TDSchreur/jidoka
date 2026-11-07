@@ -239,7 +239,7 @@ factory run begin --run <run-id> [--base <branch>] [--branch <name>] [--mode ...
 
 #### Opening a pull request
 
-`factory pr open <run-id> --title "<title>" --body-file <path>` pushes the run's branch and opens its pull request, or finds the one that is open, and records its URL on the run. The agent still writes the title (one line, up to 256 characters) and the description (a file of up to 256 KiB). Like the other pull request commands it needs the GitHub CLI (`gh`), signed in with `gh auth login`.
+`factory pr open <run-id> --title "<title>" --body-file <path>` pushes the run's branch and opens its pull request, or finds the one that is open, and records its URL on the run. The agent still writes the title (one line, up to 256 characters) and the description (a file of up to 256 KiB). For GitHub it needs the GitHub CLI (`gh`), signed in with `gh auth login`. For Azure DevOps Services it needs the Azure CLI (`az`) and its `azure-devops` extension, authenticated with `az login` or `az devops login`. Git also needs credentials for the remote.
 
 ```text
 factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]
@@ -274,6 +274,12 @@ Exit status 1 is a problem with what to do.
 - **Merge.** `git merge --no-ff` with the message "Merge origin/<base> into <branch>": never a rebase, amend or fast-forward. It never merges the pull request.
 - **Push.** `refs/heads/<branch>:refs/heads/<branch>`, never forced. If the push fails the merge commit stays, and running the command again pushes it, but only when HEAD is that merge exactly as git makes it on its own, on top of what the remote has, with no overlap; a merge that needs verification or a conflict resolved by hand is never pushed by the command. If someone else pushed to the branch, the command stops before merging and says so.
 - **Run record.** A running run gets a milestone activity, such as "Merged develop into the branch", on its current stage and status; it is neither a Rework nor a CI fix.
+
+Azure Repos pull request creation recognizes `dev.azure.com` HTTPS URLs, `ssh.dev.azure.com` v3 SSH URLs, and legacy `visualstudio.com` HTTPS URLs. The Azure DevOps CLI does not support Azure DevOps Server. Azure descriptions must be UTF-8 and at most 4,000 characters. Factory passes the organization, project, and repository explicitly to the CLI and checks for an existing pull request before pushing.
+
+For a GitHub Enterprise host that cannot be identified from its remote, set `git config factory.prProvider github`. For a custom Azure Services remote, explicitly select the target with `git config factory.prProvider azure` and set `factory.azureOrganization`, `factory.azureProject`, and `factory.azureRepository` with `git config`. For an unrecognized custom remote, also set `factory.azureOrigin` to its exact `origin` URL, so stale configuration is rejected if the remote changes. For recognized Azure remotes, the configured destination must match `origin`. An unknown host without an override is refused.
+
+Azure support currently covers pull request creation only. `factory pr wait` and the shared factory finish workflow still require GitHub; Azure CI and policy watching are planned separately.
 
 #### Watching CI
 

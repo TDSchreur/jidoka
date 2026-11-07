@@ -119,6 +119,9 @@ struct FakeGh {
     list: RefCell<VecDeque<Result<GhOutput, GhError>>>,
     create: RefCell<VecDeque<Result<GhOutput, GhError>>>,
     calls: RefCell<Vec<(PathBuf, String)>>,
+    remote_url: RefCell<Option<String>>,
+    push_url: RefCell<Option<String>>,
+    az_missing: std::cell::Cell<bool>,
 }
 
 fn ok(stdout: &str) -> Result<GhOutput, GhError> {
@@ -145,8 +148,36 @@ fn pop(queue: &RefCell<VecDeque<Result<GhOutput, GhError>>>) -> Result<GhOutput,
 }
 
 impl Gh for FakeGh {
+    fn az(&self, dir: &Path, args: &[&str]) -> Result<GhOutput, GhError> {
+        if self.az_missing.get() {
+            return Err(GhError::NotInstalled);
+        }
+        self.calls
+            .borrow_mut()
+            .push((dir.to_path_buf(), args.join(" ")));
+        match args {
+            ["repos", "pr", "list", ..] => pop(&self.list),
+            ["repos", "pr", "create", ..] => pop(&self.create),
+            other => panic!("unexpected az call {other:?}"),
+        }
+    }
     /// The code under test runs git; the user's own git settings must not reach it.
     fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
+        if args == ["remote", "get-url", "--push", "--all", "origin"] {
+            return Ok(self
+                .push_url
+                .borrow()
+                .clone()
+                .or_else(|| self.remote_url.borrow().clone())
+                .unwrap_or_else(|| "https://github.com/o/r.git".into()));
+        }
+        if args == ["remote", "get-url", "origin"] {
+            return Ok(self
+                .remote_url
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| "https://github.com/o/r.git".into()));
+        }
         let mut command = Command::new("git");
         command.arg("-C").arg(dir).args(args).env("LC_ALL", "C");
         let output = isolated(&mut command).output().map_err(|e| e.to_string())?;
@@ -763,4 +794,265 @@ fn a_run_that_could_not_be_updated_is_told_how_to_record_the_pull_request() {
         "{text}"
     );
     assert_eq!(serde_json::to_value(&opened).unwrap()["recorded"], false);
+}
+
+#[test]
+fn an_unknown_remote_is_rejected_before_pushing() {
+    let project = Project::new();
+    let gh = FakeGh::new_pr(URL);
+    *gh.remote_url.borrow_mut() = Some("https://unknown.example/team/repo.git".into());
+    let error = open(
+        &run_of(&project),
+        &options(&project),
+        &gh,
+        &FakeApi::default(),
+    )
+    .unwrap_err();
+    assert!(error.0.contains("provider"), "{}", error.0);
+    assert_eq!(project.remote_branch("feature"), None);
+}
+
+#[test]
+fn azure_remote_opens_pull_request_in_the_selected_repository() {
+    let project = Project::new();
+    let gh = FakeGh::default();
+    *gh.remote_url.borrow_mut() =
+        Some("https://dev.azure.com/dutchworkz/Projects/_git/Kahoot".into());
+    gh.list.borrow_mut().push_back(ok("[]"));
+    gh.create.borrow_mut().push_back(ok(
+        r#"{"pullRequestId":17,"repository":{"id":"96a543bd-0277-4ba4-acc6-2e45294010fe"}}"#,
+    ));
+    let opened = open(
+        &run_of(&project),
+        &options(&project),
+        &gh,
+        &FakeApi::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        opened.pull_request,
+        "https://dev.azure.com/dutchworkz/Projects/_git/Kahoot/pullrequest/17"
+    );
+    assert!(opened.created);
+    assert_eq!(project.remote_branch("feature"), Some(opened.commit));
+    let calls = gh.calls.borrow();
+    for (_, command) in calls.iter().filter(|(_, c)| c.starts_with("repos pr")) {
+        assert!(
+            command.contains("--organization https://dev.azure.com/dutchworkz"),
+            "{command}"
+        );
+        assert!(command.contains("--project Projects"), "{command}");
+        assert!(command.contains("--repository Kahoot"), "{command}");
+    }
+}
+
+#[test]
+fn azure_reuses_the_matching_pr_and_skips_a_fork() {
+    let project = Project::new();
+    let gh = FakeGh::default();
+    *gh.remote_url.borrow_mut() =
+        Some("git@ssh.dev.azure.com:v3/dutchworkz/Projects/Kahoot".into());
+    gh.list.borrow_mut().push_back(ok(r#"[
+      {"pullRequestId":2,"repository":{"id":"target"},"forkSource":{"repository":{"id":"fork"}}},
+      {"pullRequestId":3,"repository":{"id":"target"},"targetRefName":"refs/heads/main"}
+    ]"#));
+    let opened = open(
+        &run_of(&project),
+        &options(&project),
+        &gh,
+        &FakeApi::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        opened.pull_request,
+        "https://dev.azure.com/dutchworkz/Projects/_git/Kahoot/pullrequest/3"
+    );
+    assert_eq!(opened.base, "main");
+    assert!(!opened.created);
+    assert_eq!(project.remote_branch("feature"), Some(opened.commit));
+}
+
+#[test]
+fn azure_unavailable_or_invalid_body_never_pushes() {
+    for invalid_body in [false, true] {
+        let project = Project::new();
+        let gh = FakeGh::default();
+        *gh.remote_url.borrow_mut() =
+            Some("https://dev.azure.com/dutchworkz/Projects/_git/Kahoot".into());
+        if invalid_body {
+            gh.list.borrow_mut().push_back(ok("[]"));
+        } else {
+            gh.list
+                .borrow_mut()
+                .push_back(failed(1, "secret credential"));
+        }
+        let options = options(&project);
+        if invalid_body {
+            fs::write(&options.body_file, "x".repeat(4001)).unwrap();
+        }
+        let error = open(&run_of(&project), &options, &gh, &FakeApi::default()).unwrap_err();
+        assert!(!error.0.contains("secret credential"));
+        assert_eq!(project.remote_branch("feature"), None);
+    }
+}
+
+#[test]
+fn azure_creation_retry_reuses_concurrent_pull_request() {
+    let project = Project::new();
+    let gh = FakeGh::default();
+    *gh.remote_url.borrow_mut() =
+        Some("https://dutchworkz.visualstudio.com/Projects/_git/Kahoot".into());
+    gh.list.borrow_mut().push_back(ok("[]"));
+    gh.create.borrow_mut().push_back(failed(1, "race"));
+    gh.list
+        .borrow_mut()
+        .push_back(ok(r#"[{"pullRequestId":44,"repository":{"id":"target"}}]"#));
+    let opened = open(
+        &run_of(&project),
+        &options(&project),
+        &gh,
+        &FakeApi::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        opened.pull_request,
+        "https://dev.azure.com/dutchworkz/Projects/_git/Kahoot/pullrequest/44"
+    );
+    assert!(!opened.created);
+}
+
+#[test]
+fn github_enterprise_can_be_selected_explicitly() {
+    let project = Project::new();
+    run_git(&project.repo, &["config", "factory.prProvider", "github"]);
+    let gh = FakeGh::new_pr(URL);
+    *gh.remote_url.borrow_mut() = Some("git@git.example.com:team/repo.git".into());
+    let opened = open(
+        &run_of(&project),
+        &options(&project),
+        &gh,
+        &FakeApi::default(),
+    )
+    .unwrap();
+    assert_eq!(opened.pull_request, URL);
+}
+
+#[test]
+fn azure_override_cannot_push_a_different_origin() {
+    let project = Project::new();
+    for (key, value) in [
+        ("factory.prProvider", "azure"),
+        ("factory.azureOrganization", "other"),
+        ("factory.azureProject", "Projects"),
+        ("factory.azureRepository", "Kahoot"),
+    ] {
+        run_git(&project.repo, &["config", key, value]);
+    }
+    let gh = FakeGh::default();
+    *gh.remote_url.borrow_mut() =
+        Some("https://dev.azure.com/dutchworkz/Projects/_git/Kahoot".into());
+    let error = open(
+        &run_of(&project),
+        &options(&project),
+        &gh,
+        &FakeApi::default(),
+    )
+    .unwrap_err();
+    assert!(error.0.contains("origin"), "{}", error.0);
+    assert_eq!(project.remote_branch("feature"), None);
+}
+
+#[test]
+fn github_remote_with_username_is_recognized() {
+    let project = Project::new();
+    let gh = FakeGh::new_pr(URL);
+    *gh.remote_url.borrow_mut() = Some("https://user@github.com/o/r.git".into());
+    assert_eq!(
+        open(
+            &run_of(&project),
+            &options(&project),
+            &gh,
+            &FakeApi::default()
+        )
+        .unwrap()
+        .pull_request,
+        URL
+    );
+}
+
+#[test]
+fn azure_missing_cli_and_malformed_list_fail_before_push() {
+    for missing in [true, false] {
+        let project = Project::new();
+        let gh = FakeGh::default();
+        *gh.remote_url.borrow_mut() =
+            Some("https://dutchworkz@dev.azure.com/dutchworkz/Projects/_git/Kahoot".into());
+        gh.az_missing.set(missing);
+        if !missing {
+            gh.list.borrow_mut().push_back(ok("invalid JSON"));
+        }
+        let error = open(
+            &run_of(&project),
+            &options(&project),
+            &gh,
+            &FakeApi::default(),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .0
+                .contains(if missing { "Azure CLI" } else { "invalid JSON" }),
+            "{}",
+            error.0
+        );
+        assert_eq!(project.remote_branch("feature"), None);
+    }
+}
+
+#[test]
+fn azure_explicit_override_uses_confirmed_custom_origin() {
+    let project = Project::new();
+    for (key, value) in [
+        ("factory.prProvider", "azure"),
+        ("factory.azureOrganization", "dutchworkz"),
+        ("factory.azureProject", "Projects"),
+        ("factory.azureRepository", "Kahoot"),
+        ("factory.azureOrigin", "custom:repo"),
+    ] {
+        run_git(&project.repo, &["config", key, value]);
+    }
+    let gh = FakeGh::default();
+    *gh.remote_url.borrow_mut() = Some("custom:repo".into());
+    gh.list
+        .borrow_mut()
+        .push_back(ok(r#"[{"pullRequestId":7,"repository":{"id":"x"}}]"#));
+    let opened = open(
+        &run_of(&project),
+        &options(&project),
+        &gh,
+        &FakeApi::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        opened.pull_request,
+        "https://dev.azure.com/dutchworkz/Projects/_git/Kahoot/pullrequest/7"
+    );
+}
+
+#[test]
+fn azure_rejects_a_push_destination_in_a_different_repository() {
+    let project = Project::new();
+    let gh = FakeGh::default();
+    *gh.remote_url.borrow_mut() =
+        Some("https://dev.azure.com/dutchworkz/Projects/_git/Kahoot".into());
+    *gh.push_url.borrow_mut() = Some("https://dev.azure.com/other/Projects/_git/Kahoot".into());
+    let error = open(
+        &run_of(&project),
+        &options(&project),
+        &gh,
+        &FakeApi::default(),
+    )
+    .unwrap_err();
+    assert!(error.0.contains("push"), "{}", error.0);
+    assert_eq!(project.remote_branch("feature"), None);
 }

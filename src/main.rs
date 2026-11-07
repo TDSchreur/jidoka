@@ -221,7 +221,6 @@ fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
         return Err("Invalid run id".into());
     }
-    pr_wait::check_gh(&pr_wait::RealGh).map_err(|problem| problem.0)?;
     let run = fetch_run(ADDRESS, id)?;
     let info = pr_open::RunInfo {
         id: id.to_string(),
