@@ -310,6 +310,7 @@ mod tests {
         let continuing = continuing.split("\n## ").next().unwrap();
         for needle in [
             "factory run inspect",
+            "factory run check",
             "git worktree list",
             "git branch --show-current",
             "merge-base --is-ancestor",

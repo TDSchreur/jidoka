@@ -13,6 +13,7 @@ mod requests_pool;
 mod routing;
 mod run;
 mod run_begin;
+mod run_check;
 mod server;
 mod stats;
 mod update;
@@ -24,7 +25,7 @@ use run::UPDATE_HELP;
 use server::{serve, ADDRESS, DEFAULT_PORT};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr sync <run-id> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr sync <run-id> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run check <run-id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -120,6 +121,9 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             let parsed = run_begin::parse_options(title, options)
                 .map_err(|error| format!("{error}\n{HELP}"))?;
             return run_begin_command(parsed);
+        }
+        ["run", "check", id, options @ ..] if !id.starts_with('-') => {
+            return run_check_command(id, options);
         }
         ["run", "inspect", id, options @ ..] => {
             let json = match options {
@@ -240,6 +244,27 @@ fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
         print!("{}", pr_open::render(&opened, &info));
     }
     Ok(0)
+}
+
+/// `factory run check <run-id>`: compares the run's recorded workspace with the repository. It only reads.
+/// The exit status is 0 when nothing differs, 2 when something does, and 1 for a problem.
+fn run_check_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
+    let json = run_check::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
+    let run = fetch_run(ADDRESS, id)?;
+    let recorded = run_check::Recorded {
+        id: id.to_string(),
+        repository: run.repository.clone(),
+        worktree: run.worktree.clone(),
+        branch: run.branch.clone(),
+        base_commit: run.base_commit.clone(),
+    };
+    let report = run_check::check(&recorded, &run_check::ReadOnlyGit);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", run_check::render(&report));
+    }
+    Ok(report.exit_code)
 }
 
 /// `factory pr sync <run-id>`: brings the run's branch up to date with its base. The exit status is the
