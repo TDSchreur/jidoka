@@ -8,8 +8,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
+    timeout-minutes: 45
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -32,12 +37,25 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Lint workflows
+        run: '"$(go env GOPATH)/bin/actionlint"'
   ci-ok:
     if: always()
-    needs: [check]
+    needs: [check, actionlint]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Require all checks to pass
         env:
           RESULT: ${{ needs.check.result }}
-        run: test "$RESULT" = success
+          ACTIONLINT_RESULT: ${{ needs.actionlint.result }}
+        run: test "$RESULT" = success && test "$ACTIONLINT_RESULT" = success
