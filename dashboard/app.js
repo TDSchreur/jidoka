@@ -956,15 +956,20 @@ function App() {
       opener.current = null;
     }
   }, [openKey]);
-  // The sticky top's height, as --top-height, so the page scrolls a focused control below it into view.
+  // The sticky top's height (--top-height), so the page scrolls a focused control below it into view, and its
+  // toolbar's height (--toolbar-height), which scrolls away on narrow screens.
   const top = useRef(null);
   useEffect(() => {
     const element = top.current;
-    if (!element || typeof ResizeObserver !== 'function') return;
-    const observer = new ResizeObserver(() =>
-      document.documentElement.style.setProperty('--top-height', `${element.offsetHeight}px`),
-    );
+    const toolbar = element?.querySelector('.toolbar');
+    if (!element || !toolbar || typeof ResizeObserver !== 'function') return;
+    const style = document.documentElement.style;
+    const observer = new ResizeObserver(() => {
+      style.setProperty('--top-height', `${element.offsetHeight}px`);
+      style.setProperty('--toolbar-height', `${toolbar.offsetHeight}px`);
+    });
     observer.observe(element);
+    observer.observe(toolbar);
     return () => observer.disconnect();
   }, []);
   return html`<${ProjectNames.Provider} value=${names}>

@@ -2445,6 +2445,7 @@ mod tests {
         // Its height is published, so focus below it is scrolled into view under it, not behind it.
         assert!(script.contains("new ResizeObserver("));
         assert!(script.contains("setProperty('--top-height', `${element.offsetHeight}px`)"));
+        assert!(script.contains("setProperty('--toolbar-height', `${toolbar.offsetHeight}px`)"));
         let css = stylesheet().await;
         let (_, rules) = split_tokens(&css);
         let rule = |selector: &str| {
@@ -2468,7 +2469,37 @@ mod tests {
         );
         assert!(rule(".line-rows").contains("overflow-y: auto"));
         assert!(rule(".andon-list").contains("overflow-y: auto"));
-        assert!(rule(".top > .line").contains("min-height: 0"));
+        // At the cap the line gives up room first, down to about one row; then the waiting Runs.
+        let line = rule(".top > .line");
+        assert!(
+            line.contains("flex: 0 1000 auto") && line.contains("min-height: min(8rem, 20dvh)")
+        );
+        let andon = rule(".top > .andon");
+        assert!(andon.contains("flex: 0 1 auto") && andon.contains("min-height: 0"));
+        // Above the footer, so the Projects menu panel is never covered.
+        assert!(sticky.contains("z-index: 3"));
+        // Focus rings inside the scrolling lists sit inside their control, where the list cannot clip them.
+        assert!(rule(".andon-run:focus-visible")
+            .contains("outline-offset: calc(-2 * var(--stroke-thick))"));
+        assert!(rule(".line-open:focus-visible::after")
+            .contains("outline-offset: calc(-1 * var(--stroke-thick))"));
+        assert!(rule(".line-row .meta a:focus-visible").contains("outline-offset: 0"));
+        // Narrow screens: the toolbar scrolls away, the andon strip and the line stay.
+        let narrow = rules
+            .split("@media (max-width: 48rem) {\n")
+            .skip(1)
+            .find(|block| {
+                block
+                    .split("\n}")
+                    .next()
+                    .is_some_and(|body| body.contains(".top {"))
+            })
+            .and_then(|block| block.split("\n}").next())
+            .expect("a narrow-screen sticky rule");
+        assert!(narrow.contains("top: calc(-1 * (var(--toolbar-height) + var(--space-4)))"));
+        assert!(
+            narrow.contains("scroll-padding-top: calc(var(--top-height) - var(--toolbar-height))")
+        );
         assert!(
             rule("html").contains("scroll-padding-top: calc(var(--top-height) + var(--space-4))")
         );

@@ -3,7 +3,7 @@
    Colours and shadows differ per theme; every rule below the layer reads tokens only.
    Amber means "needs you" and always carries dark text. Red only means errors, offline and the confirm button of a delete.
    --station is the exception: each row of the line sets it to its station number, 0 to 3, which places the rail marker.
-   --top-height is set by the page to the height of the sticky top, so focus scrolls below it. */
+   --top-height and --toolbar-height are set by the page to the heights of the sticky top and its toolbar. */
 :root {
   color-scheme: light dark;
   --color-floor: #E8EBEE;
@@ -50,6 +50,7 @@
   --ease: cubic-bezier(0.33, 0, 0.67, 1);
   --station: 0;
   --top-height: 0px;
+  --toolbar-height: 0px;
 }
 :root[data-theme="light"] { color-scheme: light; }
 @media (prefers-color-scheme: dark) {
@@ -121,9 +122,18 @@ p { color: var(--color-slate); margin: var(--space-2) 0; }
 .connection.offline [role="status"] { color: var(--color-red); font-weight: var(--weight-strong); }
 @keyframes beat { from { transform: scale(1.8); opacity: .4; } to { transform: scale(1); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .connection .pulse { animation: none; } }
-.top { position: sticky; top: 0; z-index: 2; box-sizing: border-box; display: flex; flex-direction: column; max-height: 60vh; max-height: 60dvh; padding-top: var(--space-4); background: var(--color-floor); }
+.top { position: sticky; top: 0; z-index: 3; box-sizing: border-box; display: flex; flex-direction: column; max-height: 60vh; max-height: 60dvh; padding-top: var(--space-4); background: var(--color-floor); }
 .top > * { flex: none; }
-.top > .line { display: flex; flex: 0 1 auto; flex-direction: column; min-height: 0; margin-bottom: var(--space-6); }
+.top > .line { display: flex; flex: 0 1000 auto; flex-direction: column; min-height: min(8rem, 20dvh); margin-bottom: var(--space-6); }
+/* When the cap is reached, the line gives up room first, down to its heading and about one row; then the waiting Runs,
+   so what needs you stays in view longest. */
+.top > .andon { display: flex; flex: 0 1 auto; flex-direction: column; min-height: 0; }
+.top .andon-list { flex: 0 1 auto; min-height: 0; }
+/* Narrow screens: the toolbar scrolls away and the andon strip and the line stay, with the same 60% for them. */
+@media (max-width: 48rem) {
+  html { scroll-padding-top: calc(var(--top-height) - var(--toolbar-height)); }
+  .top { top: calc(-1 * (var(--toolbar-height) + var(--space-4))); max-height: calc(60dvh + var(--toolbar-height) + var(--space-4)); }
+}
 /* A very short window, such as 400% zoom: the top scrolls with the page, so the rest stays reachable. */
 @media (max-height: 30rem) {
   html { scroll-padding-top: 0; }
@@ -166,7 +176,7 @@ p { color: var(--color-slate); margin: var(--space-2) 0; }
 .andon-list { display: grid; gap: var(--space-2); max-height: 20vh; max-height: 20dvh; margin: var(--space-4) 0 0; padding: 0; list-style: none; overflow-y: auto; overscroll-behavior: contain; }
 .andon-run { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 var(--space-6); width: 100%; padding: var(--space-4) var(--space-5); border: var(--stroke-thin) solid var(--color-on-amber); border-radius: var(--radius-m); background: none; color: var(--color-on-amber); font: inherit; text-align: left; cursor: pointer; }
 .andon-run:hover { background: var(--color-panel); color: var(--color-slate); }
-.andon-run:focus-visible { outline: var(--stroke-thick) solid var(--color-on-amber); outline-offset: var(--stroke-thick); }
+.andon-run:focus-visible { outline: var(--stroke-thick) solid var(--color-on-amber); outline-offset: calc(-2 * var(--stroke-thick)); }
 .andon-run-title { font-weight: var(--weight-strong); overflow-wrap: anywhere; }
 .andon-run-project { font-size: var(--text-xs); text-align: right; }
 .andon-run-reason { grid-column: 1 / -1; overflow-wrap: anywhere; }
@@ -179,7 +189,7 @@ p { color: var(--color-slate); margin: var(--space-2) 0; }
 .line-open { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .line-open::after { content: ''; position: absolute; inset: 0; }
 .line-open:focus-visible { outline: none; }
-.line-open:focus-visible::after { outline: var(--stroke-thick) solid var(--color-slate); outline-offset: var(--stroke-thick); }
+.line-open:focus-visible::after { outline: var(--stroke-thick) solid var(--color-slate); outline-offset: calc(-1 * var(--stroke-thick)); }
 .toggle.danger { border-color: var(--color-red); background: var(--color-red); color: var(--color-on-red); font-weight: var(--weight-strong); }
 /* Help: a large modal with tabs. Its height is fixed so a tab change does not resize it; each tab scrolls on its own.
    `.confirm.help` outranks `.confirm`, which comes later and sets the small width. */
@@ -266,7 +276,8 @@ main:focus { outline: none; }
 .chip { display: inline-block; padding: var(--space-1) var(--space-3); border: var(--stroke-thin) solid var(--color-muted); border-radius: var(--radius-s); font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-slate); background: var(--color-tint); }
 /* The footer, and the version in it, stays in view: at the bottom of a short page, and stuck to the bottom of the window while a long page scrolls. */
 #app { min-width: 0; margin-bottom: var(--space-7); }
-/* z-index 2: above row links (1), which otherwise paint over the footer while the page scrolls. */
+/* z-index 2: above row links (1), which otherwise paint over the footer while the page scrolls. The sticky top (3)
+   stays above it, so the Projects menu panel is never covered. */
 footer { position: sticky; bottom: 0; z-index: 2; margin-top: auto; padding: var(--space-4) 0; background: var(--color-floor); border-top: var(--stroke-thin) solid var(--color-rule); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-6); }
 footer .theme legend, footer .theme label { font-size: var(--text-xs); line-height: var(--leading-xs); }
 footer .theme label { padding: var(--space-2) var(--space-4); }
@@ -292,6 +303,8 @@ a:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline
 .line-row.blocked .where { color: var(--color-slate); font-weight: var(--weight-strong); }
 .line-row .meta { grid-area: meta; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-5); font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); }
 .line-row .meta a { position: relative; z-index: 1; }
+/* Links in the scrolling rows keep their focus ring inside the row, so the scroller cannot clip it. */
+.line-row .meta a:focus-visible { outline-offset: 0; }
 .meta .links { display: inline-flex; gap: var(--space-4); }
 .line-row .activity { grid-area: activity; margin: 0; color: var(--color-slate); overflow-wrap: anywhere; }
 .line .empty { margin: 0; padding: var(--space-5) var(--space-6); }
