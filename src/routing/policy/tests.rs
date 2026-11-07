@@ -444,6 +444,29 @@ fn a_starter_for_both_agents_is_one_usable_file_with_an_entry_each() {
             );
         }
     }
+    for (host, expected) in [
+        (
+            Host::Claude,
+            [("sonnet", "medium"), ("sonnet", "medium"), ("haiku", "low")],
+        ),
+        (
+            Host::Codex,
+            [
+                ("gpt-6.1-terra", "medium"),
+                ("gpt-6.1-terra", "medium"),
+                ("gpt-6-luna", "low"),
+            ],
+        ),
+    ] {
+        let selected = load(&path, Some(host)).unwrap().selection.unwrap();
+        for (role, (model, effort)) in [Role::Strong, Role::Coding, Role::Routine]
+            .into_iter()
+            .zip(expected)
+        {
+            assert_eq!(selected.roles[&role].model, model);
+            assert_eq!(selected.roles[&role].effort.as_deref(), Some(effort));
+        }
+    }
     // The two entries are different, and a run must name its agent.
     let claude = selection(&fs::read_to_string(&path).unwrap(), Some(Host::Claude));
     let codex = selection(&fs::read_to_string(&path).unwrap(), Some(Host::Codex));
