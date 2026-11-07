@@ -653,6 +653,8 @@ mod tests {
             .collect()
     }
 
+    /// A served asset as text, with line endings normalised to `\n`: a Windows checkout has CRLF, and tests cut
+    /// components out of the source at `\n}\n`.
     async fn asset(path: &'static str) -> String {
         let dir = TestDir::new();
         client(&dir)
@@ -664,6 +666,7 @@ mod tests {
             .into_string()
             .await
             .unwrap()
+            .replace("\r\n", "\n")
     }
 
     async fn stylesheet() -> String {
