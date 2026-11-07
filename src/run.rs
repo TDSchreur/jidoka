@@ -10,7 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory-full|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <build|check|finish>=<strong|coding|routine> (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
+pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory-full|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <build|check|finish>=<strong|coding|routine> (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
 const MAX_TICKETS: usize = 100;
@@ -58,6 +58,8 @@ pub(crate) struct Run {
     pub(crate) tickets: Vec<Ticket>,
     #[serde(default)]
     pub(crate) ticket_reports: Vec<TicketReport>,
+    #[serde(default)]
+    pub(crate) run_reports: Vec<RunReport>,
     /// One short summary per stage, kept after later stages begin.
     #[serde(default)]
     pub(crate) summaries: BTreeMap<Stage, String>,
@@ -130,6 +132,21 @@ pub(crate) struct Ticket {
 pub(crate) enum ReportKind {
     Skill,
     Activity,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NewRunReport {
+    pub(crate) kind: ReportKind,
+    pub(crate) text: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct RunReport {
+    pub(crate) kind: ReportKind,
+    pub(crate) text: String,
+    pub(crate) stage: Stage,
+    pub(crate) at: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -238,6 +255,8 @@ pub(crate) struct UpdateRun {
     pub(crate) ticket_status: BTreeMap<String, TicketStatus>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) ticket_reports: Vec<NewTicketReport>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) run_reports: Vec<NewRunReport>,
     /// Stage summaries to set; null removes that stage's summary. Other stages keep theirs.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) summaries: BTreeMap<Stage, Option<String>>,
@@ -431,6 +450,7 @@ impl UpdateRun {
             tickets: FieldUpdate::Keep,
             ticket_status: BTreeMap::new(),
             ticket_reports: Vec::new(),
+            run_reports: Vec::new(),
             summaries: BTreeMap::new(),
             sessions: Vec::new(),
             model_routing: FieldUpdate::Keep,
@@ -514,6 +534,15 @@ impl UpdateRun {
             check_text("Ticket report", &report.text, 500)?;
             if has_control(&report.text) {
                 return Err("Ticket report must not contain control characters".into());
+            }
+        }
+        if self.run_reports.len() > 100 {
+            return Err("At most 100 run reports can be submitted at once".into());
+        }
+        for report in &self.run_reports {
+            check_text("Run report", &report.text, 500)?;
+            if has_control(&report.text) {
+                return Err("Run report must not contain control characters".into());
             }
         }
         for summary in self.summaries.values().flatten() {
@@ -643,6 +672,17 @@ pub(crate) fn parse_update(
                 if !update.sessions.iter().any(|known| known == *id) {
                     update.sessions.push((*id).to_string());
                 }
+                continue;
+            }
+            "--run-report" => {
+                let kind = *next_value()?;
+                let text = *next_value()?;
+                let kind = serde_json::from_value(kind.into())
+                    .map_err(|_| "Run report kind must be skill or activity")?;
+                update.run_reports.push(NewRunReport {
+                    kind,
+                    text: text.to_string(),
+                });
                 continue;
             }
             "--ticket-report" => {
@@ -809,6 +849,7 @@ impl RunStore {
             pr: None,
             tickets: Vec::new(),
             ticket_reports: Vec::new(),
+            run_reports: Vec::new(),
             summaries: BTreeMap::new(),
             timeline: Vec::new(),
             finished_at: None,
@@ -905,6 +946,17 @@ impl RunStore {
             }
             next.ticket_reports.push(TicketReport {
                 ticket: report.ticket,
+                kind: report.kind,
+                text: report.text,
+                stage: update.stage,
+                at: updated_at,
+            });
+        }
+        if next.run_reports.len() + update.run_reports.len() > 1000 {
+            return Err(io_invalid("A run can hold at most 1000 run reports"));
+        }
+        for report in update.run_reports {
+            next.run_reports.push(RunReport {
                 kind: report.kind,
                 text: report.text,
                 stage: update.stage,
@@ -2161,6 +2213,43 @@ mod tests {
             .unwrap()
             .run;
         assert_eq!(reopened.finished_at, None);
+    }
+
+    #[test]
+    fn run_reports_survive_reopening_without_tickets() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let run = new_run(&store, "task");
+        let update = parse_update(
+            "build",
+            "running",
+            &[
+                "--run-report",
+                "skill",
+                "factory-balanced",
+                "--run-report",
+                "activity",
+                "Checks passed",
+            ],
+        )
+        .unwrap();
+        store.update(&run.id, update).unwrap().unwrap();
+        let reopened = RunStore::open(&path).unwrap();
+        let saved = serde_json::to_value(reopened.get(&run.id).unwrap().unwrap()).unwrap();
+        assert_eq!(saved["tickets"], serde_json::json!([]));
+        assert_eq!(saved["run_reports"][0]["kind"], "skill");
+        assert_eq!(saved["run_reports"][0]["text"], "factory-balanced");
+        assert_eq!(saved["run_reports"][1]["text"], "Checks passed");
+        assert_eq!(saved["run_reports"][1]["stage"], "build");
+        assert!(saved["run_reports"][1]["at"].as_u64().is_some());
+        for args in [
+            vec!["--run-report", "wrong", "text"],
+            vec!["--run-report", "skill", ""],
+            vec!["--run-report", "activity", "bad\ntext"],
+        ] {
+            assert!(parse_update("build", "running", &args).is_err());
+        }
     }
 
     #[test]

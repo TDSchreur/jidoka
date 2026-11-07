@@ -43,3 +43,5 @@
 **Workspace**: A run's own git worktree and feature branch, created from the pull request base branch, which the run records as its worktree, branch and base commit. `factory run begin` creates it.
 
 **Ticket report**: A short, agent-reported skill or activity associated with a ticket in a run. Reports may be incomplete and are not independent proof of the work.
+
+**Run report**: A short, agent-reported skill or activity associated with a run rather than a particular ticket. Reports may be incomplete and are not independent proof of the work.
