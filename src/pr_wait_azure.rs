@@ -24,6 +24,7 @@ impl AzurePr {
             || parts[2] != "_git"
             || parts[4] != "pullrequest"
             || parts[5].is_empty()
+            || parts[5].parse::<u64>().ok().filter(|id| *id > 0).is_none()
             || !parts[5].bytes().all(|b| b.is_ascii_digit())
         {
             return Err(ToolProblem("Invalid Azure pull request URL.".into()));
@@ -76,9 +77,8 @@ impl AzurePr {
             ],
         )?;
         if data["repository"]["name"].as_str() != Some(self.repository.as_str())
-            || data["repository"]["project"]["name"]
-                .as_str()
-                .is_some_and(|name| name != self.project)
+            || data["repository"]["project"]["name"].as_str() != Some(self.project.as_str())
+            || data["pullRequestId"].as_u64() != self.id.parse::<u64>().ok()
         {
             return Err(ToolProblem(
                 "Azure pull request does not match the recorded repository.".into(),
@@ -185,21 +185,66 @@ fn required<'a>(value: &'a Value, label: &str) -> Result<&'a str, ToolProblem> {
         .ok_or_else(|| ToolProblem(format!("Azure response has no valid {label}.")))
 }
 
+fn parse_time(value: &str) -> Option<time::OffsetDateTime> {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+}
+
 fn az_json(gh: &dyn Gh, args: &[&str]) -> Result<Value, ToolProblem> {
+    let operation = match args {
+        ["repos", "pr", "show", ..] => "read the pull request",
+        ["repos", "pr", "policy", "list", ..] => "list pull request policies",
+        ["repos", "ref", "list", ..] => "read the source branch",
+        ["pipelines", "runs", "show", ..] => "read the policy build",
+        ["devops", "invoke", ..] => "read pull request checks",
+        _ => "read Azure DevOps",
+    };
     let result = gh.az(args).map_err(|error| match error {
         GhError::NotInstalled => ToolProblem(
             "Azure CLI (`az`) is not installed; install it and the azure-devops extension.".into(),
         ),
-        GhError::Other(_) => ToolProblem("Could not start Azure CLI.".into()),
+        GhError::Other(_) => ToolProblem(format!(
+            "Could not start Azure CLI to {operation}; check executable permissions."
+        )),
     })?;
     if result.code != Some(0) {
-        return Err(ToolProblem(
-            "Azure CLI request failed; check authentication, the extension and repository access."
-                .into(),
-        ));
+        // Do not echo Azure output: it can contain credentials or other sensitive data.
+        let error = result.stderr.to_lowercase();
+        let advice = if error.contains("az login")
+            || error.contains("az devops login")
+            || error.contains("authentication")
+            || error.contains("unauthorized")
+            || error.contains("401")
+        {
+            "check Azure authentication with az login or az devops login"
+        } else if error.contains("extension")
+            || error.contains("not recognized")
+            || error.contains("unrecognized arguments")
+        {
+            "install or update the azure-devops extension"
+        } else if error.contains("forbidden")
+            || error.contains("permission")
+            || error.contains("403")
+        {
+            "check your repository and pipeline permissions"
+        } else if error.contains("connection")
+            || error.contains("timed out")
+            || error.contains("network")
+        {
+            "check the network connection"
+        } else {
+            "check the azure-devops extension, authentication, and repository access"
+        };
+        return Err(ToolProblem(format!(
+            "Azure CLI could not {operation}; {advice}."
+        )));
     }
-    serde_json::from_str(&result.stdout)
-        .map_err(|_| ToolProblem("Azure CLI returned invalid JSON.".into()))
+    serde_json::from_str(&result.stdout).map_err(|error| {
+        ToolProblem(format!(
+            "Azure CLI returned invalid JSON while trying to {operation} (line {}, column {}).",
+            error.line(),
+            error.column()
+        ))
+    })
 }
 
 fn result(
@@ -254,6 +299,9 @@ fn checks_for(
         });
         return Ok((checks, true));
     }
+    let iteration_time = latest
+        .and_then(|item| item["createdDate"].as_str())
+        .and_then(parse_time);
     let iteration = latest
         .and_then(|item| item["id"].as_u64())
         .filter(|id| *id > 0)
@@ -315,9 +363,12 @@ fn checks_for(
         if required_policy && state != "notApplicable" {
             applicable = true;
         }
+        let evaluation_time = policy["startedDate"].as_str().and_then(parse_time);
+        let fresh = matches!((iteration_time, evaluation_time), (Some(iteration), Some(evaluation)) if evaluation >= iteration);
         let bucket = if !required_policy || state == "notApplicable" {
             "skipping"
-        } else if policy["context"]["isExpired"].as_bool() == Some(true)
+        } else if !fresh
+            || policy["context"]["isExpired"].as_bool() == Some(true)
             || policy["context"]["buildIsNotCurrent"].as_bool() == Some(true)
         {
             "pending"
@@ -414,15 +465,20 @@ fn checks_for(
     }
     for ((genre, name), status) in latest_status {
         let state = required(&status["state"], "status state")?;
-        if state != "notApplicable" {
+        let scoped = status["iterationId"].as_u64() == Some(iteration);
+        if !scoped || state != "notApplicable" {
             applicable = true;
         }
-        let bucket = match state {
-            "failed" | "error" => "fail",
-            "canceled" | "cancelled" => "cancel",
-            "notApplicable" => "skipping",
-            "succeeded" if status["iterationId"].as_u64() == Some(iteration) => "pass",
-            _ => "pending",
+        let bucket = if !scoped {
+            "pending"
+        } else {
+            match state {
+                "failed" | "error" => "fail",
+                "canceled" | "cancelled" => "cancel",
+                "notApplicable" => "skipping",
+                "succeeded" => "pass",
+                _ => "pending",
+            }
         };
         checks.push(CheckResult {
             name: if genre.is_empty() {

@@ -732,7 +732,7 @@ fn the_run_and_repository_are_read_from_real_link_shapes() {
 #[test]
 fn azure_abandoned_pr_reports_not_open_without_using_gh() {
     let gh = FakeGh::default();
-    gh.azure.borrow_mut().push_back(ok(json!({"status":"abandoned", "lastMergeSourceCommit":{"commitId":"abc"}, "repository":{"id":"repo","name":"Kahoot"}}).to_string()));
+    gh.azure.borrow_mut().push_back(ok(json!({"pullRequestId":535,"status":"abandoned", "lastMergeSourceCommit":{"commitId":"abc"}, "repository":{"id":"repo","name":"Kahoot","project":{"name":"Projects"}}}).to_string()));
     let waited = wait(
         Some("https://dev.azure.com/dutchworkz/Projects/_git/Kahoot/pullrequest/535"),
         &Options::default(),
@@ -754,10 +754,10 @@ impl Gh for AzureScript {
     }
     fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
         match args {
-            ["repos", "pr", "show", ..] => ok(json!({"status":"active", "sourceRefName":"refs/heads/feature", "lastMergeSourceCommit":{"commitId":"abc"}, "repository":{"id":"repo","name":"Kahoot"}}).to_string()),
+            ["repos", "pr", "show", ..] => ok(json!({"pullRequestId":535,"status":"active", "sourceRefName":"refs/heads/feature", "lastMergeSourceCommit":{"commitId":"abc"}, "repository":{"id":"repo","name":"Kahoot","project":{"name":"Projects"}}}).to_string()),
             ["repos", "ref", "list", ..] => ok(json!([{"name":"refs/heads/feature","objectId":"abc"}]).to_string()),
-            ["repos", "pr", "policy", "list", ..] => ok(json!([{"status":"approved", "configuration":{"isEnabled":true,"isBlocking":true,"type":{"displayName":"Build"}}}]).to_string()),
-            ["devops", "invoke", ..] if args.contains(&"pullRequestIterations") => ok(json!({"value":[{"id":1,"sourceRefCommit":{"commitId":"abc"}}]}).to_string()),
+            ["repos", "pr", "policy", "list", ..] => ok(json!([{"status":"approved", "startedDate":"2026-01-01T00:00:01Z", "configuration":{"isEnabled":true,"isBlocking":true,"type":{"displayName":"Build"}}}]).to_string()),
+            ["devops", "invoke", ..] if args.contains(&"pullRequestIterations") => ok(json!({"value":[{"id":1,"createdDate":"2026-01-01T00:00:00Z","sourceRefCommit":{"commitId":"abc"}}]}).to_string()),
             ["devops", "invoke", ..] => ok(json!({"value":[]}).to_string()),
             _ => panic!("unexpected Azure command {args:?}"),
         }
@@ -794,7 +794,7 @@ impl AzureCase {
             policies,
             statuses,
             iteration_statuses: json!({"value":[]}),
-            iterations: json!({"value":[{"id":2,"sourceRefCommit":{"commitId":"abc"}}]}),
+            iterations: json!({"value":[{"id":2,"createdDate":"2026-01-01T00:00:00Z","sourceRefCommit":{"commitId":"abc"}}]}),
             build: json!({"status":"completed","result":"canceled"}),
             heads: RefCell::new(VecDeque::from(["abc"])),
         }
@@ -807,7 +807,7 @@ impl Gh for AzureCase {
     fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
         let data = match args {
             ["repos", "pr", "show", ..] => {
-                json!({"status":"active", "sourceRefName":"refs/heads/feature", "lastMergeSourceCommit":{"commitId":"abc"}, "repository":{"id":"repo","name":"Kahoot"}})
+                json!({"pullRequestId":535,"status":"active", "sourceRefName":"refs/heads/feature", "lastMergeSourceCommit":{"commitId":"abc"}, "repository":{"id":"repo","name":"Kahoot","project":{"name":"Projects"}}})
             }
             ["repos", "ref", "list", ..] => {
                 let mut heads = self.heads.borrow_mut();
@@ -835,7 +835,7 @@ impl Gh for AzureCase {
     }
 }
 fn azure_policy(state: &str, required: bool) -> Value {
-    json!({"status": state, "configuration":{"isEnabled":true,"isBlocking":required,"type":{"displayName":"Build"}}})
+    json!({"status": state, "startedDate":"2026-01-01T00:00:01Z", "configuration":{"isEnabled":true,"isBlocking":required,"type":{"displayName":"Build"}}})
 }
 fn run_azure(case: &AzureCase, seconds: u64) -> Result<Waited, ToolProblem> {
     wait(
@@ -941,4 +941,44 @@ fn azure_latest_iteration_status_overrides_an_older_failure() {
         json!({"value":[{"id":1,"iterationId":2,"context":{"name":"build"},"state":"failed"},{"id":2,"iterationId":2,"context":{"name":"build"},"state":"succeeded"}]}),
     );
     assert_eq!(run_azure(&case, 1).unwrap().outcome, Outcome::Passed);
+}
+
+#[test]
+fn azure_unscoped_failure_and_cancellation_do_not_end_current_head_wait() {
+    for state in ["failed", "cancelled"] {
+        let case = AzureCase::new(
+            json!([]),
+            json!({"value":[{"id":1,"context":{"name":"build"},"state":state}]}),
+        );
+        assert_eq!(
+            run_azure(&case, 1).unwrap().outcome,
+            Outcome::Timeout,
+            "{state}"
+        );
+    }
+}
+
+#[test]
+fn azure_stale_approved_policy_cannot_pass() {
+    let mut policy = azure_policy("approved", true);
+    policy["startedDate"] = json!("2026-01-01T00:00:00Z");
+    let mut case = AzureCase::new(json!([policy]), json!({"value":[]}));
+    case.iterations = json!({"value":[{"id":2,"createdDate":"2026-01-02T00:00:00Z","sourceRefCommit":{"commitId":"abc"}}]});
+    assert_eq!(run_azure(&case, 1).unwrap().outcome, Outcome::Timeout);
+}
+
+#[test]
+fn azure_pr_response_without_project_identity_fails_closed() {
+    let gh = FakeGh::default();
+    gh.azure.borrow_mut().push_back(ok(json!({"pullRequestId":535,"status":"abandoned","repository":{"id":"repo","name":"Kahoot"}}).to_string()));
+    let error = wait(
+        Some("https://dev.azure.com/dutchworkz/Projects/_git/Kahoot/pullrequest/535"),
+        &Options::default(),
+        &gh,
+        &FakeClock::default(),
+        &mut |_| {},
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert!(error.0.contains("repository"));
 }
