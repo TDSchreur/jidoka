@@ -1625,10 +1625,98 @@ mod tests {
         assert!(!page.contains("Factory dashboard"));
         let script = asset("/assets/app.js").await;
         // The indicator is fed by the Run poll and says its state in words, not by colour alone.
-        assert!(script.contains("lastOk: Date.now(), beat: current.beat + 1"));
+        assert!(script.contains("lastOk: Date.now()"));
         for word in ["Offline", "Connecting…", "Connected"] {
             assert!(script.contains(word), "{word}");
         }
+        // The dot restarts its pulse when the state changes, not on every poll.
+        assert!(script.contains("<span class=\"pulse\" key=${state}"));
+        assert!(!script.contains("beat"), "no per-poll counter is left");
+    }
+
+    #[rocket::async_test]
+    async fn quiet_controls_leave_attention_for_runs_that_need_you() {
+        let page = dashboard_page().await;
+        let css = stylesheet().await;
+        let script = asset("/assets/app.js").await;
+        let rule = |selector: &str| {
+            css.lines()
+                .find(|line| line.starts_with(&format!("{selector} {{")))
+                .unwrap_or_else(|| panic!("no {selector} rule"))
+                .to_string()
+        };
+        // Needs you is filled only while a Run waits; the count is in its text either way.
+        assert!(script.contains("class=${count ? 'toggle waiting' : 'toggle'}"));
+        assert!(script.contains("Needs you (${count})"));
+        assert!(rule(".toggle.waiting").contains("background:"));
+        // Pressed shows in more than colour, because waiting and pressed are both filled.
+        assert!(script.contains("${pressed ? html`<span aria-hidden=\"true\">✓ </span>` : null}"));
+        // Badges read in sentence case.
+        for selector in [".badge", ".needs-you-label"] {
+            let badge = rule(selector);
+            assert!(!badge.contains("text-transform") && !badge.contains("letter-spacing"));
+        }
+        assert!(script.contains("running: 'Running', blocked: 'Blocked', done: 'Done'"));
+        // Delete on cards and rows is a text button; only the confirm dialog's Delete is red.
+        assert_eq!(script.matches("class=\"toggle danger\"").count(), 1);
+        assert!(!script.contains("toggle danger delete"));
+        assert!(script.contains("class=\"text-button hide-project\""));
+        assert!(rule(".text-button").contains("text-decoration: underline"));
+        // 16 px of line height plus 4 px of padding above and below: a 24 px target.
+        assert!(rule(".text-button").contains("padding: var(--spacingVerticalXS)"));
+        assert!(rule(".text-button:focus-visible").contains("outline:"));
+        // The Theme switch renders in the footer, not in the toolbar.
+        let footer = page
+            .split("<footer>")
+            .nth(1)
+            .and_then(|rest| rest.split("</footer>").next())
+            .expect("a footer");
+        assert!(footer.contains("<div id=\"theme-switch\"></div>"));
+        assert!(script.contains("document.querySelector('#theme-switch')"));
+        let toolbar = script
+            .split("<div class=\"toolbar\">")
+            .nth(1)
+            .and_then(|rest| rest.split("</div>").next())
+            .expect("a toolbar");
+        assert!(!toolbar.contains("ThemeSwitch"));
+        // Cards drop the labels the detail sheet keeps.
+        assert!(!script.contains("Activity: ${run.activity}"));
+        assert!(script.contains("<span class=\"visually-hidden\">Ticket: </span>"));
+        // Stage descriptions live in Help, not on the board.
+        assert!(!script.contains("group-description") && !script.contains("compact-description"));
+    }
+
+    #[rocket::async_test]
+    async fn the_board_spends_no_space_on_finished_or_empty_projects() {
+        let css = stylesheet().await;
+        let script = asset("/assets/app.js").await;
+        // A Project whose Runs are all done starts collapsed, unless the visitor opened it, and that is remembered.
+        assert!(script.contains("own.every((run) => run.status === 'done')"));
+        assert!(script.contains("localStorage.getItem('expanded-projects')"));
+        assert!(script.contains("localStorage.setItem('expanded-projects'"));
+        // Wide: cells are as tall as their own content.
+        let (_, rules) = split_tokens(&css);
+        let wide = rules
+            .split_once("@media (min-width: 1025px)")
+            .expect("a wide layout")
+            .1;
+        assert!(wide.contains(".project-groups { align-items: start; }"));
+        assert!(wide.contains(".compact-empty { display: none; }"));
+        // Compact: rows with nothing in the picked Stage are left out, and "No runs" shows once.
+        let compact = rules
+            .split("@media (max-width: 1024px)")
+            .skip(1)
+            .find(|block| block.contains(".group:not(.selected)"))
+            .expect("a compact layout");
+        assert!(compact.contains(".project-row.no-runs-in-stage { display: none; }"));
+        assert!(script.contains("<p class=\"empty compact-empty\">No runs</p>"));
+        // Phones: Delete and Hide stay on the Project's heading line.
+        let heading_row = css
+            .lines()
+            .find(|line| line.starts_with(".project-heading-row {"))
+            .expect("a heading row rule");
+        assert!(!heading_row.contains("flex-wrap: wrap"));
+        assert!(css.contains(".project-heading-row .text-button { flex: none; }"));
     }
 
     #[test]
@@ -1688,7 +1776,8 @@ mod tests {
     async fn the_page_opens_on_the_requested_project_expanded_and_first() {
         let script = asset("/assets/app.js").await;
         assert!(script.contains("new URLSearchParams(location.search).get('project')"));
-        assert!(script.contains("collapsed.has(project) && !forcedOpen.has(project)"));
+        // The requested Project opens even when it was collapsed or all its Runs are done.
+        assert!(script.contains("!forcedOpen.has(project) && (collapsed.has(project)"));
         assert!(script.contains("Number(b === wanted) - Number(a === wanted)"));
     }
 
@@ -1884,6 +1973,8 @@ mod tests {
         // Stuck to the bottom of the window while the page scrolls, with a background so content does not show through.
         let footer = rule("footer");
         assert!(footer.contains("position: sticky") && footer.contains("bottom: 0"));
+        // Above card buttons and links (z-index 1), so nothing paints over it.
+        assert!(footer.contains("z-index: 2"));
         assert!(footer.contains("background:"));
         // At the bottom of a short page: the body is a column at least as tall as the window.
         let body = rule("body");

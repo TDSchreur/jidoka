@@ -137,7 +137,8 @@
 /* The page is a column at least as tall as the window, so the footer is at the bottom of a short page. */
 body { box-sizing: border-box; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; max-width: 960px; margin: 0 auto; padding: var(--spacingVerticalXXL) var(--spacingHorizontalL) 0; }
 /* A focused element that scrolls into view stops above the footer, not behind it. */
-html { scroll-padding-bottom: calc(var(--lineHeightBase200) + 2 * var(--spacingVerticalS)); }
+/* The footer is one row: the theme buttons (small text, padding and border) plus the footer's own padding. */
+html { scroll-padding-bottom: calc(var(--lineHeightBase200) + 2 * var(--spacingVerticalXS) + 2 * var(--strokeWidthThin) + 2 * var(--spacingVerticalS)); }
 header.site-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingVerticalS) var(--spacingHorizontalXXL); margin-bottom: var(--spacingVerticalXXL); }
 /* The logo is the visible heading; its text stays for screen readers. The dark parts follow the theme, the blue parts keep their colour. */
 .logo { display: block; height: 2.25rem; width: auto; }
@@ -157,11 +158,19 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .toggle { padding: var(--spacingVerticalXS) var(--spacingHorizontalM); border: var(--strokeWidthThin) solid var(--colorNeutralStroke1); border-radius: var(--borderRadiusMedium); background: var(--colorNeutralBackground1); color: var(--colorNeutralForeground1); font: inherit; cursor: pointer; transition: background-color var(--durationFast) var(--curveEasyEase); }
 .toggle:hover { background: var(--colorNeutralBackground1Hover); }
 .toggle:active { background: var(--colorNeutralBackground1Pressed); }
+/* Needs you while a Run is waiting: filled, so it stands out from the quiet controls. The count says the same in words.
+   It comes before the pressed rules, so a pressed toggle shows it is pressed: in colour, and with a check mark. */
+.toggle.waiting { border-color: var(--colorPaletteRedBackground3); background: var(--colorPaletteRedBackground3); color: var(--colorNeutralForegroundOnBrand); font-weight: var(--fontWeightSemibold); }
+.toggle.waiting:hover, .toggle.waiting:active { border-color: var(--colorPaletteRedBorder2); background: var(--colorPaletteRedBackground3); }
 .toggle[aria-pressed="true"] { border-color: var(--colorBrandBackground); background: var(--colorBrandBackground); color: var(--colorNeutralForegroundOnBrand); font-weight: var(--fontWeightSemibold); }
 .toggle[aria-pressed="true"]:hover { background: var(--colorBrandBackgroundHover); }
 .toggle[aria-pressed="true"]:active { background: var(--colorBrandBackgroundPressed); }
 .toggle:disabled { color: var(--colorNeutralForeground3); cursor: not-allowed; }
 .toggle:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: var(--strokeWidthThick); }
+/* Delete on cards and rows: a quiet text button, at least 24 px tall. Red is kept for the confirm dialog's Delete. */
+.text-button { padding: var(--spacingVerticalXS) var(--spacingHorizontalXS); border: 0; border-radius: var(--borderRadiusSmall); background: none; color: var(--colorNeutralForeground2); font: inherit; font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); text-decoration: underline; cursor: pointer; }
+.text-button:hover { color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground1Hover); }
+.text-button:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: var(--strokeWidthThick); }
 .theme legend { float: left; padding: 0; margin-right: var(--spacingHorizontalS); color: var(--colorNeutralForeground2); }
 .theme label { display: inline-flex; align-items: center; gap: var(--spacingHorizontalXS); padding: var(--spacingVerticalXS) var(--spacingHorizontalM); border: var(--strokeWidthThin) solid var(--colorNeutralStroke1); border-radius: var(--borderRadiusMedium); background: var(--colorNeutralBackground1); color: var(--colorNeutralForeground1); cursor: pointer; transition: background-color var(--durationFast) var(--curveEasyEase); }
 .theme label:hover { background: var(--colorNeutralBackground1Hover); }
@@ -176,7 +185,10 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 #message.error { color: var(--colorPaletteRedForeground1); font-weight: var(--fontWeightSemibold); }
 .hidden-projects { margin-bottom: var(--spacingVerticalL); }
 .hidden-projects li { margin: var(--spacingVerticalS) 0; overflow-wrap: anywhere; }
-.project-heading-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingHorizontalS); }
+/* The Project name wraps; Delete and Hide stay on its line, also on a phone. */
+.project-heading-row { display: flex; align-items: center; gap: var(--spacingHorizontalS); margin: var(--spacingVerticalS) 0; }
+.project-heading-row .project-heading { flex: 1 1 auto; min-width: 0; margin: 0; }
+.project-heading-row .text-button { flex: none; }
 .project-row { margin-bottom: var(--spacingVerticalXXL); }
 .project-heading { font-size: var(--fontSizeBase400); overflow-wrap: anywhere; display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingHorizontalS); }
 .project-toggle { font: inherit; font-weight: var(--fontWeightSemibold); color: var(--colorNeutralForeground1); background: none; border: 0; padding: var(--spacingVerticalXS) var(--spacingHorizontalXS); cursor: pointer; text-align: left; }
@@ -188,7 +200,6 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .group { margin-bottom: var(--spacingVerticalXXL); }
 .group h2 { font-size: var(--fontSizeBase400); line-height: var(--lineHeightBase300); font-weight: var(--fontWeightSemibold); margin: 0; }
 .count { color: var(--colorNeutralForeground3); font-weight: normal; }
-.group-description { font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); margin: var(--spacingVerticalXXS) 0 var(--spacingVerticalM); color: var(--colorNeutralForeground3); }
 .empty { margin: 0; font-style: italic; }
 .runs { display: grid; gap: var(--spacingVerticalM); list-style: none; margin: 0; padding: 0; }
 .run { position: relative; background: var(--colorNeutralBackground1); border: var(--strokeWidthThin) solid var(--colorNeutralStroke2); border-radius: var(--borderRadiusMedium); box-shadow: var(--shadow4); padding: var(--spacingVerticalL) var(--spacingHorizontalL); }
@@ -206,8 +217,9 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .done-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingVerticalXS) var(--spacingHorizontalS); }
 .done-line h3 { flex: 1 1 8rem; min-width: 0; }
 .done-run [hidden] { display: none; }
-.run .toggle { position: relative; z-index: 1; }
+.run .toggle, .run .text-button { position: relative; z-index: 1; }
 .toggle.danger { border-color: var(--colorPaletteRedBorder2); color: var(--colorPaletteRedForeground1); }
+.run > .text-button { margin-top: var(--spacingVerticalXS); margin-left: calc(-1 * var(--spacingHorizontalXS)); }
 /* Help: a large modal with tabs. Its height is fixed so a tab change does not resize it; each tab scrolls on its own.
    `.confirm.help` outranks `.confirm`, which comes later and sets the small width. */
 .confirm.help { width: min(64rem, calc(100% - 2 * var(--spacingHorizontalL))); height: min(46rem, calc(100% - 2 * var(--spacingVerticalXL))); padding-bottom: 0; }
@@ -250,7 +262,7 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .link { padding: 0; border: 0; background: none; font: inherit; color: var(--colorBrandForegroundLink); text-decoration: underline; cursor: pointer; }
 .link:hover { color: var(--colorBrandForegroundLinkHover); }
 .link:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: var(--strokeWidthThick); border-radius: var(--borderRadiusSmall); }
-.delete-all { margin-bottom: var(--spacingVerticalM); }
+.delete-all { margin-bottom: var(--spacingVerticalS); }
 /* Delete confirmation: a small centred modal. */
 .confirm { box-sizing: border-box; width: min(28rem, calc(100% - 2 * var(--spacingHorizontalL))); padding: var(--spacingVerticalXL) var(--spacingHorizontalXL); border: var(--strokeWidthThin) solid var(--colorNeutralStroke2); border-radius: var(--borderRadiusLarge); background: var(--colorNeutralBackground1); color: var(--colorNeutralForeground1); box-shadow: var(--shadow28); }
 .confirm::backdrop { background: var(--colorBackgroundOverlay); }
@@ -286,17 +298,20 @@ main:focus { outline: none; }
   .detail-close-compact { display: inline; }
 }
 .updated { font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground3); }
-.badge { display: inline-block; margin-top: var(--spacingVerticalXS); padding: var(--spacingVerticalXXS) var(--spacingHorizontalSNudge); border: var(--strokeWidthThin) solid var(--colorNeutralStrokeAccessible); border-radius: var(--borderRadiusSmall); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); font-weight: var(--fontWeightSemibold); color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground3); text-transform: uppercase; letter-spacing: .04em; }
+.badge { display: inline-block; margin-top: var(--spacingVerticalXS); padding: var(--spacingVerticalXXS) var(--spacingHorizontalSNudge); border: var(--strokeWidthThin) solid var(--colorNeutralStrokeAccessible); border-radius: var(--borderRadiusSmall); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); font-weight: var(--fontWeightSemibold); color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground3); }
 .badge.blocked { color: var(--colorNeutralForegroundOnBrand); background: var(--colorPaletteRedBackground3); border-color: var(--colorPaletteRedBackground3); }
 .badge.done { color: var(--colorPaletteGreenForeground1); background: var(--colorPaletteGreenBackground1); border-color: var(--colorPaletteGreenBorder2); }
 .run .needs-you { margin: 0 0 var(--spacingVerticalS); color: var(--colorPaletteRedForeground1); font-weight: var(--fontWeightSemibold); }
-.needs-you-label { display: inline-block; margin-right: var(--spacingHorizontalXS); padding: var(--spacingVerticalXXS) var(--spacingHorizontalSNudge); border-radius: var(--borderRadiusSmall); background: var(--colorPaletteRedBackground3); color: var(--colorNeutralForegroundOnBrand); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); text-transform: uppercase; letter-spacing: .04em; }
+.needs-you-label { display: inline-block; margin-right: var(--spacingHorizontalXS); padding: var(--spacingVerticalXXS) var(--spacingHorizontalSNudge); border-radius: var(--borderRadiusSmall); background: var(--colorPaletteRedBackground3); color: var(--colorNeutralForegroundOnBrand); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); }
 .chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingHorizontalXS); margin-top: var(--spacingVerticalXS); }
 .chips .badge { margin-top: 0; }
 .chip { display: inline-block; padding: var(--spacingVerticalXXS) var(--spacingHorizontalSNudge); border: var(--strokeWidthThin) solid var(--colorNeutralStrokeAccessible); border-radius: var(--borderRadiusSmall); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground3); }
 /* The footer, and the version in it, stays in view: at the bottom of a short page, and stuck to the bottom of the window while a long page scrolls. */
 #app { margin-bottom: var(--spacingVerticalXL); }
-footer { position: sticky; bottom: 0; margin-top: auto; padding: var(--spacingVerticalS) 0; background: var(--colorNeutralBackground2); border-top: var(--strokeWidthThin) solid var(--colorNeutralStroke2); }
+/* z-index 2: above card buttons and links (1), which otherwise paint over the footer while the page scrolls. */
+footer { position: sticky; bottom: 0; z-index: 2; margin-top: auto; padding: var(--spacingVerticalS) 0; background: var(--colorNeutralBackground2); border-top: var(--strokeWidthThin) solid var(--colorNeutralStroke2); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--spacingVerticalXS) var(--spacingHorizontalL); }
+footer .theme legend, footer .theme label { font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); }
+footer .theme label { padding: var(--spacingVerticalXS) var(--spacingHorizontalS); }
 .build { margin: 0; font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground3); }
 code { font-family: var(--fontFamilyMonospace); }
 a { color: var(--colorBrandForegroundLink); }
@@ -308,18 +323,19 @@ a:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2
 .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 @media (max-width: 1024px) {
   .group:not(.selected) { display: none; }
+  .project-row.no-runs-in-stage { display: none; }
 }
 /* Wide screens: one column per Stage, each with a header that stays in view. Narrower screens keep the stacked groups. */
 @media (min-width: 1025px) {
   html { scroll-padding-top: calc(var(--spacingVerticalXXL) * 6); }
   .stages { display: none; }
-  .compact-description { display: none; }
+  .compact-empty { display: none; }
   body { max-width: none; }
   .board-headers, .project-groups { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--spacingHorizontalM); }
   .board-headers { position: sticky; top: 0; z-index: 1; background: var(--colorNeutralBackground1); }
-  .project-groups { align-items: stretch; }
+  .project-groups { align-items: start; }
   .group { margin: 0; padding-top: var(--spacingVerticalM); background: var(--colorNeutralBackground3); border-radius: var(--borderRadiusLarge); }
-  .group-header { padding: var(--spacingVerticalM) var(--spacingHorizontalM) var(--spacingVerticalXS); background: var(--colorNeutralBackground3); border-radius: var(--borderRadiusLarge); }
+  .group-header { padding: var(--spacingVerticalM) var(--spacingHorizontalM); background: var(--colorNeutralBackground3); border-radius: var(--borderRadiusLarge); }
   .group .delete-all { margin: var(--spacingVerticalM) var(--spacingHorizontalM); }
   .group .runs { padding: 0 var(--spacingHorizontalM) var(--spacingVerticalM); }
   .group .empty { padding: 0 var(--spacingHorizontalM) var(--spacingVerticalM); }

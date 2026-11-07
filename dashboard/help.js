@@ -485,34 +485,38 @@ function Dashboard({ reworkCap }) {
       <p>
         Runs are grouped into one row per project, named after the repository. A row has a column for each Stage (Define, Build, Check and Finish), plus one
         for Done. The project name toggles the row; a collapsed row shows how many Runs it
-        has in each Stage, and how many are waiting for you. On a narrow screen the Stage buttons show one column at a
-        time. Hide removes a project from the board in this browser; use Hidden projects to restore it. Its Runs are kept. Delete removes the project’s Run records after confirmation; repository files, worktrees, branches and pull requests are kept.
+        has in each Stage, and how many are waiting for you. A project whose Runs are all done starts collapsed until you
+        open it. On a narrow screen the Stage buttons show one column at a time, and projects with no Runs in that Stage
+        are left out. Hide removes a project from the board in this browser; use Hidden projects to restore it. Its Runs are kept. Delete removes the project’s Run records after confirmation; repository files, worktrees, branches and pull requests are kept.
         Hidden projects do not contribute to the waiting count or notifications. The board refreshes by itself every few seconds.
       </p>
     <//>
     <${Topic} title="The header">
       <${Terms}
         items=${[
-          ['Needs you', 'Shows only the Runs waiting for you. The number of waiting Runs also appears in the page title.'],
+          ['Needs you', 'Shows only the Runs waiting for you. The button is filled while a Run is waiting, and the number of waiting Runs also appears in the page title.'],
           [
             'Notify me',
             'Asks the browser for permission to show a notification when a Run starts waiting for you, while this page is open. If the browser blocks or does not support notifications, the button says so.',
           ],
           ['Help', 'Opens this window.'],
-          ['Theme', 'Follows your system, or forces light or dark. The choice is remembered in this browser.'],
           [
             'Connection',
             'Shows whether the dashboard is receiving updates from its server, and when the last one arrived.',
           ],
         ]}
       />
+      <p>
+        At the bottom of the page, Theme follows your system or forces light or dark. The choice is remembered in this
+        browser.
+      </p>
     <//>
     <${Topic} title="A card">
       <p>Each Run in a column is a card. Select its title to open the detail.</p>
       <${Terms}
         items=${[
           ['Needs you', 'Shown first on a blocked Run, with the reason.'],
-          ['Status', 'running, blocked or done.'],
+          ['Status', 'Running, blocked or done.'],
           ['Rework', html`<em>Rework 1/${reworkCap}</em>: the current Rework out of the ${reworkCap} a Run gets.`],
           ['Tickets', 'How many of the Run’s tickets are done, such as 2/5.'],
           [
