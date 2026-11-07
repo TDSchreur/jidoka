@@ -390,6 +390,8 @@ mod tests {
             "evidence",
             "qualifications",
             "findings",
+            "right before you write the first",
+            "still gets the humanizer pass",
         ] {
             assert!(
                 writing.contains(needle),
