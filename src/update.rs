@@ -188,6 +188,8 @@ pub(crate) fn installed_agents(
 pub(crate) fn update(current: &str, release: bool, agents: Option<&str>) -> Result<(), String> {
     let latest = latest_version()?;
     if status(current, release, &latest)? == Status::UpToDate {
+        install::ensure_default_policy(|name| env::var_os(name))
+            .map_err(|error| error.to_string())?;
         println!("factory {current} is already the latest release.");
         return Ok(());
     }
@@ -229,6 +231,8 @@ pub(crate) fn update(current: &str, release: bool, agents: Option<&str>) -> Resu
     result?;
     println!("Updated {} to factory {latest}.", exe.display());
     if agents.is_empty() {
+        install::ensure_default_policy(|name| env::var_os(name))
+            .map_err(|error| error.to_string())?;
         println!("No installed skills found. Run 'factory install --agent <codex|claude|copilot>' to install them.");
     } else {
         // The new binary carries the new skills, so it installs them.

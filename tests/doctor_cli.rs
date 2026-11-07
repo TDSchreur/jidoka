@@ -189,7 +189,7 @@ fn doctor_creates_the_codex_starter_too_and_reports_when_it_cannot_write() {
     let written =
         std::fs::read_to_string(home.path().join(".config/tds-factory/model-routing.json"))
             .unwrap();
-    assert!(written.contains("gpt-6-astra"), "{written}");
+    assert!(written.contains("gpt-6.1-terra"), "{written}");
 
     // A file where the folder should be: doctor stops with the reason and a way out.
     let blocked = tempfile::tempdir().unwrap();

@@ -52,7 +52,7 @@ The dashboard footer and `factory --version` show which build is running: the ve
 
 ## Use
 
-1. Start the dashboard and keep it running in a separate terminal: `factory dashboard`. Open <http://127.0.0.1:4311> to follow your runs. The dashboard follows your system's light or dark setting; use the Theme control (System, Light, Dark) to override it. The choice is remembered in your browser.
+1. Start the dashboard and keep it running in a separate terminal: `factory dashboard`. Open <http://127.0.0.1:4311> to follow your runs. The dashboard follows your system's light or dark setting; use the Theme control (System, Light, Dark) at the bottom of the page to override it. The choice is remembered in your browser. While you scroll, the andon strip (what needs you) and the active runs stay at the top of the page. When the dashboard server restarts, for example after an update, an open dashboard page reloads itself within a few seconds, once no dialog or menu is open, so it always shows the running version.
 2. In your project, ask your coding agent to run `/factory` to select a workflow, or choose `/factory-full`, `/factory-balanced`, or `/factory-fast` directly; see [Choosing a mode](#choosing-a-mode). The agent reports progress to the dashboard with `factory run start` and `factory run update`, and ends by opening a pull request and watching its CI.
 3. Review the pull request. See [Skills](#skills) for what each workflow does.
 
@@ -71,12 +71,14 @@ Besides its stage and status, a run records the context a new session needs to c
 | `--mode <factory-full\|factory-balanced\|factory-fast>` | The workflow mode. |
 | `--spec <http(s)-url\|path>`, `--pr <http(s)-url>` | The spec (a URL or a local path) and the pull request. URLs with credentials are refused. |
 | `--ticket "<reference> <title>"` (repeat), `--ticket-status <reference>=<pending\|in-progress\|done>` | The ordered ticket list, listed whole each time (statuses of kept tickets are preserved), and its progress. At most one ticket is in progress. |
+| `--run-report <skill\|activity> "<text>"` (repeat) | Append a short report to the run, with the current stage and server time. |
+| `--ticket-report "<reference>" <skill\|activity> "<text>"` (repeat) | Append a short skill or activity report to a listed ticket, with the current stage and server time. |
 | `--summary <stage>=<text>` | A short summary per stage, kept after later stages begin. |
 | `--blocking-reason <text>` | The status reason of a blocked run. |
 
 Options left out keep their value, each has a `--clear-*` form (`--clear-tickets`, `--clear-summary <stage>`), and an inconsistent update is refused with the reason and changes nothing. A run recorded before this existed shows its missing context as unknown.
 
-`factory run inspect <id>` prints a run's context (`--json` for the stored record). The dashboard shows it in the run's detail, shows ticket progress and pull request and spec links on cards, and groups the runs of every linked worktree under their repository.
+`factory run inspect <id>` prints a run's context (`--json` for the stored record). The dashboard shows it in the run's detail, shows ticket progress and pull request and spec links on each run's row, and counts the runs of every linked worktree under their repository.
 
 To continue a run in a new session, ask the agent to continue it by ID. The workflow skills then read the context and check the recorded repository, worktree, branch, base commit and Git state, report any difference, and never reset, clean or discard work to make them match.
 
@@ -102,6 +104,7 @@ Run updates also accept optional reporting fields:
 
 ```sh
 factory run update <id> build running --activity "Implementing ticket #42" --current-ticket "https://github.com/owner/repo/issues/42"
+factory run update <id> build running --ticket-report "https://github.com/owner/repo/issues/42" skill "tdd" --ticket-report "https://github.com/owner/repo/issues/42" activity "Tests passed"
 factory run update <id> build blocked --blocking-reason "Waiting for credentials"
 factory run update <id> build running --clear-blocking-reason
 factory run update <id> build running --rework 1 --activity "Fixing Check findings"
@@ -116,7 +119,9 @@ The API uses `activity`, `current_ticket`, `blocking_reason`, and `rework` on `P
 {"stage":"build","status":"running","activity":"Implementing ticket #42","blocking_reason":null}
 ```
 
-Run responses and `runs.json` include these optional fields and `updated_at`, a server-owned Unix timestamp in milliseconds set on creation and each successful update. Callers cannot set `updated_at` through an update. Existing records load with `null` for missing metadata and timestamps; they receive a timestamp on their next update. The timestamp records a run update, not an agent heartbeat. Restart the dashboard with the updated CLI before using the new options. The dashboard shows these fields on each run card. Done runs show on one line with a Show details toggle, and can be deleted one by one or all at once after a confirmation; deleting removes only the run record, not its worktree or pull request. The record is removed by `DELETE /api/runs/<id>`, which needs the session token from the dashboard page (sent as `X-Session-Token`), so it works from the dashboard only.
+Run reports are displayed in run details, including when no tickets exist. Ticket reports are displayed under their ticket in run details. They are agent-reported and may be incomplete; no reports does not mean no work occurred. Each report is limited to 500 bytes; run and ticket reports are each limited to 100 per update and 1,000 per run. Do not report secrets or transcripts.
+
+Run responses and `runs.json` include these optional fields and `updated_at`, a server-owned Unix timestamp in milliseconds set on creation and each successful update. Callers cannot set `updated_at` through an update. Existing records load with `null` for missing metadata and timestamps; they receive a timestamp on their next update. The timestamp records a run update, not an agent heartbeat. Restart the dashboard with the updated CLI before using the new options. The dashboard shows these fields on each run's row on the line. Finished runs (status `done`) are listed under Shipped, grouped by day. Next to each pull request link the dashboard shows its state (Open, Draft, Merged or Closed). The dashboard server reads it in the background, with `gh` for GitHub and with `az` and its `azure-devops` extension for Azure Repos, stores it on the run as `pr_status`, and reads it again about once a minute until the pull request is merged. Without the tool, or when it is not signed in, the state is unknown and the run's detail says why. Callers cannot set `pr_status`. A run is deleted from its detail, and Clear shipped removes all shipped runs, each after a confirmation; deleting removes only the run record, not its worktree or pull request. The record is removed by `DELETE /api/runs/<id>`, which needs the session token from the dashboard page (sent as `X-Session-Token`), so it works from the dashboard only.
 
 The server listens only on localhost but has no user authentication. Other users on the same machine can read and change run titles and project paths; use it only on a trusted machine.
 
@@ -197,7 +202,7 @@ flowchart TB
 The dashboard reads the token counts your agents write to their own session logs and shows them per run, stage, model and ticket. It counts tokens only, never money, and it keeps only counts, identifiers and the reasoning effort of each call: no conversation text, prompts, tool output or credentials are stored.
 
 - `factory run stats <id>` prints the breakdown (stage, model and ticket, with the rework and work with no ticket in their own rows), the totals per model, and what the figures do not cover. `factory run stats --all` adds the totals per model over all runs and names the runs it leaves out.
-- The dashboard shows the fresh tokens on a card and the breakdown in the run's detail.
+- The dashboard shows the fresh tokens on a run's row and the breakdown in the run's detail.
 
 **What the figures mean.** Every agent is normalized to the same four counts:
 
@@ -349,7 +354,7 @@ Write one policy file, `model-routing.json`, in the factory's config folder: `$X
   "agents": {
     "claude": {
       "roles": {
-        "strong": { "model": "opus", "effort": "high" },
+        "strong": { "model": "sonnet", "effort": "medium" },
         "coding": { "model": "sonnet", "effort": "medium" },
         "routine": { "model": "haiku", "effort": "low" }
       },
@@ -357,7 +362,9 @@ Write one policy file, `model-routing.json`, in the factory's config folder: `$X
     },
     "codex": {
       "roles": {
-        "strong": { "model": "gpt-6-astra", "effort": "high" }
+        "strong": { "model": "gpt-6.1-terra", "effort": "medium" },
+        "coding": { "model": "gpt-6.1-terra", "effort": "medium" },
+        "routine": { "model": "gpt-6-luna", "effort": "low" }
       },
       "tasks": { "check": "strong" }
     }
@@ -365,7 +372,7 @@ Write one policy file, `model-routing.json`, in the factory's config folder: `$X
 }
 ```
 
-`factory doctor --create-model-routing` writes a starter like this for you, with an entry for each agent (or only one with `--agent claude` or `--agent codex`); see [Checking readiness](#checking-readiness). It never overwrites a file that is already there.
+`factory install` and `factory update` create this policy when no file exists. They preserve an existing policy, including a symbolic link. `factory doctor --create-model-routing` can also create it explicitly, with both agents or just the one named by `--agent`; see [Checking readiness](#checking-readiness).
 
 - Each entry under `agents` is `claude` or `codex` and has `roles` and `tasks`, and optionally `enabled`. `roles` defines up to three roles (`strong`, `coding`, `routine`), each with a `model` and an optional `effort`. `tasks` maps `build`, `check` and `finish` to one of those roles; a task you leave out is not routed. `enabled` defaults to `true`; set it to `false` at the top to switch routing off for every agent, or inside an entry to switch off that agent only, without deleting anything.
 - The original single-agent form still works and is never rewritten for you: `agent` (`claude` or `codex`), `roles` and `tasks` at the top of the file, instead of `agents`. Use one form or the other; a file that has both is refused.
@@ -410,7 +417,7 @@ Copilot CLI is not supported. It chooses a subagent's model from its own setting
 
 Each line is `pass`, `missing` (something to supply), `fail` (something broken), `warning` (a risk to read about that does not stop the factory) or `skipped` (not checked, with the reason), with a fix where there is one. Model routing problems other than a policy file that cannot be used are warnings, because model routing is optional and without it a stage uses the session's model. The exit status is 0 when the project checks pass and at least one agent is usable, and the model-routing policy, if there is one, loads. Use `--agent codex|claude|copilot` to check, and require, one agent, and `--json` for structured output.
 
-Doctor writes one file, and only when you ask: a starter model-routing policy. `factory doctor --create-model-routing` creates `model-routing.json` in the config folder in the `agents` form, with an entry for Claude Code and one for Codex, each with the three roles and only the `check` task routed to `strong`. Add `--agent claude` or `--agent codex` for an entry for that agent only. Doctor then runs its checks, so the new file is verified straight away. Giving the option is the confirmation: there is no prompt. The file is switched on, so the next run's review agents use it; edit the models and efforts, or set `"enabled": false`. Doctor never overwrites anything already at that path, and never writes through a symbolic link there. If it cannot write the file, it stops with the reason and does not run its checks. The option is refused with `--agent copilot`, because Copilot CLI is not supported. With `--json`, the note about the file goes to stderr and stdout stays JSON.
+Doctor writes a starter model-routing policy only when you ask. The installer and updater create the same two-agent policy if it is missing. `factory doctor --create-model-routing` creates `model-routing.json` in the config folder in the `agents` form, with an entry for Claude Code and one for Codex, each with the three roles and only the `check` task routed to `strong`. Add `--agent claude` or `--agent codex` for an entry for that agent only. Doctor then runs its checks, so the new file is verified straight away. Giving the option is the confirmation: there is no prompt. The file is switched on, so the next run's review agents use it; edit the models and efforts, or set `"enabled": false`. Doctor never overwrites anything already at that path, and never writes through a symbolic link there. If it cannot write the file, it stops with the reason and does not run its checks. The option is refused with `--agent copilot`, because Copilot CLI is not supported. With `--json`, the note about the file goes to stderr and stdout stays JSON.
 
 ### First use in a repository
 

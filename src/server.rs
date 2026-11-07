@@ -1,5 +1,6 @@
 use crate::{
-    current_build,
+    current_build, pr_state,
+    pr_wait::{self, RealGh},
     run::{NewRun, Run, RunStore, UpdateRun},
     usage::{collect_and_store, UsageSettings},
 };
@@ -55,11 +56,24 @@ const ASSETS: &[(&str, ContentType, &[u8])] = &[
         ContentType::JavaScript,
         include_bytes!("../dashboard/vendor/htm.js"),
     ),
+    (
+        "vendor/barlow-400.woff2",
+        ContentType::WOFF2,
+        include_bytes!("../dashboard/vendor/barlow-400.woff2"),
+    ),
+    (
+        "vendor/barlow-600.woff2",
+        ContentType::WOFF2,
+        include_bytes!("../dashboard/vendor/barlow-600.woff2"),
+    ),
 ];
 /// Placeholder in the dashboard page that is replaced with the build label.
 const BUILD_PLACEHOLDER: &str = "__BUILD__";
 /// Placeholder in the dashboard page that is replaced with this server's session token.
 const TOKEN_PLACEHOLDER: &str = "__TOKEN__";
+/// Placeholder in the dashboard page that is replaced with this server's process id, so the page can tell when a
+/// new server is running and reload itself.
+const PID_PLACEHOLDER: &str = "__PID__";
 /// The header the dashboard sends its session token in.
 const TOKEN_HEADER: &str = "X-Session-Token";
 const BODY_LIMIT: u64 = 64 * 1024;
@@ -140,7 +154,8 @@ fn dashboard(
     Ok(RawHtml(
         DASHBOARD
             .replace(BUILD_PLACEHOLDER, &current_build())
-            .replace(TOKEN_PLACEHOLDER, &token.0),
+            .replace(TOKEN_PLACEHOLDER, &token.0)
+            .replace(PID_PLACEHOLDER, &std::process::id().to_string()),
     ))
 }
 
@@ -436,6 +451,34 @@ pub(crate) fn build_rocket_with(
         )))
 }
 
+/// How often the dashboard server looks for pull requests whose state is due to be read again.
+const PR_STATE_PASS: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Reads the state of the Runs' pull requests from their hosts, one pass every `pass`, on a blocking thread so
+/// a slow or missing tool never holds up a request. Merged pull requests are not read again.
+fn watch_pr_states(
+    store: RunStore,
+    tool: std::sync::Arc<dyn pr_wait::Gh + Send + Sync>,
+    pass: std::time::Duration,
+) -> rocket::tokio::task::JoinHandle<()> {
+    rocket::tokio::spawn(async move {
+        loop {
+            let (store, tool) = (store.clone(), tool.clone());
+            let _ = rocket::tokio::task::spawn_blocking(move || {
+                let now = match crate::run::updated_now() {
+                    Ok(now) => now,
+                    Err(error) => return eprintln!("Pull request states were not read: {error}"),
+                };
+                if let Err(error) = pr_state::refresh(&store, tool.as_ref(), now) {
+                    eprintln!("Pull request states were not stored: {error}");
+                }
+            })
+            .await;
+            rocket::tokio::time::sleep(pass).await;
+        }
+    })
+}
+
 pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> io::Result<()> {
     let runtime = rocket::tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -447,6 +490,20 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
             .map_err(|error| {
                 io::Error::new(error.kind(), format!("could not open run storage: {error}"))
             })?
+            .attach(rocket::fairing::AdHoc::on_liftoff(
+                "Pull request state",
+                |rocket| {
+                    Box::pin(async move {
+                        if let Some(store) = rocket.state::<RunStore>() {
+                            watch_pr_states(
+                                store.clone(),
+                                std::sync::Arc::new(RealGh),
+                                PR_STATE_PASS,
+                            );
+                        }
+                    })
+                },
+            ))
             .launch()
             .await
             .map(|_| ())
@@ -491,8 +548,8 @@ mod tests {
         }
         assert!(page.contains("Needs you"), "missing Needs you label");
         assert!(
-            page.contains("Needs you (${count})"),
-            "missing Needs you toggle"
+            page.contains("runs need you"),
+            "missing the andon strip's count"
         );
         assert!(
             page.contains("aria-pressed"),
@@ -501,7 +558,7 @@ mod tests {
         assert!(page.contains("document.title"), "the count is in the title");
         assert!(page.contains("m ago"), "missing relative time");
         assert!(
-            page.contains("title=${date.toLocaleString()}"),
+            page.contains("title=${localDateTime(date)}"),
             "exact time tooltip"
         );
         assert!(page.contains("Rework"), "missing Rework label");
@@ -643,6 +700,8 @@ mod tests {
             .collect()
     }
 
+    /// A served asset as text, with line endings normalised to `\n`: a Windows checkout has CRLF, and tests cut
+    /// components out of the source at `\n}\n`.
     async fn asset(path: &'static str) -> String {
         let dir = TestDir::new();
         client(&dir)
@@ -654,6 +713,7 @@ mod tests {
             .into_string()
             .await
             .unwrap()
+            .replace("\r\n", "\n")
     }
 
     async fn stylesheet() -> String {
@@ -768,90 +828,10 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn dashboard_board_has_a_sticky_column_per_stage_on_wide_screens_only() {
-        let css = stylesheet().await;
-        let (_, rules) = split_tokens(&css);
-        let (stacked, wide) = rules
-            .split_once("@media (min-width: 1025px)")
-            .expect("a wide-screen layout");
-        let wide = &wide[..wide
-            .find("@media (prefers-reduced-motion")
-            .unwrap_or(wide.len())];
-        // Narrow screens keep the plain stacked groups.
-        assert!(!stacked.contains("repeat("), "no board grid when stacked");
-        assert!(!stacked.contains("#groups { display: grid"));
-        assert!(!stacked.contains(".group-header { position: sticky"));
-        assert!(
-            wide.contains("position: sticky"),
-            "the column header sticks"
-        );
-        // One column for each group the page renders.
-        let script = {
-            let dir = TestDir::new();
-            client(&dir)
-                .await
-                .get("/assets/app.js")
-                .header(Header::new("Host", "127.0.0.1:4311"))
-                .dispatch()
-                .await
-                .into_string()
-                .await
-                .unwrap()
-        };
-        let groups = script
-            .split("const GROUPS = [")
-            .nth(1)
-            .and_then(|rest| rest.split("];").next())
-            .unwrap()
-            .lines()
-            .filter(|line| line.trim_start().starts_with("['"))
-            .count();
-        assert!(
-            wide.contains(&format!("grid-template-columns: repeat({groups},")),
-            "{groups} columns"
-        );
-        assert!(script.contains("class=\"group-header\""));
-    }
-
-    #[rocket::async_test]
-    async fn dashboard_shows_one_stage_at_a_time_up_to_1024_px_and_all_stages_above() {
-        let css = stylesheet().await;
-        let (_, rules) = split_tokens(&css);
-        // Compact: the groups other than the picked Stage are hidden up to 1024 px.
-        let compact = rules
-            .split("@media (max-width: 1024px)")
-            .skip(1)
-            .find(|block| block.contains(".group:not(.selected)"))
-            .expect("a compact layout");
-        let compact = &compact[..compact.find("\n}").unwrap()];
-        assert!(compact.contains(".group:not(.selected) { display: none; }"));
-        // Wide: every column shows, so the Stage buttons go away.
-        let wide = rules
-            .split_once("@media (min-width: 1025px)")
-            .expect("a wide layout")
-            .1;
-        assert!(wide.contains(".stages { display: none; }"));
-        let script = asset("/assets/app.js").await;
-        assert!(script.contains("aria-label=\"Stage\""), "a labelled group");
-        assert!(script.contains("aria-pressed=${String(stage.id === current)}"));
-        assert!(
-            script.contains("needs you"),
-            "a text alternative for the marker"
-        );
-        // The Stage is chosen once from the first answer, then only the visitor changes it.
-        assert!(script.contains("firstStage(runs)"));
-        assert!(
-            script.contains("opening.current"),
-            "the opening Stage is kept"
-        );
-        assert!(css.contains(".waiting-mark {"));
-    }
-
-    #[rocket::async_test]
     async fn selecting_a_card_opens_a_modal_detail_with_every_run_field() {
         let script = asset("/assets/app.js").await;
         // The card's title is the button that opens the detail, found again by the Run id.
-        assert!(script.contains("class=\"card-open\""));
+        assert!(script.contains("class=\"line-open\""));
         assert!(script.contains("data-run-key="));
         // A native modal dialog named by the Run title.
         assert!(script.contains("<dialog"));
@@ -864,8 +844,6 @@ mod tests {
             "Stage",
             "Status",
             "Activity",
-            "Ticket",
-            "Status reason",
             "Mode",
             "Branch",
             "Worktree",
@@ -890,18 +868,11 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn done_cards_collapse_to_one_line_and_delete_asks_first() {
+    async fn every_delete_asks_first_and_sends_the_session_token() {
         let script = asset("/assets/app.js").await;
-        // A Done card hides its details behind a toggle that tells assistive technology its state.
-        assert!(script.contains("DoneCard"));
-        assert!(script.contains("aria-expanded=${String(expanded)}"));
-        assert!(script.contains("aria-controls=${detailsId}"));
-        assert!(script.contains("Show details"));
-        assert!(script.contains("hidden=${!expanded}"));
-        // Delete per Run and Delete all (Done column only) both open a confirmation dialog first.
+        // Delete in a Run's detail and Clear shipped both open a confirmation dialog first.
         assert!(script.contains("onDelete=${(run) => setPending({ runs: [run] })}"));
-        assert!(script.contains("id === 'done' && entries.length"));
-        assert!(script.contains("Delete all"));
+        assert!(script.contains("onClear=${() => setPending({ shipped: true, runs: shipped.map((entry) => entry.run) })}"));
         assert!(script.contains("<${Confirm}"));
         assert!(script.contains("aria-labelledby=\"confirm-title\""));
         assert!(script.contains("autofocus"), "Cancel takes focus first");
@@ -915,22 +886,16 @@ mod tests {
         );
         assert!(script
             .contains("The repository, worktrees, branches and pull requests stay as they are."));
-        // Cards in every other column offer Delete too, so a stuck Run can be removed.
-        assert_eq!(
-            script
-                .matches("now=${now} onOpen=${onOpen} onDelete=${onDelete} />")
-                .count(),
-            2,
-            "DoneCard and Card both get onDelete"
-        );
+        // No row on the board has a Delete of its own.
+        assert!(!script.contains("now=${now} onOpen=${onOpen} onDelete=${onDelete} />"));
     }
 
     #[rocket::async_test]
     async fn welcome_card_and_help_dialog_use_the_glossary_terms() {
         let script = asset("/assets/app.js").await;
-        // The welcome card replaces the columns when there are no Runs, and links to Help.
+        // The welcome card replaces the board when there are no Runs, and links to Help.
         assert!(script.contains("runs && !runs.length ? html`<${Welcome}"));
-        assert!(script.contains("runs?.length"));
+        assert!(script.contains("visibleRuns?.length"));
         assert!(script.contains("Read the Help"));
         // Help opens from the header. It is a native modal named by its heading, with tabs, and the selected
         // tab takes focus. It lives in its own module.
@@ -968,24 +933,13 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn project_rows_collapse_with_a_remembered_toggle() {
-        let script = asset("/assets/app.js").await;
-        assert!(script.contains("aria-expanded=${String(!closed)}"));
-        assert!(script.contains("localStorage.getItem('collapsed-projects')"));
-        assert!(script.contains("${projectWaiting} waiting"));
-        // Storage failures are tolerated on both read and write.
-        assert!(script.contains("storage is blocked"));
-    }
-
-    #[rocket::async_test]
     async fn selection_and_notifications_are_keyed_per_project_and_run() {
         let script = asset("/assets/app.js").await;
         assert!(script.contains("const runKey = (run) =>"));
         assert!(script.contains("known.current.has(runKey(run))"));
         assert!(script.contains("runKey(run) === openKey"));
-        // Delete all only takes the Done Runs of its own Project row, and the dialog names it.
-        assert!(script.contains("projectOf(entry.run) === project"));
-        assert!(script.contains("done runs in ${names.get("));
+        // Deleting a Project takes only that Project's Runs.
+        assert!(script.contains("runs.filter((run) => projectOf(run) === project)"));
     }
 
     #[rocket::async_test]
@@ -1550,7 +1504,7 @@ mod tests {
             script.contains("aria-label=\"Token usage by stage, model and ticket\" tabindex=\"0\"")
         );
         assert!(script.contains("n === undefined || n === null ? 'n/a'"));
-        assert!(script.contains("<${Field} label=\"Token usage\" missing=\"Not tracked\">"));
+        assert!(script.contains("<${Field} label=\"Token usage\" missing=\"Not tracked\" wide>"));
         assert!(script.contains(
             "Fresh tokens are input excluding cache reads, plus cache writes and output."
         ));
@@ -1611,6 +1565,42 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn run_reports_accept_valid_updates_and_reject_bad_reports() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
+        let body =
+            r#"{"stage":"build","status":"running","run_reports":[{"kind":"skill","text":"tdd"}]}"#;
+        assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
+        let bad =
+            r#"{"stage":"build","status":"running","run_reports":[{"kind":"skill","text":""}]}"#;
+        assert_eq!(
+            report(&api, &run.id, bad).await.status(),
+            HttpStatus::BadRequest
+        );
+        let saved = fetch(&api, &run.id).await.1.unwrap();
+        assert_eq!(saved.run_reports.len(), 1);
+        assert_eq!(saved.run_reports[0].text, "tdd");
+    }
+
+    #[rocket::async_test]
+    async fn ticket_reports_are_recorded_and_rejected_atomically_via_api() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
+        let body = r#"{"stage":"build","status":"running","tickets":[{"reference":"local=42","title":"One"}],"ticket_reports":[{"ticket":"local=42","kind":"skill","text":"tdd"}]}"#;
+        assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
+        let bad = r#"{"stage":"build","status":"running","ticket_reports":[{"ticket":"missing","kind":"activity","text":"oops"}]}"#;
+        assert_eq!(
+            report(&api, &run.id, bad).await.status(),
+            HttpStatus::BadRequest
+        );
+        let saved = fetch(&api, &run.id).await.1.unwrap();
+        assert_eq!(saved.ticket_reports.len(), 1);
+        assert_eq!(saved.ticket_reports[0].text, "tdd");
+    }
+
+    #[rocket::async_test]
     async fn the_header_has_no_dashboard_title_and_a_connection_indicator_follows_the_poll() {
         let dir = TestDir::new();
         let page = client(&dir)
@@ -1625,10 +1615,55 @@ mod tests {
         assert!(!page.contains("Factory dashboard"));
         let script = asset("/assets/app.js").await;
         // The indicator is fed by the Run poll and says its state in words, not by colour alone.
-        assert!(script.contains("lastOk: Date.now(), beat: current.beat + 1"));
+        assert!(script.contains("lastOk: Date.now()"));
         for word in ["Offline", "Connecting…", "Connected"] {
             assert!(script.contains(word), "{word}");
         }
+        // The dot restarts its pulse when the state changes, not on every poll.
+        assert!(script.contains("<span class=\"pulse\" key=${state}"));
+        assert!(!script.contains("beat"), "no per-poll counter is left");
+    }
+
+    #[rocket::async_test]
+    async fn quiet_controls_leave_attention_for_runs_that_need_you() {
+        let page = dashboard_page().await;
+        let css = stylesheet().await;
+        let script = asset("/assets/app.js").await;
+        let rule = |selector: &str| {
+            css.lines()
+                .find(|line| line.starts_with(&format!("{selector} {{")))
+                .unwrap_or_else(|| panic!("no {selector} rule"))
+                .to_string()
+        };
+        // Badges read in sentence case.
+        let badge = rule(".badge");
+        assert!(!badge.contains("text-transform") && !badge.contains("letter-spacing"));
+        assert!(script.contains("running: 'Running', blocked: 'Blocked', done: 'Shipped'"));
+        // Delete on cards and rows is a text button; only the confirm dialog's Delete is red.
+        assert_eq!(script.matches("class=\"toggle danger\"").count(), 1);
+        assert!(!script.contains("toggle danger delete"));
+        assert!(rule(".text-button").contains("text-decoration: underline"));
+        // 16 px of line height plus 4 px of padding above and below: a 24 px target.
+        assert!(rule(".text-button").contains("padding: var(--space-2)"));
+        assert!(rule(".text-button:focus-visible").contains("outline:"));
+        // The Theme switch renders in the footer, not in the toolbar.
+        let footer = page
+            .split("<footer>")
+            .nth(1)
+            .and_then(|rest| rest.split("</footer>").next())
+            .expect("a footer");
+        assert!(footer.contains("<div id=\"theme-switch\"></div>"));
+        assert!(script.contains("document.querySelector('#theme-switch')"));
+        let toolbar = script
+            .split("<div class=\"toolbar\">")
+            .nth(1)
+            .and_then(|rest| rest.split("</div>").next())
+            .expect("a toolbar");
+        assert!(!toolbar.contains("ThemeSwitch"));
+        // Cards drop the labels the detail sheet keeps.
+        assert!(!script.contains("Activity: ${run.activity}"));
+        // Stage descriptions live in Help, not on the board.
+        assert!(!script.contains("group-description") && !script.contains("compact-description"));
     }
 
     #[test]
@@ -1688,8 +1723,10 @@ mod tests {
     async fn the_page_opens_on_the_requested_project_expanded_and_first() {
         let script = asset("/assets/app.js").await;
         assert!(script.contains("new URLSearchParams(location.search).get('project')"));
-        assert!(script.contains("collapsed.has(project) && !forcedOpen.has(project)"));
-        assert!(script.contains("Number(b === wanted) - Number(a === wanted)"));
+        // Blocked Runs come first, then the requested Project's Runs, then the most recent.
+        assert!(
+            script.contains("blockedFirst(a, b) || first(b.run) - first(a.run) || compare(a, b)")
+        );
     }
 
     #[rocket::async_test]
@@ -1745,16 +1782,16 @@ mod tests {
         let css = stylesheet().await;
         let (_, rules) = split_tokens(&css);
         assert!(rules.contains(".detail::backdrop {"));
-        assert!(rules.contains("background: var(--colorBackgroundOverlay)"));
+        assert!(rules.contains("background: var(--color-overlay)"));
         assert!(rules.contains(".detail {"));
         assert!(
             rules.contains("margin: 0 0 0 auto"),
             "the sheet sits on the right"
         );
         assert!(rules.contains("body:has(.detail[open]) { overflow: hidden; }"));
-        // The whole card is the click target, with the ticket link kept above it.
-        assert!(rules.contains(".card-open::after {"));
-        assert!(rules.contains(".run a { position: relative; z-index: 1; }"));
+        // The whole row is the click target, with its links kept above it.
+        assert!(rules.contains(".line-open::after {"));
+        assert!(rules.contains(".line-row .meta a { position: relative; z-index: 1; }"));
     }
 
     #[rocket::async_test]
@@ -1831,6 +1868,729 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn dashboard_serves_barlow_itself_and_uses_its_own_palette() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        // Both weights come from the dashboard itself, so the page works offline.
+        for weight in ["400", "600"] {
+            let response = api
+                .get(format!("/assets/vendor/barlow-{weight}.woff2"))
+                .header(Header::new("Host", "127.0.0.1:4311"))
+                .dispatch()
+                .await;
+            assert_eq!(response.status(), HttpStatus::Ok, "barlow {weight}");
+            assert_eq!(response.content_type(), Some(ContentType::WOFF2));
+            let bytes = response.into_bytes().await.unwrap();
+            assert!(bytes.starts_with(b"wOF2"), "barlow {weight} is woff2");
+        }
+        let css = stylesheet().await;
+        for weight in ["400", "600"] {
+            assert!(css.contains(&format!(
+                "src: url(/assets/vendor/barlow-{weight}.woff2) format('woff2');"
+            )));
+            assert!(css.contains(&format!("font-weight: {weight};")));
+        }
+        assert!(css.contains("font-display: swap;"));
+        assert!(
+            !css.contains("url(http"),
+            "no font or image from the network"
+        );
+        assert!(css.contains("--font-sans: 'Barlow', system-ui, sans-serif;"));
+        // The six named colours, light values as in the design proposal.
+        let (layer, rules) = split_tokens(&css);
+        let light = layer
+            .split(":root {")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .unwrap();
+        for (name, value) in [
+            ("floor", "#E8EBEE"),
+            ("panel", "#FFFFFF"),
+            ("slate", "#1B2633"),
+            ("blue", "#0A6CE0"),
+            ("amber", "#F2B705"),
+            ("red", "#C4314B"),
+        ] {
+            assert!(
+                light.contains(&format!("--color-{name}: {value};")),
+                "--color-{name}"
+            );
+        }
+        assert!(
+            !layer.contains("--colorNeutral"),
+            "the Fluent layer is gone"
+        );
+        // Needs you is amber with dark text; red is left for errors and the confirm Delete.
+        let rule = |selector: &str| {
+            rules
+                .lines()
+                .find(|line| line.starts_with(&format!("{selector} {{")))
+                .unwrap_or_else(|| panic!("no {selector} rule"))
+                .to_string()
+        };
+        for selector in [".badge.blocked", ".andon.lit"] {
+            let needs_you = rule(selector);
+            assert!(needs_you.contains("var(--color-amber)"), "{selector}");
+            assert!(
+                needs_you.contains("color: var(--color-on-amber)"),
+                "{selector}"
+            );
+        }
+        assert!(rule(".toggle.danger").contains("var(--color-red)"));
+        assert!(rule("#message.error").contains("var(--color-red)"));
+        // The line sits flat on the floor; only dialogs and menus cast a shadow.
+        assert!(!rule(".line").contains("box-shadow"));
+        assert!(
+            !rules.contains("box-shadow: inset"),
+            "a blocked row is marked with a bar, not a shadow"
+        );
+        assert_eq!(
+            rules.matches("var(--shadow-dialog)").count(),
+            3,
+            "confirm, detail and the Projects menu"
+        );
+        let license = include_str!("../third-party/barlow-LICENSE");
+        assert!(license.contains("SIL Open Font License"));
+    }
+
+    #[rocket::async_test]
+    async fn the_andon_strip_says_whether_anything_needs_you() {
+        let script = asset("/assets/app.js").await;
+        let andon = script
+            .split("function Andon(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("an Andon component");
+        // Quiet: one line that says so, with how many Runs are on the line. Lit: how many need you.
+        assert!(andon.contains("'Nothing needs you.'"));
+        assert!(andon.contains("on the line.`"));
+        assert!(andon.contains("'1 run needs you'"));
+        assert!(andon.contains("`${waiting.length} runs need you`"));
+        // Only whether and how many Runs need you is announced: not the list, and not the count on the line,
+        // so a Run starting or finishing elsewhere is not read out.
+        assert!(andon.contains("<span role=\"status\">${needs}</span>"));
+        assert_eq!(andon.matches("role=\"status\"").count(), 1);
+        // Each waiting Run shows its title, Project and status reason, and opens its detail.
+        assert!(andon.contains("class=\"andon-run\""));
+        assert!(andon.contains("onClick=${() => onOpen(runKey(run))}"));
+        assert!(andon.contains("<${ProjectName} path=${projectOf(run)} />"));
+        assert!(andon.contains("run.blocking_reason"));
+        // The Needs you filter lives in the strip, and stays reachable while it is on.
+        assert!(andon.contains("class=\"toggle andon-filter\""));
+        assert!(andon.contains("aria-pressed=${String(filtered)}"));
+        assert!(andon.contains("waiting.length || filtered"));
+        assert!(
+            !script.contains("NeedsYouToggle"),
+            "the toolbar toggle is gone"
+        );
+        // Hidden Projects stay out of the strip.
+        assert!(script.contains("<${Andon}\n            waiting=${visibleRuns"));
+        // Focus goes back to the control that opened the detail, wherever it was; failing that, to the Run's
+        // row on the board before its entry in the strip.
+        assert!(script.contains("opener.current = document.activeElement"));
+        assert!(script.contains(
+            "document.querySelector(`.line [data-run-key=\"${key}\"], .shipped [data-run-key=\"${key}\"]`)"
+        ));
+        let css = stylesheet().await;
+        let lit = css
+            .lines()
+            .find(|line| line.starts_with(".andon.lit {"))
+            .expect("a lit andon rule");
+        assert!(lit.contains("background: var(--color-amber)"));
+        assert!(lit.contains("color: var(--color-on-amber)"));
+    }
+
+    #[rocket::async_test]
+    async fn the_line_shows_each_active_run_on_a_four_station_rail() {
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("const STATIONS = ['define', 'build', 'check', 'finish'];"));
+        let row = script
+            .split("function LineRow(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a LineRow component");
+        // The title opens the detail and is found again by the Run key.
+        assert!(row.contains("class=\"line-open\" data-run-key=${runKey(run)}"));
+        // The rail is drawn for sighted users; its position is also given in words.
+        assert!(row.contains("<div class=\"rail\" aria-hidden=\"true\">"));
+        assert!(row.contains("<p class=\"where\">${where}</p>"));
+        assert!(row.contains("`${station}, blocked`"));
+        // Project, ticket progress, Rework, pull request and age sit in one meta line.
+        for part in [
+            "<${ProjectName} path=${projectOf(run)} />",
+            "<${ContextChips} run=${run} />",
+            "reworkLabel(",
+            "<${ContextLinks} run=${run} />",
+            "<${Updated} run=${run} now=${now} />",
+        ] {
+            assert!(row.contains(part), "row misses {part}");
+        }
+        // Active Runs only, blocked first, and the requested Project before the rest.
+        assert!(script.contains("run.status !== 'done'"));
+        assert!(script.contains("const first = (run) => Number(projectOf(run) === wanted);"));
+        assert!(script.contains(
+            "const blockedFirst = (a, b) => Number(needsYou(b.run)) - Number(needsYou(a.run));"
+        ));
+        // The old grid and its Stage buttons are gone.
+        for gone in [
+            "board-headers",
+            "StageButtons",
+            "project-row",
+            "collapsed-projects",
+        ] {
+            assert!(!script.contains(gone), "{gone} is still there");
+        }
+        let css = stylesheet().await;
+        let (_, rules) = split_tokens(&css);
+        assert!(!rules.contains("repeat(5,"), "no five-column board");
+        assert!(rules.contains(".rail { "));
+        // The current station is a marker placed by the Run's station number.
+        assert!(rules.contains("calc((var(--station) + 0.5) * 25%)"));
+        assert!(rules.contains(".line-row.blocked .rail-marker {"));
+    }
+
+    #[rocket::async_test]
+    async fn the_projects_menu_hides_restores_and_deletes_projects() {
+        let script = asset("/assets/app.js").await;
+        let menu = script
+            .split("function ProjectsMenu(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a ProjectsMenu component");
+        assert!(
+            menu.contains("<details class=\"projects-menu\" ref=${menu} onKeyDown=${onKeyDown}>")
+        );
+        assert!(menu.contains("<summary>Projects (${projects.length})</summary>"));
+        assert!(menu.contains("const name = names.get(project) ?? project;"));
+        assert!(menu.contains("aria-label=${`${hidden ? 'Restore' : 'Hide'} ${name}`}"));
+        assert!(menu.contains("aria-label=${`Delete ${name}`}"));
+        assert!(menu.contains("onClick=${() => onDelete(project)}"));
+        // Hiding is remembered in this browser, and deleting a Project still asks first.
+        assert!(script.contains("localStorage.setItem('hidden-projects'"));
+        assert!(script.contains("onDelete=${(project) => setPending({ project, runs: runs.filter((run) => projectOf(run) === project) })}"));
+        assert!(script.contains("<${ProjectsMenu}"));
+        // It closes with Escape (focus back on its summary) and with a click elsewhere.
+        assert!(menu.contains("event.key === 'Escape'"));
+        assert!(menu.contains("document.addEventListener('pointerdown', onOutside)"));
+        let css = stylesheet().await;
+        assert!(css.contains(".toolbar { position: relative;"));
+        assert!(css.contains(".projects-menu { position: static; }"));
+    }
+
+    #[rocket::async_test]
+    async fn shipped_runs_are_listed_by_day_and_cleared_after_confirming() {
+        let script = asset("/assets/app.js").await;
+        let log = script
+            .split("function ShippedLog(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a ShippedLog component");
+        assert!(log.contains("<h2 id=\"shipped-title\">Shipped"));
+        assert!(log.contains("<table class=\"shipped-table\">"));
+        assert!(log.contains("<caption class=\"visually-hidden\">"));
+        for column in ["Run", "Project", "Pull request", "Fresh tokens", "Shipped"] {
+            assert!(
+                log.contains(&format!("<th scope=\"col\">{column}</th>")),
+                "{column}"
+            );
+        }
+        // One group per day, newest first; a Run without a time goes last.
+        assert!(log.contains("<th scope=\"rowgroup\" colspan=\"5\">${group.label}</th>"));
+        let day = script
+            .split("function dayLabel(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a dayLabel function");
+        for label in ["'Today'", "'Yesterday'", "'Undated'"] {
+            assert!(day.contains(label), "{label}");
+        }
+        // Unknown usage is never shown as zero.
+        assert!(log.contains("tokens === null ? 'n/a' : compactTokens(tokens)"));
+        // Clear shipped asks first, naming how many.
+        assert!(log.contains("Clear shipped…"));
+        assert!(script.contains(
+            "`Clear ${pending.runs.length} shipped ${pending.runs.length === 1 ? 'run' : 'runs'}?`"
+        ));
+        // Single Runs are deleted from their detail, through the same dialog.
+        let detail = script
+            .split("function Detail(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .unwrap();
+        assert!(detail.contains("onClick=${() => onDelete(run)}"));
+        assert!(script.contains("onDelete=${(run) => setPending({ runs: [run] })}"));
+        assert!(!script.contains("DoneCard"), "rows have no Delete");
+        // People read Shipped; the status stays done.
+        assert!(script.contains("done: 'Shipped'"));
+        assert!(script.contains("run.status === 'done'"));
+        let help = asset("/assets/help.js").await;
+        assert!(!help.contains("Done column"));
+        assert!(help.contains("['Shipped', "));
+        let glossary = include_str!("../GLOSSARY.md");
+        for term in ["Shipped", "Andon strip", "The line"] {
+            assert!(glossary.contains(&format!("**{term}**")), "{term}");
+        }
+    }
+
+    #[rocket::async_test]
+    async fn the_rail_marker_slides_to_a_new_station_unless_motion_is_reduced() {
+        let css = stylesheet().await;
+        let (layer, rules) = split_tokens(&css);
+        assert!(layer.contains("--duration-move: 200ms;"));
+        let marker = rules
+            .lines()
+            .find(|line| line.starts_with(".rail-marker {"))
+            .expect("a rail marker rule");
+        // The marker is placed by --station, so a new Stage moves it; a new row has nothing to move from.
+        assert!(marker.contains("left: calc((var(--station) + 0.5) * 25%)"));
+        assert!(marker.contains("transition: left var(--duration-move) var(--ease)"));
+        let reduced = rules
+            .split("@media (prefers-reduced-motion: reduce)")
+            .last()
+            .expect("a reduced-motion block");
+        assert!(
+            reduced.contains(".rail-marker"),
+            "no slide under reduced motion"
+        );
+        // Rows are keyed by Run, so a refresh keeps the element and only its station changes.
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("<${LineRow} key=${runKey(entry.run)}"));
+        assert!(script.contains("style=${`--station: ${index}`}"));
+    }
+
+    /// The relative luminance of a `#RRGGBB` colour, as WCAG 2 defines it.
+    fn luminance(hex: &str) -> f64 {
+        let channel = |at: usize| {
+            let value = f64::from(u8::from_str_radix(&hex[at..at + 2], 16).unwrap()) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5)
+    }
+
+    fn contrast(a: &str, b: &str) -> f64 {
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn contrast_follows_the_wcag_formula() {
+        // Worked examples: black on white is 21:1, and #767676 on white is the classic 4.54:1.
+        assert!((contrast("#000000", "#FFFFFF") - 21.0).abs() < 0.01);
+        assert!((contrast("#767676", "#FFFFFF") - 4.54).abs() < 0.01);
+    }
+
+    #[rocket::async_test]
+    async fn text_colours_have_enough_contrast_in_both_themes() {
+        let css = stylesheet().await;
+        let (layer, _) = split_tokens(&css);
+        let colour_in = |marker: &str, name: &str| -> String {
+            let start = layer.find(marker).unwrap();
+            let body = &layer[start..start + layer[start..].find('}').unwrap()];
+            let at = body
+                .find(&format!("--color-{name}: "))
+                .unwrap_or_else(|| panic!("no --color-{name} in {marker}"));
+            body[at..].split(": ").nth(1).unwrap()[..7].to_string()
+        };
+        for marker in [":root {", ":root[data-theme=\"dark\"] {"] {
+            let colour = |name: &str| colour_in(marker, name);
+            for (text, background, minimum) in [
+                ("slate", "panel", 4.5),
+                ("muted", "panel", 4.5),
+                ("muted", "floor", 4.5),
+                ("muted", "tint", 4.5),
+                ("blue", "panel", 4.5),
+                ("red", "floor", 4.5),
+                ("on-amber", "amber", 4.5),
+                ("on-blue", "blue", 4.5),
+                ("on-red", "red", 4.5),
+                ("slate", "tint", 4.5),
+            ] {
+                let ratio = contrast(&colour(text), &colour(background));
+                assert!(
+                    ratio >= minimum,
+                    "{text} on {background} in {marker}: {ratio:.2}"
+                );
+            }
+        }
+    }
+
+    #[rocket::async_test]
+    async fn the_token_table_gets_the_full_width_of_the_detail() {
+        // The breakdown has ten columns: beside the field labels it overflowed and scrolled, cutting off the first.
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("<${Field} label=\"Token usage\" missing=\"Not tracked\" wide>"));
+        assert!(script
+            .contains("function Field({ label, children, missing = 'Not set', wide = false }) {"));
+        let css = stylesheet().await;
+        assert!(css.contains(".fields .wide { grid-column: 1 / -1; }"));
+        // The table fills its row and its numbers line up.
+        let table = css
+            .lines()
+            .find(|line| line.starts_with(".usage-table {"))
+            .expect("a usage table rule");
+        assert!(table.contains("width: 100%"));
+        assert!(table.contains("font-variant-numeric: tabular-nums"));
+    }
+
+    #[rocket::async_test]
+    async fn the_token_table_shows_tickets_as_short_links_so_it_fits() {
+        // A ticket URL in the breakdown made the table wider than the sheet. It shows as #202, with the URL as a tooltip.
+        let script = asset("/assets/app.js").await;
+        let short = script
+            .split("function shortRef(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a shortRef function");
+        // GitHub issues and pull requests, and Azure Boards work items, by number; anything else by its last part.
+        assert!(short.contains("/(?:issues|pull|pullrequest|workitems\\/edit)\\/(\\d+)\\/?$/"));
+        assert!(short.contains("`#${number[1]}`"));
+        assert!(script.contains("<td><${TicketRef} value=${rowBucket(row)} /></td>"));
+        assert!(script.contains("title=${url.href}"));
+        // Model and ticket may wrap, so a long name never widens the table.
+        let css = stylesheet().await;
+        assert!(css.contains(
+            ".usage-table td:nth-child(2), .usage-table td:nth-child(3) { white-space: normal; overflow-wrap: anywhere; }"
+        ));
+        // One doc comment on Field, and the token usage label keeps the same gap as the others.
+        assert!(!script.contains("reads \"Not set\". */\n/**"));
+        assert!(!css.contains(".fields dd.wide"));
+    }
+
+    #[rocket::async_test]
+    async fn links_share_one_http_check_and_short_ticket_links_say_what_they_are() {
+        let script = asset("/assets/app.js").await;
+        // One place decides what becomes a link: an http(s) URL, nothing else.
+        assert!(script.contains("function httpUrl(value) {"));
+        assert_eq!(
+            script
+                .matches("url.protocol === 'http:' || url.protocol === 'https:'")
+                .count(),
+            1,
+            "the protocol check lives only in httpUrl"
+        );
+        for component in [
+            "function TicketLink(",
+            "function RefLink(",
+            "function TicketRef(",
+        ] {
+            let body = script
+                .split(component)
+                .nth(1)
+                .and_then(|rest| rest.split("\n}\n").next())
+                .unwrap_or_else(|| panic!("no {component}"));
+            assert!(body.contains("httpUrl("), "{component} uses httpUrl");
+            assert!(
+                !body.contains("new URL("),
+                "{component} parses no URL itself"
+            );
+        }
+        // A screen reader hears "Ticket #202", not just "#202".
+        assert!(script.contains("<span class=\"visually-hidden\">Ticket </span>${shortRef(url)}"));
+    }
+
+    #[rocket::async_test]
+    async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
+        use crate::pr_state::{PrState, PrStatus};
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let run = store
+            .create(NewRun {
+                title: "t".into(),
+                project: "/work".into(),
+                repository: None,
+                session: None,
+                model_routing: None,
+            })
+            .unwrap();
+        let pr = "https://github.com/o/r/pull/7";
+        store
+            .update(
+                &run.id,
+                serde_json::from_str(&format!(
+                    r#"{{"stage":"finish","status":"done","pr":"{pr}"}}"#
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        store
+            .set_pr_status(
+                &run.id,
+                PrStatus {
+                    url: pr.into(),
+                    state: PrState::Merged,
+                    reason: None,
+                    checked_at: 42,
+                },
+            )
+            .unwrap();
+        drop(store);
+        let api = Client::tracked(build_rocket(&path, DEFAULT_PORT).unwrap())
+            .await
+            .unwrap();
+        let list: serde_json::Value = api
+            .get("/api/runs")
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .dispatch()
+            .await
+            .into_json()
+            .await
+            .unwrap();
+        assert_eq!(
+            list[0]["pr_status"],
+            serde_json::json!({"url": pr, "state": "merged", "checked_at": 42})
+        );
+        // An update through the API cannot set it.
+        let response = api
+            .post(format!("/api/runs/{}", run.id))
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .header(ContentType::JSON)
+            .body(r#"{"stage":"finish","status":"done","pr_status":{"state":"open"}}"#)
+            .dispatch()
+            .await;
+        assert_ne!(response.status(), HttpStatus::Ok);
+    }
+
+    /// Answers every `gh` call with a merged pull request.
+    struct MergedGh;
+
+    impl crate::pr_wait::Gh for MergedGh {
+        fn run(&self, _args: &[&str]) -> Result<crate::pr_wait::GhOutput, crate::pr_wait::GhError> {
+            Ok(crate::pr_wait::GhOutput {
+                code: Some(0),
+                stdout: r#"{"state":"MERGED","isDraft":false}"#.into(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[rocket::async_test]
+    async fn the_dashboard_server_reads_pull_request_states_in_the_background() {
+        use crate::pr_state::PrState;
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let run = store
+            .create(NewRun {
+                title: "t".into(),
+                project: "/work".into(),
+                repository: None,
+                session: None,
+                model_routing: None,
+            })
+            .unwrap();
+        store
+            .update(
+                &run.id,
+                serde_json::from_str(
+                    r#"{"stage":"finish","status":"done","pr":"https://github.com/o/r/pull/7"}"#,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let watcher = watch_pr_states(
+            store.clone(),
+            std::sync::Arc::new(MergedGh),
+            std::time::Duration::from_millis(10),
+        );
+        // Wait for the first pass, with a deadline instead of a fixed sleep.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let state = loop {
+            let stored = store.list().unwrap()[0].pr_status.clone();
+            if let Some(status) = stored {
+                break status.state;
+            }
+            assert!(std::time::Instant::now() < deadline, "no state was stored");
+            rocket::tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        watcher.abort();
+        assert_eq!(state, PrState::Merged);
+    }
+
+    #[rocket::async_test]
+    async fn the_dashboard_shows_each_pull_requests_state_in_words() {
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains(
+            "const PR_STATE = { open: 'Open', draft: 'Draft', merged: 'Merged', closed: 'Closed' };"
+        ));
+        let label = script
+            .split("function PrStateLabel(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a PrStateLabel component");
+        // Only a state read for the pull request the Run records now, and never an unknown one, gets a label.
+        assert!(label.contains("status.url !== run.pr"));
+        assert!(label.contains("!PR_STATE[status.state]"));
+        assert!(label.contains("<span class=${`pr-state ${status.state}`}>"));
+        // Beside the link on the line and in the Shipped log, and as a field in the detail.
+        assert!(script.contains("<${ContextLinks} run=${run} /><${PrStateLabel} run=${run} />"));
+        assert!(script.contains("<${PrStateLabel} run=${run} /></td>"));
+        assert!(script.contains("<${Field} label=\"Pull request state\""));
+        let detail = script
+            .split("function PrStateDetail(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a PrStateDetail component");
+        assert!(detail.contains("status.reason"));
+        assert!(detail.contains("checked ${ago(now - status.checked_at)}"));
+        let css = stylesheet().await;
+        for state in ["open", "draft", "merged", "closed"] {
+            assert!(css.contains(&format!(".pr-state.{state} {{")), "{state}");
+        }
+    }
+
+    #[rocket::async_test]
+    async fn the_detail_shows_the_current_ticket_and_status_reason_only_while_set() {
+        // Both are cleared by the workflows when the ticket ends and when work resumes, so a shipped Run has neither.
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains(
+            "${run.current_ticket\n          ? html`<${Field} label=\"Current ticket\"><${TicketLink} value=${String(run.current_ticket)} /><//>`\n          : null}"
+        ));
+        assert!(script.contains(
+            "${run.blocking_reason ? html`<${Field} label=\"Status reason\">${run.blocking_reason}<//>` : null}"
+        ));
+        assert!(!script.contains("<${Field} label=\"Ticket\">"));
+    }
+
+    #[rocket::async_test]
+    async fn the_toolbar_andon_strip_and_line_stay_in_view_without_taking_the_screen() {
+        let script = asset("/assets/app.js").await;
+        // One sticky block inside the main landmark: the toolbar, the andon strip, the message and the line.
+        let top = script
+            .split("<div class=\"top\" ref=${top}>")
+            .nth(1)
+            .expect("a sticky top block")
+            .split("${runs && !runs.length ? html`<${Welcome}")
+            .next()
+            .unwrap();
+        for part in [
+            "<div class=\"toolbar\">",
+            "<${Andon}",
+            "<p id=\"message\"",
+            "<section class=\"line\"",
+        ] {
+            assert!(top.contains(part), "the top holds {part}");
+        }
+        assert!(
+            !top.contains("<${ShippedLog}"),
+            "the Shipped log scrolls under it"
+        );
+        assert!(
+            script.find("<main tabindex=\"-1\">").unwrap()
+                < script.find("<div class=\"top\"").unwrap()
+        );
+        // Its height is published, so focus below it is scrolled into view under it, not behind it.
+        assert!(script.contains("new ResizeObserver("));
+        assert!(script.contains("setProperty('--top-height', `${element.offsetHeight}px`)"));
+        assert!(script.contains("setProperty('--toolbar-height', `${toolbar.offsetHeight}px`)"));
+        let css = stylesheet().await;
+        let (_, rules) = split_tokens(&css);
+        let rule = |selector: &str| {
+            rules
+                .lines()
+                .find(|line| line.starts_with(&format!("{selector} {{")))
+                .unwrap_or_else(|| panic!("no {selector} rule"))
+                .to_string()
+        };
+        let sticky = rule(".top");
+        assert!(sticky.contains("position: sticky; top: 0;"));
+        assert!(
+            sticky.contains("background: var(--color-floor)"),
+            "content does not show through"
+        );
+        // Never more than 60% of the window: the rows and the waiting Runs scroll inside instead.
+        assert!(sticky.contains("max-height: 60dvh"));
+        assert!(
+            sticky.contains("box-sizing: border-box"),
+            "the cap includes the padding"
+        );
+        assert!(rule(".line-rows").contains("overflow-y: auto"));
+        assert!(rule(".andon-list").contains("overflow-y: auto"));
+        // At the cap the line gives up room first, down to about one row; then the waiting Runs.
+        let line = rule(".top > .line");
+        assert!(
+            line.contains("flex: 0 1000 auto") && line.contains("min-height: min(8rem, 20dvh)")
+        );
+        // Browsers without dvh fall back to vh rather than dropping the minimum.
+        assert!(line.contains("min-height: min(8rem, 20vh); min-height: min(8rem, 20dvh)"));
+        let andon = rule(".top > .andon");
+        assert!(andon.contains("flex: 0 1 auto") && andon.contains("min-height: 0"));
+        // Above the footer, so the Projects menu panel is never covered.
+        assert!(sticky.contains("z-index: 3"));
+        // Focus rings inside the scrolling lists sit inside their control, where the list cannot clip them.
+        assert!(rule(".andon-run:focus-visible")
+            .contains("outline-offset: calc(-2 * var(--stroke-thick))"));
+        assert!(rule(".line-open:focus-visible::after")
+            .contains("outline-offset: calc(-1 * var(--stroke-thick))"));
+        assert!(rule(".line-row .meta a:focus-visible").contains("outline-offset: 0"));
+        // Narrow screens: the toolbar scrolls away, the andon strip and the line stay.
+        let narrow = rules
+            .split("@media (max-width: 48rem) {\n")
+            .skip(1)
+            .find(|block| {
+                block
+                    .split("\n}")
+                    .next()
+                    .is_some_and(|body| body.contains(".top {"))
+            })
+            .and_then(|block| block.split("\n}").next())
+            .expect("a narrow-screen sticky rule");
+        // The toolbar and its bottom margin scroll away, so the strip sits just below the window's top.
+        assert!(narrow.contains("top: calc(-1 * (var(--toolbar-height) + var(--space-6)))"));
+        assert!(
+            narrow.contains("scroll-padding-top: calc(var(--top-height) - var(--toolbar-height))")
+        );
+        assert!(
+            rule("html").contains("scroll-padding-top: calc(var(--top-height) + var(--space-4))")
+        );
+        // In a very short window, such as at 400% zoom, it scrolls with the page.
+        let short = rules
+            .split("@media (max-height: 30rem) {\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("a short-window block");
+        assert!(short.contains(".top { position: static; max-height: none; }"));
+        assert!(short.contains("html { scroll-padding-top: 0; }"));
+        // On a phone the Shipped table keeps readable columns and scrolls sideways in its own region.
+        assert!(rule(".shipped-table").contains("min-width: 36rem"));
+        // The page column may be narrower than that table, so only the table's region scrolls, not the page.
+        assert!(rule("#app").contains("min-width: 0"));
+        // A closed Projects menu does not lay out its panel, which would otherwise widen the page on a phone.
+        assert!(rules.contains(".projects-menu:not([open]) .projects-panel { display: none; }"));
+        // Visually hidden labels in a scrolled table are positioned inside it, so they cannot widen the page.
+        assert!(rule(".table-scroll").contains("position: relative"));
+    }
+
+    #[rocket::async_test]
+    async fn the_page_reloads_itself_when_a_new_server_answers() {
+        // The page knows which server served it, by process id, the same id /api/info reports.
+        let page = dashboard_page().await;
+        assert!(!page.contains(PID_PLACEHOLDER), "placeholder left in page");
+        assert!(page.contains(&format!(
+            "<meta name=\"server-pid\" content=\"{}\">",
+            std::process::id()
+        )));
+        let script = asset("/assets/app.js").await;
+        let hook = script
+            .split("function useReloadOnNewServer(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a reload hook");
+        assert!(hook.contains("fetch('/api/info', { cache: 'no-store' })"));
+        assert!(hook.contains("changed = String(info.pid) !== page;"));
+        // Never while a dialog or the Projects menu is open, and never because the server is unreachable.
+        assert!(hook.contains("if (changed && !somethingOpen()) location.reload();"));
+        assert!(
+            script.contains("document.querySelector('dialog[open], details.projects-menu[open]')")
+        );
+        assert!(hook.contains("if (!response.ok) return;"));
+        assert!(script.contains("  useReloadOnNewServer();\n"));
+    }
+
+    #[rocket::async_test]
     async fn dashboard_tokens_are_all_used_and_all_declared() {
         let css = stylesheet().await;
         let (layer, rules) = split_tokens(&css);
@@ -1869,7 +2629,7 @@ mod tests {
             heading.contains("id=\"tds-logo-blue\"") && heading.contains("url(#tds-logo-blue)")
         );
         let css = stylesheet().await;
-        assert!(css.contains(".logo .ink { fill: var(--colorNeutralForeground1); }"));
+        assert!(css.contains(".logo .ink { fill: var(--color-slate); }"));
     }
 
     #[rocket::async_test]
@@ -1884,6 +2644,8 @@ mod tests {
         // Stuck to the bottom of the window while the page scrolls, with a background so content does not show through.
         let footer = rule("footer");
         assert!(footer.contains("position: sticky") && footer.contains("bottom: 0"));
+        // Above card buttons and links (z-index 1), so nothing paints over it.
+        assert!(footer.contains("z-index: 2"));
         assert!(footer.contains("background:"));
         // At the bottom of a short page: the body is a column at least as tall as the window.
         let body = rule("body");

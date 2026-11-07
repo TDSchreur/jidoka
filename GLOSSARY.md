@@ -4,7 +4,15 @@
 
 **Stage**: The current part of a run: Define, Build, Check, or Finish.
 
-**Needs you**: A run that is blocked and waiting for the user. The dashboard marks its card, sorts it first and counts it in the page title.
+**Needs you**: A run that is blocked and waiting for the user. The dashboard lists it in the andon strip, marks its row on the line amber, sorts it first and counts it in the page title.
+
+**Andon strip**: The top of the dashboard. It says that nothing needs you, or turns amber and lists every run that needs you, with its project and status reason. Named after the signal board above a factory line.
+
+**The line**: The dashboard's list of active runs (every run that is not done), one row each, with a rail of the four Stages that shows where the run is.
+
+**Shipped**: The dashboard's name for a finished run, one with the status `done`. Shipped runs are listed below the line, grouped by day. The CLI, the API and `runs.json` keep the status `done`.
+
+**Pull request state**: Whether a run's pull request is open, a draft, merged or closed. The dashboard server reads it from GitHub with `gh` or from Azure Repos with `az`, keeps it on the run and reads it again about once a minute until it is merged. When it cannot be read, it is unknown, with the reason; it is never guessed.
 
 **Rework**: A return from Check to Build to fix actionable findings, followed by another Check. `factory-full` and `factory-balanced` allow at most two per run; after that, the user decides whether to do another Rework, finish with the findings listed in the pull request, or stop. Findings alone never block a run; the run is `blocked` only while it waits for that decision.
 
@@ -33,3 +41,7 @@
 **CI outcome**: The single result of watching a pull request's checks for its current head commit: `passed`, `failed`, `cancelled`, `timeout`, `head-changed`, `no-ci` or `not-open`. Whether the branch is behind its base is reported next to the outcome and is not part of it.
 
 **Workspace**: A run's own git worktree and feature branch, created from the pull request base branch, which the run records as its worktree, branch and base commit. `factory run begin` creates it.
+
+**Ticket report**: A short, agent-reported skill or activity associated with a ticket in a run. Reports may be incomplete and are not independent proof of the work.
+
+**Run report**: A short, agent-reported skill or activity associated with a run rather than a particular ticket. Reports may be incomplete and are not independent proof of the work.
