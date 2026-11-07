@@ -946,7 +946,9 @@ function App() {
       const same = opener.current?.isConnected ? opener.current : null;
       const key = CSS.escape(String(lastOpened.current));
       const target =
-        same ?? document.querySelector(`main [data-run-key="${key}"]`) ?? document.querySelector(`[data-run-key="${key}"]`);
+        same ??
+        document.querySelector(`.line [data-run-key="${key}"], .shipped [data-run-key="${key}"]`) ??
+        document.querySelector(`[data-run-key="${key}"]`);
       target?.focus();
       // The control is gone (its Run left): keep focus on the board.
       if (!target || document.activeElement !== target) document.querySelector('main')?.focus();
@@ -954,52 +956,65 @@ function App() {
       opener.current = null;
     }
   }, [openKey]);
+  // The sticky top's height, as --top-height, so the page scrolls a focused control below it into view.
+  const top = useRef(null);
+  useEffect(() => {
+    const element = top.current;
+    if (!element || typeof ResizeObserver !== 'function') return;
+    const observer = new ResizeObserver(() =>
+      document.documentElement.style.setProperty('--top-height', `${element.offsetHeight}px`),
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   return html`<${ProjectNames.Provider} value=${names}>
-    <div class="toolbar">
-      <${NotificationsToggle} state=${notifications.state} onToggle=${notifications.toggle} />
-      <button type="button" class="toggle help-open" onClick=${() => setHelpOpen(true)}>Help</button>
-      ${projects.length
-        ? html`<${ProjectsMenu}
-            projects=${projects}
-            hiddenProjects=${hiddenProjects}
-            counts=${counts}
-            onHide=${changeHidden}
-            onDelete=${(project) => setPending({ project, runs: runs.filter((run) => projectOf(run) === project) })}
-          />`
-        : null}
-      <${Connection} failed=${failed} lastOk=${lastOk} now=${now} />
-    </div>
-    ${visibleRuns
-      ? html`<${Andon}
-        waiting=${visibleRuns
-          .map((run, index) => ({ run, index }))
-          .filter((entry) => needsYou(entry.run))
-          .sort(compare)
-          .map((entry) => entry.run)}
-        active=${visibleRuns.filter((run) => run.status !== 'done').length}
-        filtered=${onlyWaiting}
-        onFilter=${() => setOnlyWaiting((current) => !current)}
-        onOpen=${open}
-      />`
-      : null}
     <main tabindex="-1">
-      <p id="message" role="status" class=${failed || deleteError ? 'error' : ''}>${text}</p>
+      <div class="top" ref=${top}>
+        <div class="toolbar">
+          <${NotificationsToggle} state=${notifications.state} onToggle=${notifications.toggle} />
+          <button type="button" class="toggle help-open" onClick=${() => setHelpOpen(true)}>Help</button>
+          ${projects.length
+            ? html`<${ProjectsMenu}
+                projects=${projects}
+                hiddenProjects=${hiddenProjects}
+                counts=${counts}
+                onHide=${changeHidden}
+                onDelete=${(project) => setPending({ project, runs: runs.filter((run) => projectOf(run) === project) })}
+              />`
+            : null}
+          <${Connection} failed=${failed} lastOk=${lastOk} now=${now} />
+        </div>
+        ${visibleRuns
+          ? html`<${Andon}
+            waiting=${visibleRuns
+              .map((run, index) => ({ run, index }))
+              .filter((entry) => needsYou(entry.run))
+              .sort(compare)
+              .map((entry) => entry.run)}
+            active=${visibleRuns.filter((run) => run.status !== 'done').length}
+            filtered=${onlyWaiting}
+            onFilter=${() => setOnlyWaiting((current) => !current)}
+            onOpen=${open}
+          />`
+          : null}
+        <p id="message" role="status" class=${failed || deleteError ? 'error' : ''}>${text}</p>
+        ${visibleRuns?.length
+          ? html`<section class="line" aria-labelledby="line-title">
+              <div class="line-head">
+                <h2 id="line-title">On the line<span class="count">${` (${line.length})`}</span></h2>
+                <ol class="stations" aria-hidden="true">
+                  ${STATIONS.map((id, at) => html`<li key=${id}>${GROUPS[at][1]}</li>`)}
+                </ol>
+              </div>
+              ${line.length
+                ? html`<ul class="line-rows">
+                    ${line.map((entry) => html`<${LineRow} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${open} />`)}
+                  </ul>`
+                : html`<p class="empty">${onlyWaiting ? 'Nothing needs you right now.' : 'Nothing on the line.'}</p>`}
+            </section>`
+          : null}
+      </div>
       ${runs && !runs.length ? html`<${Welcome} onHelp=${() => setHelpOpen(true)} />` : null}
-      ${visibleRuns?.length
-        ? html`<section class="line" aria-labelledby="line-title">
-            <div class="line-head">
-              <h2 id="line-title">On the line<span class="count">${` (${line.length})`}</span></h2>
-              <ol class="stations" aria-hidden="true">
-                ${STATIONS.map((id, at) => html`<li key=${id}>${GROUPS[at][1]}</li>`)}
-              </ol>
-            </div>
-            ${line.length
-              ? html`<ul class="line-rows">
-                  ${line.map((entry) => html`<${LineRow} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${open} />`)}
-                </ul>`
-              : html`<p class="empty">${onlyWaiting ? 'Nothing needs you right now.' : 'Nothing on the line.'}</p>`}
-          </section>`
-        : null}
       ${shipped.length
         ? html`<${ShippedLog}
             entries=${shipped}

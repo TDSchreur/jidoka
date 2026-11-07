@@ -2,7 +2,8 @@
    Only the tokens this stylesheet uses are listed: add one here when a rule needs it, and remove it when no rule does (a test checks both).
    Colours and shadows differ per theme; every rule below the layer reads tokens only.
    Amber means "needs you" and always carries dark text. Red only means errors, offline and the confirm button of a delete.
-   --station is the exception: each row of the line sets it to its station number, 0 to 3, which places the rail marker. */
+   --station is the exception: each row of the line sets it to its station number, 0 to 3, which places the rail marker.
+   --top-height is set by the page to the height of the sticky top, so focus scrolls below it. */
 :root {
   color-scheme: light dark;
   --color-floor: #E8EBEE;
@@ -48,6 +49,7 @@
   --duration-move: 200ms;
   --ease: cubic-bezier(0.33, 0, 0.67, 1);
   --station: 0;
+  --top-height: 0px;
 }
 :root[data-theme="light"] { color-scheme: light; }
 @media (prefers-color-scheme: dark) {
@@ -104,7 +106,7 @@
 body { box-sizing: border-box; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; max-width: 75rem; margin: 0 auto; padding: var(--space-8) var(--space-6) 0; }
 /* A focused element that scrolls into view stops above the footer, not behind it. */
 /* The footer is one row: the theme buttons (small text, padding and border) plus the footer's own padding. */
-html { scroll-padding-bottom: calc(var(--leading-xs) + 2 * var(--space-2) + 2 * var(--stroke-thin) + 2 * var(--space-4)); }
+html { scroll-padding-top: calc(var(--top-height) + var(--space-4)); scroll-padding-bottom: calc(var(--leading-xs) + 2 * var(--space-2) + 2 * var(--stroke-thin) + 2 * var(--space-4)); }
 header.site-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) var(--space-8); margin-bottom: var(--space-8); }
 /* The logo is the visible heading; its text stays for screen readers. The dark parts follow the theme, the blue parts keep their colour. */
 .logo { display: block; height: 2.25rem; width: auto; }
@@ -119,6 +121,15 @@ p { color: var(--color-slate); margin: var(--space-2) 0; }
 .connection.offline [role="status"] { color: var(--color-red); font-weight: var(--weight-strong); }
 @keyframes beat { from { transform: scale(1.8); opacity: .4; } to { transform: scale(1); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .connection .pulse { animation: none; } }
+.top { position: sticky; top: 0; z-index: 2; box-sizing: border-box; display: flex; flex-direction: column; max-height: 60vh; max-height: 60dvh; padding-top: var(--space-4); background: var(--color-floor); }
+.top > * { flex: none; }
+.top > .line { display: flex; flex: 0 1 auto; flex-direction: column; min-height: 0; margin-bottom: var(--space-6); }
+/* A very short window, such as 400% zoom: the top scrolls with the page, so the rest stays reachable. */
+@media (max-height: 30rem) {
+  html { scroll-padding-top: 0; }
+  .top { position: static; max-height: none; }
+  .line-rows, .andon-list { max-height: none; overflow-y: visible; }
+}
 .toolbar { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) var(--space-8); margin: 0 0 var(--space-6); }
 .theme { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); margin: 0; padding: 0; border: 0; }
 .toggle { padding: var(--space-2) var(--space-5); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-m); background: var(--color-panel); color: var(--color-slate); font: inherit; cursor: pointer; transition: background-color var(--duration-fast) var(--ease); }
@@ -152,7 +163,7 @@ p { color: var(--color-slate); margin: var(--space-2) 0; }
 .andon.lit .andon-filter:hover { background: var(--color-panel); color: var(--color-slate); }
 .andon.lit .andon-filter[aria-pressed="true"] { background: var(--color-on-amber); color: var(--color-amber); }
 .andon.lit .andon-filter:focus-visible { outline-color: var(--color-on-amber); }
-.andon-list { display: grid; gap: var(--space-2); margin: var(--space-4) 0 0; padding: 0; list-style: none; }
+.andon-list { display: grid; gap: var(--space-2); max-height: 20vh; max-height: 20dvh; margin: var(--space-4) 0 0; padding: 0; list-style: none; overflow-y: auto; overscroll-behavior: contain; }
 .andon-run { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 var(--space-6); width: 100%; padding: var(--space-4) var(--space-5); border: var(--stroke-thin) solid var(--color-on-amber); border-radius: var(--radius-m); background: none; color: var(--color-on-amber); font: inherit; text-align: left; cursor: pointer; }
 .andon-run:hover { background: var(--color-panel); color: var(--color-slate); }
 .andon-run:focus-visible { outline: var(--stroke-thick) solid var(--color-on-amber); outline-offset: var(--stroke-thick); }
@@ -230,7 +241,7 @@ body:has(.confirm[open]) { overflow: hidden; }
 .fields dd { margin: 0; overflow-wrap: anywhere; }
 .fields .wide { grid-column: 1 / -1; }
 .links { margin: var(--space-2) 0 0; font-size: var(--text-xs); line-height: var(--leading-xs); }
-.table-scroll { overflow-x: auto; max-width: 100%; }
+.table-scroll { position: relative; overflow-x: auto; max-width: 100%; }
 .table-scroll:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline-offset: var(--stroke-thick); }
 .usage-table { width: 100%; border-collapse: collapse; font-size: var(--text-xs); line-height: var(--leading-xs); font-variant-numeric: tabular-nums; }
 .usage-table th, .usage-table td { padding: var(--space-2) var(--space-3); border-bottom: var(--stroke-thin) solid var(--color-rule); text-align: right; white-space: nowrap; }
@@ -254,7 +265,7 @@ main:focus { outline: none; }
 .badge.done { color: var(--color-slate); background: var(--color-tint); border-color: var(--color-rule); }
 .chip { display: inline-block; padding: var(--space-1) var(--space-3); border: var(--stroke-thin) solid var(--color-muted); border-radius: var(--radius-s); font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-slate); background: var(--color-tint); }
 /* The footer, and the version in it, stays in view: at the bottom of a short page, and stuck to the bottom of the window while a long page scrolls. */
-#app { margin-bottom: var(--space-7); }
+#app { min-width: 0; margin-bottom: var(--space-7); }
 /* z-index 2: above row links (1), which otherwise paint over the footer while the page scrolls. */
 footer { position: sticky; bottom: 0; z-index: 2; margin-top: auto; padding: var(--space-4) 0; background: var(--color-floor); border-top: var(--stroke-thin) solid var(--color-rule); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-6); }
 footer .theme legend, footer .theme label { font-size: var(--text-xs); line-height: var(--leading-xs); }
@@ -271,7 +282,7 @@ a:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline
 .line-head { align-items: end; border-bottom: var(--stroke-thin) solid var(--color-rule); }
 .line-head h2 { margin: 0; font-size: var(--text-m); line-height: var(--leading-s); font-weight: var(--weight-strong); }
 .stations { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; padding: 0; list-style: none; font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); text-align: center; }
-.line-rows { margin: 0; padding: 0; list-style: none; }
+.line-rows { min-height: 0; margin: 0; padding: 0; list-style: none; overflow-y: auto; overscroll-behavior: contain; }
 .line-row { position: relative; grid-template-areas: "title rail" "meta where" "activity activity"; align-items: center; }
 .line-row + .line-row { border-top: var(--stroke-thin) solid var(--color-rule); }
 .line-row:has(.line-open:hover) { background: var(--color-tint); }
@@ -301,7 +312,7 @@ a:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline
 .shipped { margin: 0 0 var(--space-8); }
 .shipped-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-4); margin: 0 0 var(--space-4); }
 .shipped-head h2 { margin: 0; font-size: var(--text-m); line-height: var(--leading-s); font-weight: var(--weight-strong); }
-.shipped-table { width: 100%; border-collapse: collapse; background: var(--color-panel); font-variant-numeric: tabular-nums; }
+.shipped-table { width: 100%; min-width: 36rem; border-collapse: collapse; background: var(--color-panel); font-variant-numeric: tabular-nums; }
 .shipped-table th, .shipped-table td { padding: var(--space-3) var(--space-5); border-bottom: var(--stroke-thin) solid var(--color-rule); text-align: left; vertical-align: baseline; }
 .shipped-table thead th { font-size: var(--text-xs); line-height: var(--leading-xs); font-weight: normal; color: var(--color-muted); }
 .shipped-table .day th { padding-top: var(--space-6); background: var(--color-floor); font-weight: var(--weight-strong); }
@@ -323,6 +334,8 @@ a:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline
 .pr-state.closed { color: var(--color-muted); }
 /* Projects: a menu in the toolbar with Hide or Restore and Delete for each Project. */
 .projects-menu { position: static; }
+/* A closed details element still lays out its content in current browsers; the panel would widen the page. */
+.projects-menu:not([open]) .projects-panel { display: none; }
 .projects-menu summary { list-style: none; padding: var(--space-2) var(--space-5); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-m); background: var(--color-panel); cursor: pointer; }
 .projects-menu summary::-webkit-details-marker { display: none; }
 .projects-menu summary::after { content: " \25BE" / ""; }

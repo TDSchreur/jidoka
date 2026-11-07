@@ -490,7 +490,8 @@ function Dashboard({ reworkCap }) {
         is not done, with a rail of the four Stations (Define, Build, Check and Finish) that shows where the Run is. A
         blocked Run is marked amber and its position says so, such as Check, blocked. Runs waiting for you come first,
         then the most recently updated. Finished Runs are listed below the line. The board refreshes by itself every few
-        seconds.
+        seconds. The toolbar, the andon strip and the line stay at the top while you scroll the Shipped list. They take
+        at most about 60% of the window: with many Runs, the line scrolls on its own.
       </p>
       <p>
         Projects in the toolbar lists every project. Hide removes a project's Runs from the board in this browser, and
