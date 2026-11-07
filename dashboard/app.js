@@ -471,6 +471,15 @@ function Detail({ run, now, onClose, onDelete }) {
               </ol>`
             : null}
         <//>
+        <${Field} label="Run reports" wide>
+          <p>Agent-reported; entries may be incomplete.</p>
+          ${Array.isArray(run.run_reports) && run.run_reports.length
+            ? html`<ul>${run.run_reports.map((report) => html`<li>
+                <strong>${report.kind === 'skill' ? 'Skill' : 'Activity'}:</strong>${' '}${report.text}${' '}
+                (${report.stage}, <time datetime=${new Date(report.at).toISOString()}>${new Date(report.at).toLocaleString()}</time>)
+              </li>`)}</ul>`
+            : html`<p>No reports recorded.</p>`}
+        <//>
         <${Field} label="Token usage" missing="Not tracked" wide>
           ${run.usage ? html`<${UsageDetail} usage=${run.usage} />` : null}
         <//>
