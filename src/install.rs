@@ -552,6 +552,121 @@ mod tests {
     }
 
     #[test]
+    fn setup_links_exactly_the_bundled_issue_tracker_templates() {
+        let setup = bundled_text("setup-matt-pocock-skills/SKILL.md");
+        let mut linked: Vec<&str> = setup
+            .split("](./")
+            .skip(1)
+            .filter_map(|rest| rest.split_once(')'))
+            .map(|(target, _)| target)
+            .filter(|target| target.starts_with("issue-tracker-"))
+            .collect();
+        linked.sort_unstable();
+        linked.dedup();
+        let mut bundled: Vec<&str> = bundled_skill_files()
+            .filter_map(|path| path.strip_prefix("setup-matt-pocock-skills/"))
+            .filter(|name| name.starts_with("issue-tracker-") && name.ends_with(".md"))
+            .collect();
+        bundled.sort_unstable();
+        assert_eq!(linked, bundled);
+        assert!(linked.contains(&"issue-tracker-azure-boards.md"));
+    }
+
+    #[test]
+    fn setup_stops_on_missing_azure_boards_details_without_a_partial_tracker_file() {
+        let setup = bundled_text("setup-matt-pocock-skills/SKILL.md");
+        let (_, azure) = setup
+            .split_once("An Azure Boards tracker needs")
+            .expect("setup has an Azure Boards part");
+        assert!(azure.contains("is missing, stop and tell the user"));
+        assert!(azure.contains("partial `docs/agents/issue-tracker.md`"));
+    }
+
+    #[test]
+    fn azure_boards_template_names_no_process_specific_types_or_states() {
+        let template = bundled_text("setup-matt-pocock-skills/issue-tracker-azure-boards.md");
+        let found: Vec<String> = [
+            "User Story",
+            "Product Backlog Item",
+            "Active",
+            "Resolved",
+            "Done",
+            "To Do",
+            "Closed",
+        ]
+        .into_iter()
+        .flat_map(|name| {
+            [
+                format!("`{name}`"),
+                format!("\"{name}\""),
+                format!("--state {name}"),
+                format!("--type {name}"),
+            ]
+        })
+        .filter(|used| template.contains(used))
+        .collect();
+        assert!(
+            found.is_empty(),
+            "template hardcodes process names as values: {found:?}"
+        );
+    }
+
+    /// Returns why `arguments` (the text after `--route-parameters`) is not a
+    /// list of separately double-quoted `"name=value"` pairs.
+    fn route_parameter_problem(arguments: &str) -> Option<String> {
+        let mut arguments = arguments.split_whitespace().peekable();
+        if arguments.peek().is_none() {
+            return Some("no arguments".to_string());
+        }
+        arguments.find_map(|argument| {
+            let inner = argument
+                .strip_prefix('"')
+                .and_then(|rest| rest.strip_suffix('"'));
+            match inner {
+                Some(inner) if !inner.contains('"') && inner.matches('=').count() == 1 => None,
+                _ => Some(format!("not exactly one quoted name=value: {argument}")),
+            }
+        })
+    }
+
+    #[test]
+    fn route_parameter_checker_rejects_unquoted_and_merged_pairs() {
+        assert_eq!(
+            route_parameter_problem("\"project=<project>\" \"workItemId=<id>\""),
+            None
+        );
+        assert!(route_parameter_problem("\"project=<project>\" type=<type>").is_some());
+        assert!(route_parameter_problem("\"project=<project> type=<type>\"").is_some());
+        assert!(route_parameter_problem("project=<project>").is_some());
+    }
+
+    #[test]
+    fn azure_boards_route_parameters_are_quoted_pairs() {
+        const FLAG: &str = "--route-parameters ";
+        for path in [
+            "setup-matt-pocock-skills/issue-tracker-azure-boards.md",
+            "setup-matt-pocock-skills/SKILL.md",
+        ] {
+            let text = bundled_text(path);
+            assert!(text.contains(FLAG), "{path} has no {FLAG}");
+            for (index, _) in text.match_indices(FLAG) {
+                let after = &text[index + FLAG.len()..];
+                let end = [after.find(" --"), after.find(['`', '\n'])]
+                    .into_iter()
+                    .flatten()
+                    .min()
+                    .unwrap_or(after.len());
+                let arguments = &after[..end];
+                assert_eq!(
+                    route_parameter_problem(arguments),
+                    None,
+                    "{path}: bad route parameters: {arguments}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn skills_roots_resolves_every_listed_agent_once() {
         let home = Path::new("/home/user");
         let unset = |_: &str| None;
@@ -661,6 +776,9 @@ mod tests {
         assert!(root.join("setup-matt-pocock-skills/SKILL.md").is_file());
         assert!(root
             .join("setup-matt-pocock-skills/issue-tracker-github.md")
+            .is_file());
+        assert!(root
+            .join("setup-matt-pocock-skills/issue-tracker-azure-boards.md")
             .is_file());
         assert!(root.join("setup-matt-pocock-skills/LICENSE").is_file());
         assert!(root.join("to-spec/SKILL.md").is_file());

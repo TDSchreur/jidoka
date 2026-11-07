@@ -13,6 +13,7 @@ Local adaptations of upstream skills:
 
 - `implement-spec` (from mattpocock/skills): the upstream skill runs implementer and merger subagents in separate worktrees, opens a draft PR and runs a code review. The adaptation builds the tickets sequentially in the run's existing worktree and branch, one at a time with `tdd`, runs the project's checks after each ticket, and leaves committing, the pull request and review to the calling workflow. Its MIT license is still installed with it.
 - `pr` (from mattpocock/skills): the adaptation adds a step that runs the finished description through `humanizer` in embedded mode, keeping the template's sections, evidence and review findings intact. Its MIT license is still installed with it.
+- `setup-matt-pocock-skills` (from mattpocock/skills): the adaptation adds an Azure Boards issue tracker option for any repository host, with an `issue-tracker-azure-boards.md` template whose work item types and states setup discovers from the project. Its MIT license is still installed with it.
 
 Upstream sources:
 
