@@ -1,0 +1,80 @@
+# Issue tracker: Azure Boards
+
+Issues and specs for this repo live as work items in Azure Boards, whatever host the code lives on. Use the `az` CLI with the `azure-devops` extension for all operations.
+
+## Configuration
+
+Setup fills in these values from the project itself. Use them in every command below; never guess a type or state name, because they differ per process (Agile, Scrum, Basic, CMMI or a custom one).
+
+- **Organization URL**: `<org-url>` (for example `https://dev.azure.com/<organization>`)
+- **Project**: `<project>`
+
+| Used for | Work item type   |
+| -------- | ---------------- |
+| Specs    | `<spec-type>`    |
+| Tickets  | `<ticket-type>`  |
+| Bugs     | `<bug-type>`     |
+
+States per type, by state category. When a category has several states, the first one listed is the one to set.
+
+| Work item type  | Proposed | InProgress | Completed | Removed | Closed as wontfix |
+| --------------- | -------- | ---------- | --------- | ------- | ----------------- |
+| `<spec-type>`   | `<...>`  | `<...>`    | `<...>`   | `<...>` | `<...>`           |
+| `<ticket-type>` | `<...>`  | `<...>`    | `<...>`   | `<...>` | `<...>`           |
+| `<bug-type>`    | `<...>`  | `<...>`    | `<...>`   | `<...>` | `<...>`           |
+
+An item is **open** while its state is in the Proposed or InProgress category, and **closed** once it is in the Completed or Removed category.
+
+## Authentication
+
+Sign in once with `az login` (Microsoft Entra ID), or with a personal access token through `az devops login --org <org-url>` (it reads the token from the prompt or stdin) or the `AZURE_DEVOPS_EXT_PAT` environment variable. Never print, echo or log a token.
+
+## Conventions
+
+Every command passes `--org <org-url> --detect false`, so nothing depends on `az devops configure` defaults or the git remote. Commands that take a project get `--project <project>` (`-p`); `az devops invoke` gets it as the route parameter `project=<project>`. Work item ids are unique across the organization, so commands that take `--id` need no project.
+
+- **Create a work item**: `az boards work-item create --org <org-url> --detect false --project <project> --type "<ticket-type>" --title "..." --description "..."`. Use `<spec-type>` for a spec and `<bug-type>` for a bug. `--description` is HTML, not Markdown: write headings, paragraphs and lists as HTML (`<h2>`, `<p>`, `<ul><li>`), or line breaks are lost. For a multi-line body, read it from a heredoc into a variable and pass `--description "$body"`. Add tags at creation with `--fields "System.Tags=<tag>; <tag>"`.
+- **Read a work item**: `az boards work-item show --org <org-url> --detect false --id <id> --expand relations` returns the fields (`System.Title`, `System.Description`, `System.State`, `System.Tags`, `System.WorkItemType`, `System.AssignedTo`) and the links. Read the comments with `az devops invoke --org <org-url> --detect false --area wit --resource comments --route-parameters project=<project> workItemId=<id> --api-version 7.1-preview`. The `-preview` suffix is required; `7.1` alone is refused.
+- **List work items**: run a WIQL query with `az boards query --org <org-url> --detect false --project <project> --wiql "..."`. For example, open tickets with a triage role: `SELECT [System.Id], [System.Title], [System.State], [System.Tags] FROM WorkItems WHERE [System.TeamProject] = '<project>' AND [System.WorkItemType] = '<ticket-type>' AND [System.Tags] CONTAINS 'ready-for-agent' AND [System.State] NOT IN ('<completed and removed states>') ORDER BY [System.CreatedDate]`. WIQL has no state-category filter, so list the Completed and Removed states from the configuration. For items without any triage role, combine `[System.Tags] NOT CONTAINS '<role>'` for each of the five roles.
+- **Comment on a work item**: `az boards work-item update --org <org-url> --detect false --id <id> --discussion "..."`. The comment is HTML, like the description.
+- **Apply / remove triage roles**: triage roles are tags in the `System.Tags` field, a list separated by `; `. `--fields System.Tags=...` replaces the whole list, so read, modify, then write: read the current tags with `az boards work-item show --org <org-url> --detect false --id <id> --fields System.Tags`, add or drop the role in that list, and write the full result back with `az boards work-item update --org <org-url> --detect false --id <id> --fields "System.Tags=<tag>; <tag>"`. A tag is created the first time it is used. When moving between roles, drop the old role in the same write.
+- **Change state**: `az boards work-item update --org <org-url> --detect false --id <id> --state "<state>"`, with a state from the configuration for that item's type.
+- **Close**: post the explanation first with `--discussion`, then set the Completed state of the item's type with `--state` in a second `update` call.
+- **Close as wontfix**: post the explanation first with `--discussion`, then set the "Closed as wontfix" state of the item's type with `--state`, and set the `wontfix` role tag as in **Apply / remove triage roles**.
+- **Make a work item a child of a parent**: `az boards work-item relation add --org <org-url> --detect false --id <child> --relation-type parent --target-id <parent>`. A child shows the link as `System.LinkTypes.Hierarchy-Reverse` and the parent as `System.LinkTypes.Hierarchy-Forward` in **Read a work item**.
+- **Blocking**: Azure Boards' Predecessor link, the canonical, UI-visible representation. To record that `<blocker>` blocks `<child>`: `az boards work-item relation add --org <org-url> --detect false --id <child> --relation-type Predecessor --target-id <blocker>` (the blocker sees it as a Successor link). `az boards work-item relation list-type --org <org-url> --detect false` lists the link names the organization accepts.
+- **Count open blockers**: read the item with `--expand relations`, take every relation with `rel` equal to `System.LinkTypes.Dependency-Reverse` (Predecessor), and read each target id's `System.State`. An item is unblocked when every predecessor is in a Completed or Removed category state for its type.
+
+## Pull requests as a triage surface
+
+**PRs as a request surface: no.** _(Fixed for Azure Boards: pull requests are not work items, so `/triage` does not read them from this tracker.)_
+
+## When a skill says "publish to the issue tracker"
+
+Create a work item as in **Create a work item**: `<spec-type>` for a spec, `<ticket-type>` for a ticket, `<bug-type>` for a bug.
+
+## When a skill says "fetch the relevant ticket"
+
+Read it as in **Read a work item** above, including its comments.
+
+## Wayfinding operations
+
+Used by `/wayfinder`. The **map** is a single parent work item with **child** work items as tickets.
+
+- **Map**: a single `<spec-type>` work item tagged `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body in its description. Create it with `--fields "System.Tags=wayfinder:map"`.
+- **Child ticket**: a `<ticket-type>` work item made a child of the map (see **Make a work item a child of a parent**), tagged `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.
+- **Blocking**: see **Blocking** under Conventions.
+- **Frontier query**: read the map with `--expand relations` and take its children (relations with `rel` equal to `System.LinkTypes.Hierarchy-Forward`), in the order they appear. Keep the open ones without `System.AssignedTo`, drop any with an open predecessor (see **Count open blockers**); first in map order wins.
+- **Claim**: `az boards work-item update --org <org-url> --detect false --id <id> --assigned-to "<sign-in name of the driving dev>" --state "<InProgress state>"`, the session's first write.
+- **Resolve**: post the answer with `--discussion`, then set the Completed state of the ticket's type, then append a context pointer (gist + link) to the map's Decisions-so-far by rewriting the map's description with `--description`.
+
+## Unsupported or limited
+
+- **Pull requests**: not a triage request surface for Azure Boards; the flag above stays `no`.
+- **Tags**: there is no command to add or remove one tag. Every tag change rewrites the full `System.Tags` list, so always read it first.
+- **Comments**: `az boards` can add a comment (`--discussion`) but not read one. Reading goes through the preview REST API with `az devops invoke ... --api-version 7.1-preview`. Editing or deleting a comment is not covered.
+- **Markdown**: descriptions and comments are HTML; the CLI has no Markdown option.
+- **Types and states**: they are process-specific. Use only the names in **Configuration**; if a type or state is missing there, stop and ask the user to rerun setup instead of guessing.
+- **State categories**: WIQL and `az boards` cannot filter by category, so queries and blocker checks map states to categories through **Configuration**.
+- **Assign to me**: there is no `@me`. Pass the user's sign-in name or email to `--assigned-to`.
+- **Closing reasons**: `--reason` values are process-specific and are not part of the configuration; leave them to the process default.

@@ -552,6 +552,27 @@ mod tests {
     }
 
     #[test]
+    fn setup_links_exactly_the_bundled_issue_tracker_templates() {
+        let setup = bundled_text("setup-matt-pocock-skills/SKILL.md");
+        let mut linked: Vec<&str> = setup
+            .split("](./")
+            .skip(1)
+            .filter_map(|rest| rest.split_once(')'))
+            .map(|(target, _)| target)
+            .filter(|target| target.starts_with("issue-tracker-"))
+            .collect();
+        linked.sort_unstable();
+        linked.dedup();
+        let mut bundled: Vec<&str> = bundled_skill_files()
+            .filter_map(|path| path.strip_prefix("setup-matt-pocock-skills/"))
+            .filter(|name| name.starts_with("issue-tracker-") && name.ends_with(".md"))
+            .collect();
+        bundled.sort_unstable();
+        assert_eq!(linked, bundled);
+        assert!(linked.contains(&"issue-tracker-azure-boards.md"));
+    }
+
+    #[test]
     fn skills_roots_resolves_every_listed_agent_once() {
         let home = Path::new("/home/user");
         let unset = |_: &str| None;
@@ -661,6 +682,9 @@ mod tests {
         assert!(root.join("setup-matt-pocock-skills/SKILL.md").is_file());
         assert!(root
             .join("setup-matt-pocock-skills/issue-tracker-github.md")
+            .is_file());
+        assert!(root
+            .join("setup-matt-pocock-skills/issue-tracker-azure-boards.md")
             .is_file());
         assert!(root.join("setup-matt-pocock-skills/LICENSE").is_file());
         assert!(root.join("to-spec/SKILL.md").is_file());
