@@ -323,7 +323,9 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
             }
         }
     };
-    if let (Some(worktree), Some(branch)) = (&run.worktree, &run.branch) {
+    // Only GitHub can lag behind a push in what it reports; the Azure wait does not use the hint.
+    let github = !run.pr.as_deref().is_some_and(pr_wait::is_azure_pr_url);
+    if let (true, Some(worktree), Some(branch)) = (github, &run.worktree, &run.branch) {
         wait_options.pushed_head = pr_wait::pushed_head(std::path::Path::new(worktree), branch);
     }
     let clock = pr_wait::RealClock(std::time::Instant::now());

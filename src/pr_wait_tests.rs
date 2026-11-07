@@ -1182,15 +1182,33 @@ fn a_pushed_commit_the_pull_request_never_shows_is_given_up_on_after_thirty_seco
 #[test]
 fn the_pushed_head_is_known_only_while_the_worktree_is_on_the_branch_on_origin() {
     let dir = tempfile::tempdir().unwrap();
+    // Isolated from the user's git configuration and from an inherited GIT_DIR.
     let git = |args: &[&str]| {
         let out = std::process::Command::new("git")
             .arg("-C")
             .arg(dir.path())
             .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+            ])
             .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env(
+                "GIT_CONFIG_GLOBAL",
+                std::env::temp_dir().join("factory-tests-no-such-gitconfig"),
+            )
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .output()
             .unwrap();
-        assert!(out.status.success(), "git {args:?}");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
     git(&["init", "-q", "-b", "feature"]);
@@ -1203,4 +1221,68 @@ fn the_pushed_head_is_known_only_while_the_worktree_is_on_the_branch_on_origin()
     // A local commit that is not pushed.
     git(&["commit", "-q", "--allow-empty", "-m", "two"]);
     assert_eq!(pushed_head(dir.path(), "feature"), None);
+}
+
+#[test]
+fn the_grace_for_a_pushed_head_stays_within_the_timeout() {
+    let gh = FakeGh::script(
+        vec![view("old111", "OPEN", "CLEAN")],
+        vec![checks(&[("build", "pending")])],
+    );
+    let options = Options {
+        timeout: Duration::from_secs(10),
+        pushed_head: Some("new222".into()),
+        ..Options::default()
+    };
+    let (result, _, clock) = run_wait_with(&gh, &options);
+    assert_eq!(result.unwrap().outcome, Outcome::Timeout);
+    // Two 5-second asks for the pushed head, then the 10 seconds are up: no extra check-poll period.
+    assert_eq!(*clock.now.borrow(), Duration::from_secs(10));
+}
+
+/// Answers the Azure calls of a pull request in `my-org` / `My Project` / `my-repo` with one rejected build
+/// policy, and records the calls.
+#[derive(Default)]
+struct AzureNames(RefCell<Vec<String>>);
+impl Gh for AzureNames {
+    fn run(&self, _: &[&str]) -> Result<GhOutput, GhError> {
+        panic!("GitHub CLI must not be called for Azure")
+    }
+    fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+        self.0.borrow_mut().push(args.join(" "));
+        match args {
+            ["repos", "pr", "show", ..] => ok(json!({"pullRequestId":535,"status":"active", "sourceRefName":"refs/heads/feature", "lastMergeSourceCommit":{"commitId":"abc"}, "repository":{"id":"repo","name":"my-repo","project":{"name":"My Project"}}}).to_string()),
+            ["repos", "ref", "list", ..] => ok(json!([{"name":"refs/heads/feature","objectId":"abc"}]).to_string()),
+            ["repos", "pr", "policy", "list", ..] => ok(json!([{"status":"rejected", "startedDate":"2026-01-01T00:00:01Z", "context":{"buildId":42}, "configuration":{"isEnabled":true,"isBlocking":true,"type":{"displayName":"Build"}}}]).to_string()),
+            ["pipelines", "runs", "show", ..] => ok(json!({"status":"completed","result":"failed"}).to_string()),
+            ["devops", "invoke", ..] if args.contains(&"pullRequestIterations") => ok(json!({"value":[{"id":1,"createdDate":"2026-01-01T00:00:00Z","sourceRefCommit":{"commitId":"abc"}}]}).to_string()),
+            ["devops", "invoke", ..] => ok(json!({"value":[]}).to_string()),
+            _ => panic!("unexpected Azure command {args:?}"),
+        }
+    }
+}
+
+#[test]
+fn azure_names_keep_unreserved_characters_in_the_organization_and_build_links() {
+    let gh = AzureNames::default();
+    let waited = wait(
+        Some("https://dev.azure.com/my-org/My%20Project/_git/my-repo/pullrequest/535"),
+        &Options::default(),
+        &gh,
+        &FakeClock::default(),
+        &mut |_| {},
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(waited.outcome, Outcome::Failed);
+    assert_eq!(
+        waited.checks[0].link,
+        "https://dev.azure.com/my-org/My%20Project/_build/results?buildId=42"
+    );
+    assert!(gh
+        .0
+        .borrow()
+        .iter()
+        .all(|call| !call.contains("--organization")
+            || call.contains("--organization https://dev.azure.com/my-org")));
 }

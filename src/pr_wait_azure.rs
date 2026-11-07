@@ -60,7 +60,7 @@ impl AzurePr {
         Ok(Self {
             org: format!(
                 "https://dev.azure.com/{}",
-                percent_encoding::utf8_percent_encode(&org, crate::pr_open::URL_SEGMENT)
+                crate::pr_open::encode_segment(&org)
             ),
             project,
             repository,
@@ -444,7 +444,7 @@ fn checks_for(
                 format!(
                     "{}/{}/_build/results?buildId={id}",
                     pr.org,
-                    percent_encoding::utf8_percent_encode(&pr.project, crate::pr_open::URL_SEGMENT)
+                    crate::pr_open::encode_segment(&pr.project)
                 )
             })
             .unwrap_or_else(|| url.into());

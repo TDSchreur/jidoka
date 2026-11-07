@@ -503,26 +503,17 @@ fn failures(gh: &dyn Gh, checks: &[CheckResult]) -> Vec<Failure> {
     out
 }
 
-/// Whether `url` is an Azure DevOps Services pull request URL, in its canonical or legacy form.
 /// The commit `branch` has on origin, when the worktree's `HEAD` is that commit; `None` otherwise, or when
-/// git cannot tell.
+/// git cannot tell. It is only a hint for the wait, so a git problem is not reported.
 pub(crate) fn pushed_head(worktree: &std::path::Path, branch: &str) -> Option<String> {
     let rev = |name: &str| {
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(worktree)
-            .args(["rev-parse", "--verify", "--quiet", name])
-            .output()
-            .ok()?;
-        output
-            .status
-            .success()
-            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        crate::run_begin::git(worktree, &["rev-parse", "--verify", "--quiet", name]).ok()
     };
     let head = rev("HEAD^{commit}")?;
     (rev(&format!("refs/remotes/origin/{branch}^{{commit}}"))? == head).then_some(head)
 }
 
+/// Whether `url` is an Azure DevOps Services pull request URL, in its canonical or legacy form.
 pub(crate) fn is_azure_pr_url(url: &str) -> bool {
     url.starts_with("https://dev.azure.com/")
         || url
@@ -552,11 +543,12 @@ pub(crate) fn wait(
         return azure::wait(pull_request, options, gh, clock, activity, progress);
     }
     let mut first = read_view(gh, pull_request)?;
+    // The whole wait, including the grace for a just-pushed head, stays within `--timeout`.
+    let started = clock.elapsed();
     if let Some(pushed) = &options.pushed_head {
-        let started = clock.elapsed();
         while first.state == "OPEN"
             && first.head != *pushed
-            && clock.elapsed().saturating_sub(started) < HEAD_GRACE
+            && clock.elapsed().saturating_sub(started) < HEAD_GRACE.min(options.timeout)
         {
             progress("Waiting for the pull request to show the pushed commit");
             clock.sleep(HEAD_POLL);
@@ -580,7 +572,6 @@ pub(crate) fn wait(
         return Ok(waited);
     }
     activity("Waiting for CI");
-    let started = clock.elapsed();
     let waited = loop {
         let checks = read_checks(gh, pull_request)?;
         let view = read_view(gh, pull_request)?;
