@@ -323,7 +323,7 @@ function Updated({ run, now }) {
   if (ts === null) return html`<span class="updated">Updated: not reported</span>`;
   const date = new Date(ts);
   return html`<span class="updated">
-    Updated${' '}<time datetime=${date.toISOString()} title=${date.toLocaleString()}
+    Updated${' '}<time datetime=${date.toISOString()} title=${localDateTime(date)}
       >${ago(now - ts)}</time
     >
   </span>`;
@@ -493,15 +493,20 @@ function Detail({ run, now, onClose, onDelete }) {
         <${Field} label="Rework">${rework !== null ? reworkLabel(rework) : null}<//>
         <${Field} label="Updated">
           ${ts !== null
-            ? html`<time datetime=${new Date(ts).toISOString()}>${ago(now - ts)}</time>${' '}(${new Date(
-                ts,
-              ).toLocaleString()})`
+            ? html`<time datetime=${new Date(ts).toISOString()}>${ago(now - ts)}</time>${' '}(${localDateTime(
+                new Date(ts),
+              )})`
             : null}
         <//>
         <${Field} label="Run id"><code>${run.id}</code><//>
       </dl>
     </div>
   </dialog>`;
+}
+
+/** Exact timestamps use day-first order while retaining the browser's local timezone. */
+function localDateTime(date) {
+  return date.toLocaleString('en-GB');
 }
 
 /** The day a Run shipped, by its last update: Today, Yesterday, the date, or Undated without a time. */
@@ -561,7 +566,7 @@ function ShippedLog({ entries, now, onOpen, onClear }) {
                 <td>
                   ${ts === null
                     ? html`<span class="not-set">Not reported</span>`
-                    : html`<time datetime=${new Date(ts).toISOString()} title=${new Date(ts).toLocaleString()}>${ago(now - ts)}</time>`}
+                    : html`<time datetime=${new Date(ts).toISOString()} title=${localDateTime(new Date(ts))}>${ago(now - ts)}</time>`}
                 </td>
               </tr>`;
             })}
