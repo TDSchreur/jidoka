@@ -1,4 +1,4 @@
-//! `factory pr open` arguments and a missing `gh`, checked before any server is contacted.
+//! `factory pr open` validates arguments before contacting the server.
 
 use std::process::Command;
 
@@ -69,30 +69,4 @@ fn open_refuses_bad_arguments_with_the_usage() {
     );
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid run id"));
-}
-
-#[test]
-fn a_missing_gh_says_what_to_install_before_the_server_is_asked() {
-    let dir = tempfile::tempdir().unwrap();
-    let body = dir.path().join("body.md");
-    std::fs::write(&body, "text").unwrap();
-    let output = factory(
-        dir.path(),
-        &[
-            "pr",
-            "open",
-            "1",
-            "--title",
-            "T",
-            "--body-file",
-            body.to_str().unwrap(),
-        ],
-    );
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("GitHub CLI") && stderr.contains("cli.github.com"),
-        "{stderr}"
-    );
 }

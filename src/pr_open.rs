@@ -17,6 +17,10 @@ use std::{
 pub(crate) trait Gh {
     fn run(&self, dir: &Path, args: &[&str]) -> Result<GhOutput, GhError>;
 
+    fn az(&self, _dir: &Path, _args: &[&str]) -> Result<GhOutput, GhError> {
+        Err(GhError::NotInstalled)
+    }
+
     /// Runs git in a folder. Tests override this to keep the user's own git settings out.
     fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
         git(dir, args)
@@ -27,6 +31,27 @@ pub(crate) trait Gh {
 pub(crate) struct RealGh;
 
 impl Gh for RealGh {
+    fn az(&self, dir: &Path, args: &[&str]) -> Result<GhOutput, GhError> {
+        let output = Command::new("az")
+            .current_dir(dir)
+            .args(args)
+            .env("AZURE_CORE_ONLY_SHOW_ERRORS", "true")
+            .env("AZURE_EXTENSION_USE_DYNAMIC_INSTALL", "no")
+            .output()
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    GhError::NotInstalled
+                } else {
+                    GhError::Other(error.to_string())
+                }
+            })?;
+        Ok(GhOutput {
+            code: output.status.code(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+
     fn run(&self, dir: &Path, args: &[&str]) -> Result<GhOutput, GhError> {
         let output = Command::new("gh")
             .current_dir(dir)
@@ -244,6 +269,260 @@ fn open_pull_request(
     }))
 }
 
+/// Azure DevOps Services repository identified by its origin URL.
+struct AzureRepo {
+    organization: String,
+    project: String,
+    repository: String,
+}
+
+impl AzureRepo {
+    fn from_remote(remote: &str) -> Result<Option<Self>, ToolProblem> {
+        let remote = remote.trim_end_matches('/');
+        // Azure HTTPS remotes commonly include a username; it never belongs in output or API calls.
+        let normalized = if let Some(rest) = remote.strip_prefix("https://") {
+            if let Some((authority, path)) = rest.split_once('/') {
+                let host = authority.rsplit('@').next().unwrap_or(authority);
+                if host == "dev.azure.com" || host.ends_with(".visualstudio.com") {
+                    format!("https://{host}/{path}")
+                } else {
+                    remote.to_string()
+                }
+            } else {
+                remote.to_string()
+            }
+        } else {
+            remote.to_string()
+        };
+        let remote = normalized.as_str();
+        let parts: Vec<&str> = if let Some(path) = remote.strip_prefix("https://dev.azure.com/") {
+            let p: Vec<_> = path.split('/').collect();
+            if p.len() != 4 || p[2] != "_git" {
+                return Err(ToolProblem("Invalid Azure Repos origin URL.".into()));
+            }
+            vec![p[0], p[1], p[3]]
+        } else if let Some(path) = remote
+            .strip_prefix("git@ssh.dev.azure.com:v3/")
+            .or_else(|| remote.strip_prefix("ssh://git@ssh.dev.azure.com/v3/"))
+            .or_else(|| remote.strip_prefix("ssh://git@ssh.dev.azure.com:22/v3/"))
+        {
+            path.split('/').collect()
+        } else if let Some(path) = remote.strip_prefix("https://") {
+            let Some((host, path)) = path.split_once('/') else {
+                return Ok(None);
+            };
+            let Some(org) = host.strip_suffix(".visualstudio.com") else {
+                return Ok(None);
+            };
+            let mut p: Vec<_> = path.split('/').collect();
+            if p.first() == Some(&"DefaultCollection") {
+                p.remove(0);
+            }
+            if p.len() != 3 || p[1] != "_git" {
+                return Err(ToolProblem("Invalid Azure Repos origin URL.".into()));
+            }
+            vec![org, p[0], p[2]]
+        } else {
+            return Ok(None);
+        };
+        if parts.len() != 3 {
+            return Err(ToolProblem("Invalid Azure Repos origin URL.".into()));
+        }
+        let decode = |part: &str| -> Result<String, ToolProblem> {
+            let decoded = percent_encoding::percent_decode_str(part)
+                .decode_utf8()
+                .map_err(|_| ToolProblem("Invalid Azure Repos origin URL.".into()))?
+                .into_owned();
+            if decoded.is_empty()
+                || decoded.starts_with('-')
+                || decoded == "."
+                || decoded == ".."
+                || decoded
+                    .chars()
+                    .any(|c| c.is_control() || matches!(c, '/' | '\\' | '?' | '#' | '@' | '%'))
+            {
+                return Err(ToolProblem("Invalid Azure Repos origin URL.".into()));
+            }
+            Ok(decoded)
+        };
+        Ok(Some(Self {
+            organization: decode(parts[0])?,
+            project: decode(parts[1])?,
+            repository: decode(parts[2])?,
+        }))
+    }
+    fn encoded(value: &str) -> String {
+        percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC).to_string()
+    }
+    fn org_url(&self) -> String {
+        format!(
+            "https://dev.azure.com/{}",
+            Self::encoded(&self.organization)
+        )
+    }
+    fn pr_url(&self, id: u64) -> String {
+        format!(
+            "{}/{}/_git/{}/pullrequest/{id}",
+            self.org_url(),
+            Self::encoded(&self.project),
+            Self::encoded(&self.repository)
+        )
+    }
+}
+
+fn az_json(gh: &dyn Gh, dir: &Path, args: &[&str]) -> Result<serde_json::Value, ToolProblem> {
+    let result = gh.az(dir, args).map_err(|error| match error {
+        GhError::NotInstalled => ToolProblem("Azure CLI (`az`) is not installed. Install it and the azure-devops extension, then sign in.".into()),
+        GhError::Other(_) => ToolProblem("Could not start Azure CLI. Check its installation.".into()),
+    })?;
+    if result.code != Some(0) {
+        // CLI output can contain credentials or remote URLs; do not include it in diagnostics.
+        return Err(ToolProblem("Azure CLI request failed. Check the azure-devops extension, authentication, and repository access.".into()));
+    }
+    serde_json::from_str(&result.stdout)
+        .map_err(|_| ToolProblem("Azure CLI returned invalid JSON.".into()))
+}
+
+fn azure_existing(
+    gh: &dyn Gh,
+    dir: &Path,
+    repo: &AzureRepo,
+    branch: &str,
+) -> Result<Option<Existing>, ToolProblem> {
+    let org = repo.org_url();
+    let data = az_json(
+        gh,
+        dir,
+        &[
+            "repos",
+            "pr",
+            "list",
+            "--organization",
+            &org,
+            "--project",
+            &repo.project,
+            "--repository",
+            &repo.repository,
+            "--source-branch",
+            branch,
+            "--status",
+            "active",
+            "--output",
+            "json",
+            "--detect",
+            "false",
+        ],
+    )?;
+    let list = data
+        .as_array()
+        .ok_or_else(|| ToolProblem("Azure PR list did not return an array.".into()))?;
+    for item in list {
+        // Cross-repository PRs with the same branch name must not be reused.
+        if !item["forkSource"].is_null() {
+            continue;
+        }
+        let id = item["pullRequestId"].as_u64().ok_or_else(|| {
+            ToolProblem("Azure PR list returned a pull request without an ID.".into())
+        })?;
+        let base = item["targetRefName"]
+            .as_str()
+            .and_then(|s| s.strip_prefix("refs/heads/"))
+            .map(str::to_string);
+        return Ok(Some(Existing {
+            url: repo.pr_url(id),
+            base,
+        }));
+    }
+    Ok(None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn open_azure(
+    run: &RunInfo,
+    options: &Options,
+    gh: &dyn Gh,
+    api: &dyn RunApi,
+    dir: &Path,
+    repo: &AzureRepo,
+    branch: String,
+    base: String,
+    commit: String,
+) -> Result<Opened, ToolProblem> {
+    let existing = azure_existing(gh, dir, repo, &branch)?;
+    let description = if existing.is_none() {
+        let text = std::fs::read_to_string(&options.body_file)
+            .map_err(|_| ToolProblem("The pull request body could not be read as UTF-8.".into()))?;
+        if text.chars().count() > 4000 || text.contains('\0') {
+            return Err(ToolProblem("Azure pull request descriptions must be at most 4000 characters and contain no NUL bytes.".into()));
+        }
+        Some(format!("--description={text}"))
+    } else {
+        None
+    };
+    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    gh.git(dir, &["push", "-u", "origin", &refspec]).map_err(|_| {
+        ToolProblem("Git could not push to the Azure repository. Check Git authentication and branch permissions.".into())
+    })?;
+    if let Some(found) = existing {
+        return finish(
+            run,
+            api,
+            branch,
+            found.base.unwrap_or(base),
+            commit,
+            found.url,
+            false,
+        );
+    }
+    let org = repo.org_url();
+    let result = az_json(
+        gh,
+        dir,
+        &[
+            "repos",
+            "pr",
+            "create",
+            "--organization",
+            &org,
+            "--project",
+            &repo.project,
+            "--repository",
+            &repo.repository,
+            "--source-branch",
+            &branch,
+            "--target-branch",
+            &base,
+            &format!("--title={}", options.title),
+            description
+                .as_deref()
+                .expect("new Azure PR has a description"),
+            "--output",
+            "json",
+            "--detect",
+            "false",
+        ],
+    );
+    let data = match result {
+        Ok(data) => data,
+        Err(error) => {
+            return match azure_existing(gh, dir, repo, &branch) {
+                Ok(Some(found)) => finish(
+                    run,
+                    api,
+                    branch,
+                    found.base.unwrap_or(base),
+                    commit,
+                    found.url,
+                    false,
+                ),
+                _ => Err(error),
+            }
+        }
+    };
+    let id = data["pullRequestId"].as_u64().ok_or_else(|| ToolProblem("Azure PR creation returned no pull request ID; check for an existing PR before retrying.".into()))?;
+    finish(run, api, branch, base, commit, repo.pr_url(id), true)
+}
+
 /// Pushes the run's branch and opens its pull request, or finds the open one, and records its URL on the run.
 /// Nothing is pushed unless the checks pass and `gh` can see the repository. It never forces a push.
 pub(crate) fn open(
@@ -265,7 +544,49 @@ pub(crate) fn open(
             shown(worktree)
         )));
     }
-    run_gh(gh, dir, &["--version"])?;
+    let remote = gh.git(dir, &["remote", "get-url", "origin"]).map_err(|_| {
+        ToolProblem("Cannot identify the repository provider: origin is not configured.".into())
+    })?;
+    let provider = gh.git(dir, &["config", "--get", "factory.prProvider"]).ok();
+    let azure = match provider.as_deref() {
+        None => AzureRepo::from_remote(&remote)?,
+        Some("github") => None,
+        Some("azure") => {
+            let get = |key: &str| {
+                gh.git(dir, &["config", "--get", key]).map_err(|_| {
+                    ToolProblem(format!(
+                        "Set git config {key} for the Azure provider override."
+                    ))
+                })
+            };
+            let org = get("factory.azureOrganization")?;
+            let project = get("factory.azureProject")?;
+            let repo = get("factory.azureRepository")?;
+            let url = format!(
+                "https://dev.azure.com/{}/{}/_git/{}",
+                AzureRepo::encoded(&org),
+                AzureRepo::encoded(&project),
+                AzureRepo::encoded(&repo)
+            );
+            AzureRepo::from_remote(&url)?
+        }
+        Some(_) => {
+            return Err(ToolProblem(
+                "Unknown factory.prProvider; choose github or azure.".into(),
+            ))
+        }
+    };
+    if azure.is_none() {
+        let known = remote.starts_with("https://github.com/")
+            || remote.starts_with("http://github.com/")
+            || remote.starts_with("git@github.com:")
+            || remote.starts_with("ssh://git@github.com/");
+        let configured = gh.git(dir, &["config", "--get", "factory.prProvider"]).ok();
+        if !known && configured.as_deref() != Some("github") {
+            return Err(ToolProblem("Cannot identify the repository provider from origin; set git config factory.prProvider github for a GitHub Enterprise repository.".into()));
+        }
+        run_gh(gh, dir, &["--version"])?;
+    }
 
     let branch = gh
         .git(dir, &["branch", "--show-current"])
@@ -361,6 +682,9 @@ pub(crate) fn open(
     })?;
 
     // Look for the pull request before pushing: it also shows whether `gh` is signed in.
+    if let Some(azure) = azure {
+        return open_azure(run, options, gh, api, dir, &azure, branch, base, commit);
+    }
     let existing = open_pull_request(gh, dir, &branch)?;
     // The branch is pushed by its full name on both sides, so that no name is read as a refspec.
     let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
