@@ -31,7 +31,9 @@ The output has one line per case with its passes, the modes it saw and the accep
 `run.sh` copies `fixture/` into a temporary directory, commits it as a new repository, and runs each request there:
 
 ```text
-claude -p "/factory Which factory workflow fits this request, and why? Do not start a run ... Request: <request> ... MODE: ..."
+claude -p "/factory Which factory workflow would this request get if it were run for real, and why?
+  Only answer the question: do not start a run ... Request: <request> ...
+  MODE: none only when the request itself should not start a new run, such as continuing one ..."
   --add-dir <skills dir>              print mode reads nothing outside the working directory otherwise
   --permission-mode dontAsk           refuse every tool call that is not allowed below
   --tools Read Grep Glob Bash         no Write or Edit in the session at all
@@ -39,7 +41,7 @@ claude -p "/factory Which factory workflow fits this request, and why? Do not st
   --disallowedTools Write Edit "Bash(factory run begin:*)" "Bash(factory pr:*)" "Bash(git worktree:*)" ...
 ```
 
-The prompt asks for analysis only, which the selector's first rule respects. The tools can only read, and the deny list wins over any broader allow rule in your own Claude Code settings, so a run can't start, a worktree can't be created, and no file can change. After the last case, the script compares the run IDs in `factory run stats --all` with the ones from before, and checks that the temporary repository still has a single worktree. If anything appeared, it names it and exits with status 2.
+The prompt asks for analysis only, which the selector's first rule respects, but asks which workflow the request would get if it were run, so the analysis-only question itself is not a reason to answer `none`. The tools can only read, and the deny list wins over any broader allow rule in your own Claude Code settings, so a run can't start, a worktree can't be created, and no file can change. After the last case, the script compares the run IDs in `factory run stats --all` with the ones from before, and checks that the temporary repository still has a single worktree. If anything appeared, it names it and exits with status 2.
 
 When an answer has no `MODE:` line, the script prints the end of `claude`'s error output and of the answer, so you can tell a failed call from an answer in the wrong format. It reads `MODE: fast`, `**MODE:** fast` and ``MODE: `fast` `` alike.
 
