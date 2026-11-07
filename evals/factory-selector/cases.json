@@ -25,6 +25,11 @@
     "accepted": ["balanced", "fast"]
   },
   {
+    "id": "startup-config",
+    "request": "Change a small configuration setting read at startup so it accepts a new value; its startup behavior needs tests and review.",
+    "accepted": ["balanced"]
+  },
+  {
     "id": "admin-impersonation",
     "request": "Let admins impersonate a user for support.",
     "accepted": ["full"]
