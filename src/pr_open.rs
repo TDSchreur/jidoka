@@ -66,7 +66,7 @@ pub(crate) struct RunInfo {
 }
 
 impl RunInfo {
-    fn running(&self) -> bool {
+    pub(crate) fn running(&self) -> bool {
         self.status == "running"
     }
 }
