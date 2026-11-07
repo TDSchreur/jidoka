@@ -30,7 +30,7 @@ To update, run `factory update`. It downloads the latest release for your platfo
 
 Claude Code skills go to `$CLAUDE_CONFIG_DIR/skills` when `CLAUDE_CONFIG_DIR` is set (for example `~/.claude-work`), otherwise `~/.claude/skills`. Codex skills likewise honor `CODEX_HOME`, and Copilot skills honor `COPILOT_HOME` (otherwise `~/.copilot/skills`).
 
-Stop the dashboard before upgrading when you can; `factory update` renames a running Windows executable aside, but the dashboard keeps running the old version until you restart it. The Windows CLI cross-compiles, but the installer has not yet been run on Windows; the release workflow tests the build on a Windows runner.
+Stop the dashboard before upgrading when you can; `factory update` renames a running Windows executable aside, but the dashboard keeps running the old version until you restart it. The release workflow checks Windows runtime imports and starts the Windows executable on a Windows runner.
 
 To build from source instead, run:
 

@@ -36,7 +36,21 @@ function Get-FactoryAgents {
     }
 }
 
+# Report the native code in both decimal and its Windows hexadecimal form.
+function Assert-FactoryExitCode([int]$ExitCode, [string]$Action) {
+    if ($ExitCode -eq 0) { return }
+    $unsigned = [BitConverter]::ToUInt32([BitConverter]::GetBytes($ExitCode), 0)
+    $hex = '{0:X8}' -f $unsigned
+    $detail = ''
+    if ($hex -eq 'C0000135') {
+        $detail = ' A required DLL is missing; install the Microsoft Visual C++ x64 Redistributable or contact support.'
+    }
+    throw "Factory $Action failed with exit code $ExitCode (0x$hex).$detail"
+}
+
 function Install-Factory {
+    # Preserve native exit codes even when PowerShell 7 treats them as errors.
+    $PSNativeCommandUseErrorActionPreference = $false
     if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -notin @('AMD64', 'x86')) {
         throw 'Only Windows x86-64 is supported by this installer.'
     }
@@ -52,12 +66,14 @@ function Install-Factory {
         $expected = ((Get-Content -Raw $checksum).Trim() -split '\s+')[0]
         $actual = (Get-FileHash -Algorithm SHA256 $download).Hash
         if (-not $expected -or $actual -ne $expected) { throw 'Download checksum mismatch.' }
+        & $download --version
+        Assert-FactoryExitCode $LASTEXITCODE 'startup'
         $bin = Join-Path $env:LOCALAPPDATA 'Programs\factory'
         New-Item -ItemType Directory -Force -Path $bin | Out-Null
         $destination = Join-Path $bin 'factory.exe'
         Copy-Item -Force $download $destination
         & $destination install --agent $agents
-        if ($LASTEXITCODE -ne 0) { throw 'Skill installation failed.' }
+        Assert-FactoryExitCode $LASTEXITCODE 'skill installation'
         $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
         if ($null -eq $userPath) { $userPath = '' }
         if (($userPath -split ';') -notcontains $bin) {

@@ -23,7 +23,7 @@ jobs:
             executable: target/release/factory
           - os: windows-latest
             artifact: factory-windows-x86_64.exe
-            executable: target/release/factory.exe
+            executable: target/x86_64-pc-windows-msvc/release/factory.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -33,9 +33,25 @@ jobs:
         with:
           toolchain: stable
       - run: cargo test --locked
-      - run: cargo build --release --locked
+      - name: Build Linux release
+        if: runner.os != 'Windows'
+        run: cargo build --release --locked
         env:
           FACTORY_RELEASE: '1'
+      - name: Build Windows release with static CRT
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-windows-release.ps1
+      - name: Inspect and smoke-test Windows release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check-windows-release.ps1 -Executable '${{ matrix.executable }}'
+      - name: Smoke-test Linux release
+        if: runner.os != 'Windows'
+        shell: pwsh
+        run: |
+          & './${{ matrix.executable }}' --version
+          if ($LASTEXITCODE -ne 0) { throw "Release executable failed with exit code $LASTEXITCODE" }
       - shell: pwsh
         run: |
           Copy-Item '${{ matrix.executable }}' '${{ matrix.artifact }}'
