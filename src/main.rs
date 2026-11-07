@@ -4,6 +4,7 @@ mod doctor;
 mod inspect;
 mod install;
 mod pr_open;
+mod pr_sync;
 mod pr_wait;
 mod repository;
 mod request_logs;
@@ -23,7 +24,7 @@ use run::UPDATE_HELP;
 use server::{serve, ADDRESS, DEFAULT_PORT};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr sync <run-id> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -195,6 +196,9 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
         ["pr", "open", id, options @ ..] if !id.starts_with('-') => {
             return pr_open_command(id, options);
         }
+        ["pr", "sync", id, options @ ..] if !id.starts_with('-') => {
+            return pr_sync_command(id, options);
+        }
         _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
     }
     Ok(0)
@@ -236,6 +240,33 @@ fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
         print!("{}", pr_open::render(&opened, &info));
     }
     Ok(0)
+}
+
+/// `factory pr sync <run-id>`: brings the run's branch up to date with its base. The exit status is the
+/// outcome's; 1 is a problem.
+fn pr_sync_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
+    let parsed = pr_sync::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Invalid run id".into());
+    }
+    let run = fetch_run(ADDRESS, id)?;
+    let text =
+        |value: serde_json::Value, fallback: &str| value.as_str().unwrap_or(fallback).to_string();
+    let info = pr_open::RunInfo {
+        id: id.to_string(),
+        worktree: run.worktree.clone(),
+        branch: run.branch.clone(),
+        stage: text(serde_json::to_value(run.stage)?, "finish"),
+        status: text(serde_json::to_value(run.status)?, "running"),
+    };
+    let synced = pr_sync::sync(&info, &parsed, &pr_sync::RealGit, &ServerApi)
+        .map_err(|problem| inspect::shown(&problem.0))?;
+    if parsed.json {
+        println!("{}", serde_json::to_string_pretty(&synced)?);
+    } else {
+        print!("{}", pr_sync::render(&synced));
+    }
+    Ok(synced.exit_code)
 }
 
 /// `factory pr wait <run-id>`: watches the CI of the run's pull request and prints the outcome. The exit

@@ -231,6 +231,30 @@ factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [-
 - **Retry.** It looks for an open pull request of the branch first, ignoring pull requests from forks. If there is one it is reused, so running the command again never makes a second pull request; new commits are still pushed to it. If another run of the command opens it between the look and the creation, the one that won is used. If the pull request opened but the server did not take the record, the message names the URL and a retry records it. For a run that is blocked or done the output says that the run was not updated and how to record the pull request.
 - **Output.** `Pull request opened` or `Pull request already open`, the URL, the branch, the base and the pushed commit; `--json` prints the same fields (`pull_request`, `created`, `branch`, `base`, `commit`, `recorded`). It sets the run's pull request and the activity "Opened pull request" for a running run, keeping its stage, and leaves a run that is blocked or done alone. It never waits for CI: `factory pr wait` is the next step. Problems exit with status 1.
 
+#### Keeping a pull request current
+
+`factory pr sync <run-id>` brings the run's branch up to date with its base, the way the Finish procedure asks for. Conflict resolution and verification stay with the agent.
+
+```text
+factory pr sync <run-id> [--base <branch>] [--json]
+```
+
+| Outcome | Exit status | Meaning |
+| --- | ---: | --- |
+| `current` | 0 | The branch already contains `origin/<base>`. Commits of yours that are not pushed are reported and left alone. |
+| `pushed` | 2 | The base was merged with a normal merge commit, it touched none of the change's own files, the branch had nothing that was not pushed yet, and the merge was pushed. Watch CI again with `factory pr wait`. |
+| `needs-verification` | 3 | The base merged cleanly, but it touched files of the change (listed), or the branch has commits that are not pushed yet, or it was never pushed. The merge is not pushed: rerun the project's verification on the merged code, then push. |
+| `conflict` | 4 | The merge conflicts and is left in progress, with the conflicting files listed. Resolve them, rerun the verification, commit and push. |
+
+Exit status 1 is a problem with what to do.
+
+- **Checks.** The run has a worktree recorded and it exists; it is on the recorded branch, whose name is safe to push; the tree is clean; no merge is in progress; and the branch is not the base. The base is `--base`, otherwise the branch `refs/remotes/origin/HEAD` points to, and it is fetched first.
+- **Behind.** `git merge-base --is-ancestor origin/<base> HEAD`: exit 0 is current, 1 is behind, anything else is an error and never read as behind.
+- **Overlap.** The change's own files (`git diff --no-renames --name-only <merge base> HEAD`, taken before the merge) against the base's files since the merge base. Without rename detection a renamed file counts under both names.
+- **Merge.** `git merge --no-ff` with the message "Merge origin/<base> into <branch>": never a rebase, amend or fast-forward. It never merges the pull request.
+- **Push.** `refs/heads/<branch>:refs/heads/<branch>`, never forced. If the push fails the merge commit stays, and running the command again pushes it, but only when HEAD is that merge exactly as git makes it on its own, on top of what the remote has, with no overlap; a merge that needs verification or a conflict resolved by hand is never pushed by the command. If someone else pushed to the branch, the command stops before merging and says so.
+- **Run record.** A running run gets a milestone activity, such as "Merged develop into the branch", on its current stage and status; it is neither a Rework nor a CI fix.
+
 #### Watching CI
 
 `factory pr wait <run-id>` watches the checks of the run's pull request and prints one CI outcome, so an agent does not poll with repeated model requests. It reads the pull request URL recorded on the run (`factory run update <id> finish running --pr <url>`) and needs the GitHub CLI (`gh`), signed in with `gh auth login`.
