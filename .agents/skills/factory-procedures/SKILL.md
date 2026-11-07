@@ -86,7 +86,7 @@ Load `humanizer` right before you write the first of these texts in a run, or be
 
 ## Pull request and CI
 
-The factory's pull request commands work with two hosts, and each needs its own command line tool, signed in: `gh` for GitHub, and `az` with the `azure-devops` extension for Azure Repos (signed in with `az login`, or with a personal access token in `AZURE_DEVOPS_EXT_PAT`). They work out the host from `origin`. `factory doctor` shows the host it found, and whether the tool and a sign-in are there. For any other host, such as GitLab, or when the host is not configured, open the pull request and watch its CI with that host's own tooling, then record the URL on the run with `--pr <url>`. `factory pr sync` needs only git, so it works on any host; the rest of this section still applies, with the host's own tooling in place of `factory pr open` and `factory pr wait`.
+The factory's pull request commands work with two hosts, and each needs its own command line tool, signed in: `gh` for GitHub, and `az` with the `azure-devops` extension for Azure Repos (signed in with `az login`, or with a personal access token in `AZURE_DEVOPS_EXT_PAT`). They work out the host from `origin`. `factory doctor` shows the host it found, and whether the tool and a sign-in are there. For any other host, such as GitLab, or when the host is not configured, open the pull request and watch its CI with that host's own tooling, then record the URL on the run with `--pr <url>`. `factory pr sync` needs only git, so it works on any host; the rest of this section still applies, with the host's own tooling in place of `factory pr open` and `factory pr wait`. Watch every check there until all have completed, noticing failures as well as success, with `--activity "Waiting for CI"` on the running run.
 
 ### Opening the pull request
 
@@ -123,7 +123,7 @@ Whenever you add to the branch, whether to resolve a conflict or to fix CI, make
 
 ### When CI fails
 
-When the outcome is `failed`, read the failure details it printed (fetch the full log only when the excerpt is not enough), fix the cause in a new commit on the same branch, rerun the project's verification on the changed code, push, note it with a milestone update, and run `factory pr wait` again; repeat until CI is green. CI fixes are not Reworks.
+When the outcome is `failed`, read the failure details it printed (fetch the full log only when the excerpt is not enough), fix the cause in a new commit on the same branch (never amend or force-push, as above), rerun the project's verification on the changed code, push, note it with a milestone update, and run `factory pr wait` again; repeat until CI is green. CI fixes are not Reworks.
 
 - After `head-changed`, run it again.
 - For `cancelled` or `timeout`, look at the checks it lists; if the cause is not something you can fix, treat it as a failure you cannot fix.

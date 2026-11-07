@@ -534,6 +534,14 @@ mod tests {
                 "the procedures lose the {outcome} outcome"
             );
         }
+        // Both commands still explain their exit status 1.
+        assert_eq!(
+            procedures.matches("Exit status 1 is a problem").count(),
+            2,
+            "pr wait and pr sync both explain exit status 1"
+        );
+        // So does a host without factory support.
+        assert!(procedures.contains("Watch every check there until all have completed"));
         // The hard rules say why.
         for reason in [
             "the user may be working in it",
