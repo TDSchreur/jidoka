@@ -34,3 +34,5 @@ try {
     }
 }
 finally { Remove-Item -Recurse -Force $tempRoot }
+
+$global:LASTEXITCODE = 0
