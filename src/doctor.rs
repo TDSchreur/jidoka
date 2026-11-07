@@ -1,6 +1,7 @@
 //! `factory doctor`: a report on whether this project and this machine are ready for the factory.
-//! It only reads files, looks on `PATH` and asks `git` read-only questions, and, when a model-routing policy
-//! exists, asks an agent for its `--version`. It never runs the project's own commands, calls a model,
+//! It only reads files, looks on `PATH` and asks `git` read-only questions, asks the pull request host's tool
+//! whether it is signed in (`gh auth status`, `az extension show`, `az account show`), and, when a
+//! model-routing policy exists, asks an agent for its `--version`. It never runs the project's own commands, calls a model,
 //! installs anything or needs the dashboard. The one thing it writes is a starter model-routing policy, and
 //! only when `--create-model-routing` asks for it.
 
@@ -14,6 +15,7 @@ use std::{
     process::Command,
 };
 
+mod provider;
 mod routing;
 
 pub(crate) const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
@@ -145,6 +147,8 @@ pub(crate) struct Report {
     pub(crate) ok: bool,
     project: Vec<Check>,
     agents: Vec<AgentReport>,
+    /// The pull request host and its tools. These checks never change `ok`.
+    provider: Vec<Check>,
     /// Present only when a model-routing policy exists.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     model_routing: Vec<Check>,
@@ -201,10 +205,12 @@ pub(crate) fn diagnose(
         None => agents.iter().any(|a| a.usable),
     };
     let model_routing = routing::checks(&root, machine, agent);
+    let provider = provider::checks(project, machine);
     Ok(Report {
         ok: shared_ok && agents_ok && !model_routing.iter().any(Check::blocks),
         project: project_checks,
         agents,
+        provider,
         model_routing,
     })
 }
@@ -552,6 +558,10 @@ pub(crate) fn render(report: &Report) -> String {
         for check in &agent.checks {
             out.push_str(&line(check, "    "));
         }
+    }
+    out.push_str("\nProvider\n");
+    for check in &report.provider {
+        out.push_str(&line(check, "  "));
     }
     if !report.model_routing.is_empty() {
         out.push_str("\nModel routing\n");
@@ -1848,5 +1858,200 @@ mod tests {
         );
         assert_eq!(routing::parse_version("version 2.1"), None);
         assert_eq!(routing::parse_version(""), None);
+    }
+
+    fn provider_check<'a>(report: &'a Report, id: &str) -> Option<&'a Check> {
+        report.provider.iter().find(|check| check.id == id)
+    }
+
+    /// A fake host tool on PATH: a shell script that exits 0 only for the listed argument lines.
+    #[cfg(unix)]
+    fn fake_tool(bin: &Path, name: &str, succeeds_for: &[&str]) {
+        use std::os::unix::fs::PermissionsExt;
+        let cases: String = succeeds_for
+            .iter()
+            .map(|args| format!("  \"{args}\") exit 0 ;;\n"))
+            .collect();
+        let file = bin.join(name);
+        fs::write(
+            &file,
+            format!("#!/bin/sh\ncase \"$*\" in\n{cases}esac\necho secret-output\nexit 1\n"),
+        )
+        .unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn with_origin(world: World, url: &str) -> World {
+        git(world.project.path(), &["remote", "set-url", "origin", url]);
+        world
+    }
+
+    #[test]
+    fn a_github_origin_without_gh_is_a_warning_that_keeps_the_project_ready() {
+        let world = with_origin(
+            World::ready().claude_ready(),
+            "https://github.com/me/repo.git",
+        );
+        let report = world.report(None);
+        assert!(report.ok, "{}", render(&report));
+        assert_eq!(
+            provider_check(&report, "host").unwrap().status,
+            Status::Pass
+        );
+        assert!(provider_check(&report, "host")
+            .unwrap()
+            .message
+            .contains("GitHub"));
+        assert_eq!(
+            provider_check(&report, "gh").unwrap().status,
+            Status::Warning
+        );
+        assert!(provider_check(&report, "sign-in").is_none());
+        assert!(render(&report).contains("\nProvider\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_github_origin_reports_gh_and_its_sign_in() {
+        let world = with_origin(World::ready(), "git@github.com:me/repo.git");
+        fake_tool(world.bin.path(), "gh", &["auth status"]);
+        let report = world.report(None);
+        assert_eq!(provider_check(&report, "gh").unwrap().status, Status::Pass);
+        assert_eq!(
+            provider_check(&report, "sign-in").unwrap().status,
+            Status::Pass
+        );
+        let not_verified = provider_check(&report, "not-verified").unwrap();
+        assert_eq!(not_verified.status, Status::Skipped);
+        assert!(not_verified.message.contains("token is valid"));
+        assert!(not_verified.message.contains("branch policies"));
+
+        let signed_out = with_origin(World::ready(), "git@github.com:me/repo.git");
+        fake_tool(signed_out.bin.path(), "gh", &[]);
+        let report = signed_out.report(None);
+        let sign_in = provider_check(&report, "sign-in").unwrap();
+        assert_eq!(sign_in.status, Status::Warning);
+        assert!(sign_in.fix.as_deref().unwrap().contains("gh auth login"));
+    }
+
+    const AZURE_ORIGIN: &str = "https://me@dev.azure.com/org/My%20Project/_git/repo";
+
+    #[test]
+    fn an_azure_origin_without_az_is_a_warning() {
+        let world = with_origin(World::ready().claude_ready(), AZURE_ORIGIN);
+        let report = world.report(None);
+        assert!(report.ok, "{}", render(&report));
+        let host = provider_check(&report, "host").unwrap();
+        assert_eq!(host.status, Status::Pass);
+        assert!(host.message.contains("Azure Repos (org/My Project/repo)"));
+        assert_eq!(
+            provider_check(&report, "az").unwrap().status,
+            Status::Warning
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_azure_origin_reports_the_extension_and_the_sign_in() {
+        let no_extension = with_origin(World::ready(), AZURE_ORIGIN);
+        fake_tool(no_extension.bin.path(), "az", &["account show"]);
+        let report = no_extension.report(None);
+        assert_eq!(provider_check(&report, "az").unwrap().status, Status::Pass);
+        let extension = provider_check(&report, "azure-devops-extension").unwrap();
+        assert_eq!(extension.status, Status::Warning);
+        assert!(extension
+            .fix
+            .as_deref()
+            .unwrap()
+            .contains("az extension add --name azure-devops"));
+
+        let signed_out = with_origin(World::ready(), AZURE_ORIGIN);
+        fake_tool(
+            signed_out.bin.path(),
+            "az",
+            &["extension show --name azure-devops"],
+        );
+        let report = signed_out.report(None);
+        assert_eq!(
+            provider_check(&report, "azure-devops-extension")
+                .unwrap()
+                .status,
+            Status::Pass
+        );
+        let sign_in = provider_check(&report, "sign-in").unwrap();
+        assert_eq!(sign_in.status, Status::Warning);
+        assert!(sign_in.message.contains("AZURE_DEVOPS_EXT_PAT is not set"));
+
+        let signed_in = with_origin(World::ready(), AZURE_ORIGIN);
+        fake_tool(
+            signed_in.bin.path(),
+            "az",
+            &["extension show --name azure-devops", "account show"],
+        );
+        let report = signed_in.report(None);
+        assert_eq!(
+            provider_check(&report, "sign-in").unwrap().status,
+            Status::Pass
+        );
+        assert!(!render(&report).contains("secret-output"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_personal_access_token_counts_as_signed_in_and_is_never_shown() {
+        let mut world = with_origin(World::ready(), AZURE_ORIGIN);
+        world
+            .vars
+            .insert("AZURE_DEVOPS_EXT_PAT".into(), "tok3n-value".into());
+        fake_tool(
+            world.bin.path(),
+            "az",
+            &["extension show --name azure-devops"],
+        );
+        let report = world.report(None);
+        let sign_in = provider_check(&report, "sign-in").unwrap();
+        assert_eq!(sign_in.status, Status::Pass);
+        assert_eq!(sign_in.message, "AZURE_DEVOPS_EXT_PAT is set");
+        assert!(!render(&report).contains("tok3n-value"));
+        assert!(!serde_json::to_string(&report)
+            .unwrap()
+            .contains("tok3n-value"));
+    }
+
+    #[test]
+    fn an_unknown_host_is_a_warning_with_what_to_do_instead() {
+        let report = World::ready().claude_ready().report(None);
+        assert!(report.ok, "{}", render(&report));
+        assert_eq!(report.provider.len(), 1);
+        let host = provider_check(&report, "host").unwrap();
+        assert_eq!(host.status, Status::Warning);
+        assert!(host.message.contains("GitHub or Azure Repos"));
+        assert!(host.fix.as_deref().unwrap().contains("--pr <url>"));
+    }
+
+    #[test]
+    fn a_misconfigured_azure_override_is_reported_as_unsupported() {
+        let world = World::ready().claude_ready();
+        git(
+            world.project.path(),
+            &["config", "factory.prProvider", "gitlab"],
+        );
+        let report = world.report(None);
+        assert!(report.ok, "{}", render(&report));
+        let host = provider_check(&report, "host").unwrap();
+        assert_eq!(host.status, Status::Warning);
+        assert!(host.message.contains("not supported"), "{}", host.message);
+    }
+
+    #[test]
+    fn without_origin_the_provider_is_not_checked() {
+        let world = World::ready();
+        git(world.project.path(), &["remote", "remove", "origin"]);
+        let report = world.report(None);
+        assert_eq!(report.provider.len(), 1);
+        assert_eq!(
+            provider_check(&report, "host").unwrap().status,
+            Status::Skipped
+        );
     }
 }

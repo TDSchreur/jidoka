@@ -195,6 +195,35 @@ fn each_command_lands_in_the_category_the_rules_give_it() {
         ),
         ("gh pr checks 12 --watch", Category::CiWatch),
         ("gh run watch 99", Category::CiWatch),
+        (
+            "az repos pr create --source-branch x --target-branch develop --title t",
+            Category::PrCreationAndPush,
+        ),
+        (
+            "az repos pr update --id 7 --description d",
+            Category::PrCreationAndPush,
+        ),
+        ("az pipelines runs list --branch x", Category::CiWatch),
+        ("az pipelines runs show --id 42", Category::CiWatch),
+        ("az repos pr policy list --id 7", Category::CiWatch),
+        (
+            "az devops invoke --area git --resource pullRequestStatuses --route-parameters project=p repositoryId=r pullRequestId=7",
+            Category::CiWatch,
+        ),
+        (
+            "az devops invoke --area git --resource pullRequestIterationStatuses --route-parameters iterationId=2",
+            Category::CiWatch,
+        ),
+        (
+            "az boards work-item create --title t --type Task",
+            Category::ReadingEditingAnalysis,
+        ),
+        ("az account show", Category::ReadingEditingAnalysis),
+        (
+            "az devops invoke --area wit --resource workitems",
+            Category::ReadingEditingAnalysis,
+        ),
+        ("az repos pr show --id 7", Category::ReadingEditingAnalysis),
         ("scripts/verify.sh", Category::Verification),
         (
             "cd /repo && cargo clippy --all-targets -- -D warnings",

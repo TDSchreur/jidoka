@@ -897,6 +897,13 @@ fn hit(segment: &str) -> Hit {
         ("gh", "pr", "checks") | ("gh", "run", "watch" | "view" | "list") => Category::CiWatch,
         ("gh", "pr", "view") if has("mergeStateStatus") => Category::PrSynchronization,
         ("gh", "api", _) if has("actions/runs") || has("check-runs") => Category::CiWatch,
+        ("az", "repos", "pr") if matches!(word(3), "create" | "update") => {
+            Category::PrCreationAndPush
+        }
+        ("az", "repos", "pr") if word(3) == "policy" && word(4) == "list" => Category::CiWatch,
+        ("az", "pipelines", "runs") => Category::CiWatch,
+        // `pr wait` reads checks with `--resource pullRequestStatuses` or `pullRequestIterationStatuses`.
+        ("az", "devops", "invoke") if has("pullRequest") && has("Statuses") => Category::CiWatch,
         ("factory", "run", "start") => Category::Workspace,
         ("factory", "run", "update") => return Hit::Reporting,
         ("factory", "run", "inspect" | "check") => Category::ContinuationCheck,
