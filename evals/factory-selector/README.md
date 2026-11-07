@@ -2,7 +2,7 @@
 
 This eval checks which workflow the installed `factory` skill picks for a request: Full, Balanced, Fast, or no new run. Run it before and after changing the selector or the text every run loads (`factory`, the three workflows, `factory-procedures`). That way you can see whether the change shifted any choice.
 
-It calls a paid model about ten times per repetition, so it is not part of CI or `scripts/verify.sh`. One repetition of all ten cases takes a minute or two and costs about $1.20 on the Claude Code default model.
+It calls a paid model about ten times per repetition, so it is not part of CI or `scripts/verify.sh`. One repetition of all ten cases takes a minute or two and cost between $0.50 and $1.20 on the Claude Code default model in the first trials.
 
 ## Running it
 
@@ -17,7 +17,7 @@ evals/factory-selector/run.sh --model sonnet
 
 It needs `claude`, `jq`, `factory`, `git`, and GNU `timeout` (on macOS, from coreutils), plus `awk` and `comm`. `--skills-dir` points at a different skills directory; the default is `$CLAUDE_CONFIG_DIR/skills`, otherwise `~/.claude/skills`.
 
-The output has one line per case with its passes, the modes it saw and the accepted modes, then the overall pass rate and the cost reported by Claude Code. A `?` means no `MODE:` line was found, for example because `claude` failed or timed out after ten minutes; the script says which.
+The output has one line per case with its passes, the modes it saw and the accepted modes, then the overall pass rate and the cost reported by Claude Code. A `?` means no `MODE:` line was found, for example because `claude` failed or timed out after ten minutes. The script then says which of the two happened, or that the answer had no `MODE:` line, and prints the end of what `claude` said.
 
 | Exit status | Meaning |
 | --- | --- |

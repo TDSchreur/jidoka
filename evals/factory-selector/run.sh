@@ -32,8 +32,8 @@ cleanup() {
 # Accepts Markdown around it, such as **MODE:** full or `MODE: full`.
 mode_of() {
   # shellcheck disable=SC2016 # the backtick is a literal Markdown character.
-  grep -Eio 'MODE[*`]*:[*`[:space:]]*(full|balanced|fast|none)' |
-    tail -n 1 | tr '[:upper:]' '[:lower:]' | grep -Eo '(full|balanced|fast|none)$' || true
+  grep -Eio 'MODE[*`]*:[*`[:space:]]*(full|balanced|fast|none)([^a-z0-9-]|$)' |
+    tail -n 1 | tr '[:upper:]' '[:lower:]' | grep -Eo '(full|balanced|fast|none)' | tail -n 1 || true
 }
 
 # Prints the IDs of every recorded factory run, one per line, sorted.
@@ -117,14 +117,21 @@ main() {
     accepted=$(jq -r --arg id "$id" '.[] | select(.id == $id) | .accepted | join(" ")' "$case_file")
     local ok=0 seen=() i
     for ((i = 1; i <= runs; i++)); do
-      local out mode result err="$work/claude.err"
-      out=$(cd -- "$repo" && timeout 600 claude -p "$(prompt_for "$request")" "${claude_args[@]}" </dev/null 2>"$err") || out='{}'
-      result=$(printf '%s' "$out" | jq -r '.result // ""' 2>/dev/null || true)
-      cost=$(printf '%s' "$out" | jq -r --argjson sum "$cost" '$sum + (.total_cost_usd // 0)' 2>/dev/null || printf '%s' "$cost")
+      local out mode result status=0 err="$work/claude.err"
+      out=$(cd -- "$repo" && timeout 600 claude -p "$(prompt_for "$request")" "${claude_args[@]}" </dev/null 2>"$err") || status=$?
+      # A failed call often still prints JSON with the error in `result`; keep it.
+      result=$(printf '%s' "$out" | jq -r '.result // ""' 2>/dev/null || printf '%s' "$out")
+      cost=$(jq -rn --argjson sum "$cost" --arg out "$out" '$sum + (($out | fromjson? | .total_cost_usd) // 0)')
       mode=$(printf '%s\n' "$result" | mode_of)
       if [ -z "$mode" ]; then
         mode='?'
-        printf 'run.sh: %s run %d gave no MODE line; claude said:\n' "$id" "$i" >&2
+        if [ "$status" -eq 124 ]; then
+          printf 'run.sh: %s run %d timed out after 600 seconds\n' "$id" "$i" >&2
+        elif [ "$status" -ne 0 ]; then
+          printf 'run.sh: %s run %d: claude exited with status %d; it said:\n' "$id" "$i" "$status" >&2
+        else
+          printf 'run.sh: %s run %d gave no MODE line; the answer ended:\n' "$id" "$i" >&2
+        fi
         { tail -n 5 -- "$err"; printf '%s\n' "$result" | tail -n 3; } | sed 's/^/  /' >&2
       fi
       seen+=("$mode")
