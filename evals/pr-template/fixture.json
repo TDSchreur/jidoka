@@ -1,0 +1,5 @@
+{
+  "input": "Diff:\n--- src/parser.py\n+++ src/parser.py\n@@ -1 +1 @@\n-return value\n+return value.strip()\n\nBefore: `python -m unittest tests.test_parser` failed for whitespace input.\nAfter: `python -m unittest tests.test_parser` passed.\n\nRemaining review findings:\n- src/parser.py:12: Empty input still raises an exception.\n- tests/test_parser.py:24: The Unicode whitespace case is missing.",
+  "commands_and_paths": ["src/parser.py", "tests/test_parser.py", "python -m unittest tests.test_parser"],
+  "findings": ["src/parser.py:12: Empty input still raises an exception.", "tests/test_parser.py:24: The Unicode whitespace case is missing."]
+}
