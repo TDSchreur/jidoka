@@ -732,7 +732,7 @@ function NeedsYouToggle({ count, pressed, onToggle }) {
     aria-pressed=${String(pressed)}
     onClick=${onToggle}
   >
-    Needs you (${count})
+    ${pressed ? html`<span aria-hidden="true">✓ </span>` : null}Needs you (${count})
   </button>`;
 }
 
@@ -894,6 +894,7 @@ function App() {
   const opening = useRef(null);
   if (opening.current === null && visibleRuns?.length) opening.current = firstStage(visibleRuns);
   const current = picked ?? opening.current ?? GROUPS[0][0];
+  const currentStage = stages.find((stage) => stage.id === current);
   // The open detail is a Run id; it is looked up in the latest full list, so refreshes update it.
   const [openKey, setOpenKey] = useState(null);
   const lastOpened = useRef(null);
@@ -942,7 +943,7 @@ function App() {
             ${stages.map((stage) => html`<div class="group-header"><h2>${stage.name}<span class="count">${` (${stage.entries.length})`}</span></h2></div>`)}
           </div>`
         : null}
-      ${indexed.length && !stages.find((stage) => stage.id === current).entries.length
+      ${indexed.length && !currentStage.entries.length
         ? html`<p class="empty compact-empty">No runs</p>`
         : null}
       <div id="groups">
@@ -951,10 +952,8 @@ function App() {
           const groupsId = `project-groups-${projects.indexOf(project)}`;
           const projectWaiting = indexed.filter((entry) => projectOf(entry.run) === project && needsYou(entry.run)).length;
           // Compact mode hides a row with nothing in the picked Stage, so "No runs" shows once, not per Project.
-          const inCurrent = stages
-            .find((stage) => stage.id === current)
-            .entries.some((entry) => projectOf(entry.run) === project);
-          return html`<section class=${inCurrent ? 'project-row' : 'project-row empty-in-current'} key=${project}>
+          const hasRunsInStage = currentStage.entries.some((entry) => projectOf(entry.run) === project);
+          return html`<section class=${hasRunsInStage ? 'project-row' : 'project-row no-runs-in-stage'} key=${project}>
           <div class="project-heading-row">
           <h2 class="project-heading">
             <button

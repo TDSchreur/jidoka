@@ -1649,6 +1649,8 @@ mod tests {
         assert!(script.contains("class=${count ? 'toggle waiting' : 'toggle'}"));
         assert!(script.contains("Needs you (${count})"));
         assert!(rule(".toggle.waiting").contains("background:"));
+        // Pressed shows in more than colour, because waiting and pressed are both filled.
+        assert!(script.contains("${pressed ? html`<span aria-hidden=\"true\">✓ </span>` : null}"));
         // Badges read in sentence case.
         for selector in [".badge", ".needs-you-label"] {
             let badge = rule(selector);
@@ -1660,6 +1662,8 @@ mod tests {
         assert!(!script.contains("toggle danger delete"));
         assert!(script.contains("class=\"text-button hide-project\""));
         assert!(rule(".text-button").contains("text-decoration: underline"));
+        // 16 px of line height plus 4 px of padding above and below: a 24 px target.
+        assert!(rule(".text-button").contains("padding: var(--spacingVerticalXS)"));
         assert!(rule(".text-button:focus-visible").contains("outline:"));
         // The Theme switch renders in the footer, not in the toolbar.
         let footer = page
@@ -1704,7 +1708,7 @@ mod tests {
             .skip(1)
             .find(|block| block.contains(".group:not(.selected)"))
             .expect("a compact layout");
-        assert!(compact.contains(".project-row.empty-in-current { display: none; }"));
+        assert!(compact.contains(".project-row.no-runs-in-stage { display: none; }"));
         assert!(script.contains("<p class=\"empty compact-empty\">No runs</p>"));
         // Phones: Delete and Hide stay on the Project's heading line.
         let heading_row = css

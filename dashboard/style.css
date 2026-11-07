@@ -159,7 +159,7 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .toggle:hover { background: var(--colorNeutralBackground1Hover); }
 .toggle:active { background: var(--colorNeutralBackground1Pressed); }
 /* Needs you while a Run is waiting: filled, so it stands out from the quiet controls. The count says the same in words.
-   It comes before the pressed rules, so a pressed toggle shows it is pressed. */
+   It comes before the pressed rules, so a pressed toggle shows it is pressed: in colour, and with a check mark. */
 .toggle.waiting { border-color: var(--colorPaletteRedBackground3); background: var(--colorPaletteRedBackground3); color: var(--colorNeutralForegroundOnBrand); font-weight: var(--fontWeightSemibold); }
 .toggle.waiting:hover, .toggle.waiting:active { border-color: var(--colorPaletteRedBorder2); background: var(--colorPaletteRedBackground3); }
 .toggle[aria-pressed="true"] { border-color: var(--colorBrandBackground); background: var(--colorBrandBackground); color: var(--colorNeutralForegroundOnBrand); font-weight: var(--fontWeightSemibold); }
@@ -167,8 +167,8 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .toggle[aria-pressed="true"]:active { background: var(--colorBrandBackgroundPressed); }
 .toggle:disabled { color: var(--colorNeutralForeground3); cursor: not-allowed; }
 .toggle:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: var(--strokeWidthThick); }
-/* Delete on cards and rows: a quiet text button. Red is kept for the confirm dialog's Delete. */
-.text-button { padding: var(--spacingVerticalXXS) var(--spacingHorizontalXS); border: 0; border-radius: var(--borderRadiusSmall); background: none; color: var(--colorNeutralForeground2); font: inherit; font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); text-decoration: underline; cursor: pointer; }
+/* Delete on cards and rows: a quiet text button, at least 24 px tall. Red is kept for the confirm dialog's Delete. */
+.text-button { padding: var(--spacingVerticalXS) var(--spacingHorizontalXS); border: 0; border-radius: var(--borderRadiusSmall); background: none; color: var(--colorNeutralForeground2); font: inherit; font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); text-decoration: underline; cursor: pointer; }
 .text-button:hover { color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground1Hover); }
 .text-button:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: var(--strokeWidthThick); }
 .theme legend { float: left; padding: 0; margin-right: var(--spacingHorizontalS); color: var(--colorNeutralForeground2); }
@@ -323,7 +323,7 @@ a:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2
 .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 @media (max-width: 1024px) {
   .group:not(.selected) { display: none; }
-  .project-row.empty-in-current { display: none; }
+  .project-row.no-runs-in-stage { display: none; }
 }
 /* Wide screens: one column per Stage, each with a header that stays in view. Narrower screens keep the stacked groups. */
 @media (min-width: 1025px) {
