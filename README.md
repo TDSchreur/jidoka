@@ -217,6 +217,20 @@ factory run begin --run <run-id> [--base <branch>] [--branch <name>] [--mode ...
 - **Retry.** `factory run begin --run <id>` resumes that run. The command to retry that a failure prints carries `--branch <name>` as soon as a name was chosen; a resume takes over an existing branch or worktree only when it is given that branch, and without one it picks a free name like a new run, so it never takes over another run's workspace. If nothing was made it does everything; a branch without a worktree gets its worktree; a clean worktree that was made but not recorded is recorded. Anything else (a folder that is not a worktree, a branch with commits of its own, a worktree with uncommitted changes) stops and says exactly what it found. A worktree that git lists but whose folder is gone is reported, and you run `git worktree prune` yourself. A run that is finished, or already has a workspace, is refused.
 - **Dedicated worktrees.** When your agent environment hands you a fresh worktree, the Workspace procedure still uses `factory run start` and `factory run update` by hand; `begin` always makes its own worktree.
 
+#### Opening a pull request
+
+`factory pr open <run-id> --title "<title>" --body-file <path>` pushes the run's branch and opens its pull request, or finds the one that is open, and records its URL on the run. The agent still writes the title (one line, up to 256 characters) and the description (a file of up to 256 KiB). Like the other pull request commands it needs the GitHub CLI (`gh`), signed in with `gh auth login`.
+
+```text
+factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]
+```
+
+- **Base.** `--base` names the branch the pull request goes against; without it the command uses the branch `refs/remotes/origin/HEAD` points to.
+- **Checks before anything is pushed.** The run has a worktree recorded and it exists; `gh` is installed; the worktree is on a branch (the one the run records, when it records one) whose name is safe to push; its tree is clean; the branch is not the base and has commits beyond `origin/<base>`; and `gh` is signed in and can see the repository, which is asked by looking for an open pull request before the push. A branch name that git could read as an option or a forced refspec, such as `+main`, is refused.
+- **Push.** `git push -u origin refs/heads/<branch>:refs/heads/<branch>`, never forced. If origin rejects it because the branch has commits yours does not, the message says to merge them or the base into the branch with a normal merge and try again.
+- **Retry.** It looks for an open pull request of the branch first, ignoring pull requests from forks. If there is one it is reused, so running the command again never makes a second pull request; new commits are still pushed to it. If another run of the command opens it between the look and the creation, the one that won is used. If the pull request opened but the server did not take the record, the message names the URL and a retry records it. For a run that is blocked or done the output says that the run was not updated and how to record the pull request.
+- **Output.** `Pull request opened` or `Pull request already open`, the URL, the branch, the base and the pushed commit; `--json` prints the same fields (`pull_request`, `created`, `branch`, `base`, `commit`, `recorded`). It sets the run's pull request and the activity "Opened pull request" for a running run, keeping its stage, and leaves a run that is blocked or done alone. It never waits for CI: `factory pr wait` is the next step. Problems exit with status 1.
+
 #### Watching CI
 
 `factory pr wait <run-id>` watches the checks of the run's pull request and prints one CI outcome, so an agent does not poll with repeated model requests. It reads the pull request URL recorded on the run (`factory run update <id> finish running --pr <url>`) and needs the GitHub CLI (`gh`), signed in with `gh auth login`.
