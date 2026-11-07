@@ -1,7 +1,8 @@
 /* Design tokens: the dashboard's own palette (from the TDS logo and andon practice), the Barlow typeface, a type scale and spacing.
    Only the tokens this stylesheet uses are listed: add one here when a rule needs it, and remove it when no rule does (a test checks both).
    Colours and shadows differ per theme; every rule below the layer reads tokens only.
-   Amber means "needs you" and always carries dark text. Red only means errors, offline and the confirm button of a delete. */
+   Amber means "needs you" and always carries dark text. Red only means errors, offline and the confirm button of a delete.
+   --station is the exception: each row of the line sets it to its station number, 0 to 3, which places the rail marker. */
 :root {
   color-scheme: light dark;
   --color-floor: #E8EBEE;
@@ -45,6 +46,7 @@
   --stroke-thick: 2px;
   --duration-fast: 150ms;
   --ease: cubic-bezier(0.33, 0, 0.67, 1);
+  --station: 0;
 }
 :root[data-theme="light"] { color-scheme: light; }
 @media (prefers-color-scheme: dark) {
@@ -98,7 +100,7 @@
   background: var(--color-floor);
 }
 /* The page is a column at least as tall as the window, so the footer is at the bottom of a short page. */
-body { box-sizing: border-box; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; max-width: 960px; margin: 0 auto; padding: var(--space-8) var(--space-6) 0; }
+body { box-sizing: border-box; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; max-width: 75rem; margin: 0 auto; padding: var(--space-8) var(--space-6) 0; }
 /* A focused element that scrolls into view stops above the footer, not behind it. */
 /* The footer is one row: the theme buttons (small text, padding and border) plus the footer's own padding. */
 html { scroll-padding-bottom: calc(var(--leading-xs) + 2 * var(--space-2) + 2 * var(--stroke-thin) + 2 * var(--space-4)); }
@@ -160,20 +162,7 @@ p { color: var(--color-slate); margin: var(--space-2) 0; }
 #message { margin: 0 0 var(--space-6); }
 #message:empty { margin: 0; }
 #message.error { color: var(--color-red); font-weight: var(--weight-strong); }
-.hidden-projects { margin-bottom: var(--space-6); }
-.hidden-projects li { margin: var(--space-4) 0; overflow-wrap: anywhere; }
 /* The Project name wraps; Delete and Hide stay on its line, also on a phone. */
-.project-heading-row { display: flex; align-items: center; gap: var(--space-4); margin: var(--space-4) 0; }
-.project-heading-row .project-heading { flex: 1 1 auto; min-width: 0; margin: 0; }
-.project-heading-row .text-button { flex: none; }
-.project-row { margin-bottom: var(--space-8); }
-.project-heading { font-size: var(--text-m); overflow-wrap: anywhere; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); }
-.project-toggle { font: inherit; font-weight: var(--weight-strong); color: var(--color-slate); background: none; border: 0; padding: var(--space-2) var(--space-2); cursor: pointer; text-align: left; }
-.project-toggle:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline-offset: var(--stroke-thick); }
-.project-chevron { display: inline-block; width: 1.2em; }
-.project-summary { font-size: var(--text-xs); font-weight: normal; color: var(--color-muted); }
-.project-groups[hidden] { display: none; }
-.board-headers { display: none; }
 .group { margin-bottom: var(--space-8); }
 .group h2 { font-size: var(--text-m); line-height: var(--leading-s); font-weight: var(--weight-strong); margin: 0; }
 .count { color: var(--color-muted); font-weight: normal; }
@@ -294,29 +283,56 @@ code { font-family: var(--font-mono); }
 a { color: var(--color-blue); }
 a:hover { color: var(--color-blue-hover); }
 a:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline-offset: var(--stroke-thick); border-radius: var(--radius-s); }
-/* Compact: one Stage at a time, picked with the Stage buttons. */
-.stages { display: flex; flex-wrap: wrap; gap: var(--space-4); margin: 0 0 var(--space-6); }
-.waiting-mark { display: inline-block; min-width: var(--leading-xs); margin-left: var(--space-2); border: var(--stroke-thin) solid var(--color-on-amber); border-radius: var(--radius-round); background: var(--color-amber); color: var(--color-on-amber); font-size: var(--text-xs); line-height: var(--leading-xs); font-weight: var(--weight-strong); text-align: center; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
-@media (max-width: 1024px) {
-  .group:not(.selected) { display: none; }
-  .project-row.no-runs-in-stage { display: none; }
+/* The line: one row per active Run. Wide, the rail sits in its own column under the station names; narrow, it stacks. */
+.line { margin: 0 0 var(--space-8); background: var(--color-panel); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-l); }
+.line-head, .line-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(14rem, 26rem); gap: var(--space-2) var(--space-8); padding: var(--space-5) var(--space-6); }
+.line-head { align-items: end; border-bottom: var(--stroke-thin) solid var(--color-rule); }
+.line-head h2 { margin: 0; font-size: var(--text-m); line-height: var(--leading-s); font-weight: var(--weight-strong); }
+.stations { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; padding: 0; list-style: none; font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); text-align: center; }
+.line-rows { margin: 0; padding: 0; list-style: none; }
+.line-row { position: relative; grid-template-areas: "title rail" "meta where" "activity activity"; align-items: center; }
+.line-row + .line-row { border-top: var(--stroke-thin) solid var(--color-rule); }
+.line-row:has(.card-open:hover) { background: var(--color-tint); }
+.line-row.blocked { box-shadow: inset calc(var(--stroke-thick) * 3) 0 0 var(--color-amber); }
+.line-title { grid-area: title; margin: 0; font-size: var(--text-s); line-height: var(--leading-s); font-weight: var(--weight-strong); overflow-wrap: anywhere; }
+.line-row .card-open::after { border-radius: 0; }
+.line-row .where { grid-area: where; margin: 0; font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); text-align: center; }
+.line-row.blocked .where { color: var(--color-slate); font-weight: var(--weight-strong); }
+.line-row .meta { grid-area: meta; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-5); font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); }
+.line-row .meta a { position: relative; z-index: 1; }
+.meta .links { display: inline-flex; gap: var(--space-4); }
+.line-row .activity { grid-area: activity; margin: 0; color: var(--color-slate); overflow-wrap: anywhere; }
+.line .empty { margin: 0; padding: var(--space-5) var(--space-6); }
+/* The rail: four stations, done ones filled, the current one half filled with a marker on it. */
+.rail { grid-area: rail; position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-1); align-items: center; height: var(--space-8); }
+.station { height: var(--space-2); border-radius: var(--radius-s); background: var(--color-rule); }
+.station.past { background: var(--color-blue); }
+.station.current { background: linear-gradient(90deg, var(--color-blue) 50%, var(--color-rule) 50%); }
+.rail-marker { position: absolute; top: 50%; left: calc((var(--station) + 0.5) * 25%); width: var(--space-6); height: var(--space-6); margin: calc(var(--space-6) / -2) 0 0 calc(var(--space-6) / -2); box-sizing: border-box; border: var(--stroke-thick) solid var(--color-panel); border-radius: var(--radius-round); background: var(--color-blue); }
+.line-row.blocked .rail-marker { border-color: var(--color-on-amber); border-radius: var(--radius-s); background: var(--color-amber); transform: rotate(45deg); }
+@media (max-width: 48rem) {
+  .line-head, .line-row { grid-template-columns: minmax(0, 1fr); padding: var(--space-5) var(--space-5); }
+  .line-row { grid-template-areas: "title" "rail" "where" "meta" "activity"; }
+  .line-row .where { text-align: left; }
+  .stations { display: none; }
 }
-/* Wide screens: one column per Stage, each with a header that stays in view. Narrower screens keep the stacked groups. */
-@media (min-width: 1025px) {
-  html { scroll-padding-top: calc(var(--space-8) * 6); }
-  .stages { display: none; }
-  .compact-empty { display: none; }
-  body { max-width: none; }
-  .board-headers, .project-groups { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--space-5); }
-  .board-headers { position: sticky; top: 0; z-index: 1; background: var(--color-panel); }
-  .project-groups { align-items: start; }
-  .group { margin: 0; padding-top: var(--space-5); background: var(--color-tint); border-radius: var(--radius-l); }
-  .group-header { padding: var(--space-5) var(--space-5); background: var(--color-tint); border-radius: var(--radius-l); }
-  .group .delete-all { margin: var(--space-5) var(--space-5); }
-  .group .runs { padding: 0 var(--space-5) var(--space-5); }
-  .group .empty { padding: 0 var(--space-5) var(--space-5); }
-}
+/* Projects: a menu in the toolbar with Hide or Restore and Delete for each Project. */
+.projects-menu { position: relative; }
+.projects-menu summary { list-style: none; padding: var(--space-2) var(--space-5); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-m); background: var(--color-panel); cursor: pointer; }
+.projects-menu summary::-webkit-details-marker { display: none; }
+.projects-menu summary::after { content: " \25BE" / ""; }
+.projects-menu summary:hover { background: var(--color-tint); }
+.projects-menu summary:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline-offset: var(--stroke-thick); }
+.projects-menu[open] summary { border-color: var(--color-slate); }
+.projects-panel { position: absolute; left: 0; top: calc(100% + var(--space-2)); z-index: 3; box-sizing: border-box; width: min(30rem, calc(100vw - 2 * var(--space-6))); padding: var(--space-4) var(--space-5); background: var(--color-panel); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-l); box-shadow: var(--shadow-dialog); }
+.projects-list { margin: 0; padding: 0; list-style: none; }
+.projects-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: var(--space-4); padding: var(--space-2) 0; }
+.projects-list li + li { border-top: var(--stroke-thin) solid var(--color-rule); }
+.projects-name { overflow-wrap: anywhere; font-weight: var(--weight-strong); }
+.hidden-project .projects-name { font-weight: normal; color: var(--color-muted); }
+.projects-count { font-size: var(--text-xs); color: var(--color-muted); }
+.projects-note { margin: var(--space-4) 0 0; font-size: var(--text-xs); color: var(--color-muted); }
 /* Very narrow screens, or 400% zoom: each field label sits above its value. */
 @media (max-width: 30rem) {
   .fields { grid-template-columns: minmax(0, 1fr); }

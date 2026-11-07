@@ -778,86 +778,6 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn dashboard_board_has_a_sticky_column_per_stage_on_wide_screens_only() {
-        let css = stylesheet().await;
-        let (_, rules) = split_tokens(&css);
-        let (stacked, wide) = rules
-            .split_once("@media (min-width: 1025px)")
-            .expect("a wide-screen layout");
-        let wide = &wide[..wide
-            .find("@media (prefers-reduced-motion")
-            .unwrap_or(wide.len())];
-        // Narrow screens keep the plain stacked groups.
-        assert!(!stacked.contains("repeat("), "no board grid when stacked");
-        assert!(!stacked.contains("#groups { display: grid"));
-        assert!(!stacked.contains(".group-header { position: sticky"));
-        assert!(
-            wide.contains("position: sticky"),
-            "the column header sticks"
-        );
-        // One column for each group the page renders.
-        let script = {
-            let dir = TestDir::new();
-            client(&dir)
-                .await
-                .get("/assets/app.js")
-                .header(Header::new("Host", "127.0.0.1:4311"))
-                .dispatch()
-                .await
-                .into_string()
-                .await
-                .unwrap()
-        };
-        let groups = script
-            .split("const GROUPS = [")
-            .nth(1)
-            .and_then(|rest| rest.split("];").next())
-            .unwrap()
-            .lines()
-            .filter(|line| line.trim_start().starts_with("['"))
-            .count();
-        assert!(
-            wide.contains(&format!("grid-template-columns: repeat({groups},")),
-            "{groups} columns"
-        );
-        assert!(script.contains("class=\"group-header\""));
-    }
-
-    #[rocket::async_test]
-    async fn dashboard_shows_one_stage_at_a_time_up_to_1024_px_and_all_stages_above() {
-        let css = stylesheet().await;
-        let (_, rules) = split_tokens(&css);
-        // Compact: the groups other than the picked Stage are hidden up to 1024 px.
-        let compact = rules
-            .split("@media (max-width: 1024px)")
-            .skip(1)
-            .find(|block| block.contains(".group:not(.selected)"))
-            .expect("a compact layout");
-        let compact = &compact[..compact.find("\n}").unwrap()];
-        assert!(compact.contains(".group:not(.selected) { display: none; }"));
-        // Wide: every column shows, so the Stage buttons go away.
-        let wide = rules
-            .split_once("@media (min-width: 1025px)")
-            .expect("a wide layout")
-            .1;
-        assert!(wide.contains(".stages { display: none; }"));
-        let script = asset("/assets/app.js").await;
-        assert!(script.contains("aria-label=\"Stage\""), "a labelled group");
-        assert!(script.contains("aria-pressed=${String(stage.id === current)}"));
-        assert!(
-            script.contains("needs you"),
-            "a text alternative for the marker"
-        );
-        // The Stage is chosen once from the first answer, then only the visitor changes it.
-        assert!(script.contains("firstStage(runs)"));
-        assert!(
-            script.contains("opening.current"),
-            "the opening Stage is kept"
-        );
-        assert!(css.contains(".waiting-mark {"));
-    }
-
-    #[rocket::async_test]
     async fn selecting_a_card_opens_a_modal_detail_with_every_run_field() {
         let script = asset("/assets/app.js").await;
         // The card's title is the button that opens the detail, found again by the Run id.
@@ -910,7 +830,6 @@ mod tests {
         assert!(script.contains("hidden=${!expanded}"));
         // Delete per Run and Delete all (Done column only) both open a confirmation dialog first.
         assert!(script.contains("onDelete=${(run) => setPending({ runs: [run] })}"));
-        assert!(script.contains("id === 'done' && entries.length"));
         assert!(script.contains("Delete all"));
         assert!(script.contains("<${Confirm}"));
         assert!(script.contains("aria-labelledby=\"confirm-title\""));
@@ -925,22 +844,22 @@ mod tests {
         );
         assert!(script
             .contains("The repository, worktrees, branches and pull requests stay as they are."));
-        // Cards in every other column offer Delete too, so a stuck Run can be removed.
+        // Done cards offer Delete; Runs on the line are deleted from their detail.
         assert_eq!(
             script
                 .matches("now=${now} onOpen=${onOpen} onDelete=${onDelete} />")
                 .count(),
-            2,
-            "DoneCard and Card both get onDelete"
+            1,
+            "DoneCard gets onDelete"
         );
     }
 
     #[rocket::async_test]
     async fn welcome_card_and_help_dialog_use_the_glossary_terms() {
         let script = asset("/assets/app.js").await;
-        // The welcome card replaces the columns when there are no Runs, and links to Help.
+        // The welcome card replaces the board when there are no Runs, and links to Help.
         assert!(script.contains("runs && !runs.length ? html`<${Welcome}"));
-        assert!(script.contains("runs?.length"));
+        assert!(script.contains("visibleRuns?.length"));
         assert!(script.contains("Read the Help"));
         // Help opens from the header. It is a native modal named by its heading, with tabs, and the selected
         // tab takes focus. It lives in its own module.
@@ -978,24 +897,13 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn project_rows_collapse_with_a_remembered_toggle() {
-        let script = asset("/assets/app.js").await;
-        assert!(script.contains("aria-expanded=${String(!closed)}"));
-        assert!(script.contains("localStorage.getItem('collapsed-projects')"));
-        assert!(script.contains("${projectWaiting} waiting"));
-        // Storage failures are tolerated on both read and write.
-        assert!(script.contains("storage is blocked"));
-    }
-
-    #[rocket::async_test]
     async fn selection_and_notifications_are_keyed_per_project_and_run() {
         let script = asset("/assets/app.js").await;
         assert!(script.contains("const runKey = (run) =>"));
         assert!(script.contains("known.current.has(runKey(run))"));
         assert!(script.contains("runKey(run) === openKey"));
-        // Delete all only takes the Done Runs of its own Project row, and the dialog names it.
-        assert!(script.contains("projectOf(entry.run) === project"));
-        assert!(script.contains("done runs in ${names.get("));
+        // Deleting a Project takes only that Project's Runs.
+        assert!(script.contains("runs.filter((run) => projectOf(run) === project)"));
     }
 
     #[rocket::async_test]
@@ -1664,7 +1572,6 @@ mod tests {
         // Delete on cards and rows is a text button; only the confirm dialog's Delete is red.
         assert_eq!(script.matches("class=\"toggle danger\"").count(), 1);
         assert!(!script.contains("toggle danger delete"));
-        assert!(script.contains("class=\"text-button hide-project\""));
         assert!(rule(".text-button").contains("text-decoration: underline"));
         // 16 px of line height plus 4 px of padding above and below: a 24 px target.
         assert!(rule(".text-button").contains("padding: var(--space-2)"));
@@ -1688,39 +1595,6 @@ mod tests {
         assert!(script.contains("<span class=\"visually-hidden\">Ticket: </span>"));
         // Stage descriptions live in Help, not on the board.
         assert!(!script.contains("group-description") && !script.contains("compact-description"));
-    }
-
-    #[rocket::async_test]
-    async fn the_board_spends_no_space_on_finished_or_empty_projects() {
-        let css = stylesheet().await;
-        let script = asset("/assets/app.js").await;
-        // A Project whose Runs are all done starts collapsed, unless the visitor opened it, and that is remembered.
-        assert!(script.contains("own.every((run) => run.status === 'done')"));
-        assert!(script.contains("localStorage.getItem('expanded-projects')"));
-        assert!(script.contains("localStorage.setItem('expanded-projects'"));
-        // Wide: cells are as tall as their own content.
-        let (_, rules) = split_tokens(&css);
-        let wide = rules
-            .split_once("@media (min-width: 1025px)")
-            .expect("a wide layout")
-            .1;
-        assert!(wide.contains(".project-groups { align-items: start; }"));
-        assert!(wide.contains(".compact-empty { display: none; }"));
-        // Compact: rows with nothing in the picked Stage are left out, and "No runs" shows once.
-        let compact = rules
-            .split("@media (max-width: 1024px)")
-            .skip(1)
-            .find(|block| block.contains(".group:not(.selected)"))
-            .expect("a compact layout");
-        assert!(compact.contains(".project-row.no-runs-in-stage { display: none; }"));
-        assert!(script.contains("<p class=\"empty compact-empty\">No runs</p>"));
-        // Phones: Delete and Hide stay on the Project's heading line.
-        let heading_row = css
-            .lines()
-            .find(|line| line.starts_with(".project-heading-row {"))
-            .expect("a heading row rule");
-        assert!(!heading_row.contains("flex-wrap: wrap"));
-        assert!(css.contains(".project-heading-row .text-button { flex: none; }"));
     }
 
     #[test]
@@ -1780,9 +1654,8 @@ mod tests {
     async fn the_page_opens_on_the_requested_project_expanded_and_first() {
         let script = asset("/assets/app.js").await;
         assert!(script.contains("new URLSearchParams(location.search).get('project')"));
-        // The requested Project opens even when it was collapsed or all its Runs are done.
-        assert!(script.contains("!forcedOpen.has(project) && (collapsed.has(project)"));
-        assert!(script.contains("Number(b === wanted) - Number(a === wanted)"));
+        // The requested Project's Runs come first on the line.
+        assert!(script.contains("first(b.run) - first(a.run) || compare(a, b)"));
     }
 
     #[rocket::async_test]
@@ -2039,6 +1912,73 @@ mod tests {
             .expect("a lit andon rule");
         assert!(lit.contains("background: var(--color-amber)"));
         assert!(lit.contains("color: var(--color-on-amber)"));
+    }
+
+    #[rocket::async_test]
+    async fn the_line_shows_each_active_run_on_a_four_station_rail() {
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("const STATIONS = ['define', 'build', 'check', 'finish'];"));
+        let row = script
+            .split("function LineRow(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a LineRow component");
+        // The title opens the detail and is found again by the Run key.
+        assert!(row.contains("class=\"card-open\" data-run-key=${runKey(run)}"));
+        // The rail is drawn for sighted users; its position is also given in words.
+        assert!(row.contains("<div class=\"rail\" aria-hidden=\"true\">"));
+        assert!(row.contains("<p class=\"where\">${where}</p>"));
+        assert!(row.contains("`${station}, blocked`"));
+        // Project, ticket progress, Rework, pull request and age sit in one meta line.
+        for part in [
+            "<${ProjectName} path=${projectOf(run)} />",
+            "<${ContextChips} run=${run} />",
+            "reworkLabel(",
+            "<${ContextLinks} run=${run} />",
+            "<${Updated} run=${run} now=${now} />",
+        ] {
+            assert!(row.contains(part), "row misses {part}");
+        }
+        // Active Runs only, blocked first, and the requested Project before the rest.
+        assert!(script.contains("run.status !== 'done'"));
+        assert!(script.contains("const first = (run) => Number(projectOf(run) === wanted);"));
+        // The old grid and its Stage buttons are gone.
+        for gone in [
+            "board-headers",
+            "StageButtons",
+            "project-row",
+            "collapsed-projects",
+        ] {
+            assert!(!script.contains(gone), "{gone} is still there");
+        }
+        let css = stylesheet().await;
+        let (_, rules) = split_tokens(&css);
+        assert!(!rules.contains("repeat(5,"), "no five-column board");
+        assert!(rules.contains(".rail { "));
+        // The current station is a marker placed by the Run's station number.
+        assert!(rules.contains("calc((var(--station) + 0.5) * 25%)"));
+        assert!(rules.contains(".line-row.blocked .rail-marker {"));
+    }
+
+    #[rocket::async_test]
+    async fn the_projects_menu_hides_restores_and_deletes_projects() {
+        let script = asset("/assets/app.js").await;
+        let menu = script
+            .split("function ProjectsMenu(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a ProjectsMenu component");
+        assert!(menu.contains("<details class=\"projects-menu\">"));
+        assert!(menu.contains("<summary>Projects (${projects.length})</summary>"));
+        assert!(menu.contains(
+            "aria-label=${`${hidden ? 'Restore' : 'Hide'} ${names.get(project) ?? project}`}"
+        ));
+        assert!(menu.contains("aria-label=${`Delete ${names.get(project) ?? project}`}"));
+        assert!(menu.contains("onClick=${() => onDelete(project)}"));
+        // Hiding is remembered in this browser, and deleting a Project still asks first.
+        assert!(script.contains("localStorage.setItem('hidden-projects'"));
+        assert!(script.contains("onDelete=${(project) => setPending({ project, runs: runs.filter((run) => projectOf(run) === project) })}"));
+        assert!(script.contains("<${ProjectsMenu}"));
     }
 
     #[rocket::async_test]

@@ -1,5 +1,5 @@
 import { createContext, h, render } from 'preact';
-import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useContext, useEffect, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 import { Help } from '/assets/help.js';
 
@@ -46,26 +46,6 @@ function projectNames(runs) {
   );
 }
 
-/** Project paths the visitor collapsed. Blocked or broken storage only means the choice is not remembered. */
-function storedCollapsed() {
-  try {
-    const value = JSON.parse(localStorage.getItem('collapsed-projects'));
-    return new Set(Array.isArray(value) ? value.filter((path) => typeof path === 'string') : []);
-  } catch {
-    return new Set();
-  }
-}
-
-/** Project paths the visitor expanded, so a Project whose Runs are all done stays open for them. */
-function storedExpanded() {
-  try {
-    const value = JSON.parse(localStorage.getItem('expanded-projects'));
-    return new Set(Array.isArray(value) ? value.filter((path) => typeof path === 'string') : []);
-  } catch {
-    return new Set();
-  }
-}
-
 /** Projects hidden in this browser. */
 function storedHiddenProjects() {
   try {
@@ -103,7 +83,6 @@ const timestamp = (run) =>
 /** The Project a Run belongs to: its repository, so linked worktrees share a row, else where it was started. */
 const projectOf = (run) => run.repository ?? run.project;
 const runKey = (run) => `${projectOf(run)}\n${run.id}`;
-const groupOf = (run) => (run.status === 'done' ? 'done' : run.stage);
 
 // Blocked first, then the most recently updated; Runs without a timestamp go last, newest record first.
 function compare(a, b) {
@@ -289,7 +268,7 @@ function ContextLinks({ run }) {
   const pr = run.pr ? html`<${RefLink} value=${run.pr} label=${named('Pull request')} />` : null;
   const spec = run.spec ? html`<${RefLink} value=${run.spec} label=${named('Spec')} />` : null;
   return pr || spec
-    ? html`<p class="links">${pr}${pr && spec ? html`<span aria-hidden="true">${' · '}</span>` : null}${spec}</p>`
+    ? html`<span class="links">${pr}${spec}</span>`
     : null;
 }
 
@@ -312,13 +291,13 @@ function ago(ms) {
 
 function Updated({ run, now }) {
   const ts = timestamp(run);
-  if (ts === null) return html`<p class="updated">Updated: not reported</p>`;
+  if (ts === null) return html`<span class="updated">Updated: not reported</span>`;
   const date = new Date(ts);
-  return html`<p class="updated">
+  return html`<span class="updated">
     Updated${' '}<time datetime=${date.toISOString()} title=${date.toLocaleString()}
       >${ago(now - ts)}</time
     >
-  </p>`;
+  </span>`;
 }
 
 /** A Done card is one line: the title, a Show details toggle and Delete. The rest shows on demand. */
@@ -364,40 +343,39 @@ function DoneCard({ run, now, onOpen, onDelete }) {
   </li>`;
 }
 
-function Card({ run, now, onOpen, onDelete }) {
-  const known = STATUSES.includes(run.status);
+const STATIONS = ['define', 'build', 'check', 'finish'];
+
+/**
+ * One active Run on the line: its title (opens the detail), a rail of the four stations with a marker at the
+ * current one, the position in words, and a meta line. A blocked Run is marked amber, with a word, not only a colour.
+ */
+function LineRow({ run, now, onOpen }) {
+  const index = STATIONS.indexOf(run.stage);
+  const blocked = needsYou(run);
+  const station = index === -1 ? String(run.stage) : GROUPS[index][1];
+  const where = blocked ? `${station}, blocked` : station;
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
-  const blocked = run.status === 'blocked';
-  return html`<li>
-    <article class=${blocked ? 'run blocked' : 'run'}>
-      ${blocked
-        ? html`<p class="needs-you">
-            <span class="needs-you-label">Needs you</span>
-            ${run.blocking_reason ? ` ${run.blocking_reason}` : null}
-          </p>`
-        : null}
-      <h3>
-        <button type="button" class="card-open" data-run-key=${runKey(run)} onClick=${() => onOpen(runKey(run))}>
-          ${run.title}
-        </button>
-      </h3>
-      <div class="chips">
-        <span class=${known ? `badge ${run.status}` : 'badge'}>${statusLabel(run.status)}</span>
-        ${rework !== null
-          ? html`<span class="chip"
-              >Rework${' '}${reworkLabel(rework)}</span
-            >`
-          : null}
-        <${ContextChips} run=${run} />
-      </div>
-      <${ContextLinks} run=${run} />
-      ${run.activity ? html`<p class="activity">${run.activity}</p>` : null}
-      ${run.current_ticket ? html`<${Ticket} value=${String(run.current_ticket)} />` : null}
-      <${Updated} run=${run} now=${now} />
-      <button type="button" class="text-button" onClick=${() => onDelete(run)}>
-        Delete<span class="visually-hidden">${` ${run.title}`}</span>
+  return html`<li class=${blocked ? 'line-row blocked' : 'line-row'} style=${`--station: ${index}`}>
+    <h3 class="line-title">
+      <button type="button" class="card-open" data-run-key=${runKey(run)} onClick=${() => onOpen(runKey(run))}>
+        ${run.title}
       </button>
-    </article>
+    </h3>
+    <div class="rail" aria-hidden="true">
+      ${STATIONS.map(
+        (id, at) => html`<span key=${id} class=${at < index ? 'station past' : at === index ? 'station current' : 'station'}></span>`,
+      )}
+      ${index === -1 ? null : html`<span class="rail-marker"></span>`}
+    </div>
+    <p class="where">${where}</p>
+    <div class="meta">
+      <span class="meta-project"><${ProjectName} path=${projectOf(run)} /></span>
+      <${ContextChips} run=${run} />
+      ${rework !== null ? html`<span class="chip">Rework${' '}${reworkLabel(rework)}</span>` : null}
+      <${ContextLinks} run=${run} />
+      <${Updated} run=${run} now=${now} />
+    </div>
+    ${run.activity ? html`<p class="activity">${run.activity}</p>` : null}
   </li>`;
 }
 
@@ -514,26 +492,23 @@ function Detail({ run, now, onClose }) {
   </dialog>`;
 }
 
-function Group({ id, entries, now, selected, onOpen, onDelete, onDeleteAll }) {
-  return html`<section class=${selected ? 'group selected' : 'group'} aria-label=${GROUPS.find(([key]) => key === id)[1]}>
-    ${id === 'done' && entries.length
-      ? html`<button type="button" class="text-button delete-all" onClick=${onDeleteAll}>
-          Delete all<span class="visually-hidden">${` ${entries.length} done runs`}</span>
-        </button>`
-      : null}
-    ${entries.length
-      ? html`<ul class="runs">
-          ${entries.map((entry) =>
-            id === 'done'
-              ? html`<${DoneCard} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${onOpen} onDelete=${onDelete} />`
-              : html`<${Card} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${onOpen} onDelete=${onDelete} />`,
-          )}
-        </ul>`
-      : html`<p class="empty">No runs</p>`}
+/** Finished Runs, one line each, with Delete all. */
+function Group({ entries, now, onOpen, onDelete, onDeleteAll }) {
+  return html`<section class="group" aria-labelledby="done-title">
+    <h2 id="done-title">Done<span class="count">${` (${entries.length})`}</span></h2>
+    <button type="button" class="text-button delete-all" onClick=${onDeleteAll}>
+      Delete all<span class="visually-hidden">${` ${entries.length} done runs`}</span>
+    </button>
+    <ul class="runs">
+      ${entries.map(
+        (entry) =>
+          html`<${DoneCard} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${onOpen} onDelete=${onDelete} />`,
+      )}
+    </ul>
   </section>`;
 }
 
-/** Shown instead of the columns while there are no Runs. */
+/** Shown instead of the board while there are no Runs. */
 function Welcome({ onHelp }) {
   return html`<section class="welcome" aria-labelledby="welcome-title">
     <h2 id="welcome-title">Welcome to the factory</h2>
@@ -760,32 +735,45 @@ function Andon({ waiting, active, filtered, onFilter, onOpen }) {
   </section>`;
 }
 
-/** The Stage a visitor first sees in compact mode: one with a waiting Run, else the first with any Run. */
-function firstStage(runs) {
-  const waiting = runs.find(needsYou);
-  if (waiting) return groupOf(waiting);
-  return (GROUPS.find(([id]) => runs.some((run) => groupOf(run) === id)) ?? GROUPS[0])[0];
-}
-
-/** Compact mode shows one Stage at a time; these buttons pick it. Wide screens hide them and show every column. */
-function StageButtons({ stages, current, onPick }) {
-  return html`<div class="stages" role="group" aria-label="Stage">
-    ${stages.map((stage) => {
-      const waiting = stage.entries.some((entry) => needsYou(entry.run));
-      return html`<button
-        type="button"
-        key=${stage.id}
-        class="toggle"
-        aria-pressed=${String(stage.id === current)}
-        onClick=${() => onPick(stage.id)}
-      >
-        ${stage.name} (${stage.entries.length})${waiting
-          ? html`<span class="waiting-mark" aria-hidden="true">!</span
-              ><span class="visually-hidden"> needs you</span>`
-          : null}
-      </button>`;
-    })}
-  </div>`;
+/**
+ * Every Project with Runs or hidden in this browser, each with Hide or Restore and Delete. Hiding is remembered in
+ * this browser and keeps the Runs; Delete removes the Project's Run records after the confirm dialog.
+ */
+function ProjectsMenu({ projects, hiddenProjects, counts, onHide, onDelete }) {
+  const names = useContext(ProjectNames);
+  return html`<details class="projects-menu">
+    <summary>Projects (${projects.length})</summary>
+    <div class="projects-panel">
+    <ul class="projects-list">
+      ${projects.map((project) => {
+        const hidden = hiddenProjects.has(project);
+        return html`<li key=${project} class=${hidden ? 'hidden-project' : null}>
+          <span class="projects-name"><${ProjectName} path=${project} /></span>
+          <span class="projects-count">${hidden ? 'Hidden' : `${counts.get(project) ?? 0} ${counts.get(project) === 1 ? 'run' : 'runs'}`}</span>
+          <button
+            type="button"
+            class="text-button"
+            aria-label=${`${hidden ? 'Restore' : 'Hide'} ${names.get(project) ?? project}`}
+            onClick=${() => onHide(project, !hidden)}
+          >
+            ${hidden ? 'Restore' : 'Hide'}
+          </button>
+          ${counts.get(project)
+            ? html`<button
+                type="button"
+                class="text-button"
+                aria-label=${`Delete ${names.get(project) ?? project}`}
+                onClick=${() => onDelete(project)}
+              >
+                Delete
+              </button>`
+            : null}
+        </li>`;
+      })}
+    </ul>
+    <p class="projects-note">Hidden projects are remembered in this browser. Their runs are kept.</p>
+    </div>
+  </details>`;
 }
 
 function App() {
@@ -793,56 +781,11 @@ function App() {
   const now = useNow();
   const [onlyWaiting, setOnlyWaiting] = useState(false);
   const [wanted] = useState(requestedProject);
-  // The requested Project is shown expanded for this visit, without touching what was remembered.
-  const [collapsed, setCollapsed] = useState(storedCollapsed);
-  const [expanded, setExpanded] = useState(storedExpanded);
-  const [forcedOpen, setForcedOpen] = useState(() => new Set(wanted === null ? [] : [wanted]));
-  // A Project whose Runs are all done starts collapsed, unless the visitor expanded it.
-  const allDone = (project) => {
-    const own = (runs ?? []).filter((run) => projectOf(run) === project);
-    return own.length > 0 && own.every((run) => run.status === 'done');
-  };
-  const isCollapsed = (project) =>
-    !forcedOpen.has(project) && (collapsed.has(project) || (allDone(project) && !expanded.has(project)));
-  const toggleProject = (project) => {
-    const closing = !isCollapsed(project);
-    const nextCollapsed = new Set(collapsed);
-    const nextExpanded = new Set(expanded);
-    if (closing) {
-      nextCollapsed.add(project);
-      nextExpanded.delete(project);
-    } else {
-      nextCollapsed.delete(project);
-      nextExpanded.add(project);
-    }
-    setCollapsed(nextCollapsed);
-    setExpanded(nextExpanded);
-    setForcedOpen((current) => new Set([...current].filter((path) => path !== project)));
-    try {
-      localStorage.setItem('collapsed-projects', JSON.stringify([...nextCollapsed]));
-      localStorage.setItem('expanded-projects', JSON.stringify([...nextExpanded]));
-    } catch {
-      /* storage is blocked: the choice lasts until the page is reloaded */
-    }
-  };
   const [hiddenProjects, setHiddenProjects] = useState(storedHiddenProjects);
-  const hiddenFocus = useRef(null);
-  useLayoutEffect(() => {
-    if (!hiddenFocus.current) return;
-    const { project, hidden } = hiddenFocus.current;
-    hiddenFocus.current = null;
-    requestAnimationFrame(() => {
-      const target = hidden
-        ? document.querySelector('.hidden-projects summary')
-        : document.querySelector(`[data-project-toggle="${CSS.escape(project)}"]`) ?? document.querySelector('.hidden-projects summary');
-      (target ?? document.querySelector('.help-open'))?.focus();
-    });
-  }, [hiddenProjects]);
   const changeHidden = (project, hidden) => {
     const next = new Set(hiddenProjects);
     if (hidden) next.add(project);
     else next.delete(project);
-    hiddenFocus.current = { project, hidden };
     setHiddenProjects(next);
     try {
       localStorage.setItem('hidden-projects', JSON.stringify([...next]));
@@ -886,7 +829,7 @@ function App() {
     );
     if (project && !failures) changeHidden(project, false);
     await reload();
-    // The card and the button that opened the dialog are gone: keep focus on the board.
+    // The row and the button that opened the dialog are gone: keep focus on the board.
     document.querySelector('main')?.focus();
   };
   let text = 'Loading runs…';
@@ -898,31 +841,26 @@ function App() {
     else if (onlyWaiting && !waiting) text = 'Nothing needs you right now.';
     else text = '';
   }
-  const indexed = (visibleRuns ?? [])
-    .map((run, index) => ({ run, index }))
-    .filter((entry) => !onlyWaiting || needsYou(entry.run));
-  const stages = GROUPS.map(([id, name]) => ({
-    id,
-    name,
-    entries: indexed.filter((entry) => groupOf(entry.run) === id).sort(compare),
-  }));
-  const projects = [...new Set(indexed.map((entry) => projectOf(entry.run)))].sort(
-    (a, b) =>
-      // The Project the page was opened on comes first, the rest alphabetically.
-      Number(b === wanted) - Number(a === wanted) ||
-      String(names.get(a) ?? a).localeCompare(String(names.get(b) ?? b)) ||
-      String(a).localeCompare(String(b)),
-  );
-  // Chosen once, from the first answer that has Runs (whatever the filter), then only the visitor changes it.
-  const [picked, setPicked] = useState(null);
-  const opening = useRef(null);
-  if (opening.current === null && visibleRuns?.length) opening.current = firstStage(visibleRuns);
-  const current = picked ?? opening.current ?? GROUPS[0][0];
-  const currentStage = stages.find((stage) => stage.id === current);
+  const indexed = (visibleRuns ?? []).map((run, index) => ({ run, index }));
+  // The Project the page was opened on (`?project=`) comes first, then blocked Runs, then the most recent.
+  const first = (run) => Number(projectOf(run) === wanted);
+  const byPriority = (a, b) => first(b.run) - first(a.run) || compare(a, b);
+  const line = indexed
+    .filter((entry) => entry.run.status !== 'done' && (!onlyWaiting || needsYou(entry.run)))
+    .sort(byPriority);
+  const done = onlyWaiting ? [] : indexed.filter((entry) => entry.run.status === 'done').sort(byPriority);
+  const projects = [...new Set([...(runs ?? []).map(projectOf), ...hiddenProjects])]
+    .filter((path) => typeof path === 'string')
+    .sort(
+      (a, b) =>
+        String(names.get(a) ?? a).localeCompare(String(names.get(b) ?? b)) || String(a).localeCompare(String(b)),
+    );
+  const counts = new Map();
+  for (const run of runs ?? []) counts.set(projectOf(run), (counts.get(projectOf(run)) ?? 0) + 1);
   // The open detail is a Run id; it is looked up in the latest full list, so refreshes update it.
   const [openKey, setOpenKey] = useState(null);
   const lastOpened = useRef(null);
-  // The control that opened the detail (a card title or a Run in the andon strip), to give focus back to.
+  // The control that opened the detail (a row title or a Run in the andon strip), to give focus back to.
   const opener = useRef(null);
   const openRun = openKey === null ? null : (runs ?? []).find((run) => runKey(run) === openKey);
   const open = (key) => {
@@ -941,7 +879,7 @@ function App() {
       const same = opener.current?.isConnected ? opener.current : null;
       const card = same ?? document.querySelector(`[data-run-key="${CSS.escape(String(lastOpened.current))}"]`);
       card?.focus();
-      // The control is gone or hidden (its Run left, or changed Stage): keep focus on the board.
+      // The control is gone (its Run left): keep focus on the board.
       if (!card || document.activeElement !== card) document.querySelector('main')?.focus();
       lastOpened.current = null;
       opener.current = null;
@@ -951,6 +889,15 @@ function App() {
     <div class="toolbar">
       <${NotificationsToggle} state=${notifications.state} onToggle=${notifications.toggle} />
       <button type="button" class="toggle help-open" onClick=${() => setHelpOpen(true)}>Help</button>
+      ${projects.length
+        ? html`<${ProjectsMenu}
+            projects=${projects}
+            hiddenProjects=${hiddenProjects}
+            counts=${counts}
+            onHide=${changeHidden}
+            onDelete=${(project) => setPending({ project, runs: runs.filter((run) => projectOf(run) === project) })}
+          />`
+        : null}
       <${Connection} failed=${failed} lastOk=${lastOk} now=${now} />
     </div>
     ${visibleRuns
@@ -967,78 +914,36 @@ function App() {
       />`
       : null}
     <main tabindex="-1">
-      ${hiddenProjects.size ? html`<details class="hidden-projects">
-        <summary>Hidden projects (${hiddenProjects.size})</summary>
-        <p>Hidden projects are remembered in this browser. Their runs are kept.</p>
-        <ul>${[...hiddenProjects].sort().map((project) => html`<li key=${project}><${ProjectName} path=${project} /> <button type="button" class="toggle" onClick=${() => changeHidden(project, false)} aria-label=${`Restore ${names.get(project) ?? project}`}>Restore</button> ${runs?.some((run) => projectOf(run) === project) ? html`<button type="button" class="text-button delete-project" onClick=${() => setPending({ project, runs: runs.filter((run) => projectOf(run) === project) })} aria-label=${`Delete ${names.get(project) ?? project}`}>Delete</button>` : null}</li>`)}</ul>
-      </details>` : null}
       <p id="message" role="status" class=${failed || deleteError ? 'error' : ''}>${text}</p>
       ${runs && !runs.length ? html`<${Welcome} onHelp=${() => setHelpOpen(true)} />` : null}
-      ${runs?.length ? html`<${StageButtons} stages=${stages} current=${current} onPick=${setPicked} />` : null}
-      ${runs?.length
-        ? html`<div class="board-headers">
-            ${stages.map((stage) => html`<div class="group-header"><h2>${stage.name}<span class="count">${` (${stage.entries.length})`}</span></h2></div>`)}
-          </div>`
+      ${visibleRuns?.length
+        ? html`<section class="line" aria-labelledby="line-title">
+            <div class="line-head">
+              <h2 id="line-title">On the line<span class="count">${` (${line.length})`}</span></h2>
+              <ol class="stations" aria-hidden="true">
+                ${STATIONS.map((id, at) => html`<li key=${id}>${GROUPS[at][1]}</li>`)}
+              </ol>
+            </div>
+            ${line.length
+              ? html`<ul class="line-rows">
+                  ${line.map((entry) => html`<${LineRow} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${open} />`)}
+                </ul>`
+              : html`<p class="empty">Nothing on the line.</p>`}
+          </section>`
         : null}
-      ${indexed.length && !currentStage.entries.length
-        ? html`<p class="empty compact-empty">No runs</p>`
+      ${done.length
+        ? html`<${Group}
+            now=${now}
+            entries=${done}
+            onOpen=${open}
+            onDelete=${(run) => setPending({ runs: [run] })}
+            onDeleteAll=${() => setPending({ runs: done.map((entry) => entry.run) })}
+          />`
         : null}
-      <div id="groups">
-        ${projects.map((project) => {
-          const closed = isCollapsed(project);
-          const groupsId = `project-groups-${projects.indexOf(project)}`;
-          const projectWaiting = indexed.filter((entry) => projectOf(entry.run) === project && needsYou(entry.run)).length;
-          // Compact mode hides a row with nothing in the picked Stage, so "No runs" shows once, not per Project.
-          const hasRunsInStage = currentStage.entries.some((entry) => projectOf(entry.run) === project);
-          return html`<section class=${hasRunsInStage ? 'project-row' : 'project-row no-runs-in-stage'} key=${project}>
-          <div class="project-heading-row">
-          <h2 class="project-heading">
-            <button
-              type="button"
-              class="project-toggle"
-              data-project-toggle=${project}
-              aria-expanded=${String(!closed)}
-              aria-controls=${groupsId}
-              onClick=${() => toggleProject(project)}
-            >
-              <span class="project-chevron" aria-hidden="true">${closed ? '▸' : '▾'}</span
-              ><${ProjectName} path=${project} />
-            </button>
-            ${closed
-              ? html`<span class="project-summary"
-                  >${stages
-                    .map((item) => `${item.name} ${item.entries.filter((entry) => projectOf(entry.run) === project).length}`)
-                    .join(' · ')}</span
-                >${projectWaiting
-                  ? html`<span class="badge blocked">${projectWaiting} waiting</span>`
-                  : null}`
-              : null}
-          </h2>
-          <button type="button" class="text-button delete-project" onClick=${() => setPending({ project, runs: runs.filter((run) => projectOf(run) === project) })} aria-label=${`Delete ${names.get(project) ?? project}`}>Delete</button>
-          <button type="button" class="text-button hide-project" onClick=${() => changeHidden(project, true)} aria-label=${`Hide ${names.get(project) ?? project}`}>Hide</button>
-          </div>
-          <div class="project-groups" id=${groupsId} hidden=${closed}>
-            ${stages.map((item) => {
-              const entries = item.entries.filter((entry) => projectOf(entry.run) === project);
-              return html`<${Group}
-                key=${item.id}
-                id=${item.id}
-                now=${now}
-                entries=${entries}
-                selected=${item.id === current}
-                onOpen=${open}
-                onDelete=${(run) => setPending({ runs: [run] })}
-                onDeleteAll=${() => setPending({ runs: entries.map((entry) => entry.run) })}
-              />`;
-            })}
-          </div>
-        </section>`;
-        })}
-      </div>
       ${helpOpen ? html`<${Help} onClose=${closeHelp} reworkCap=${REWORK_CAP} />` : null}
       ${pending
         ? html`<${Confirm}
-            title=${pending.project ? `Delete ${names.get(pending.project) ?? pending.project}?` : pending.runs.length === 1 ? 'Delete this run?' : `Delete all ${pending.runs.length} done runs in ${names.get(projectOf(pending.runs[0])) ?? projectOf(pending.runs[0])}?`}
+            title=${pending.project ? `Delete ${names.get(pending.project) ?? pending.project}?` : pending.runs.length === 1 ? 'Delete this run?' : `Delete all ${pending.runs.length} done runs?`}
             confirmLabel=${pending.project || pending.runs.length === 1 ? 'Delete' : 'Delete all'}
             onConfirm=${confirmDelete}
             onCancel=${() => setPending(null)}
@@ -1048,7 +953,7 @@ function App() {
                 ? `This removes all ${pending.runs.length} run records for this project from the dashboard.`
                 : pending.runs.length === 1
                 ? html`This removes the record of <strong>${pending.runs[0].title}</strong> from the dashboard.`
-                : `This removes the records of these runs in ${names.get(projectOf(pending.runs[0])) ?? projectOf(pending.runs[0])} from the dashboard.`}
+                : `This removes the records of these runs from the dashboard.`}
               The repository, worktrees, branches and pull requests stay as they are.
             </p>
           <//>`

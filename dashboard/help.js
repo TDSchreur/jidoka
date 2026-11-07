@@ -483,12 +483,17 @@ function Dashboard({ reworkCap }) {
   return html`
     <${Topic} title="The board">
       <p>
-        Runs are grouped into one row per project, named after the repository. A row has a column for each Stage (Define, Build, Check and Finish), plus one
-        for Done. The project name toggles the row; a collapsed row shows how many Runs it
-        has in each Stage, and how many are waiting for you. A project whose Runs are all done starts collapsed until you
-        open it. On a narrow screen the Stage buttons show one column at a time, and projects with no Runs in that Stage
-        are left out. Hide removes a project from the board in this browser; use Hidden projects to restore it. Its Runs are kept. Delete removes the project’s Run records after confirmation; repository files, worktrees, branches and pull requests are kept.
-        Hidden projects do not contribute to the waiting count or notifications. The board refreshes by itself every few seconds.
+        At the top, the andon strip says whether anything needs you. Below it, On the line has one row for each Run that
+        is not done, with a rail of the four Stations (Define, Build, Check and Finish) that shows where the Run is. A
+        blocked Run is marked amber and its position says so, such as Check, blocked. Runs waiting for you come first,
+        then the most recently updated. Finished Runs are listed below the line. The board refreshes by itself every few
+        seconds.
+      </p>
+      <p>
+        Projects in the toolbar lists every project. Hide removes a project's Runs from the board in this browser, and
+        Restore brings them back. Hidden projects do not count towards the waiting count or notifications, and their
+        Runs are kept. Delete removes the project's Run records after you confirm; repository files, worktrees,
+        branches and pull requests are kept.
       </p>
     <//>
     <${Topic} title="The header">
@@ -503,6 +508,7 @@ function Dashboard({ reworkCap }) {
             'Asks the browser for permission to show a notification when a Run starts waiting for you, while this page is open. If the browser blocks or does not support notifications, the button says so.',
           ],
           ['Help', 'Opens this window.'],
+          ['Projects', 'Lists every project, with Hide or Restore and Delete.'],
           [
             'Connection',
             'Shows whether the dashboard is receiving updates from its server, and when the last one arrived.',
@@ -514,12 +520,12 @@ function Dashboard({ reworkCap }) {
         browser.
       </p>
     <//>
-    <${Topic} title="A card">
-      <p>Each Run in a column is a card. Select its title to open the detail.</p>
+    <${Topic} title="A Run on the line">
+      <p>Each Run on the line is a row. Select its title to open the detail.</p>
       <${Terms}
         items=${[
-          ['Needs you', 'Shown first on a blocked Run, with the reason.'],
-          ['Status', 'Running, blocked or done.'],
+          ['Rail', 'The four Stations. Done ones are filled; the marker is on the current one, and turns into an amber diamond when the Run is blocked. The position is also given in words.'],
+          ['Project', 'The project the Run belongs to.'],
           ['Rework', html`<em>Rework 1/${reworkCap}</em>: the current Rework out of the ${reworkCap} a Run gets.`],
           ['Tickets', 'How many of the Run’s tickets are done, such as 2/5.'],
           [
@@ -527,9 +533,8 @@ function Dashboard({ reworkCap }) {
             'The fresh tokens the Run has used, such as 41.2k. It says partial when some of the usage could not be read.',
           ],
           ['Pull request, Spec', 'Links, when the Run has recorded them.'],
-          ['Activity, Ticket', 'What the agent says it is doing, and the ticket it is working on.'],
+          ['Activity', 'What the agent says it is doing.'],
           ['Updated', 'How long ago the agent last reported. It is the time of the last report, not a heartbeat.'],
-          ['Delete', 'Removes the record of the Run, after you confirm. The worktree, branch and pull request stay.'],
         ]}
       />
     <//>

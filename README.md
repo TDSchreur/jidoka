@@ -76,7 +76,7 @@ Besides its stage and status, a run records the context a new session needs to c
 
 Options left out keep their value, each has a `--clear-*` form (`--clear-tickets`, `--clear-summary <stage>`), and an inconsistent update is refused with the reason and changes nothing. A run recorded before this existed shows its missing context as unknown.
 
-`factory run inspect <id>` prints a run's context (`--json` for the stored record). The dashboard shows it in the run's detail, shows ticket progress and pull request and spec links on cards, and groups the runs of every linked worktree under their repository.
+`factory run inspect <id>` prints a run's context (`--json` for the stored record). The dashboard shows it in the run's detail, shows ticket progress and pull request and spec links on each run's row, and counts the runs of every linked worktree under their repository.
 
 To continue a run in a new session, ask the agent to continue it by ID. The workflow skills then read the context and check the recorded repository, worktree, branch, base commit and Git state, report any difference, and never reset, clean or discard work to make them match.
 
@@ -116,7 +116,7 @@ The API uses `activity`, `current_ticket`, `blocking_reason`, and `rework` on `P
 {"stage":"build","status":"running","activity":"Implementing ticket #42","blocking_reason":null}
 ```
 
-Run responses and `runs.json` include these optional fields and `updated_at`, a server-owned Unix timestamp in milliseconds set on creation and each successful update. Callers cannot set `updated_at` through an update. Existing records load with `null` for missing metadata and timestamps; they receive a timestamp on their next update. The timestamp records a run update, not an agent heartbeat. Restart the dashboard with the updated CLI before using the new options. The dashboard shows these fields on each run card. Done runs show on one line with a Show details toggle, and can be deleted one by one or all at once after a confirmation; deleting removes only the run record, not its worktree or pull request. The record is removed by `DELETE /api/runs/<id>`, which needs the session token from the dashboard page (sent as `X-Session-Token`), so it works from the dashboard only.
+Run responses and `runs.json` include these optional fields and `updated_at`, a server-owned Unix timestamp in milliseconds set on creation and each successful update. Callers cannot set `updated_at` through an update. Existing records load with `null` for missing metadata and timestamps; they receive a timestamp on their next update. The timestamp records a run update, not an agent heartbeat. Restart the dashboard with the updated CLI before using the new options. The dashboard shows these fields on each run's row on the line. Done runs show on one line with a Show details toggle, and can be deleted one by one or all at once after a confirmation; deleting removes only the run record, not its worktree or pull request. The record is removed by `DELETE /api/runs/<id>`, which needs the session token from the dashboard page (sent as `X-Session-Token`), so it works from the dashboard only.
 
 The server listens only on localhost but has no user authentication. Other users on the same machine can read and change run titles and project paths; use it only on a trusted machine.
 
@@ -197,7 +197,7 @@ flowchart TB
 The dashboard reads the token counts your agents write to their own session logs and shows them per run, stage, model and ticket. It counts tokens only, never money, and it keeps only counts, identifiers and the reasoning effort of each call: no conversation text, prompts, tool output or credentials are stored.
 
 - `factory run stats <id>` prints the breakdown (stage, model and ticket, with the rework and work with no ticket in their own rows), the totals per model, and what the figures do not cover. `factory run stats --all` adds the totals per model over all runs and names the runs it leaves out.
-- The dashboard shows the fresh tokens on a card and the breakdown in the run's detail.
+- The dashboard shows the fresh tokens on a run's row and the breakdown in the run's detail.
 
 **What the figures mean.** Every agent is normalized to the same four counts:
 
