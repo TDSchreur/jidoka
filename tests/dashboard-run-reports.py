@@ -2,6 +2,7 @@
 """Exercise run reports in the rendered dashboard (requires Chromium)."""
 import http.server
 import importlib.util
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -35,7 +36,15 @@ class RunReportsTest(unittest.TestCase):
         thread.start()
         try:
             with tempfile.TemporaryDirectory() as profile:
-                process = subprocess.Popen(["chromium", "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--lang=en-US", "--timezone-for-testing=Europe/Amsterdam", "--user-data-dir=" + profile, f"http://127.0.0.1:{server.server_port}/"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                process = subprocess.Popen(
+                    [
+                        "chromium", "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+                        "--lang=en-US", "--user-data-dir=" + profile, f"http://127.0.0.1:{server.server_port}/",
+                    ],
+                    env={**os.environ, "TZ": "Europe/Amsterdam"},
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
                 try:
                     result = rows.RESULTS.get(timeout=30)
                 finally:
