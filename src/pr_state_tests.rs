@@ -128,6 +128,16 @@ fn problems_say_what_to_do() {
             [format!("pr view {PR} --json state,isDraft")]
         );
     }
+    // A repository may itself be called pull: the pull request is the last /pull/<number> in the link.
+    let named_pull = ScriptedGh::new(vec![view("MERGED", false)]);
+    assert_eq!(
+        read(&named_pull, "https://github.com/o/pull/pull/7/files").unwrap(),
+        PrState::Merged
+    );
+    assert_eq!(
+        named_pull.calls(),
+        ["pr view https://github.com/o/pull/pull/7 --json state,isDraft"]
+    );
     // Only http(s) URLs are pull request links; anything else is never handed to a tool.
     let unused = ScriptedGh::new(vec![view("OPEN", false)]);
     assert!(read(&unused, "--help").is_err());

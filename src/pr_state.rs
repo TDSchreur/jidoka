@@ -85,10 +85,12 @@ pub(crate) fn read(tool: &dyn Gh, url: &str) -> Result<PrState, ToolProblem> {
 /// that is not a pull request.
 fn github_pull_request(url: &str) -> Option<String> {
     let page = url.split(['?', '#']).next().unwrap_or(url);
-    let (repository, rest) = page.split_once("/pull/")?;
-    let number = rest.split('/').next().unwrap_or("");
-    (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
-        .then(|| format!("{repository}/pull/{number}"))
+    // The last /pull/<number>, so a repository that is itself called pull still works.
+    page.rmatch_indices("/pull/").find_map(|(at, marker)| {
+        let number = page[at + marker.len()..].split('/').next().unwrap_or("");
+        (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| format!("{}/pull/{number}", &page[..at]))
+    })
 }
 
 /// Whether the stored state of a Run's pull request `url` should be read again at `now`.
