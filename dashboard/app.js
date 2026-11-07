@@ -156,7 +156,7 @@ function TicketLink({ value }) {
   } catch {
     /* not a URL: show as text */
   }
-  return url ? html`<a href=${url.href} rel="noopener noreferrer">${value}</a>` : value;
+  return url ? html`<a href=${url.href} target="_blank" rel="noopener noreferrer">${value}</a>` : value;
 }
 
 /** The tickets listed on a Run, with how many are done; null when none are recorded. */
@@ -170,7 +170,7 @@ function RefLink({ value, label }) {
   try {
     const url = new URL(String(value));
     if (url.protocol === 'http:' || url.protocol === 'https:')
-      return html`<a href=${url.href} rel="noopener noreferrer">${label}</a>`;
+      return html`<a href=${url.href} target="_blank" rel="noopener noreferrer">${label}</a>`;
   } catch {
     /* not a URL: no link on a card */
   }
