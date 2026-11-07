@@ -1,0 +1,7 @@
+## Changed
+
+- The dashboard has its own look: a palette taken from the TDS logo (Floor, Panel, Slate, Line blue, Andon amber and Stop red, in light and dark) and the Barlow typeface, which the dashboard serves itself so it works offline. Amber means a Run needs you. Red is kept for errors, offline and the confirm button of a delete.
+- An andon strip at the top replaces the Needs you button. It says that nothing needs you and how many Runs are on the line, or turns amber and lists each waiting Run with its project and status reason. Selecting one opens its detail, and Show only these filters the board.
+- On the line replaces the project and Stage grid. Each active Run has one row, with a rail of Define, Build, Check and Finish that shows where it is, the position in words, and its project, tickets, Rework, links and age. A blocked Run is marked amber. The marker slides to the next Station when a Run moves on, except with reduced motion. Phones get the same rows stacked, without Stage buttons.
+- A Projects menu in the toolbar holds Hide, Restore and Delete for each project. It replaces the project rows, their collapse toggles and the Hidden projects list.
+- Finished Runs are listed under Shipped, below the line: a table grouped by day with the project, pull request, fresh tokens and age. Clear shipped replaces Delete all, and Delete for one Run is in its detail. The status stays `done` in the CLI, the API and `runs.json`.

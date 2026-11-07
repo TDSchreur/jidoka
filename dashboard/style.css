@@ -45,6 +45,7 @@
   --stroke-thin: 1px;
   --stroke-thick: 2px;
   --duration-fast: 150ms;
+  --duration-move: 200ms;
   --ease: cubic-bezier(0.33, 0, 0.67, 1);
   --station: 0;
 }
@@ -287,7 +288,7 @@ a:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline
 .station { height: var(--space-2); border-radius: var(--radius-s); background: var(--color-rule); }
 .station.past { background: var(--color-blue); }
 .station.current { background: linear-gradient(90deg, var(--color-blue) 50%, var(--color-rule) 50%); }
-.rail-marker { position: absolute; top: 50%; left: calc((var(--station) + 0.5) * 25%); width: var(--space-6); height: var(--space-6); margin: calc(var(--space-6) / -2) 0 0 calc(var(--space-6) / -2); box-sizing: border-box; border: var(--stroke-thick) solid var(--color-panel); border-radius: var(--radius-round); background: var(--color-blue); }
+.rail-marker { position: absolute; top: 50%; left: calc((var(--station) + 0.5) * 25%); width: var(--space-6); height: var(--space-6); margin: calc(var(--space-6) / -2) 0 0 calc(var(--space-6) / -2); box-sizing: border-box; border: var(--stroke-thick) solid var(--color-panel); border-radius: var(--radius-round); background: var(--color-blue); transition: left var(--duration-move) var(--ease); }
 .line-row.blocked .rail-marker { border-color: var(--color-on-amber); border-radius: var(--radius-s); background: var(--color-amber); transform: rotate(45deg); }
 @media (max-width: 48rem) {
   .line-head, .line-row { grid-template-columns: minmax(0, 1fr); padding: var(--space-5) var(--space-5); }
@@ -337,5 +338,5 @@ a:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline
   .fields dd { margin-bottom: var(--space-4); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .theme label, .toggle { transition: none; }
+  .theme label, .toggle, .rail-marker { transition: none; }
 }

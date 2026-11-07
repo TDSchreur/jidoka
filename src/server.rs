@@ -2027,6 +2027,32 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn the_rail_marker_slides_to_a_new_station_unless_motion_is_reduced() {
+        let css = stylesheet().await;
+        let (layer, rules) = split_tokens(&css);
+        assert!(layer.contains("--duration-move: 200ms;"));
+        let marker = rules
+            .lines()
+            .find(|line| line.starts_with(".rail-marker {"))
+            .expect("a rail marker rule");
+        // The marker is placed by --station, so a new Stage moves it; a new row has nothing to move from.
+        assert!(marker.contains("left: calc((var(--station) + 0.5) * 25%)"));
+        assert!(marker.contains("transition: left var(--duration-move) var(--ease)"));
+        let reduced = rules
+            .split("@media (prefers-reduced-motion: reduce)")
+            .last()
+            .expect("a reduced-motion block");
+        assert!(
+            reduced.contains(".rail-marker"),
+            "no slide under reduced motion"
+        );
+        // Rows are keyed by Run, so a refresh keeps the element and only its station changes.
+        let script = asset("/assets/app.js").await;
+        assert!(script.contains("<${LineRow} key=${runKey(entry.run)}"));
+        assert!(script.contains("style=${`--station: ${index}`}"));
+    }
+
+    #[rocket::async_test]
     async fn dashboard_tokens_are_all_used_and_all_declared() {
         let css = stylesheet().await;
         let (layer, rules) = split_tokens(&css);
