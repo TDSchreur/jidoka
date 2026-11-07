@@ -592,6 +592,42 @@ function Confirm({ title, children, confirmLabel, onConfirm, onCancel }) {
   </dialog>`;
 }
 
+/** How often the page asks whether the same server is still running. */
+const SERVER_CHECK_MS = 5000;
+
+/** The process id of the server that served this page. */
+const servedBy = () => document.querySelector('meta[name="server-pid"]')?.content ?? '';
+
+/** Whether something the visitor is reading or confirming is open: a dialog or the Projects menu. */
+const somethingOpen = () => Boolean(document.querySelector('dialog[open], details.projects-menu[open]'));
+
+/**
+ * Reloads the page once another server answers, such as after an update restarted it, so the visitor always sees
+ * the latest dashboard and holds a valid session token. It waits while a dialog or the Projects menu is open, and
+ * while the server cannot be reached.
+ */
+function useReloadOnNewServer() {
+  useEffect(() => {
+    const page = servedBy();
+    if (!page) return;
+    let changed = false;
+    const timer = setInterval(async () => {
+      if (!changed) {
+        try {
+          const response = await fetch('/api/info', { cache: 'no-store' });
+          if (!response.ok) return;
+          const info = await response.json();
+          changed = String(info.pid) !== page;
+        } catch {
+          return; /* the server is down, for instance while it restarts: ask again later */
+        }
+      }
+      if (changed && !somethingOpen()) location.reload();
+    }, SERVER_CHECK_MS);
+    return () => clearInterval(timer);
+  }, []);
+}
+
 /** The token this server put in the page; deleting needs it. */
 const sessionToken = () => document.querySelector('meta[name="session-token"]')?.content ?? '';
 
@@ -844,6 +880,7 @@ function ProjectsMenu({ projects, hiddenProjects, counts, onHide, onDelete }) {
 
 function App() {
   const { runs, failed, lastOk, reload } = useRuns();
+  useReloadOnNewServer();
   const now = useNow();
   const [onlyWaiting, setOnlyWaiting] = useState(false);
   const [wanted] = useState(requestedProject);

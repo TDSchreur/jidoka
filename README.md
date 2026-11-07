@@ -52,7 +52,7 @@ The dashboard footer and `factory --version` show which build is running: the ve
 
 ## Use
 
-1. Start the dashboard and keep it running in a separate terminal: `factory dashboard`. Open <http://127.0.0.1:4311> to follow your runs. The dashboard follows your system's light or dark setting; use the Theme control (System, Light, Dark) at the bottom of the page to override it. The choice is remembered in your browser. While you scroll, the andon strip (what needs you) and the active runs stay at the top of the page.
+1. Start the dashboard and keep it running in a separate terminal: `factory dashboard`. Open <http://127.0.0.1:4311> to follow your runs. The dashboard follows your system's light or dark setting; use the Theme control (System, Light, Dark) at the bottom of the page to override it. The choice is remembered in your browser. While you scroll, the andon strip (what needs you) and the active runs stay at the top of the page. When the dashboard server restarts, for example after an update, an open dashboard page reloads itself within a few seconds, once no dialog or menu is open, so it always shows the running version.
 2. In your project, ask your coding agent to run `/factory` to select a workflow, or choose `/factory-full`, `/factory-balanced`, or `/factory-fast` directly; see [Choosing a mode](#choosing-a-mode). The agent reports progress to the dashboard with `factory run start` and `factory run update`, and ends by opening a pull request and watching its CI.
 3. Review the pull request. See [Skills](#skills) for what each workflow does.
 
