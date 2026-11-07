@@ -55,6 +55,16 @@ const ASSETS: &[(&str, ContentType, &[u8])] = &[
         ContentType::JavaScript,
         include_bytes!("../dashboard/vendor/htm.js"),
     ),
+    (
+        "vendor/barlow-400.woff2",
+        ContentType::WOFF2,
+        include_bytes!("../dashboard/vendor/barlow-400.woff2"),
+    ),
+    (
+        "vendor/barlow-600.woff2",
+        ContentType::WOFF2,
+        include_bytes!("../dashboard/vendor/barlow-600.woff2"),
+    ),
 ];
 /// Placeholder in the dashboard page that is replaced with the build label.
 const BUILD_PLACEHOLDER: &str = "__BUILD__";
@@ -1663,7 +1673,7 @@ mod tests {
         assert!(script.contains("class=\"text-button hide-project\""));
         assert!(rule(".text-button").contains("text-decoration: underline"));
         // 16 px of line height plus 4 px of padding above and below: a 24 px target.
-        assert!(rule(".text-button").contains("padding: var(--spacingVerticalXS)"));
+        assert!(rule(".text-button").contains("padding: var(--space-2)"));
         assert!(rule(".text-button:focus-visible").contains("outline:"));
         // The Theme switch renders in the footer, not in the toolbar.
         let footer = page
@@ -1834,7 +1844,7 @@ mod tests {
         let css = stylesheet().await;
         let (_, rules) = split_tokens(&css);
         assert!(rules.contains(".detail::backdrop {"));
-        assert!(rules.contains("background: var(--colorBackgroundOverlay)"));
+        assert!(rules.contains("background: var(--color-overlay)"));
         assert!(rules.contains(".detail {"));
         assert!(
             rules.contains("margin: 0 0 0 auto"),
@@ -1920,6 +1930,83 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn dashboard_serves_barlow_itself_and_uses_its_own_palette() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        // Both weights come from the dashboard itself, so the page works offline.
+        for weight in ["400", "600"] {
+            let response = api
+                .get(format!("/assets/vendor/barlow-{weight}.woff2"))
+                .header(Header::new("Host", "127.0.0.1:4311"))
+                .dispatch()
+                .await;
+            assert_eq!(response.status(), HttpStatus::Ok, "barlow {weight}");
+            assert_eq!(response.content_type(), Some(ContentType::WOFF2));
+            let bytes = response.into_bytes().await.unwrap();
+            assert!(bytes.starts_with(b"wOF2"), "barlow {weight} is woff2");
+        }
+        let css = stylesheet().await;
+        for weight in ["400", "600"] {
+            assert!(css.contains(&format!(
+                "src: url(/assets/vendor/barlow-{weight}.woff2) format('woff2');"
+            )));
+            assert!(css.contains(&format!("font-weight: {weight};")));
+        }
+        assert!(css.contains("font-display: swap;"));
+        assert!(
+            !css.contains("url(http"),
+            "no font or image from the network"
+        );
+        assert!(css.contains("--font-sans: 'Barlow', system-ui, sans-serif;"));
+        // The six named colours, light values as in the design proposal.
+        let (layer, rules) = split_tokens(&css);
+        let light = layer
+            .split(":root {")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .unwrap();
+        for (name, value) in [
+            ("floor", "#E8EBEE"),
+            ("panel", "#FFFFFF"),
+            ("slate", "#1B2633"),
+            ("blue", "#0A6CE0"),
+            ("amber", "#F2B705"),
+            ("red", "#C4314B"),
+        ] {
+            assert!(
+                light.contains(&format!("--color-{name}: {value};")),
+                "--color-{name}"
+            );
+        }
+        assert!(
+            !layer.contains("--colorNeutral"),
+            "the Fluent layer is gone"
+        );
+        // Needs you is amber with dark text; red is left for errors and the confirm Delete.
+        let rule = |selector: &str| {
+            rules
+                .lines()
+                .find(|line| line.starts_with(&format!("{selector} {{")))
+                .unwrap_or_else(|| panic!("no {selector} rule"))
+                .to_string()
+        };
+        for selector in [".badge.blocked", ".needs-you-label", ".toggle.waiting"] {
+            let needs_you = rule(selector);
+            assert!(needs_you.contains("var(--color-amber)"), "{selector}");
+            assert!(
+                needs_you.contains("color: var(--color-on-amber)"),
+                "{selector}"
+            );
+        }
+        assert!(rule(".toggle.danger").contains("var(--color-red)"));
+        assert!(rule("#message.error").contains("var(--color-red)"));
+        // Cards sit flat on the panel.
+        assert!(!rule(".run").contains("box-shadow"));
+        let license = include_str!("../third-party/barlow-LICENSE");
+        assert!(license.contains("SIL Open Font License"));
+    }
+
+    #[rocket::async_test]
     async fn dashboard_tokens_are_all_used_and_all_declared() {
         let css = stylesheet().await;
         let (layer, rules) = split_tokens(&css);
@@ -1958,7 +2045,7 @@ mod tests {
             heading.contains("id=\"tds-logo-blue\"") && heading.contains("url(#tds-logo-blue)")
         );
         let css = stylesheet().await;
-        assert!(css.contains(".logo .ink { fill: var(--colorNeutralForeground1); }"));
+        assert!(css.contains(".logo .ink { fill: var(--color-slate); }"));
     }
 
     #[rocket::async_test]
