@@ -269,6 +269,78 @@ fn open_pull_request(
     }))
 }
 
+/// The pull request host a repository uses, as `factory pr open` and `factory doctor` see it.
+pub(crate) enum Host {
+    GitHub,
+    Azure(AzureRepo),
+    /// Neither the origin URL nor `factory.prProvider` names a supported host.
+    Unknown,
+}
+
+/// The origin URL and the host it belongs to.
+pub(crate) struct Origin {
+    pub(crate) url: String,
+    pub(crate) host: Host,
+}
+
+/// Works out the pull request host from origin and the `factory.prProvider` override. `git` answers a
+/// read-only git question in the repository, or `None` when git fails. A missing origin, an unknown
+/// override or an Azure override that does not match origin is an error.
+pub(crate) fn detect_host(git: &dyn Fn(&[&str]) -> Option<String>) -> Result<Origin, ToolProblem> {
+    let remote = git(&["remote", "get-url", "origin"]).ok_or_else(|| {
+        ToolProblem("Cannot identify the repository provider: origin is not configured.".into())
+    })?;
+    let provider = git(&["config", "--get", "factory.prProvider"]);
+    let azure = match provider.as_deref() {
+        None => AzureRepo::from_remote(&remote)?,
+        Some("github") => None,
+        Some("azure") => {
+            let get = |key: &str| {
+                git(&["config", "--get", key]).ok_or_else(|| {
+                    ToolProblem(format!(
+                        "Set git config {key} for the Azure provider override."
+                    ))
+                })
+            };
+            let org = get("factory.azureOrganization")?;
+            let project = get("factory.azureProject")?;
+            let repo = get("factory.azureRepository")?;
+            let url = format!(
+                "https://dev.azure.com/{}/{}/_git/{}",
+                AzureRepo::encoded(&org),
+                AzureRepo::encoded(&project),
+                AzureRepo::encoded(&repo)
+            );
+            let selected = AzureRepo::from_remote(&url)?;
+            match AzureRepo::from_remote(&remote)? {
+                Some(actual) if Some(&actual) != selected.as_ref() => {
+                    return Err(ToolProblem(
+                        "Azure provider configuration does not match origin.".into(),
+                    ))
+                }
+                None if get("factory.azureOrigin")? != remote => {
+                    return Err(ToolProblem(
+                        "Azure provider configuration does not match origin.".into(),
+                    ))
+                }
+                _ => {}
+            }
+            selected
+        }
+        Some(_) => {
+            return Err(ToolProblem(
+                "Unknown factory.prProvider; choose github or azure.".into(),
+            ))
+        }
+    };
+    let host = match azure {
+        Some(repo) => Host::Azure(repo),
+        None if provider.as_deref() == Some("github") || is_github_remote(&remote) => Host::GitHub,
+        None => Host::Unknown,
+    };
+    Ok(Origin { url: remote, host })
+}
+
 fn is_github_remote(remote: &str) -> bool {
     if remote.starts_with("git@github.com:") {
         return true;
@@ -288,10 +360,10 @@ fn is_github_remote(remote: &str) -> bool {
 
 /// Azure DevOps Services repository identified by its origin URL.
 #[derive(PartialEq, Eq)]
-struct AzureRepo {
-    organization: String,
-    project: String,
-    repository: String,
+pub(crate) struct AzureRepo {
+    pub(crate) organization: String,
+    pub(crate) project: String,
+    pub(crate) repository: String,
 }
 
 impl AzureRepo {
@@ -570,51 +642,11 @@ pub(crate) fn open(
             shown(worktree)
         )));
     }
-    let remote = gh.git(dir, &["remote", "get-url", "origin"]).map_err(|_| {
-        ToolProblem("Cannot identify the repository provider: origin is not configured.".into())
-    })?;
-    let provider = gh.git(dir, &["config", "--get", "factory.prProvider"]).ok();
-    let azure = match provider.as_deref() {
-        None => AzureRepo::from_remote(&remote)?,
-        Some("github") => None,
-        Some("azure") => {
-            let get = |key: &str| {
-                gh.git(dir, &["config", "--get", key]).map_err(|_| {
-                    ToolProblem(format!(
-                        "Set git config {key} for the Azure provider override."
-                    ))
-                })
-            };
-            let org = get("factory.azureOrganization")?;
-            let project = get("factory.azureProject")?;
-            let repo = get("factory.azureRepository")?;
-            let url = format!(
-                "https://dev.azure.com/{}/{}/_git/{}",
-                AzureRepo::encoded(&org),
-                AzureRepo::encoded(&project),
-                AzureRepo::encoded(&repo)
-            );
-            let selected = AzureRepo::from_remote(&url)?;
-            match AzureRepo::from_remote(&remote)? {
-                Some(actual) if Some(&actual) != selected.as_ref() => {
-                    return Err(ToolProblem(
-                        "Azure provider configuration does not match origin.".into(),
-                    ))
-                }
-                None if get("factory.azureOrigin")? != remote => {
-                    return Err(ToolProblem(
-                        "Azure provider configuration does not match origin.".into(),
-                    ))
-                }
-                _ => {}
-            }
-            selected
-        }
-        Some(_) => {
-            return Err(ToolProblem(
-                "Unknown factory.prProvider; choose github or azure.".into(),
-            ))
-        }
+    let Origin { url: remote, host } = detect_host(&|args| gh.git(dir, args).ok())?;
+    let azure = match host {
+        Host::Azure(repo) => Some(repo),
+        Host::GitHub => None,
+        Host::Unknown => return Err(ToolProblem("Cannot identify the repository provider from origin; set git config factory.prProvider github for a GitHub Enterprise repository.".into())),
     };
     if let Some(selected) = &azure {
         let push_urls = gh
@@ -635,10 +667,6 @@ pub(crate) fn open(
         }
     }
     if azure.is_none() {
-        let known = is_github_remote(&remote);
-        if !known && provider.as_deref() != Some("github") {
-            return Err(ToolProblem("Cannot identify the repository provider from origin; set git config factory.prProvider github for a GitHub Enterprise repository.".into()));
-        }
         run_gh(gh, dir, &["--version"])?;
     }
 

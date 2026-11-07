@@ -6,7 +6,7 @@ The core flow is **define → build → check → finish**, implemented as an ag
 
 ## Install
 
-Prerequisites: Linux x86-64 or Windows x86-64, `git`, and a supported coding agent (Codex, Claude Code, or GitHub Copilot). The `gh` CLI is needed for the workflows to open pull requests. Building from source also needs a Rust toolchain with Cargo.
+Prerequisites: Linux x86-64 or Windows x86-64, `git`, and a supported coding agent (Codex, Claude Code, or GitHub Copilot). To open pull requests and watch CI, the workflows need the `gh` CLI on GitHub, or the Azure CLI (`az`) with its `azure-devops` extension on Azure Repos. Building from source also needs a Rust toolchain with Cargo.
 
 Install the latest release with one command:
 
@@ -279,7 +279,7 @@ Azure Repos pull request creation recognizes `dev.azure.com` HTTPS URLs, `ssh.de
 
 For a GitHub Enterprise host that cannot be identified from its remote, set `git config factory.prProvider github`. For a custom Azure Services remote, explicitly select the target with `git config factory.prProvider azure` and set `factory.azureOrganization`, `factory.azureProject`, and `factory.azureRepository` with `git config`. For an unrecognized custom remote, also set `factory.azureOrigin` to its exact `origin` URL, so stale configuration is rejected if the remote changes. For recognized Azure remotes, the configured destination must match `origin`. An unknown host without an override is refused.
 
-The shared factory finish workflow still contains GitHub-specific guidance; host-aware workflow guidance is planned separately.
+The workflows' shared Pull request and CI procedure names the tool for each host. On any other host, such as GitLab, the agent opens the pull request and watches CI with that host's own tooling and records the URL on the run with `--pr`.
 
 #### Watching CI
 
@@ -295,7 +295,7 @@ The shared factory finish workflow still contains GitHub-specific guidance; host
 | `no-ci` | 6 | No check appeared within 90 seconds, or within `--timeout` when that is shorter. |
 | `not-open` | 7 | The pull request is merged or closed. |
 
-Exit status 1 is a problem with the tools or the run (no `gh`, not signed in, no network, no pull request recorded), with what to do. Checks are asked for every 15 seconds, and the progress goes to standard error. By default it waits until every check has ended; `--fail-fast` returns `failed` at the first failing check and lists the others as still running. `--json` prints the same data.
+Exit status 1 is a problem with the tools or the run (no `gh` or `az`, not signed in, no network, no pull request recorded), with what to do. Checks are asked for every 15 seconds, and the progress goes to standard error. By default it waits until every check has ended; `--fail-fast` returns `failed` at the first failing check and lists the others as still running. `--json` prints the same data.
 
 Next to the outcome it says whether the branch is up to date with its base, behind it, in conflict with it, or not yet known. GitHub is asked again up to five times. Azure reports a conflict when its merge calculation finds one and otherwise reports unknown, because a successful merge does not prove the branch is up to date; check it with `factory pr sync`. The command only reads: it never merges, pushes or updates the branch, and a `passed` outcome does not mark Finish done. While it waits, the run's activity is "Waiting for CI", and it is set to the outcome when the wait ends; a run that is blocked or done is left alone. Names, links and log lines come from the pull request's checks and are printed with control characters replaced. Ctrl-C ends the process; the activity text then stays until the next update of the run. The Finish procedure of the workflows uses this command, and falls back to watching by hand when the installed `factory` does not know it.
 
@@ -322,9 +322,9 @@ The counting rules:
 - **Categories.** Each request has one category, taken from the first match in this order. The commands are read from the start of each part of a shell line, after env assignments and the words that only wrap a command (listed below).
   - Workspace: `git worktree` (other than `list`), `git clone`, `git symbolic-ref` and `factory run start`.
   - Commit: `git commit` and `git add`.
-  - PR creation and push: `git push`, `gh pr create` and `gh pr edit`.
+  - PR creation and push: `git push`, `gh pr create`, `gh pr edit`, `az repos pr create` and `az repos pr update`.
   - PR synchronization: `git fetch`, `git merge`, `git merge-base`, `git pull`, and `gh pr view` that asks for `mergeStateStatus`.
-  - CI watch: `gh pr checks`, `gh run watch`, `gh run view`, `gh run list`, and `gh api` calls on `actions/runs` or `check-runs`.
+  - CI watch: `gh pr checks`, `gh run watch`, `gh run view`, `gh run list`, `gh api` calls on `actions/runs` or `check-runs`, `az pipelines runs`, `az repos pr policy list`, and `az devops invoke` on pull request statuses (`pullRequestStatuses`, `pullRequestIterationStatuses`). Other `az` commands, such as `az boards`, fall under reading, editing, analysis like any other tool call.
   - Verification: `cargo` with `test`, `fmt`, `clippy`, `build`, `check` or `nextest`; `rustfmt`; `pytest`; `npm`, `pnpm`, `yarn` and `bun` with `test`, `lint`, `build` (or `run` followed by `test`, `lint`, `build` or `check`); `go` with `test`, `vet` or `build`; `dotnet` with `test` or `build`; `make` with `test`, `check` or `lint`; and any `verify.sh`.
   - Continuation check: `factory run inspect`, `factory run check`, `git worktree list` and `git rev-parse --git-common-dir`.
 
@@ -398,8 +398,9 @@ Copilot CLI is not supported. It chooses a subagent's model from its own setting
 
 - the project: a Git repository, an `origin` remote, origin's default branch (`git remote set-head origin --auto` sets it when unknown), the setup output of `/setup-matt-pocock-skills` (`docs/agents/issue-tracker.md` and the `## Agent skills` section), which `/factory-full` always needs and the lighter workflows only when they read or publish specs or tickets, and the verification commands listed as bullets under `## Commands` in `AGENTS.md` or `CLAUDE.md`. It looks for each command's tool but never runs it.
 - each agent (Codex, Claude Code, Copilot): its command is on `PATH`, and every file of every skill `factory install` bundles is installed in the folder `factory install` would use (honoring `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `COPILOT_HOME`).
+- the pull request host, in a "Provider" section after the agents. `host` says whether origin is on GitHub or Azure Repos, worked out the way `factory pr open` does it (including `factory.prProvider`). An unknown host, or an override that does not match origin, is a warning that says to open pull requests with the host's own tooling; without an origin the section is `skipped`. For GitHub, doctor looks for `gh` on `PATH` and runs `gh auth status`. For Azure Repos, it looks for `az`, runs `az extension show --name azure-devops`, and counts you as signed in when `AZURE_DEVOPS_EXT_PAT` is set or `az account show` succeeds. It only checks that the variable is set, never reads or prints the token, and discards what these commands print. A `not-verified` line says what it did not check: whether the token is valid, project permissions and branch policies. A missing tool or sign-in is a warning, so this section never changes whether the factory is ready.
 
-- the [model routing](#model-routing) policy, only when a `model-routing.json` exists and is switched on. A "Model routing" section follows the agents. Doctor asks the agent for its `--version` there, using the program's absolute path from `PATH`; that is the only agent command it runs, and it calls no model.
+- the [model routing](#model-routing) policy, only when a `model-routing.json` exists and is switched on. A "Model routing" section follows the provider section. Doctor asks the agent for its `--version` there, using the program's absolute path from `PATH`; that is the only agent command it runs, and it calls no model.
   - `policy`: the file loads. A file that stops `factory run start` is a `fail`, which includes a role without a model and a mistake in any enabled entry, named as `agents.<agent>`. With the `agents` form, the line says which agents the file configures, and each agent's checks that follow are tagged with it, as `host [claude]` in the text and an `agent` field in `--json`.
   - `factory doctor` checks every configured entry. `--agent claude` or `--agent codex` checks only that agent's entry: an agent with no entry, or a switched-off entry, is `skipped` with the reason, and so is a single-agent file written for the other agent. With no `--agent`, an agent without an entry is left out.
   - `host`: for Claude Code, the command is on `PATH` and is version 2.1.292 or later, the first with the Agent tool's `effort` option. For Codex, the command and its version are shown, but the factory does not know which version first supports a model and effort per subagent, so that is `skipped`.
