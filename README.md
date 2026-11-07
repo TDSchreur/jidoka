@@ -283,7 +283,7 @@ The shared factory finish workflow still contains GitHub-specific guidance; host
 
 #### Watching CI
 
-`factory pr wait <run-id>` watches the checks of the run's pull request and prints one CI outcome, so an agent does not poll with repeated model requests. It reads the pull request URL recorded on the run (`factory run update <id> finish running --pr <url>`) and uses the GitHub CLI (`gh`) for GitHub or the Azure CLI and `azure-devops` extension for Azure DevOps Services.
+`factory pr wait <run-id>` watches the checks of the run's pull request and prints one CI outcome, so an agent does not poll with repeated model requests. It reads the pull request URL recorded on the run (`factory run update <id> finish running --pr <url>`) and uses the GitHub CLI (`gh`, signed in with `gh auth login`) for GitHub, or the Azure CLI with the `azure-devops` extension (signed in with `az login` or `az devops login`) for Azure DevOps Services.
 
 | Outcome | Exit status | Meaning |
 | --- | ---: | --- |
