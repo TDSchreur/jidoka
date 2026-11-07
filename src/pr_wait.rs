@@ -243,7 +243,7 @@ fn first_line(text: &str) -> &str {
 }
 
 /// A failed `gh` call as a message that says what to do.
-fn problem(what: &str, output: &GhOutput) -> ToolProblem {
+pub(crate) fn problem(what: &str, output: &GhOutput) -> ToolProblem {
     let stderr = output.stderr.to_lowercase();
     if output.code == Some(4) || stderr.contains("gh auth login") {
         return ToolProblem(

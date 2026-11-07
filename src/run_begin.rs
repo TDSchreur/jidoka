@@ -44,7 +44,7 @@ pub(crate) struct Options {
 
 /// Whether `name` can be a branch name that is safe to pass to git: no option look-alike, no spaces or
 /// control characters, none of the characters git refuses, and no `..`, `@{`, `.lock` ending or edge slash.
-fn valid_branch_name(name: &str) -> bool {
+pub(crate) fn valid_branch_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with(['-', '/', '.'])
         && !name.ends_with(['/', '.'])
@@ -166,7 +166,7 @@ const MAX_REASON_CHARS: usize = 300;
 const MAX_NAME_CHARS: usize = 40;
 
 /// Runs git in `dir`. The error is what git printed, or why it could not be started.
-fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -191,7 +191,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     Err(text.trim().to_string())
 }
 
-fn first_line(text: &str) -> &str {
+pub(crate) fn first_line(text: &str) -> &str {
     text.lines()
         .find(|l| !l.trim().is_empty())
         .unwrap_or("")
@@ -199,7 +199,7 @@ fn first_line(text: &str) -> &str {
 }
 
 /// The last line git printed, where its `fatal:` message is (progress lines come first).
-fn last_line(text: &str) -> &str {
+pub(crate) fn last_line(text: &str) -> &str {
     text.lines()
         .rev()
         .find(|l| !l.trim().is_empty())

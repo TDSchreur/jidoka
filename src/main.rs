@@ -3,6 +3,7 @@ mod codex_requests;
 mod doctor;
 mod inspect;
 mod install;
+mod pr_open;
 mod pr_wait;
 mod repository;
 mod request_logs;
@@ -22,7 +23,7 @@ use run::UPDATE_HELP;
 use server::{serve, ADDRESS, DEFAULT_PORT};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -191,7 +192,48 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
         ["pr", "wait", id, options @ ..] if !id.starts_with('-') => {
             return pr_wait_command(id, options);
         }
+        ["pr", "open", id, options @ ..] if !id.starts_with('-') => {
+            return pr_open_command(id, options);
+        }
         _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
+    }
+    Ok(0)
+}
+
+/// The run server for `factory pr open`.
+struct PrApi;
+
+impl pr_open::RunApi for PrApi {
+    fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
+        report_run(ADDRESS, id, stage, status, options).map_err(|e| e.to_string())
+    }
+}
+
+/// `factory pr open <run-id> --title <title> --body-file <path>`: pushes the run's branch and opens its pull
+/// request, or finds the one that is open, and records it on the run.
+fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
+    let parsed = pr_open::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Invalid run id".into());
+    }
+    pr_wait::check_gh(&pr_wait::RealGh).map_err(|problem| problem.0)?;
+    let run = fetch_run(ADDRESS, id)?;
+    let info = pr_open::RunInfo {
+        id: id.to_string(),
+        worktree: run.worktree.clone(),
+        branch: run.branch.clone(),
+        stage: serde_json::to_value(run.stage)?
+            .as_str()
+            .unwrap_or("finish")
+            .to_string(),
+        running: matches!(run.status, run::RunStatus::Running),
+    };
+    let opened = pr_open::open(&info, &parsed, &pr_open::RealGh, &PrApi)
+        .map_err(|problem| inspect::shown(&problem.0))?;
+    if parsed.json {
+        println!("{}", serde_json::to_string_pretty(&opened)?);
+    } else {
+        print!("{}", pr_open::render(&opened));
     }
     Ok(0)
 }
