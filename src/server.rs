@@ -558,7 +558,7 @@ mod tests {
         assert!(page.contains("document.title"), "the count is in the title");
         assert!(page.contains("m ago"), "missing relative time");
         assert!(
-            page.contains("title=${date.toLocaleString()}"),
+            page.contains("title=${localDateTime(date)}"),
             "exact time tooltip"
         );
         assert!(page.contains("Rework"), "missing Rework label");
