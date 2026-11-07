@@ -237,13 +237,15 @@ dependencies = [
 
 [[package]]
 name = "factory"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
+ "percent-encoding",
  "rocket",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
+ "time",
 ]
 
 [[package]]

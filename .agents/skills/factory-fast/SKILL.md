@@ -1,11 +1,11 @@
 ---
 name: factory-fast
-description: Take a software change from an idea to a pull request through define, build, and finish. Use when the user asks to run factory-fast.
+description: Fast factory workflow without a Check stage. Usually entered from `factory`; use directly only when the user names factory-fast.
 ---
 
 # TDS Factory Fast
 
-Take the user's request through these stages in order. Keep stage updates brief. Load only the skills needed for the task, reading their `SKILL.md` files and relevant referenced resources. In this project's checkout, bundled implementation and planning skills are in `skills/<name>/`; in an installed bundle, they are siblings of this directory. Otherwise use the corresponding installed skills. This workflow's instructions take precedence where they differ from those skills. Read [factory-procedures](../factory-procedures/SKILL.md) before starting: it holds the procedures shared by all three workflows (run reporting, continuing a run, workspace, tracker setup, pull request and CI).
+Take the user's request through these stages in order. Keep stage updates brief. Load only the skills needed for the task, reading their `SKILL.md` files and relevant referenced resources. In this project's checkout, bundled implementation and planning skills are in `skills/<name>/`; in an installed bundle, they are siblings of this directory. Otherwise use the corresponding installed skills. `grill-with-docs`, `to-spec` and `to-tickets` can only be invoked by the user, so the agent's skill tool may refuse them: read their `SKILL.md` from that location instead of invoking them. This workflow's instructions take precedence where they differ from those skills. Read [factory-procedures](../factory-procedures/SKILL.md) before starting: it holds the procedures shared by all three workflows (run reporting, continuing a run, workspace, tracker setup, pull request and CI).
 
 ## Run reporting
 
@@ -21,7 +21,7 @@ Follow Workspace in [factory-procedures](../factory-procedures/SKILL.md): every 
 
 ## Writing
 
-Follow Writing in [factory-procedures](../factory-procedures/SKILL.md) for all human-facing prose in every stage.
+Follow Writing in [factory-procedures](../factory-procedures/SKILL.md) for all human-facing prose in every stage. Load `humanizer` when that section says to, not when the run starts.
 
 ## Define
 
@@ -33,7 +33,7 @@ When these artifacts are needed, store them in the tracker configured in `docs/a
 
 ## Build
 
-Use `implement-spec-fast` to implement the request or tickets on the run's feature branch without TDD. Work sequentially in the run's worktree; do not require subagents, extra worktrees beyond it, a draft PR, or a code review here. Run the project's relevant checks as you go and fix failures before moving on. Reuse a passing result only while the checked code and its relevant inputs are unchanged, and repeat checks when later changes affect their coverage. Always honor stricter checks the project requires. Find the project's verification: the commands its agent instructions (`AGENTS.md`, `CLAUDE.md`), contributing docs or build files say to run before merging, which should match what its CI runs. Run all of them once, after the last change and before Finish, not only the relevant ones; a missing tool or a failing check blocks the run, so fix it or mark the run blocked, and never skip it. If you cannot find any, ask the user once, or say so in the pull request when running unattended.
+Use `implement-spec-fast` to implement the request or tickets on the run's feature branch without TDD. Work sequentially in the run's worktree; do not require subagents, extra worktrees beyond it, a draft PR, or a code review here. Run the project's relevant checks as you go and fix failures before moving on. Run the full verification once after the last change and before Finish; follow Verification in [factory-procedures](../factory-procedures/SKILL.md).
 
 ## Finish
 

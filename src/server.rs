@@ -26,6 +26,16 @@ const ASSETS: &[(&str, ContentType, &[u8])] = &[
         include_bytes!("../dashboard/app.js"),
     ),
     (
+        "favicon.svg",
+        ContentType::SVG,
+        include_bytes!("../dashboard/favicon.svg"),
+    ),
+    (
+        "help.js",
+        ContentType::JavaScript,
+        include_bytes!("../dashboard/help.js"),
+    ),
+    (
         "style.css",
         ContentType::CSS,
         include_bytes!("../dashboard/style.css"),
@@ -192,30 +202,16 @@ fn create_run(
     if !request.post_allowed {
         return Err(HttpStatus::Forbidden);
     }
-    if new.title.trim().is_empty()
-        || new.project.trim().is_empty()
-        || new.title.len() > 500
-        || new.project.len() > 4096
-        || new
-            .session
-            .as_deref()
-            .is_some_and(|id| crate::run::check_session_id(id).is_err())
-        || new.title.chars().any(char::is_control)
-        || new.project.chars().any(char::is_control)
-        || new.repository.as_deref().is_some_and(|repository| {
-            repository.len() > 4096
-                || repository.chars().any(char::is_control)
-                || !crate::run::is_absolute_path(repository)
-        })
-    {
-        return Err(HttpStatus::BadRequest);
-    }
     store
         .create(new.into_inner())
         .map(|run| (HttpStatus::Created, Json(run)))
         .map_err(|error| {
-            eprintln!("Run storage error: {error}");
-            HttpStatus::InternalServerError
+            if error.kind() == io::ErrorKind::InvalidInput {
+                HttpStatus::BadRequest
+            } else {
+                eprintln!("Run storage error: {error}");
+                HttpStatus::InternalServerError
+            }
         })
 }
 
@@ -233,10 +229,6 @@ fn update_run(
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err((HttpStatus::BadRequest, "Invalid run id".into()));
     }
-    update
-        .validate()
-        .map_err(|message| (HttpStatus::BadRequest, message))?;
-    let before = store.get(id).ok().flatten();
     let updated = store
         .update(id, update.into_inner())
         .map_err(|error| match error.kind() {
@@ -251,8 +243,10 @@ fn update_run(
             }
         })?
         .ok_or((HttpStatus::NotFound, "Not found".into()))?;
-    collector.after_update(store, before.as_ref(), &updated);
-    Ok(Json(updated))
+    if updated.collect_usage {
+        collector.after_update(store, &updated.run.id);
+    }
+    Ok(Json(updated.run))
 }
 
 #[rocket::get("/api/runs/<id>")]
@@ -340,21 +334,12 @@ impl Collector {
         }
     }
 
-    /// Starts collecting for `after` when the update moved it on: a stage, rework or ticket change, a new
-    /// session, or the run finishing. The update has already succeeded; collecting never delays or fails it.
-    fn after_update(&self, store: &RunStore, before: Option<&Run>, after: &Run) {
+    /// Starts background collection after a successful update requires it.
+    fn after_update(&self, store: &RunStore, id: &str) {
         let Some(settings) = self.settings.clone() else {
             return;
         };
-        let moved = before.is_none_or(|b| {
-            b.timeline.len() != after.timeline.len()
-                || b.sessions != after.sessions
-                || (b.finished_at.is_none() && after.finished_at.is_some())
-        });
-        if !moved {
-            return;
-        }
-        let (store, id) = (store.clone(), after.id.clone());
+        let (store, id) = (store.clone(), id.to_owned());
         let chains = self.chains.clone();
         let generation = chains.lock().map_or(0, |mut chains| {
             let latest = chains.entry(id.clone()).or_insert(0);
@@ -547,6 +532,8 @@ mod tests {
         let api = client(&dir).await;
         for (path, content_type) in [
             ("/assets/app.js", ContentType::JavaScript),
+            ("/assets/help.js", ContentType::JavaScript),
+            ("/assets/favicon.svg", ContentType::SVG),
             ("/assets/style.css", ContentType::CSS),
             ("/assets/vendor/preact.js", ContentType::JavaScript),
             ("/assets/vendor/hooks.js", ContentType::JavaScript),
@@ -926,7 +913,8 @@ mod tests {
             2,
             "one definition, one use"
         );
-        assert!(script.contains("The worktree, branch and pull request stay as they are."));
+        assert!(script
+            .contains("The repository, worktrees, branches and pull requests stay as they are."));
         // Cards in every other column offer Delete too, so a stuck Run can be removed.
         assert_eq!(
             script
@@ -944,13 +932,16 @@ mod tests {
         assert!(script.contains("runs && !runs.length ? html`<${Welcome}"));
         assert!(script.contains("runs?.length"));
         assert!(script.contains("Read the Help"));
-        // Help is a native modal named by its heading, opened from the header and focused on its Close button.
+        // Help opens from the header. It is a native modal named by its heading, with tabs, and the selected
+        // tab takes focus. It lives in its own module.
         assert!(script.contains("class=\"toggle help-open\""));
-        assert!(script.contains("aria-labelledby=\"help-title\""));
-        assert!(script.contains("autofocus onClick"));
+        let help = asset("/assets/help.js").await;
+        assert!(help.contains("aria-labelledby=\"help-title\""));
+        assert!(help.contains("role=\"tablist\""));
+        assert!(help.contains("autofocus=${id === current}"));
         for term in ["Stages", "Needs you", "Rework"] {
             assert!(
-                script.contains(&format!("<h3>{term}</h3>")),
+                help.contains(&format!("title=\"{term}\"")) || help.contains(&format!("'{term}'")),
                 "missing {term}"
             );
         }
@@ -964,11 +955,16 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn cards_show_the_project_name_with_the_path_as_tooltip() {
+    async fn cards_leave_project_names_in_the_swimlane_and_run_details() {
         let script = asset("/assets/app.js").await;
         assert!(script.contains("function projectNames(runs)"));
         assert!(script.contains("title=${path}>${name}"));
-        assert!(!script.contains("${run.project}</p>"));
+        assert!(
+            !script.contains("<p class=\"project\"><${ProjectName} path=${projectOf(run)} /></p>")
+        );
+        assert!(script.contains("><${ProjectName} path=${project} />"));
+        assert!(script
+            .contains("<${Field} label=\"Project\"><${ProjectName} path=${projectOf(run)} /><//>"));
     }
 
     #[rocket::async_test]
@@ -1125,7 +1121,36 @@ mod tests {
         assert!(fetch(&api, &run.id).await.1.unwrap().usage.is_none());
 
         // Moving to Build collects, without delaying the answer, and records what it found.
-        let response = report(&api, &run.id, r#"{"stage":"build","status":"running"}"#).await;
+        let store = api.rocket().state::<RunStore>().unwrap().clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let settings = UsageSettings {
+                enabled: false,
+                roots: crate::usage_logs::Roots {
+                    claude: Default::default(),
+                    codex: Default::default(),
+                    copilot: Default::default(),
+                },
+                budget: std::time::Duration::from_secs(5),
+                settle: Vec::new(),
+            };
+            store
+                .usage_collection()
+                .collect_paused(&store, "missing", &settings, None, ready_tx, release_rx)
+                .unwrap();
+        });
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let response = rocket::tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            report(&api, &run.id, r#"{"stage":"build","status":"running"}"#),
+        )
+        .await;
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        let response = response.expect("update should respond while collection is blocked");
         assert_eq!(response.status(), HttpStatus::Ok);
         collector.wait_idle().await;
         let usage = fetch(&api, &run.id)
@@ -1412,6 +1437,52 @@ mod tests {
         let run = fetch(&api, "7").await.1.unwrap();
         assert_eq!(run.branch.as_deref(), Some("feature/x"));
         assert!(run.repository.is_none() && run.tickets.is_empty());
+    }
+
+    #[rocket::async_test]
+    async fn starting_a_run_validates_its_model_routing_selection() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let with = |routing: &str| {
+            format!(r#"{{"title":"t","project":"/work","model_routing":{routing}}}"#)
+        };
+        let long = "m".repeat(65);
+        for routing in [
+            // A task names a role the selection does not have.
+            r#"{"agent":"claude","roles":{"coding":{"model":"sonnet"}},"tasks":{"check":"strong"}}"#.to_string(),
+            // Empty, oversized and unsafe text.
+            r#"{"agent":"claude","roles":{"coding":{"model":""}},"tasks":{}}"#.to_string(),
+            format!(r#"{{"agent":"claude","roles":{{"coding":{{"model":"{long}"}}}},"tasks":{{}}}}"#),
+            r#"{"agent":"claude","roles":{"coding":{"model":"son net"}},"tasks":{}}"#.to_string(),
+            r#"{"agent":"claude","roles":{"coding":{"model":"sonnet","effort":"hi\u001b[2Jgh"}},"tasks":{}}"#.to_string(),
+            // Unknown field, unknown task, unknown agent (Copilot records no selection).
+            r#"{"agent":"claude","roles":{},"tasks":{},"extra":1}"#.to_string(),
+            r#"{"agent":"claude","roles":{"coding":{"model":"sonnet"}},"tasks":{"deploy":"coding"}}"#.to_string(),
+            r#"{"agent":"copilot","roles":{},"tasks":{}}"#.to_string(),
+        ] {
+            let response = api
+                .post("/api/runs")
+                .header(Header::new("Host", "127.0.0.1:4311"))
+                .header(ContentType::JSON)
+                .body(with(&routing))
+                .dispatch()
+                .await;
+            assert_eq!(response.status(), HttpStatus::BadRequest, "{routing}");
+        }
+        assert!(api
+            .rocket()
+            .state::<RunStore>()
+            .unwrap()
+            .list()
+            .unwrap()
+            .is_empty());
+        let run = start(
+            &api,
+            &with(r#"{"agent":"codex","roles":{"strong":{"model":"gpt-6-astra","effort":"high"}},"tasks":{"check":"strong"}}"#),
+        )
+        .await;
+        let routing = run.model_routing.unwrap();
+        assert_eq!(routing.roles.len(), 1);
     }
 
     #[rocket::async_test]
@@ -1778,6 +1849,51 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn the_page_has_a_favicon_and_a_decorative_logo_with_a_readable_heading() {
+        let page = dashboard_page().await;
+        assert!(page
+            .contains("<link rel=\"icon\" href=\"/assets/favicon.svg\" type=\"image/svg+xml\">"));
+        // The logo is drawn inline, hidden from assistive technology, and the heading keeps its text.
+        let heading = page
+            .split("<h1>")
+            .nth(1)
+            .and_then(|rest| rest.split("</h1>").next())
+            .expect("a heading");
+        assert!(heading.contains("<svg class=\"logo\""));
+        assert!(
+            heading.contains("aria-hidden=\"true\"") && heading.contains("focusable=\"false\"")
+        );
+        assert!(heading.contains("<span class=\"visually-hidden\">TDS Factory</span>"));
+        // Its gradient has an id of its own, and only the dark parts follow the theme.
+        assert!(
+            heading.contains("id=\"tds-logo-blue\"") && heading.contains("url(#tds-logo-blue)")
+        );
+        let css = stylesheet().await;
+        assert!(css.contains(".logo .ink { fill: var(--colorNeutralForeground1); }"));
+    }
+
+    #[rocket::async_test]
+    async fn the_footer_with_the_version_stays_in_view() {
+        let css = stylesheet().await;
+        let rule = |selector: &str| {
+            css.lines()
+                .find(|line| line.starts_with(&format!("{selector} {{")))
+                .unwrap_or_else(|| panic!("no {selector} rule"))
+                .to_string()
+        };
+        // Stuck to the bottom of the window while the page scrolls, with a background so content does not show through.
+        let footer = rule("footer");
+        assert!(footer.contains("position: sticky") && footer.contains("bottom: 0"));
+        assert!(footer.contains("background:"));
+        // At the bottom of a short page: the body is a column at least as tall as the window.
+        let body = rule("body");
+        assert!(body.contains("min-height: 100dvh") && body.contains("flex-direction: column"));
+        assert!(footer.contains("margin-top: auto"));
+        // A focused element is not left behind the footer.
+        assert!(rule("html").contains("scroll-padding-bottom"));
+    }
+
+    #[rocket::async_test]
     async fn dashboard_theme_toggle_is_a_labelled_radio_group_remembered_safely() {
         let page = dashboard_page().await;
         assert!(page.contains("<legend>Theme</legend>"));
@@ -1939,6 +2055,7 @@ mod tests {
             project: "/work".into(),
             repository: None,
             session: None,
+            model_routing: None,
         };
         let kept = store.create(new("kept")).unwrap();
         let token = session_token(&api).await;
@@ -1996,6 +2113,7 @@ mod tests {
                         project: "/work".into(),
                         repository: None,
                         session: None,
+                        model_routing: None,
                     })
                     .unwrap();
                 let update: UpdateRun =
@@ -2022,6 +2140,7 @@ mod tests {
                 project: "/work".into(),
                 repository: None,
                 session: None,
+                model_routing: None,
             })
             .unwrap();
         let token = session_token(&api).await;
@@ -2243,6 +2362,7 @@ mod tests {
                 project: "/work".into(),
                 repository: None,
                 session: None,
+                model_routing: None,
             })
             .unwrap();
         assert!(run.rework.is_none());
@@ -2294,6 +2414,7 @@ mod tests {
                 project: "/work".into(),
                 repository: None,
                 session: None,
+                model_routing: None,
             })
             .unwrap();
         let path = dir.0.path().join("runs.json");

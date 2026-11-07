@@ -19,7 +19,7 @@ fn stage_name(stage: Stage) -> &'static str {
 }
 
 /// `12,345`, or `n/a` for a count that was not reported.
-fn number(value: Option<u64>) -> String {
+pub(crate) fn number(value: Option<u64>) -> String {
     let Some(value) = value else {
         return "n/a".into();
     };
@@ -44,6 +44,11 @@ fn bucket(row: &UsageRow) -> String {
 }
 
 fn table(rows: &[Vec<String>], header: &[&str]) -> String {
+    table_with(rows, header, 3)
+}
+
+/// A table whose first `text_columns` columns are left-aligned and the rest right-aligned.
+pub(crate) fn table_with(rows: &[Vec<String>], header: &[&str], text_columns: usize) -> String {
     let mut widths: Vec<usize> = header.iter().map(|h| h.chars().count()).collect();
     for row in rows {
         for (index, cell) in row.iter().enumerate() {
@@ -54,7 +59,7 @@ fn table(rows: &[Vec<String>], header: &[&str]) -> String {
         let mut out = String::from("  ");
         for (index, cell) in cells.iter().enumerate() {
             // Text columns are left-aligned, numbers right-aligned.
-            if index < 3 {
+            if index < text_columns {
                 out.push_str(&format!("{cell:<width$}  ", width = widths[index]));
             } else {
                 out.push_str(&format!("{cell:>width$}  ", width = widths[index]));

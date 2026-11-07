@@ -78,7 +78,7 @@ pub(crate) fn agent_home(
     match agent {
         "codex" => Ok(config_dir("CODEX_HOME", ".codex")),
         "claude" => Ok(config_dir("CLAUDE_CONFIG_DIR", ".claude")),
-        "copilot" => Ok(home.join(".copilot")),
+        "copilot" => Ok(config_dir("COPILOT_HOME", ".copilot")),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unknown agent {agent:?}; use codex, claude, or copilot"),
@@ -216,7 +216,12 @@ mod tests {
         );
         assert_eq!(root("codex", &unset), home.join(".codex/skills"));
         assert_eq!(root("codex", &set), Path::new("/custom/CODEX_HOME/skills"));
-        assert_eq!(root("copilot", &set), home.join(".copilot/skills"));
+        assert_eq!(root("copilot", &unset), home.join(".copilot/skills"));
+        assert_eq!(root("copilot", &empty), home.join(".copilot/skills"));
+        assert_eq!(
+            root("copilot", &set),
+            Path::new("/custom/COPILOT_HOME/skills")
+        );
         assert!(skills_root("other", home, unset).is_err());
     }
     /// Names that belong to this repository, not to the projects the skills are installed in.
@@ -305,10 +310,10 @@ mod tests {
         let continuing = continuing.split("\n## ").next().unwrap();
         for needle in [
             "factory run inspect",
-            "git worktree list",
-            "git branch --show-current",
-            "merge-base --is-ancestor",
-            "git status --porcelain",
+            "factory run check",
+            "recorded branch",
+            "ancestor of `HEAD`",
+            "unexpected changes",
             "Never reset, clean",
         ] {
             assert!(continuing.contains(needle), "continuation lacks {needle}");
@@ -336,11 +341,18 @@ mod tests {
                     "{skill} does not point to {section}"
                 );
             }
-            assert_eq!(
-                text.contains("check blocked --blocking-reason \"Decision needed on remaining Check findings\""),
-                skill != "factory-fast",
-                "{skill} reports blocked while waiting for a decision on Check findings"
+            assert!(
+                text.contains("Verification in [factory-procedures]"),
+                "{skill} lacks Verification"
             );
+            if skill != "factory-fast" {
+                for section in ["Committing for Check", "Reworks"] {
+                    assert!(
+                        text.contains(&format!("{section} in [factory-procedures]")),
+                        "{skill} lacks {section}"
+                    );
+                }
+            }
             assert!(
                 !text.contains("Waiting for a decision"),
                 "{skill} still reports a decision wait as running"
@@ -354,10 +366,77 @@ mod tests {
                 text.contains(&format!("`--mode {skill}`")),
                 "{skill} reports its own mode"
             );
+        }
+    }
+
+    #[test]
+    fn shared_procedures_cover_check_and_rework() {
+        let text = bundled_text("factory-procedures/SKILL.md");
+        for needle in [
+            "## Verification",
+            "## Committing for Check",
+            "## Reworks",
+            "--rework",
+            "Decision needed on remaining Check findings",
+            "Review pinned at <hash>",
+        ] {
+            assert!(text.contains(needle), "shared procedures lack {needle}");
+        }
+    }
+
+    /// Whether a bundled skill's frontmatter keeps it from being invoked by the model.
+    fn is_user_only(skill: &str) -> bool {
+        let text = bundled_text(&format!("{skill}/SKILL.md")).replace("\r\n", "\n");
+        let frontmatter = text
+            .strip_prefix("---\n")
+            .and_then(|rest| rest.split_once("\n---\n"))
+            .map(|(frontmatter, _)| frontmatter)
+            .unwrap_or_else(|| panic!("{skill} has no frontmatter"));
+        frontmatter
+            .lines()
+            .any(|line| line.trim() == "disable-model-invocation: true")
+    }
+
+    #[test]
+    fn shared_procedures_are_not_invoked_on_their_own() {
+        assert!(is_user_only("factory-procedures"));
+        let codex = bundled_text("factory-procedures/agents/openai.yaml");
+        assert!(
+            codex.contains("allow_implicit_invocation: false"),
+            "{codex}"
+        );
+    }
+
+    #[test]
+    fn workflows_read_the_user_only_skills_they_use() {
+        let user_only: Vec<&str> = bundled_skill_names()
+            .into_iter()
+            .filter(|skill| is_user_only(skill))
+            .collect();
+        for skill in WORKFLOW_SKILLS {
+            let text = bundled_text(&format!("{skill}/SKILL.md")).replace("\r\n", "\n");
+            let (preamble, body) = text
+                .split_once("\n## ")
+                .unwrap_or_else(|| panic!("{skill} has no sections"));
+            let used: Vec<&str> = user_only
+                .iter()
+                .copied()
+                .filter(|name| body.contains(&format!("`{name}`")))
+                .collect();
+            assert!(!used.is_empty(), "{skill} uses no user-only skill");
+            let named: Vec<&str> = user_only
+                .iter()
+                .copied()
+                .filter(|name| preamble.contains(&format!("`{name}`")))
+                .collect();
             assert_eq!(
-                text.contains("--rework"),
-                skill != "factory-fast",
-                "{skill} reports Reworks only when it has Check"
+                named, used,
+                "{skill} must name exactly the user-only skills it uses"
+            );
+            assert!(
+                preamble
+                    .contains("read their `SKILL.md` from that location instead of invoking them"),
+                "{skill} does not say how to load its user-only skills"
             );
         }
     }
@@ -385,6 +464,8 @@ mod tests {
             "evidence",
             "qualifications",
             "findings",
+            "right before you write the first",
+            "still gets the humanizer pass",
         ] {
             assert!(
                 writing.contains(needle),
@@ -403,6 +484,173 @@ mod tests {
         assert!(root.join("skills/humanizer/SKILL.md").is_file());
         let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
         assert!(agents.contains("(skills/humanizer/SKILL.md)"));
+    }
+
+    #[test]
+    fn the_procedures_keep_the_pull_request_current_without_rewriting_history() {
+        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
+        let section = procedures
+            .split_once("## Pull request and CI")
+            .map(|(_, rest)| rest)
+            .expect("the procedures have a Pull request and CI section");
+        for needle in [
+            "factory pr sync <run-id> --base <base>",
+            "gh pr view --json mergeStateStatus",
+            "`BEHIND`",
+            "`DIRTY`",
+            "`UNKNOWN`",
+            "normal merge commit",
+            "never rebase, amend or force-push",
+            "neither a Rework nor a CI fix",
+            "not behind its base",
+        ] {
+            assert!(section.contains(needle), "missing: {needle}");
+        }
+    }
+
+    #[test]
+    fn the_procedures_ask_for_an_upgrade_instead_of_working_around_an_outdated_factory() {
+        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
+        // The skills ship with the binary, so a command it lacks means the two are out of step.
+        for gone in [
+            "unknown command",
+            "do it by hand",
+            "checks by hand",
+            "watch the checks yourself",
+            "git worktree add",
+            "gh pr create",
+            "gh pr checks",
+        ] {
+            assert!(
+                !procedures.contains(gone),
+                "the procedures still work around an outdated factory: {gone}"
+            );
+        }
+        for needle in [
+            "needs upgrading with `factory install`",
+            "mark the run blocked with that reason",
+        ] {
+            assert!(procedures.contains(needle), "missing: {needle}");
+        }
+        // Every outcome of the commands the fallbacks used to replace is still handled.
+        for outcome in [
+            "passed",
+            "failed",
+            "cancelled",
+            "timeout",
+            "head-changed",
+            "no-ci",
+            "not-open",
+            "current",
+            "pushed",
+            "needs-verification",
+            "conflict",
+        ] {
+            assert!(
+                procedures.contains(&format!("- `{outcome}` (")),
+                "the procedures lose the {outcome} outcome"
+            );
+        }
+        // Both commands still explain their exit status 1.
+        assert_eq!(
+            procedures.matches("Exit status 1 is a problem").count(),
+            2,
+            "pr wait and pr sync both explain exit status 1"
+        );
+        // So does a host without factory support.
+        assert!(procedures.contains("Watch every check there until all have completed"));
+        // The hard rules say why.
+        for reason in [
+            "the user may be working in it",
+            "The review is pinned to a commit hash",
+            "merging is the human's review decision",
+        ] {
+            assert!(procedures.contains(reason), "missing reason: {reason}");
+        }
+    }
+
+    #[test]
+    fn the_procedures_start_a_run_naming_the_agent_with_an_option_the_cli_accepts() {
+        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
+        let start = procedures
+            .split_once("- **Start:**")
+            .and_then(|(_, rest)| rest.split_once("\n- **Stage:**"))
+            .map(|(start, _)| start)
+            .expect("the procedures have a Start step");
+        assert!(
+            start.contains("factory run start \"<short task title>\" --agent <agent>"),
+            "{start}"
+        );
+        // The three values it names are the ones the command takes.
+        for (word, host) in [
+            ("claude", crate::routing::Host::Claude),
+            ("codex", crate::routing::Host::Codex),
+            ("copilot", crate::routing::Host::Copilot),
+        ] {
+            assert!(
+                start.contains(&format!("`{word}`")),
+                "Start does not name {word}"
+            );
+            assert_eq!(
+                crate::routing::parse_start_options(&["--agent", word]),
+                Ok(Some(host))
+            );
+        }
+        // A policy refusal is passed on to the user, and an older command that lacks the option is reported.
+        assert!(
+            start.contains("tell the user what it says and stop"),
+            "{start}"
+        );
+        assert!(start.contains("including `--agent`"), "{start}");
+    }
+
+    #[test]
+    fn the_model_routing_procedure_says_how_to_read_and_apply_the_selection() {
+        // A Windows checkout may have CRLF line endings.
+        // Only Check uses it, so it lives in a reference file read when Check starts.
+        let section =
+            bundled_text("factory-procedures/references/model-routing.md").replace("\r\n", "\n");
+        assert!(
+            bundled_text("factory-procedures/SKILL.md")
+                .contains("[references/model-routing.md](references/model-routing.md)"),
+            "the procedures do not point to the model routing reference"
+        );
+        for needle in [
+            "factory run inspect <id> --json",
+            "`model_routing`",
+            "`overrides.check`",
+            "`tasks.check`",
+            "never a fork",
+            "only the aliases `opus`, `sonnet`, `haiku` and `fable`",
+            "model routing not applied",
+            "Copilot CLI",
+            "do not claim a switch",
+            "only the entry of the agent named with `--agent`",
+            "never another agent's",
+        ] {
+            assert!(section.contains(needle), "Model routing lacks {needle}");
+        }
+        let review = bundled_text("code-review/SKILL.md");
+        for needle in ["model and an effort for the review agents", "not forks"] {
+            assert!(review.contains(needle), "code-review lacks {needle}");
+        }
+    }
+
+    #[test]
+    fn only_the_workflows_with_a_check_point_to_the_model_routing_procedure() {
+        for skill in ["factory-full", "factory-balanced"] {
+            let text = bundled_text(&format!("{skill}/SKILL.md"));
+            assert!(
+                text.contains("(../factory-procedures/references/model-routing.md)")
+                    && text.contains("at the start of every Check pass, including after a Rework"),
+                "{skill} does not read Model routing at every Check pass"
+            );
+        }
+        let fast = bundled_text("factory-fast/SKILL.md");
+        assert!(
+            !fast.contains("Model routing"),
+            "factory-fast has no Check to route"
+        );
     }
 
     #[test]
@@ -433,6 +681,138 @@ mod tests {
             offenders.is_empty(),
             "bundled skills must not name this repository (see AGENTS.md): {offenders:?}"
         );
+    }
+
+    #[test]
+    fn setup_links_exactly_the_bundled_issue_tracker_templates() {
+        let setup = bundled_text("setup-matt-pocock-skills/SKILL.md");
+        let mut linked: Vec<&str> = setup
+            .split("](./")
+            .skip(1)
+            .filter_map(|rest| rest.split_once(')'))
+            .map(|(target, _)| target)
+            .filter(|target| target.starts_with("issue-tracker-"))
+            .collect();
+        linked.sort_unstable();
+        linked.dedup();
+        let mut bundled: Vec<&str> = bundled_skill_files()
+            .filter_map(|path| path.strip_prefix("setup-matt-pocock-skills/"))
+            .filter(|name| name.starts_with("issue-tracker-") && name.ends_with(".md"))
+            .collect();
+        bundled.sort_unstable();
+        assert_eq!(linked, bundled);
+        assert!(linked.contains(&"issue-tracker-azure-boards.md"));
+    }
+
+    #[test]
+    fn setup_stops_on_missing_azure_boards_details_without_a_partial_tracker_file() {
+        let setup = bundled_text("setup-matt-pocock-skills/SKILL.md");
+        let (_, azure) = setup
+            .split_once("An Azure Boards tracker needs")
+            .expect("setup has an Azure Boards part");
+        assert!(azure.contains("is missing, stop and tell the user"));
+        assert!(azure.contains("partial `docs/agents/issue-tracker.md`"));
+    }
+
+    #[test]
+    fn azure_boards_template_removes_tags_with_a_replace_the_cli_cannot_send() {
+        // Checked against Azure DevOps: `az boards work-item update --fields System.Tags=...` adds to
+        // the tags, and `show --fields` fails with the expanded output, so neither can remove a role.
+        let template = bundled_text("setup-matt-pocock-skills/issue-tracker-azure-boards.md");
+        let roles = template
+            .split_once("- **Apply / remove triage roles**:")
+            .and_then(|(_, rest)| rest.split_once("\n- **"))
+            .expect("the template explains triage roles")
+            .0;
+        assert!(!roles.contains("replaces the whole list"));
+        assert!(!roles.contains("--fields System.Tags"));
+        assert!(roles.contains(r#"--query 'fields."System.Tags"'"#));
+        assert!(roles.contains(r#""op":"replace","path":"/fields/System.Tags""#));
+        assert!(roles.contains("Content-Type=application/json-patch+json"));
+    }
+
+    #[test]
+    fn azure_boards_template_names_no_process_specific_types_or_states() {
+        let template = bundled_text("setup-matt-pocock-skills/issue-tracker-azure-boards.md");
+        let found: Vec<String> = [
+            "User Story",
+            "Product Backlog Item",
+            "Active",
+            "Resolved",
+            "Done",
+            "To Do",
+            "Closed",
+        ]
+        .into_iter()
+        .flat_map(|name| {
+            [
+                format!("`{name}`"),
+                format!("\"{name}\""),
+                format!("--state {name}"),
+                format!("--type {name}"),
+            ]
+        })
+        .filter(|used| template.contains(used))
+        .collect();
+        assert!(
+            found.is_empty(),
+            "template hardcodes process names as values: {found:?}"
+        );
+    }
+
+    /// Returns why `arguments` (the text after `--route-parameters`) is not a
+    /// list of separately double-quoted `"name=value"` pairs.
+    fn route_parameter_problem(arguments: &str) -> Option<String> {
+        let mut arguments = arguments.split_whitespace().peekable();
+        if arguments.peek().is_none() {
+            return Some("no arguments".to_string());
+        }
+        arguments.find_map(|argument| {
+            let inner = argument
+                .strip_prefix('"')
+                .and_then(|rest| rest.strip_suffix('"'));
+            match inner {
+                Some(inner) if !inner.contains('"') && inner.matches('=').count() == 1 => None,
+                _ => Some(format!("not exactly one quoted name=value: {argument}")),
+            }
+        })
+    }
+
+    #[test]
+    fn route_parameter_checker_rejects_unquoted_and_merged_pairs() {
+        assert_eq!(
+            route_parameter_problem("\"project=<project>\" \"workItemId=<id>\""),
+            None
+        );
+        assert!(route_parameter_problem("\"project=<project>\" type=<type>").is_some());
+        assert!(route_parameter_problem("\"project=<project> type=<type>\"").is_some());
+        assert!(route_parameter_problem("project=<project>").is_some());
+    }
+
+    #[test]
+    fn azure_boards_route_parameters_are_quoted_pairs() {
+        const FLAG: &str = "--route-parameters ";
+        for path in [
+            "setup-matt-pocock-skills/issue-tracker-azure-boards.md",
+            "setup-matt-pocock-skills/SKILL.md",
+        ] {
+            let text = bundled_text(path);
+            assert!(text.contains(FLAG), "{path} has no {FLAG}");
+            for (index, _) in text.match_indices(FLAG) {
+                let after = &text[index + FLAG.len()..];
+                let end = [after.find(" --"), after.find(['`', '\n'])]
+                    .into_iter()
+                    .flatten()
+                    .min()
+                    .unwrap_or(after.len());
+                let arguments = &after[..end];
+                assert_eq!(
+                    route_parameter_problem(arguments),
+                    None,
+                    "{path}: bad route parameters: {arguments}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -546,6 +926,9 @@ mod tests {
         assert!(root
             .join("setup-matt-pocock-skills/issue-tracker-github.md")
             .is_file());
+        assert!(root
+            .join("setup-matt-pocock-skills/issue-tracker-azure-boards.md")
+            .is_file());
         assert!(root.join("setup-matt-pocock-skills/LICENSE").is_file());
         assert!(root.join("to-spec/SKILL.md").is_file());
         assert!(root.join("factory-full/SKILL.md").is_file());
@@ -558,6 +941,9 @@ mod tests {
         assert!(root.join("implement-spec-balanced/SKILL.md").is_file());
         assert!(!root.join("factory-balanced/LICENSE").exists());
         assert!(root.join("factory-procedures/SKILL.md").is_file());
+        assert!(root
+            .join("factory-procedures/references/model-routing.md")
+            .is_file());
         assert!(!root.join("factory-procedures/LICENSE").exists());
         assert!(!root.join("implement-spec-balanced/LICENSE").exists());
         assert!(!root.join("implement-spec-fast/LICENSE").exists());

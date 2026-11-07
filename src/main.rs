@@ -1,9 +1,19 @@
 mod client;
+mod codex_requests;
 mod doctor;
 mod inspect;
 mod install;
+mod pr_open;
+mod pr_sync;
+mod pr_wait;
 mod repository;
+mod request_logs;
+mod requests;
+mod requests_pool;
+mod routing;
 mod run;
+mod run_begin;
+mod run_check;
 mod server;
 mod stats;
 mod update;
@@ -15,7 +25,7 @@ use run::UPDATE_HELP;
 use server::{serve, ADDRESS, DEFAULT_PORT};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json]\n  factory run start <title>\n  factory run inspect <id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr sync <run-id> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run check <run-id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -38,8 +48,8 @@ fn current_build() -> String {
 
 fn main() -> ExitCode {
     match run_cli() {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::FAILURE,
+        Ok(0) => ExitCode::SUCCESS,
+        Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("{error}");
             ExitCode::FAILURE
@@ -47,8 +57,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// Runs the command; `false` means it already reported why it did not succeed.
-fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
+/// Runs the command and returns its exit status; a non-zero one means it already reported why.
+fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args().skip(1).collect();
     match args
         .iter()
@@ -76,18 +86,20 @@ fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
             env!("FACTORY_BUILD_RELEASE") == "true",
         )?,
         ["doctor", options @ ..] => {
-            let (agent, json) =
-                doctor::parse_args(options).map_err(|error| format!("{error}\n{HELP}"))?;
-            return doctor::run(agent, json);
+            let args = doctor::parse_args(options).map_err(|error| format!("{error}\n{HELP}"))?;
+            return doctor::run(args).map(|ok| u8::from(!ok));
         }
         ["dashboard", options @ ..] => {
             let (port, usage) =
                 parse_dashboard_options(options, env::var("FACTORY_USAGE").ok().as_deref())?;
             dashboard(port, usage)?;
         }
-        ["run", "start", title] => {
+        ["run", "start", title, options @ ..] => {
+            let host = routing::parse_start_options(options)
+                .map_err(|error| format!("{error}\n{HELP}"))?;
             let dir = env::current_dir()?;
             let repository = repository::canonical_repository(&dir);
+            let resolution = resolve_routing(host)?;
             println!(
                 "{}",
                 start_run(
@@ -95,9 +107,23 @@ fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
                     title,
                     &dir.display().to_string(),
                     repository,
-                    current_session()
+                    current_session(),
+                    resolution.selection
                 )?
             );
+        }
+        ["run", "begin", "--run", id, options @ ..] => {
+            let parsed =
+                run_begin::parse_resume(id, options).map_err(|error| format!("{error}\n{HELP}"))?;
+            return run_begin_command(parsed);
+        }
+        ["run", "begin", title, options @ ..] if !title.starts_with('-') => {
+            let parsed = run_begin::parse_options(title, options)
+                .map_err(|error| format!("{error}\n{HELP}"))?;
+            return run_begin_command(parsed);
+        }
+        ["run", "check", id, options @ ..] if !id.starts_with('-') => {
+            return run_check_command(id, options);
         }
         ["run", "inspect", id, options @ ..] => {
             let json = match options {
@@ -116,6 +142,48 @@ fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
         ["run", "stats", id] if !id.starts_with('-') => {
             print!("{}", stats::render_run(&fetch_run(ADDRESS, id)?))
         }
+        ["run", "requests", "--all", options @ ..] => {
+            let (pool, json) = requests_pool::parse_options(options)
+                .map_err(|error| format!("{error}\n{HELP}"))?;
+            let runs = fetch_runs(ADDRESS)?;
+            let roots =
+                usage_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
+            let result = requests_pool::pool(
+                &runs,
+                &roots,
+                run::updated_now()?,
+                std::time::Instant::now() + std::time::Duration::from_secs(120),
+                &pool,
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                print!("{}", requests_pool::render_pool(&result));
+            }
+        }
+        ["run", "requests", id, options @ ..] if !id.starts_with('-') => {
+            let json = match options {
+                [] => false,
+                ["--json"] => true,
+                _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
+            };
+            let target = fetch_run(ADDRESS, id)?;
+            let runs = fetch_runs(ADDRESS)?;
+            let roots =
+                usage_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
+            let result = requests::analyze(
+                &target,
+                &runs,
+                &roots,
+                run::updated_now()?,
+                std::time::Instant::now() + std::time::Duration::from_secs(30),
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                print!("{}", requests::render_run(&result));
+            }
+        }
         ["run", "update", id, stage, status, options @ ..] => {
             // The agent's own session is recorded with every update, so its token usage can be attributed.
             let session = current_session();
@@ -126,9 +194,247 @@ fn run_cli() -> Result<bool, Box<dyn std::error::Error>> {
             report_run(ADDRESS, id, stage, status, &options)?;
             println!("Updated run {id}");
         }
+        ["pr", "wait", id, options @ ..] if !id.starts_with('-') => {
+            return pr_wait_command(id, options);
+        }
+        ["pr", "open", id, options @ ..] if !id.starts_with('-') => {
+            return pr_open_command(id, options);
+        }
+        ["pr", "sync", id, options @ ..] if !id.starts_with('-') => {
+            return pr_sync_command(id, options);
+        }
         _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
     }
-    Ok(true)
+    Ok(0)
+}
+
+impl pr_open::RunApi for ServerApi {
+    fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
+        report_run(ADDRESS, id, stage, status, options).map_err(|e| e.to_string())
+    }
+}
+
+/// `factory pr open <run-id> --title <title> --body-file <path>`: pushes the run's branch and opens its pull
+/// request, or finds the one that is open, and records it on the run.
+fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
+    let parsed = pr_open::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Invalid run id".into());
+    }
+    let run = fetch_run(ADDRESS, id)?;
+    let info = pr_open::RunInfo {
+        id: id.to_string(),
+        worktree: run.worktree.clone(),
+        branch: run.branch.clone(),
+        stage: serde_json::to_value(run.stage)?
+            .as_str()
+            .unwrap_or("finish")
+            .to_string(),
+        status: serde_json::to_value(run.status)?
+            .as_str()
+            .unwrap_or("running")
+            .to_string(),
+    };
+    let opened = pr_open::open(&info, &parsed, &pr_open::RealGh, &ServerApi)
+        .map_err(|problem| inspect::shown(&problem.0))?;
+    if parsed.json {
+        println!("{}", serde_json::to_string_pretty(&opened)?);
+    } else {
+        print!("{}", pr_open::render(&opened, &info));
+    }
+    Ok(0)
+}
+
+/// `factory run check <run-id>`: compares the run's recorded workspace with the repository. It only reads.
+/// The exit status is 0 when nothing differs, 2 when something does, and 1 for a problem.
+fn run_check_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
+    let json = run_check::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
+    let run = fetch_run(ADDRESS, id)?;
+    let recorded = run_check::Recorded {
+        id: id.to_string(),
+        repository: run.repository.clone(),
+        worktree: run.worktree.clone(),
+        branch: run.branch.clone(),
+        base_commit: run.base_commit.clone(),
+    };
+    let report = run_check::check(&recorded, &run_check::ReadOnlyGit);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", run_check::render(&report));
+    }
+    Ok(report.exit_code)
+}
+
+/// `factory pr sync <run-id>`: brings the run's branch up to date with its base. The exit status is the
+/// outcome's; 1 is a problem.
+fn pr_sync_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
+    let parsed = pr_sync::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Invalid run id".into());
+    }
+    let run = fetch_run(ADDRESS, id)?;
+    let text =
+        |value: serde_json::Value, fallback: &str| value.as_str().unwrap_or(fallback).to_string();
+    let info = pr_open::RunInfo {
+        id: id.to_string(),
+        worktree: run.worktree.clone(),
+        branch: run.branch.clone(),
+        stage: text(serde_json::to_value(run.stage)?, "finish"),
+        status: text(serde_json::to_value(run.status)?, "running"),
+    };
+    let synced = pr_sync::sync(&info, &parsed, &pr_sync::RealGit, &ServerApi)
+        .map_err(|problem| inspect::shown(&problem.0))?;
+    if parsed.json {
+        println!("{}", serde_json::to_string_pretty(&synced)?);
+    } else {
+        print!("{}", pr_sync::render(&synced));
+    }
+    Ok(synced.exit_code)
+}
+
+/// `factory pr wait <run-id>`: watches the CI of the run's pull request and prints the outcome. The exit
+/// status is the outcome's; 1 is a problem with the tools or the run.
+fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
+    let (mut wait_options, json) =
+        pr_wait::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Invalid run id".into());
+    }
+    let gh = pr_wait::RealGh;
+    let run = fetch_run(ADDRESS, id)?;
+    if !run.pr.as_deref().is_some_and(pr_wait::is_azure_pr_url) {
+        pr_wait::check_gh(&gh).map_err(|problem| problem.0)?;
+    }
+    // The run's activity follows the wait, keeping its stage and status. Only a running run is updated.
+    let stage = serde_json::to_value(run.stage)?
+        .as_str()
+        .unwrap_or("finish")
+        .to_string();
+    let running = matches!(run.status, run::RunStatus::Running);
+    let mut reported_failure = false;
+    let mut activity = |text: &str| {
+        if running {
+            if let Err(error) = report_run(ADDRESS, id, &stage, "running", &["--activity", text]) {
+                if !reported_failure {
+                    reported_failure = true;
+                    eprintln!("The run's activity could not be updated: {error}");
+                }
+            }
+        }
+    };
+    // Only GitHub can lag behind a push in what it reports; the Azure wait does not use the hint.
+    let github = !run.pr.as_deref().is_some_and(pr_wait::is_azure_pr_url);
+    if let (true, Some(worktree), Some(branch)) = (github, &run.worktree, &run.branch) {
+        wait_options.pushed_head = pr_wait::pushed_head(std::path::Path::new(worktree), branch);
+    }
+    let clock = pr_wait::RealClock(std::time::Instant::now());
+    let waited = pr_wait::wait(
+        run.pr.as_deref(),
+        &wait_options,
+        &gh,
+        &clock,
+        &mut activity,
+        &mut |text| eprintln!("{text}"),
+    )
+    .map_err(|problem| problem.0)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&waited)?);
+    } else {
+        print!("{}", pr_wait::render(&waited));
+    }
+    Ok(waited.exit_code)
+}
+
+/// Reads the model-routing policy once, before a run exists: a mistake in it, or a policy for several
+/// agents without `--agent`, stops the start. Prints the notice, if any.
+fn resolve_routing(
+    host: Option<routing::Host>,
+) -> Result<routing::Resolution, Box<dyn std::error::Error>> {
+    let resolution = routing::policy_path_in(|name| env::var_os(name)).map_or_else(
+        || Ok(routing::Resolution::default()),
+        |path| routing::load(&path, host).map_err(|error| inspect::shown(&error)),
+    )?;
+    if let Some(notice) = &resolution.notice {
+        eprintln!("{notice}");
+    }
+    Ok(resolution)
+}
+
+/// The real factory server for `factory run begin`.
+struct ServerApi;
+
+impl run_begin::RunApi for ServerApi {
+    fn create(
+        &self,
+        title: &str,
+        project: &str,
+        repository: Option<String>,
+        session: Option<String>,
+        routing: Option<routing::ModelRouting>,
+    ) -> Result<String, String> {
+        start_run(ADDRESS, title, project, repository, session, routing).map_err(|e| e.to_string())
+    }
+
+    fn get(&self, id: &str) -> Result<run_begin::RunSummary, String> {
+        let run = fetch_run(ADDRESS, id).map_err(|e| e.to_string())?;
+        Ok(run_begin::RunSummary {
+            title: run.title,
+            finished: matches!(run.status, run::RunStatus::Done),
+            worktree: run.worktree,
+        })
+    }
+
+    fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
+        report_run(ADDRESS, id, stage, status, options).map_err(|e| e.to_string())
+    }
+}
+
+/// `factory run begin <title>`, or `--run <id>` to resume: creates a run and its workspace.
+fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::error::Error>> {
+    let host = parsed.agent.as_deref().and_then(routing::Host::parse);
+    let dir = env::current_dir()?;
+    // A resumed run already has its model routing; the policy is read only when a run is created.
+    let resolution = if parsed.run.is_some() {
+        routing::Resolution::default()
+    } else {
+        resolve_routing(host)?
+    };
+    match run_begin::begin(
+        &dir,
+        &parsed,
+        &ServerApi,
+        current_session(),
+        resolution.selection,
+    ) {
+        Ok(begun) => {
+            if parsed.json {
+                println!("{}", serde_json::to_string_pretty(&begun)?);
+            } else {
+                print!("{}", run_begin::render(&begun));
+            }
+            Ok(0)
+        }
+        Err(run_begin::BeginError::NoRun(text)) => Err(inspect::shown(&text).into()),
+        Err(run_begin::BeginError::Blocked {
+            run,
+            reason,
+            retry,
+            marked,
+        }) => {
+            let state = if marked {
+                "is blocked"
+            } else {
+                "could not be marked blocked (the server did not accept the update)"
+            };
+            eprintln!(
+                "Run {run} {state}: {}\nTo retry: {}",
+                inspect::shown(&reason),
+                inspect::shown(&retry)
+            );
+            Ok(1)
+        }
+    }
 }
 
 /// The id of the agent session this command runs in, when the agent exposes it (Claude Code does).

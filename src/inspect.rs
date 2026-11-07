@@ -1,6 +1,9 @@
 //! The readable form of a run, for `factory run inspect`: everything a new session needs to continue it.
 
+use crate::routing::{model_matches, ModelRouting, RoleChoice, Task};
 use crate::run::{Mode, Run, RunStatus, Stage, TicketStatus};
+use crate::usage::{Usage, UsageStatus};
+use std::collections::BTreeSet;
 
 const UNKNOWN: &str = "unknown (not recorded)";
 
@@ -60,6 +63,167 @@ fn field(label: &str, value: Option<&str>) -> String {
     )
 }
 
+/// The model each task is routed to; a task the selection does not map is not routed.
+fn routing_section(routing: &ModelRouting, usage: Option<&Usage>) -> String {
+    let mut out = format!("Model routing {}\n", routing.agent.name());
+    for task in Task::ALL {
+        let line = match routing.role_for(task) {
+            Some(role) => {
+                let choice = routing.roles.get(&role);
+                let model = choice.map_or_else(|| UNKNOWN.to_string(), |c| shown(&c.model));
+                let effort = choice
+                    .and_then(|c| c.effort.as_deref())
+                    .map_or(String::new(), |e| format!(", effort {}", shown(e)));
+                let overridden = if routing.overrides.contains_key(&task) {
+                    " (override)"
+                } else {
+                    ""
+                };
+                format!("{:<7} {model}{effort}{overridden}", role.name())
+            }
+            None => "not routed".to_string(),
+        };
+        out.push_str(&format!("  {:<6}  {line}\n", task.name()));
+        if let Some(requested) = routing
+            .role_for(task)
+            .and_then(|role| routing.roles.get(&role))
+        {
+            out.push_str(&format!(
+                "          {}\n",
+                observed_line(requested, stage_of(task), usage)
+            ));
+        }
+    }
+    out
+}
+
+/// A task runs in the stage of the same name.
+fn stage_of(task: Task) -> Stage {
+    match task {
+        Task::Build => Stage::Build,
+        Task::Check => Stage::Check,
+        Task::Finish => Stage::Finish,
+    }
+}
+
+/// What the run's usage shows for one model in one stage.
+struct Seen<'a> {
+    model: &'a str,
+    efforts: BTreeSet<&'a str>,
+    subagents: bool,
+}
+
+/// The models the run's usage shows for `stage`, next to whether the request is met. The request is an
+/// alias or an id and the log has an id, so both are shown and only a missing request counts. When an
+/// effort was requested, it is compared with the efforts the logs recorded for the models that match.
+fn observed_line(requested: &RoleChoice, stage: Stage, usage: Option<&Usage>) -> String {
+    let Some(usage) = usage else {
+        return "observed: not tracked: usage has not been collected for this run yet".into();
+    };
+    if usage.status == UsageStatus::NotTracked {
+        let reason = usage.reason.as_deref().unwrap_or("no reason recorded");
+        return format!("observed: not tracked: {}", shown(reason));
+    }
+    // Models in the order they first appear.
+    let mut seen: Vec<Seen> = Vec::new();
+    for row in usage.rows.iter().filter(|row| row.stage == stage) {
+        let subagents = !row.subagents.is_empty();
+        let efforts = row.efforts.iter().map(String::as_str);
+        match seen.iter_mut().find(|s| s.model == row.model) {
+            Some(known) => {
+                known.subagents |= subagents;
+                known.efforts.extend(efforts);
+            }
+            None => seen.push(Seen {
+                model: &row.model,
+                efforts: efforts.collect(),
+                subagents,
+            }),
+        }
+    }
+    let partial = usage.status == UsageStatus::Partial;
+    if seen.is_empty() {
+        let why = match (usage.no_data.contains(&stage), partial) {
+            (true, false) => " (no session log has entries for it)",
+            (true, true) => " (no session log has entries for it; usage is partial)",
+            (false, true) => " (usage is partial)",
+            (false, false) => "",
+        };
+        return format!("observed: none recorded for this stage{why}");
+    }
+    let list: Vec<String> = seen
+        .iter()
+        .map(|s| {
+            let mut notes = Vec::new();
+            if !s.efforts.is_empty() {
+                notes.push(format!(
+                    "effort {}",
+                    join_efforts(s.efforts.iter().copied())
+                ));
+            }
+            if s.subagents {
+                notes.push("+subagents".to_string());
+            }
+            if notes.is_empty() {
+                shown(s.model)
+            } else {
+                format!("{} ({})", shown(s.model), notes.join(", "))
+            }
+        })
+        .collect();
+    format!(
+        "observed: {}; {}",
+        list.join(", "),
+        verdict(requested, &seen, partial)
+    )
+}
+
+/// Whether the request is met by what was observed.
+fn verdict(requested: &RoleChoice, seen: &[Seen], partial: bool) -> String {
+    let matching: Vec<&Seen> = seen
+        .iter()
+        .filter(|s| model_matches(&requested.model, s.model))
+        .collect();
+    let model = shown(&requested.model);
+    if matching.is_empty() {
+        return if partial {
+            format!("{model} not observed (usage is partial, so it may be missing)")
+        } else {
+            format!("MISMATCH: {model} was requested and never observed")
+        };
+    }
+    let mut notes = Vec::new();
+    if let Some(want) = &requested.effort {
+        let efforts: BTreeSet<&str> = matching
+            .iter()
+            .flat_map(|s| s.efforts.iter().copied())
+            .collect();
+        if efforts.is_empty() {
+            notes.push("effort not recorded");
+        } else if !efforts.iter().any(|e| e.eq_ignore_ascii_case(want)) {
+            let (want, got) = (shown(want), join_efforts(efforts.iter().copied()));
+            return if partial {
+                format!("effort {want} not observed, only {got} (usage is partial, so it may be missing)")
+            } else {
+                format!("MISMATCH: effort {want} was requested, observed {got}")
+            };
+        }
+    }
+    if partial {
+        notes.push("usage is partial");
+    }
+    if notes.is_empty() {
+        "matches the request".to_string()
+    } else {
+        format!("matches the request ({})", notes.join("; "))
+    }
+}
+
+/// Efforts as one piece of text, such as `high/medium`.
+fn join_efforts<'a>(efforts: impl IntoIterator<Item = &'a str>) -> String {
+    efforts.into_iter().map(shown).collect::<Vec<_>>().join("/")
+}
+
 pub(crate) fn render(run: &Run) -> String {
     let mut out = format!("Run {}: {}\n", run.id, shown(&run.title));
     out.push_str(&format!(
@@ -105,6 +269,9 @@ pub(crate) fn render(run: &Run) -> String {
             ));
         }
     }
+    if let Some(routing) = &run.model_routing {
+        out.push_str(&routing_section(routing, run.usage.as_ref()));
+    }
     if let Some(ticket) = &run.current_ticket {
         out.push_str(&field("Current ticket", Some(ticket)));
     }
@@ -129,6 +296,355 @@ mod tests {
             "summaries": {"define": summary}
         }))
         .unwrap()
+    }
+
+    fn routed_run() -> Run {
+        serde_json::from_value(serde_json::json!({
+            "id": "1", "title": "t", "project": "/p", "stage": "build", "status": "running",
+            "model_routing": {
+                "agent": "claude",
+                "roles": {
+                    "strong": {"model": "opus", "effort": "high"},
+                    "coding": {"model": "sonnet"}
+                },
+                "tasks": {"build": "coding", "check": "strong"}
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn model_routing_is_shown_per_task_only_when_a_selection_exists() {
+        let text = render(&routed_run());
+        let lines: Vec<_> = text
+            .lines()
+            .skip_while(|line| !line.starts_with("Model routing"))
+            .take(4)
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "Model routing claude",
+                "  build   coding  sonnet",
+                "          observed: not tracked: usage has not been collected for this run yet",
+                "  check   strong  opus, effort high",
+            ],
+            "{text}"
+        );
+        assert!(text.contains("  finish  not routed\n"), "{text}");
+        assert!(!text.contains("Effort observed"), "{text}");
+        assert!(!render(&run_with_summary("s")).contains("Model routing"));
+        // The machine-readable form is the whole run, so skills can read the selection from it.
+        let json = serde_json::to_value(routed_run()).unwrap();
+        assert_eq!(json["model_routing"]["tasks"]["check"], "strong");
+        assert_eq!(json["model_routing"]["roles"]["strong"]["model"], "opus");
+    }
+
+    /// The routed run, with usage rows `(stage, model, used by subagents)` and a coverage status.
+    fn with_usage(status: &str, rows: &[(&str, &str, bool)]) -> Run {
+        let mut run = routed_run();
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|(stage, model, subagents)| {
+                let mut row =
+                    serde_json::json!({"stage": stage, "model": model, "input": 10, "output": 5});
+                if *subagents {
+                    row["subagents"] = serde_json::json!({"input": 4, "output": 2});
+                }
+                row
+            })
+            .collect();
+        run.usage = Some(
+            serde_json::from_value(serde_json::json!({
+                "status": status, "collected_at": 1, "rows": rows,
+                "reason": if status == "not-tracked" { Some("no session logs were found") } else { None },
+            }))
+            .unwrap(),
+        );
+        run
+    }
+
+    fn observed(text: &str, task: &str) -> String {
+        let mut lines = text
+            .lines()
+            .skip_while(|l| !l.starts_with(&format!("  {task:<6}")));
+        lines.next();
+        lines.next().unwrap_or_default().trim().to_string()
+    }
+
+    /// Records the efforts the logs showed for the rows of `model` in `stage`.
+    fn set_efforts(run: &mut Run, stage: Stage, model: &str, efforts: &[&str]) {
+        let row = run
+            .usage
+            .as_mut()
+            .unwrap()
+            .rows
+            .iter_mut()
+            .find(|row| row.stage == stage && row.model == model)
+            .unwrap();
+        row.efforts = efforts.iter().map(ToString::to_string).collect();
+    }
+
+    #[test]
+    fn the_observed_effort_is_shown_and_met_when_the_matching_model_ran_at_the_requested_one() {
+        let mut run = with_usage(
+            "tracked",
+            &[
+                ("build", "claude-sonnet-5-5", false),
+                ("check", "claude-sonnet-5-5", false),
+                ("check", "claude-opus-5-5", true),
+            ],
+        );
+        set_efforts(&mut run, Stage::Build, "claude-sonnet-5-5", &["medium"]);
+        set_efforts(&mut run, Stage::Check, "claude-sonnet-5-5", &["medium"]);
+        set_efforts(&mut run, Stage::Check, "claude-opus-5-5", &["high"]);
+        let text = render(&run);
+        // The coordinator's own effort is shown but does not count: only the matching model is compared.
+        assert_eq!(
+            observed(&text, "check"),
+            "observed: claude-sonnet-5-5 (effort medium), claude-opus-5-5 (effort high, +subagents); matches the request"
+        );
+        // No effort was requested for build, so the observed one is only shown.
+        assert_eq!(
+            observed(&text, "build"),
+            "observed: claude-sonnet-5-5 (effort medium); matches the request"
+        );
+    }
+
+    #[test]
+    fn an_effort_other_than_the_requested_one_is_a_mismatch_unless_usage_is_partial() {
+        let mut run = with_usage("tracked", &[("check", "claude-opus-5-5", true)]);
+        set_efforts(&mut run, Stage::Check, "claude-opus-5-5", &["medium"]);
+        assert_eq!(
+            observed(&render(&run), "check"),
+            "observed: claude-opus-5-5 (effort medium, +subagents); MISMATCH: effort high was requested, observed medium"
+        );
+        let mut partial = with_usage("partial", &[("check", "claude-opus-5-5", true)]);
+        set_efforts(&mut partial, Stage::Check, "claude-opus-5-5", &["medium"]);
+        assert_eq!(
+            observed(&render(&partial), "check"),
+            "observed: claude-opus-5-5 (effort medium, +subagents); effort high not observed, only medium (usage is partial, so it may be missing)"
+        );
+    }
+
+    #[test]
+    fn several_efforts_on_the_matching_model_count_as_met_when_one_is_the_request() {
+        let mut run = with_usage("tracked", &[("check", "claude-opus-5-5", false)]);
+        set_efforts(
+            &mut run,
+            Stage::Check,
+            "claude-opus-5-5",
+            &["high", "medium"],
+        );
+        assert_eq!(
+            observed(&render(&run), "check"),
+            "observed: claude-opus-5-5 (effort high/medium); matches the request"
+        );
+    }
+
+    #[test]
+    fn a_missing_effort_in_the_logs_is_said_so_next_to_partial_coverage() {
+        let text = render(&with_usage(
+            "partial",
+            &[("check", "claude-opus-5-5", false)],
+        ));
+        assert_eq!(
+            observed(&text, "check"),
+            "observed: claude-opus-5-5; matches the request (effort not recorded; usage is partial)"
+        );
+    }
+
+    #[test]
+    fn a_matching_run_shows_the_alias_and_the_observed_id_side_by_side() {
+        let text = render(&with_usage(
+            "tracked",
+            &[
+                ("build", "claude-sonnet-5-5", false),
+                ("check", "claude-sonnet-5-5", false),
+                ("check", "claude-opus-5-5", true),
+            ],
+        ));
+        assert_eq!(
+            observed(&text, "build"),
+            "observed: claude-sonnet-5-5; matches the request"
+        );
+        // The coordinator ran on Sonnet, the review agents on Opus: the request is met.
+        assert_eq!(
+            observed(&text, "check"),
+            "observed: claude-sonnet-5-5, claude-opus-5-5 (+subagents); matches the request (effort not recorded)"
+        );
+        assert!(!text.contains("MISMATCH"), "{text}");
+        assert!(!text.contains("Effort observed"), "{text}");
+        assert!(
+            text.contains("  check   strong  opus, effort high\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_request_that_was_never_observed_is_flagged_as_a_mismatch() {
+        let text = render(&with_usage(
+            "tracked",
+            &[
+                ("build", "claude-sonnet-5-5", false),
+                ("check", "claude-sonnet-5-5", false),
+            ],
+        ));
+        assert_eq!(
+            observed(&text, "check"),
+            "observed: claude-sonnet-5-5; MISMATCH: opus was requested and never observed"
+        );
+        assert!(
+            observed(&text, "build").ends_with("matches the request"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn partial_usage_does_not_turn_a_missing_model_into_a_mismatch() {
+        let text = render(&with_usage(
+            "partial",
+            &[("check", "claude-sonnet-5-5", false)],
+        ));
+        assert_eq!(
+            observed(&text, "check"),
+            "observed: claude-sonnet-5-5; opus not observed (usage is partial, so it may be missing)"
+        );
+        assert!(!text.contains("MISMATCH"), "{text}");
+    }
+
+    #[test]
+    fn partial_usage_is_visible_even_when_the_request_is_met_or_the_stage_is_empty() {
+        let text = render(&with_usage(
+            "partial",
+            &[("build", "claude-sonnet-5-5", false)],
+        ));
+        assert_eq!(
+            observed(&text, "build"),
+            "observed: claude-sonnet-5-5; matches the request (usage is partial)"
+        );
+        assert_eq!(
+            observed(&text, "check"),
+            "observed: none recorded for this stage (usage is partial)"
+        );
+    }
+
+    #[test]
+    fn a_stage_no_log_has_entries_for_is_told_apart_from_one_without_rows() {
+        let mut run = with_usage("tracked", &[("build", "claude-sonnet-5-5", false)]);
+        run.usage.as_mut().unwrap().no_data = vec![Stage::Check];
+        let text = render(&run);
+        assert_eq!(
+            observed(&text, "check"),
+            "observed: none recorded for this stage (no session log has entries for it)"
+        );
+    }
+
+    #[test]
+    fn a_no_data_stage_on_a_partial_run_still_says_the_usage_is_partial() {
+        let mut run = with_usage("partial", &[("build", "claude-sonnet-5-5", false)]);
+        run.usage.as_mut().unwrap().no_data = vec![Stage::Check];
+        assert_eq!(
+            observed(&render(&run), "check"),
+            "observed: none recorded for this stage (no session log has entries for it; usage is partial)"
+        );
+    }
+
+    #[test]
+    fn rework_usage_counts_toward_the_build_task() {
+        let mut run = with_usage("tracked", &[]);
+        let row: crate::usage::UsageRow = serde_json::from_value(serde_json::json!(
+            {"stage": "build", "model": "claude-sonnet-5-5", "rework": true, "input": 1, "output": 1}
+        ))
+        .unwrap();
+        run.usage.as_mut().unwrap().rows.push(row);
+        assert!(observed(&render(&run), "build").ends_with("matches the request"));
+    }
+
+    #[test]
+    fn a_not_tracked_run_without_a_reason_still_says_why_it_has_no_numbers() {
+        let mut run = with_usage("not-tracked", &[]);
+        run.usage.as_mut().unwrap().reason = None;
+        assert_eq!(
+            observed(&render(&run), "build"),
+            "observed: not tracked: no reason recorded"
+        );
+    }
+
+    #[test]
+    fn a_selection_that_routes_no_task_has_no_observed_lines() {
+        let mut run = routed_run();
+        run.model_routing.as_mut().unwrap().tasks.clear();
+        let text = render(&run);
+        assert!(text.contains("Model routing claude"), "{text}");
+        assert!(!text.contains("observed:"), "{text}");
+    }
+
+    #[test]
+    fn a_stage_without_usage_rows_and_a_run_without_coverage_say_so() {
+        let text = render(&with_usage(
+            "tracked",
+            &[("build", "claude-sonnet-5-5", false)],
+        ));
+        assert_eq!(
+            observed(&text, "check"),
+            "observed: none recorded for this stage"
+        );
+        let untracked = render(&with_usage("not-tracked", &[]));
+        assert_eq!(
+            observed(&untracked, "build"),
+            "observed: not tracked: no session logs were found"
+        );
+        assert!(!untracked.contains("MISMATCH"), "{untracked}");
+    }
+
+    #[test]
+    fn a_task_that_is_not_routed_has_no_observed_line() {
+        let text = render(&with_usage(
+            "tracked",
+            &[("finish", "claude-haiku-5-5", false)],
+        ));
+        let after: Vec<_> = text
+            .lines()
+            .skip_while(|l| !l.starts_with("  finish"))
+            .take(2)
+            .collect();
+        assert_eq!(after[0], "  finish  not routed");
+        assert!(
+            !after.get(1).is_some_and(|line| line.contains("observed:")),
+            "{after:?}"
+        );
+    }
+
+    #[test]
+    fn an_override_is_compared_with_the_role_it_chose() {
+        let mut run = with_usage("tracked", &[("check", "claude-sonnet-5-5", false)]);
+        run.model_routing
+            .as_mut()
+            .unwrap()
+            .overrides
+            .insert(Task::Check, crate::routing::Role::Coding);
+        let text = render(&run);
+        assert!(
+            observed(&text, "check").ends_with("matches the request"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn an_overridden_task_shows_its_role_and_is_marked() {
+        let mut run = routed_run();
+        run.model_routing
+            .as_mut()
+            .unwrap()
+            .overrides
+            .insert(Task::Check, crate::routing::Role::Coding);
+        let text = render(&run);
+        assert!(
+            text.contains("  check   coding  sonnet (override)\n"),
+            "{text}"
+        );
+        assert!(text.contains("  build   coding  sonnet\n"), "{text}");
     }
 
     #[test]

@@ -8,8 +8,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   build:
+    timeout-minutes: 45
     strategy:
       matrix:
         include:
@@ -38,12 +43,14 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
+          retention-days: 7
           path: |
             ${{ matrix.artifact }}
             ${{ matrix.artifact }}.sha256
   publish:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

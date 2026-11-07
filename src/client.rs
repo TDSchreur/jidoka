@@ -1,4 +1,5 @@
 use crate::{
+    routing::ModelRouting,
     run::{parse_update, NewRun, Run},
     server::Info,
 };
@@ -15,12 +16,14 @@ pub(crate) fn start_run(
     project: &str,
     repository: Option<String>,
     session: Option<String>,
+    model_routing: Option<ModelRouting>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let body = serde_json::to_vec(&NewRun {
         title: title.to_string(),
         project: project.to_string(),
         repository,
         session,
+        model_routing,
     })?;
     let run: Run = serde_json::from_slice(&api_post(server, "/api/runs", &body)?)?;
     Ok(run.id)
@@ -254,7 +257,7 @@ mod tests {
         )
         .unwrap();
         let server = TestServer::start(&path);
-        let id = start_run(&server.address, "Verify slice", "/work", None, None).unwrap();
+        let id = start_run(&server.address, "Verify slice", "/work", None, None, None).unwrap();
         let ticket = "https://github.com/example/repo/issues/7";
         let steps: [(&str, &str, &[&str]); 4] = [
             (
@@ -334,7 +337,7 @@ mod tests {
         assert_eq!(invalid.to_string(), "Invalid run id");
         // Nothing listens on port 1. A port that was just freed could be taken by another test's server.
         let address = NOTHING_LISTENS.to_string();
-        let unreachable = start_run(&address, "task", "/work", None, None).unwrap_err();
+        let unreachable = start_run(&address, "task", "/work", None, None, None).unwrap_err();
         assert!(
             unreachable
                 .to_string()
@@ -380,6 +383,79 @@ mod tests {
         }
     }
 
+    /// A policy file with an entry for each agent; the models tell the entries apart.
+    fn both_agents(claude_model: &str, codex_model: &str) -> String {
+        format!(
+            r#"{{"agents":{{
+                "claude":{{"roles":{{"strong":{{"model":"{claude_model}"}}}},"tasks":{{"check":"strong"}}}},
+                "codex":{{"roles":{{"strong":{{"model":"{codex_model}","effort":"high"}}}},"tasks":{{"check":"strong"}}}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn a_run_keeps_the_selection_it_started_with_when_the_policy_file_changes() {
+        use crate::routing::{Host, Role, RoutingAgent, Task};
+        let dir = TestDir::new();
+        let server = TestServer::start(&dir.0.path().join("runs.json"));
+        let policy = dir.0.path().join("model-routing.json");
+        fs::write(&policy, both_agents("opus", "gpt-6-astra")).unwrap();
+        let codex = crate::routing::load(&policy, Some(Host::Codex))
+            .unwrap()
+            .selection;
+        let id = start_run(&server.address, "Routed", "/work", None, None, codex).unwrap();
+        fs::write(&policy, both_agents("opus", "gpt-6-luna")).unwrap();
+        report_run(
+            &server.address,
+            &id,
+            "build",
+            "running",
+            &["--activity", "go"],
+        )
+        .unwrap();
+        // The run holds only the Codex entry as it was at the start, and a continued session sees the same.
+        let run = fetch_run(&server.address, &id).unwrap();
+        assert!(crate::inspect::render(&run).contains("Model routing codex"));
+        let routing = run.model_routing.unwrap();
+        assert_eq!(routing.agent, RoutingAgent::Codex);
+        assert_eq!(routing.roles[&Role::Strong].model, "gpt-6-astra");
+        assert_eq!(routing.roles.len(), 1);
+        // A per-run override keeps working on the recorded selection.
+        report_run(
+            &server.address,
+            &id,
+            "check",
+            "running",
+            &["--model-routing", "check=strong"],
+        )
+        .unwrap();
+        let run = fetch_run(&server.address, &id).unwrap();
+        assert!(run
+            .model_routing
+            .unwrap()
+            .overrides
+            .contains_key(&Task::Check));
+        // A run started now reads the new file, and a Claude run gets the Claude entry, never Codex's.
+        let codex = crate::routing::load(&policy, Some(Host::Codex))
+            .unwrap()
+            .selection;
+        let next = start_run(&server.address, "Next", "/work", None, None, codex).unwrap();
+        let run = fetch_run(&server.address, &next).unwrap();
+        assert_eq!(
+            run.model_routing.unwrap().roles[&Role::Strong].model,
+            "gpt-6-luna"
+        );
+        let claude = crate::routing::load(&policy, Some(Host::Claude))
+            .unwrap()
+            .selection;
+        let third = start_run(&server.address, "Claude", "/work", None, None, claude).unwrap();
+        let routing = fetch_run(&server.address, &third)
+            .unwrap()
+            .model_routing
+            .unwrap();
+        assert_eq!(routing.agent, RoutingAgent::Claude);
+        assert_eq!(routing.roles[&Role::Strong].model, "opus");
+    }
+
     #[test]
     fn inspect_reads_back_the_context_a_session_recorded() {
         let dir = TestDir::new();
@@ -389,6 +465,7 @@ mod tests {
             "Continue me",
             "/work/repo.worktrees/x",
             Some("/work/repo".into()),
+            None,
             None,
         )
         .unwrap();
@@ -469,7 +546,8 @@ mod tests {
         let path = dir.0.path().join("runs.json");
         let server = TestServer::start(&path);
         for mode in ["factory", "factory-full"] {
-            let id = start_run(&server.address, "Full run", "/work/repo", None, None).unwrap();
+            let id =
+                start_run(&server.address, "Full run", "/work/repo", None, None, None).unwrap();
             report_run(&server.address, &id, "build", "running", &["--mode", mode]).unwrap();
             let run = fetch_run(&server.address, &id).unwrap();
             assert!(crate::inspect::render(&run).contains("Mode          factory-full"));

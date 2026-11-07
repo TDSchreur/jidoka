@@ -134,10 +134,17 @@
   color: var(--colorNeutralForeground1);
   background: var(--colorNeutralBackground2);
 }
-body { max-width: 960px; margin: 0 auto; padding: var(--spacingVerticalXXL) var(--spacingHorizontalL); }
-header { margin-bottom: var(--spacingVerticalXXL); }
-h1 { font-size: var(--fontSizeBase500); line-height: var(--lineHeightBase500); font-weight: var(--fontWeightSemibold); margin: var(--spacingVerticalXS) 0; }
+/* The page is a column at least as tall as the window, so the footer is at the bottom of a short page. */
+body { box-sizing: border-box; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; max-width: 960px; margin: 0 auto; padding: var(--spacingVerticalXXL) var(--spacingHorizontalL) 0; }
+/* A focused element that scrolls into view stops above the footer, not behind it. */
+html { scroll-padding-bottom: calc(var(--lineHeightBase200) + 2 * var(--spacingVerticalS)); }
+header.site-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingVerticalS) var(--spacingHorizontalXXL); margin-bottom: var(--spacingVerticalXXL); }
+/* The logo is the visible heading; its text stays for screen readers. The dark parts follow the theme, the blue parts keep their colour. */
+.logo { display: block; height: 2.25rem; width: auto; }
+.logo .ink { fill: var(--colorNeutralForeground1); }
+h1 { font-size: var(--fontSizeBase500); line-height: var(--lineHeightBase500); font-weight: var(--fontWeightSemibold); margin: 0; }
 p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
+.tagline { flex: 1 1 12rem; margin: 0; }
 .connection { display: inline-flex; align-items: center; gap: var(--spacingHorizontalXS); margin: 0 0 0 auto; font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground3); }
 .connection .pulse { width: .6rem; height: .6rem; border-radius: 50%; background: var(--colorNeutralForeground3); animation: beat 1.2s var(--curveEasyEase) 1; }
 .connection.connected .pulse { background: var(--colorPaletteGreenForeground1); }
@@ -167,6 +174,9 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 #message { margin: 0 0 var(--spacingVerticalL); }
 #message:empty { margin: 0; }
 #message.error { color: var(--colorPaletteRedForeground1); font-weight: var(--fontWeightSemibold); }
+.hidden-projects { margin-bottom: var(--spacingVerticalL); }
+.hidden-projects li { margin: var(--spacingVerticalS) 0; overflow-wrap: anywhere; }
+.project-heading-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingHorizontalS); }
 .project-row { margin-bottom: var(--spacingVerticalXXL); }
 .project-heading { font-size: var(--fontSizeBase400); overflow-wrap: anywhere; display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingHorizontalS); }
 .project-toggle { font: inherit; font-weight: var(--fontWeightSemibold); color: var(--colorNeutralForeground1); background: none; border: 0; padding: var(--spacingVerticalXS) var(--spacingHorizontalXS); cursor: pointer; text-align: left; }
@@ -198,11 +208,43 @@ p { color: var(--colorNeutralForeground2); margin: var(--spacingVerticalXS) 0; }
 .done-run [hidden] { display: none; }
 .run .toggle { position: relative; z-index: 1; }
 .toggle.danger { border-color: var(--colorPaletteRedBorder2); color: var(--colorPaletteRedForeground1); }
-.help { width: min(36rem, calc(100% - 2 * var(--spacingHorizontalL))); max-height: calc(100% - 2 * var(--spacingVerticalXL)); overflow-y: auto; }
+/* Help: a large modal with tabs. Its height is fixed so a tab change does not resize it; each tab scrolls on its own.
+   `.confirm.help` outranks `.confirm`, which comes later and sets the small width. */
+.confirm.help { width: min(64rem, calc(100% - 2 * var(--spacingHorizontalL))); height: min(46rem, calc(100% - 2 * var(--spacingVerticalXL))); padding-bottom: 0; }
+.help[open] { display: flex; flex-direction: column; }
+.help-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--spacingHorizontalM); flex: none; }
+.help-bar h2 { margin: 0; }
+.help-tabs { display: flex; flex-wrap: wrap; gap: var(--spacingHorizontalXS); flex: none; margin: var(--spacingVerticalM) 0 0; border-bottom: var(--strokeWidthThin) solid var(--colorNeutralStroke2); }
+.help-tab { padding: var(--spacingVerticalS) var(--spacingHorizontalM); border: 0; border-bottom: var(--strokeWidthThick) solid var(--colorNeutralBackground1); background: none; font: inherit; color: var(--colorNeutralForeground2); cursor: pointer; }
+.help-tab:hover { color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground1Hover); border-bottom-color: var(--colorNeutralBackground1Hover); }
+.help-tab[aria-selected="true"] { color: var(--colorNeutralForeground1); border-bottom-color: var(--colorBrandBackground); font-weight: var(--fontWeightSemibold); }
+.help-tab:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: calc(-1 * var(--strokeWidthThick)); }
+.help-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: var(--spacingVerticalM) var(--spacingHorizontalS) var(--spacingVerticalXL) var(--spacingHorizontalXS); }
+.help-panel:focus-visible { outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2); outline-offset: calc(-1 * var(--strokeWidthThick)); }
+.help-panel > p:first-child { margin-top: 0; }
 .help h3 { margin: var(--spacingVerticalL) 0 var(--spacingVerticalXS); font-size: var(--fontSizeBase300); line-height: var(--lineHeightBase300); font-weight: var(--fontWeightSemibold); }
+.help-panel > section:first-child h3 { margin-top: 0; }
+.help p, .help li { max-width: 60rem; }
+.help ul, .help ol:not(.flow) { margin: var(--spacingVerticalXS) 0; padding-left: var(--spacingHorizontalXL); }
+.help li + li { margin-top: var(--spacingVerticalXS); }
 .help-terms { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--spacingVerticalXS) var(--spacingHorizontalL); margin: 0; }
 .help-terms dt { font-weight: var(--fontWeightSemibold); }
 .help-terms dd { margin: 0; color: var(--colorNeutralForeground2); }
+.help-skills { grid-template-columns: 14rem minmax(0, 1fr); }
+.help-used { display: block; margin-top: var(--spacingVerticalXXS); font-size: var(--fontSizeBase200); color: var(--colorNeutralForeground3); }
+.help-code { margin: var(--spacingVerticalS) 0; padding: var(--spacingVerticalM) var(--spacingHorizontalM); overflow-x: auto; background: var(--colorNeutralBackground3); border-radius: var(--borderRadiusMedium); font-size: var(--fontSizeBase200); }
+.help-table { width: 100%; border-collapse: collapse; font-size: var(--fontSizeBase200); }
+.help-table th, .help-table td { padding: var(--spacingVerticalXS) var(--spacingHorizontalS); text-align: left; vertical-align: top; border-bottom: var(--strokeWidthThin) solid var(--colorNeutralStroke2); }
+.help-table thead th { font-weight: var(--fontWeightSemibold); }
+.help-table tbody th { font-weight: var(--fontWeightSemibold); white-space: nowrap; }
+/* The flow: the Stages in order, with an arrow between them that a screen reader does not read. */
+.flow { display: flex; flex-wrap: wrap; gap: var(--spacingVerticalS) var(--spacingHorizontalXL); margin: var(--spacingVerticalS) 0; padding: 0; list-style: none; }
+.flow li { position: relative; display: flex; flex-direction: column; gap: var(--spacingVerticalXXS); flex: 1 1 9rem; padding: var(--spacingVerticalS) var(--spacingHorizontalM); border: var(--strokeWidthThin) solid var(--colorNeutralStroke2); border-radius: var(--borderRadiusMedium); background: var(--colorNeutralBackground2); }
+.flow li + li::before { content: "\2192"; content: "\2192" / ""; position: absolute; left: calc(-1 * var(--spacingHorizontalXL)); top: 50%; width: var(--spacingHorizontalXL); transform: translateY(-50%); text-align: center; color: var(--colorNeutralForeground3); }
+.flow span { font-size: var(--fontSizeBase200); color: var(--colorNeutralForeground2); }
+/* A very short window, such as a zoomed one: the whole dialog scrolls instead of squeezing the panel to nothing. */
+@media (max-height: 30rem) { .confirm.help { height: auto; max-height: calc(100% - 2 * var(--spacingVerticalM)); overflow-y: auto; } .help-panel { flex: none; overflow-y: visible; } }
+@media (max-width: 40rem) { .confirm.help { padding-left: var(--spacingHorizontalM); padding-right: var(--spacingHorizontalM); } .help-terms, .help-skills { grid-template-columns: minmax(0, 1fr); } .flow li + li::before { display: none; } .flow { gap: var(--spacingVerticalS) var(--spacingHorizontalS); } }
 .welcome { max-width: 40rem; padding: var(--spacingVerticalXL) var(--spacingHorizontalXL); background: var(--colorNeutralBackground1); border: var(--strokeWidthThin) solid var(--colorNeutralStroke2); border-radius: var(--borderRadiusLarge); box-shadow: var(--shadow4); }
 .welcome h2 { margin: 0 0 var(--spacingVerticalS); font-size: var(--fontSizeBase500); line-height: var(--lineHeightBase500); font-weight: var(--fontWeightSemibold); }
 .link { padding: 0; border: 0; background: none; font: inherit; color: var(--colorBrandForegroundLink); text-decoration: underline; cursor: pointer; }
@@ -243,7 +285,7 @@ main:focus { outline: none; }
   .detail-close-wide { display: none; }
   .detail-close-compact { display: inline; }
 }
-.project, .updated { font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground3); }
+.updated { font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground3); }
 .badge { display: inline-block; margin-top: var(--spacingVerticalXS); padding: var(--spacingVerticalXXS) var(--spacingHorizontalSNudge); border: var(--strokeWidthThin) solid var(--colorNeutralStrokeAccessible); border-radius: var(--borderRadiusSmall); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); font-weight: var(--fontWeightSemibold); color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground3); text-transform: uppercase; letter-spacing: .04em; }
 .badge.blocked { color: var(--colorNeutralForegroundOnBrand); background: var(--colorPaletteRedBackground3); border-color: var(--colorPaletteRedBackground3); }
 .badge.done { color: var(--colorPaletteGreenForeground1); background: var(--colorPaletteGreenBackground1); border-color: var(--colorPaletteGreenBorder2); }
@@ -252,7 +294,9 @@ main:focus { outline: none; }
 .chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacingHorizontalXS); margin-top: var(--spacingVerticalXS); }
 .chips .badge { margin-top: 0; }
 .chip { display: inline-block; padding: var(--spacingVerticalXXS) var(--spacingHorizontalSNudge); border: var(--strokeWidthThin) solid var(--colorNeutralStrokeAccessible); border-radius: var(--borderRadiusSmall); font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground1); background: var(--colorNeutralBackground3); }
-footer { margin-top: var(--spacingVerticalXXL); }
+/* The footer, and the version in it, stays in view: at the bottom of a short page, and stuck to the bottom of the window while a long page scrolls. */
+#app { margin-bottom: var(--spacingVerticalXL); }
+footer { position: sticky; bottom: 0; margin-top: auto; padding: var(--spacingVerticalS) 0; background: var(--colorNeutralBackground2); border-top: var(--strokeWidthThin) solid var(--colorNeutralStroke2); }
 .build { margin: 0; font-size: var(--fontSizeBase200); line-height: var(--lineHeightBase200); color: var(--colorNeutralForeground3); }
 code { font-family: var(--fontFamilyMonospace); }
 a { color: var(--colorBrandForegroundLink); }

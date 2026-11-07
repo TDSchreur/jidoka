@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Scaffold the per-repo configuration that the engineering skills assume:
 
-- **Issue tracker**: where issues live (GitHub by default; local markdown is also supported out of the box)
+- **Issue tracker**: where issues live (GitHub by default; GitLab, Azure Boards and local markdown are also supported out of the box)
 - **Triage labels**: the strings used for the five canonical triage roles
 - **Domain docs**: where `GLOSSARY.md` and ADRs live, and the consumer rules for reading them
 
@@ -20,7 +20,7 @@ This is a prompt-driven skill, not a deterministic script. Explore, present what
 
 Look at the current repo to understand its starting state. Read whatever exists; don't assume:
 
-- `git remote -v` and `.git/config`: is this a GitHub repo? Which one?
+- `git remote -v` and `.git/config`: is this a GitHub repo? Which one? A remote on `dev.azure.com`, `ssh.dev.azure.com` or `*.visualstudio.com` is an Azure Repos repo.
 - `AGENTS.md` and `CLAUDE.md` at the repo root: does either exist? Is there already an `## Agent skills` section in either?
 - `GLOSSARY.md` and `GLOSSARY-MAP.md` at the repo root, and the legacy `CONTEXT.md` / `CONTEXT-MAP.md`. If a legacy file exists, offer to `git mv` it to its `GLOSSARY` name and rewrite those names in `docs/agents/domain.md`.
 - `docs/adr/` and any `src/*/docs/adr/` directories
@@ -39,16 +39,29 @@ Lead each section with the recommended answer so the user can accept it in a wor
 
 > Explainer: The "issue tracker" is where issues live for this repo. Skills like `to-tickets`, `triage`, and `to-spec` read from and write to it. They need to know whether to call `gh issue create`, write a markdown file under `.scratch/`, or follow some other workflow you describe. Pick the place you actually track work for this repo.
 
-Default posture: these skills were designed for GitHub. If a `git remote` points at GitHub, propose that. If a `git remote` points at GitLab (`gitlab.com` or a self-hosted host), propose GitLab. Otherwise (or if the user prefers), offer:
+Default posture: these skills were designed for GitHub. If a `git remote` points at GitHub, propose that. If a `git remote` points at GitLab (`gitlab.com` or a self-hosted host), propose GitLab. If a `git remote` points at Azure Repos, propose Azure Boards. Otherwise (or if the user prefers), offer:
 
 - **GitHub**: issues live in the repo's GitHub Issues (uses the `gh` CLI)
 - **GitLab**: issues live in the repo's GitLab Issues (uses the [`glab`](https://gitlab.com/gitlab-org/cli) CLI)
+- **Azure Boards**: issues live as work items in an Azure DevOps project (uses the `az` CLI with the `azure-devops` extension). Available for any repository host, including GitHub and GitLab repos.
 - **Local markdown**: issues live as files under `.scratch/<feature>/` in this repo (good for solo projects or repos without a remote)
 - **Other** (Jira, Linear, etc.): ask the user to describe the workflow in one paragraph; the skill will record it as freeform prose
 
-Record the choice in `docs/agents/issue-tracker.md`. The GitHub and GitLab templates carry a "PRs as a request surface" flag, defaulted **off**. Leave it off and don't raise it: a user who wants external PRs in the triage queue can flip the flag in the file later.
+The tracker is independent of where the code is hosted: a GitHub repo can track its work in Azure Boards, and an Azure Repos repo can use any other option.
+
+Record the choice in `docs/agents/issue-tracker.md`. The GitHub and GitLab templates carry a "PRs as a request surface" flag, defaulted **off**. Leave it off and don't raise it: a user who wants external PRs in the triage queue can flip the flag in the file later. The Azure Boards template fixes this flag at **no**, because pull requests are not work items.
 
 A GitHub or GitLab tracker needs a reachable repo. When the user picks one and no `git remote` points at that host, get the repo URL from them and wire it up (`git init` if needed, `git remote add origin <url>`) before going further. Done when `gh repo view` / `glab repo view` prints the project from inside this directory; if it can't, stop and tell the user what's missing.
+
+An Azure Boards tracker needs a reachable project and its process details. When the user picks it:
+
+1. Ask for the organization URL (such as `https://dev.azure.com/<organization>`) and the project name.
+2. Check the tooling and access in order. Run `az version`; if it fails, tell the user to install or fix the Azure CLI. Run `az extension show --name azure-devops`; if it fails, tell the user to install the Azure DevOps extension with `az extension add --name azure-devops`. Run `az devops invoke --org <org-url> --detect false --area wit --resource workitemtypes --route-parameters "project=<project>" --api-version 7.1`; if it fails, tell the user to check sign-in (`az login`, `az devops login` or `AZURE_DEVOPS_EXT_PAT`) and that the organization and project are correct and visible to them. Done when the work item types list prints. Never print a token.
+3. From that list, propose a work item type for specs, one for tickets and one for bugs, and let the user confirm or change them. Don't assume the names of the Agile, Scrum, Basic or CMMI process; use what the project returns.
+4. For each chosen type, read its states and their categories with `az devops invoke --org <org-url> --detect false --area wit --resource workitemtypestates --route-parameters "project=<project>" "type=<type>" --api-version 7.1`. Show the state per category (Proposed, InProgress, Completed, Removed) and propose the Removed state, or the Completed state when the type has none, as the "Wontfix state". Have the user confirm.
+5. Fill in the configuration block of [issue-tracker-azure-boards.md](./issue-tracker-azure-boards.md) with these values.
+
+If `az`, the extension, the sign-in, project access or any value of the configuration block is missing, stop and tell the user exactly what is missing and how to fix it. Do not write a partial `docs/agents/issue-tracker.md`.
 
 **Section B: Triage label vocabulary.** Skip this section entirely if the `triage` skill isn't installed (exploration told you), since an uninstalled skill needs no labels.
 
@@ -103,12 +116,13 @@ The block:
 
 Include the `### Triage labels` sub-block, and write `docs/agents/triage-labels.md`, only when `triage` is installed and Section B ran. When it isn't, both are omitted.
 
-When Section B ran on GitHub or GitLab, create each configured label the tracker lacks (`gh label create` / `glab label create`).
+When Section B ran on GitHub or GitLab, create each configured label the tracker lacks (`gh label create` / `glab label create`). On Azure Boards the triage labels are work item tags, which are created the first time they are applied, so there is nothing to create.
 
 Then write the docs files using the seed templates in this skill folder as a starting point:
 
 - [issue-tracker-github.md](./issue-tracker-github.md): GitHub issue tracker
 - [issue-tracker-gitlab.md](./issue-tracker-gitlab.md): GitLab issue tracker
+- [issue-tracker-azure-boards.md](./issue-tracker-azure-boards.md): Azure Boards issue tracker
 - [issue-tracker-local.md](./issue-tracker-local.md): local-markdown issue tracker
 - [triage-labels.md](./triage-labels.md): label mapping (only if `triage` is installed)
 - [domain.md](./domain.md): domain doc consumer rules + layout

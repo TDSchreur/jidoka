@@ -11,7 +11,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     time::Instant,
 };
 
@@ -108,7 +108,13 @@ pub(crate) struct UsageRow {
     /// The part of `tokens` that subagents used.
     #[serde(default, skip_serializing_if = "Tokens::is_empty")]
     pub(crate) subagents: Tokens,
+    /// The reasoning efforts the agent's log recorded for these calls, sorted. Empty when it recorded none.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) efforts: BTreeSet<String>,
 }
+
+/// Most distinct efforts one row keeps. Real logs show a handful; a made-up log must not grow the record.
+pub(crate) const MAX_EFFORTS_PER_ROW: usize = 8;
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -285,13 +291,15 @@ pub(crate) struct Entry {
     pub(crate) tokens: Tokens,
     /// Whether a subagent made the call.
     pub(crate) subagent: bool,
+    /// The reasoning effort the log recorded for the call, when it recorded one.
+    pub(crate) effort: Option<String>,
 }
 
 /// How far ahead of this machine's clock a log entry may be.
-const FUTURE_SLACK_MS: u64 = 60_000;
+pub(crate) const FUTURE_SLACK_MS: u64 = 60_000;
 
 /// The last mark at or before `ts`, when `ts` is inside the run's window.
-fn mark_at(run: &Run, ts: u64) -> Option<&Mark> {
+pub(crate) fn mark_at(run: &Run, ts: u64) -> Option<&Mark> {
     if run.finished_at.is_some_and(|end| ts > end) {
         return None;
     }
@@ -299,7 +307,7 @@ fn mark_at(run: &Run, ts: u64) -> Option<&Mark> {
 }
 
 /// Whether two runs were active at the same time.
-fn overlaps(a: &Run, b: &Run) -> bool {
+pub(crate) fn overlaps(a: &Run, b: &Run) -> bool {
     let window = |run: &Run| {
         (
             run.timeline.first().map_or(u64::MAX, |m| m.at),
@@ -366,7 +374,13 @@ pub(crate) fn attribute(
                     rework,
                     tokens: Tokens::default(),
                     subagents: Tokens::default(),
+                    efforts: BTreeSet::new(),
                 });
+            if let Some(effort) = &entry.effort {
+                if row.efforts.len() < MAX_EFFORTS_PER_ROW || row.efforts.contains(effort) {
+                    row.efforts.insert(effort.clone());
+                }
+            }
             row.tokens.add(&entry.tokens);
             if entry.subagent {
                 row.subagents.add(&entry.tokens);
@@ -598,6 +612,71 @@ fn keep_more(old: Option<&Usage>, new: Usage) -> Usage {
     kept
 }
 
+/// Serializes usage collection for all handles to one run store.
+#[derive(Default)]
+pub(crate) struct Collection {
+    lock: std::sync::Mutex<()>,
+}
+
+impl Collection {
+    fn collect(
+        &self,
+        store: &crate::run::RunStore,
+        id: &str,
+        settings: &UsageSettings,
+    ) -> std::io::Result<()> {
+        self.collect_with(store, id, settings, || {}, || Ok(()))
+    }
+
+    fn collect_with(
+        &self,
+        store: &crate::run::RunStore,
+        id: &str,
+        settings: &UsageSettings,
+        waiting: impl FnOnce(),
+        acquired: impl FnOnce() -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        let _guard = match self.lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                return Err(crate::run::lock_error(error))
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                waiting();
+                self.lock.lock().map_err(crate::run::lock_error)?
+            }
+        };
+        acquired()?;
+        collect_locked(store, id, settings)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn collect_paused(
+        &self,
+        store: &crate::run::RunStore,
+        id: &str,
+        settings: &UsageSettings,
+        waiting: Option<std::sync::mpsc::Sender<()>>,
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) -> std::io::Result<()> {
+        self.collect_with(
+            store,
+            id,
+            settings,
+            || {
+                if let Some(waiting) = waiting {
+                    let _ = waiting.send(());
+                }
+            },
+            || {
+                entered.send(()).map_err(std::io::Error::other)?;
+                release.recv().map_err(std::io::Error::other)
+            },
+        )
+    }
+}
+
 /// Recomputes the usage of one run from the logs and stores it. Collections never overlap. A failure
 /// is returned, never panics, and leaves the stored usage as it was; the caller only reports it.
 pub(crate) fn collect_and_store(
@@ -605,7 +684,14 @@ pub(crate) fn collect_and_store(
     id: &str,
     settings: &UsageSettings,
 ) -> std::io::Result<()> {
-    let _one_at_a_time = store.collecting.lock().map_err(crate::run::lock_error)?;
+    store.usage_collection().collect(store, id, settings)
+}
+
+fn collect_locked(
+    store: &crate::run::RunStore,
+    id: &str,
+    settings: &UsageSettings,
+) -> std::io::Result<()> {
     let runs = store.list()?;
     let Some(target) = runs.iter().find(|run| run.id == id) else {
         return Ok(());

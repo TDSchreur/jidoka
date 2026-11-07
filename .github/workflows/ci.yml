@@ -8,8 +8,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
+    timeout-minutes: 45
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -22,16 +27,35 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      # Restores the compiled dependencies. The key covers the OS, the Rust version and the Cargo manifests
+      # including Cargo.lock, so a changed dependency or compiler starts a fresh cache, and the checks below
+      # still run in full. Only runs on develop save a cache; pull requests read it but never write one.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/develop' }}
       # Keep these three checks in sync with scripts/verify.sh.
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Lint workflows
+        run: '"$(go env GOPATH)/bin/actionlint"'
   ci-ok:
     if: always()
-    needs: [check]
+    needs: [check, actionlint]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Require all checks to pass
         env:
           RESULT: ${{ needs.check.result }}
-        run: test "$RESULT" = success
+          ACTIONLINT_RESULT: ${{ needs.actionlint.result }}
+        run: test "$RESULT" = success && test "$ACTIONLINT_RESULT" = success

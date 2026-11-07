@@ -1,6 +1,6 @@
 [package]
 name = "factory"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "A small software factory"
 
@@ -12,6 +12,8 @@ path = "src/main.rs"
 rocket = { version = "0.5.2", features = ["json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+percent-encoding = "2"
+time = { version = "0.3", features = ["parsing"] }
 sha2 = "0.11.1"
 
 [dev-dependencies]

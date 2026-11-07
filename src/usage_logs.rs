@@ -1,5 +1,5 @@
-//! Readers for the session logs of Claude Code, Codex and Copilot. Each keeps only the model, the token
-//! counts and the timestamp of a response, plus which run ids and session ids a log names. No conversation
+//! Readers for the session logs of Claude Code, Codex and Copilot. Each keeps only the model, the
+//! reasoning effort (Claude Code and Codex record it), the token counts and the timestamp of a response, plus which run ids and session ids a log names. No conversation
 //! text, prompt, tool output or credential leaves this module.
 //!
 //! Formats (see the README for what is validated): Claude Code transcripts and their subagent transcripts,
@@ -20,8 +20,8 @@ use std::{
 
 /// The largest log read: real session logs are a few megabytes, so a bigger one is skipped.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
-const DAY_MS: u64 = 24 * 60 * 60 * 1000;
-const MTIME_SLACK_MS: u64 = 5 * 60 * 1000;
+pub(crate) const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+pub(crate) const MTIME_SLACK_MS: u64 = 5 * 60 * 1000;
 /// Limits on one pass over the logs, so a huge or hostile log folder cannot exhaust memory or time.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ReadLimits {
@@ -47,7 +47,7 @@ pub(crate) struct Roots {
 }
 
 impl Roots {
-    /// The agents' usual folders under `home`, honoring `CLAUDE_CONFIG_DIR` and `CODEX_HOME` as install does.
+    /// The agents' usual folders under `home`, honoring `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `COPILOT_HOME` as install does.
     pub(crate) fn from_home(
         home: &Path,
         var: &dyn Fn(&str) -> Option<OsString>,
@@ -91,7 +91,7 @@ pub(crate) struct ReadResult {
 // --- shared pieces ----------------------------------------------------------------------------------
 
 /// A model name that is safe to store and print: a log is written by another program.
-fn model_name(value: &Value) -> Option<String> {
+pub(crate) fn model_name(value: &Value) -> Option<String> {
     let name = value.as_str()?;
     let mut chars = name.chars();
     let first = chars.next()?;
@@ -101,21 +101,36 @@ fn model_name(value: &Value) -> Option<String> {
     .then(|| name.to_string())
 }
 
+/// Longest effort text kept. The known efforts (`low`, `medium`, `high`, `xhigh`, `max`, `ultra`) are short.
+const MAX_EFFORT_LEN: usize = 16;
+
+/// A reasoning effort that is safe to store and print: a log is written by another program. Claude Code
+/// writes it as `effort` (and `perTurnEffort`, the same value) on each response.
+fn effort_name(value: &Value) -> Option<String> {
+    let name = value.as_str()?;
+    (!name.is_empty()
+        && name.len() <= MAX_EFFORT_LEN
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+    .then(|| name.to_string())
+}
+
 /// A token count, or `None` when the log holds no usable one.
-fn count(value: Option<&Value>) -> Option<u64> {
+pub(crate) fn count(value: Option<&Value>) -> Option<u64> {
     value?.as_u64().filter(|n| *n < (1 << 53))
 }
 
-fn timestamp(value: Option<&Value>) -> Option<u64> {
+pub(crate) fn timestamp(value: Option<&Value>) -> Option<u64> {
     parse_timestamp(value?.as_str()?)
 }
 
-fn modified_ms(path: &Path) -> Option<u64> {
+pub(crate) fn modified_ms(path: &Path) -> Option<u64> {
     let modified = fs::symlink_metadata(path).ok()?.modified().ok()?;
     u64::try_from(modified.duration_since(UNIX_EPOCH).ok()?.as_millis()).ok()
 }
 
-enum LogFile {
+pub(crate) enum LogFile {
     Content(String),
     /// Not a regular file, so not followed.
     Skipped,
@@ -123,7 +138,7 @@ enum LogFile {
 }
 
 /// The text of a regular log file; a link or special file is not followed.
-fn read_text(path: &Path) -> io::Result<LogFile> {
+pub(crate) fn read_text(path: &Path) -> io::Result<LogFile> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.is_file() {
         return Ok(LogFile::Skipped);
@@ -182,21 +197,21 @@ fn sorted_dir(path: &Path) -> Vec<fs::DirEntry> {
 }
 
 /// The folders inside `path`. A link to a folder is not followed, so a link cannot lead out of the log folder.
-fn sub_dirs(path: &Path) -> Vec<fs::DirEntry> {
+pub(crate) fn sub_dirs(path: &Path) -> Vec<fs::DirEntry> {
     let mut entries = sorted_dir(path);
     entries.retain(|e| e.file_type().is_ok_and(|t| t.is_dir()));
     entries
 }
 
 /// The regular files inside `path`; links are not followed.
-fn files_in(path: &Path) -> Vec<fs::DirEntry> {
+pub(crate) fn files_in(path: &Path) -> Vec<fs::DirEntry> {
     let mut entries = sorted_dir(path);
     entries.retain(|e| e.file_type().is_ok_and(|t| t.is_file()));
     entries
 }
 
 /// A response is often written more than once, sometimes with growing counts: the largest of each field wins.
-fn merge_largest(into: &mut Tokens, other: &Tokens) {
+pub(crate) fn merge_largest(into: &mut Tokens, other: &Tokens) {
     let max = |a: Option<u64>, b: Option<u64>| match (a, b) {
         (Some(a), Some(b)) => Some(a.max(b)),
         (a, b) => a.or(b),
@@ -296,6 +311,7 @@ fn parse_claude(text: &str, session: &str, subagent_file: bool) -> Parsed {
                 model,
                 tokens,
                 subagent,
+                effort: effort_name(&data["effort"]),
             },
         );
     }
@@ -361,7 +377,7 @@ struct Rollout {
 
 /// The ids on a rollout's `session_meta` line. A rollout of a subagent has its own id and the id of the
 /// root session it belongs to.
-fn codex_meta(text: &str) -> Option<(String, String, bool)> {
+pub(crate) fn codex_meta(text: &str) -> Option<(String, String, bool)> {
     let line = text
         .lines()
         .find(|line| line.contains("\"session_meta\""))?;
@@ -380,12 +396,45 @@ fn codex_meta(text: &str) -> Option<(String, String, bool)> {
     Some((id, root, subagent))
 }
 
-/// Codex counts cached input inside `input_tokens`; the cached part is moved to cache read, and cache
-/// writes are taken out of input too. Reasoning tokens are part of output.
+/// What a Codex `turn_context` line says about the model and effort of a turn.
+#[derive(Clone)]
+struct TurnSettings {
+    model: String,
+    effort: Option<String>,
+}
+
+/// Whether a `token_usage_record` usage object reports any input or output count.
+pub(crate) fn has_token_counts(usage: &Value) -> bool {
+    usage.is_object()
+        && (count(usage.get("input_tokens")).is_some()
+            || count(usage.get("output_tokens")).is_some())
+}
+
+/// The token counts of a Codex `token_usage_record`. Codex counts cached input inside `input_tokens`; the
+/// cached part is moved to cache read, and cache writes are taken out of input too.
+pub(crate) fn codex_tokens(usage: &Value) -> Tokens {
+    let (input, cached, written) = (
+        count(usage.get("input_tokens")),
+        count(usage.get("cached_input_tokens")),
+        count(usage.get("cache_write_input_tokens")),
+    );
+    Tokens {
+        input: input.map(|n| {
+            n.saturating_sub(cached.unwrap_or(0))
+                .saturating_sub(written.unwrap_or(0))
+        }),
+        cache_read: cached,
+        cache_write: written,
+        output: count(usage.get("output_tokens")),
+        reasoning: count(usage.get("reasoning_output_tokens")),
+    }
+}
+
+/// Reasoning tokens are part of output; see `codex_tokens` for how the counts are split.
 fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
     let mut parsed = Parsed::default();
-    let mut model_by_turn: BTreeMap<String, String> = BTreeMap::new();
-    let mut last_model: Option<String> = None;
+    let mut by_turn: BTreeMap<String, TurnSettings> = BTreeMap::new();
+    let mut last: Option<TurnSettings> = None;
     for (number, line) in text.lines().enumerate() {
         let is_context = line.contains("\"turn_context\"");
         if !is_context && !line.contains("\"token_usage_record\"") {
@@ -398,10 +447,15 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
         let payload = &data["payload"];
         if is_context && data["type"] == "turn_context" {
             if let Some(model) = model_name(&payload["model"]) {
+                // The effort belongs to the same turn as the model.
+                let settings = TurnSettings {
+                    model,
+                    effort: effort_name(&payload["effort"]),
+                };
                 if let Some(turn) = payload["turn_id"].as_str() {
-                    model_by_turn.insert(turn.to_string(), model.clone());
+                    by_turn.insert(turn.to_string(), settings.clone());
                 }
-                last_model = Some(model);
+                last = Some(settings);
             }
             continue;
         }
@@ -413,30 +467,16 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
             parsed.unusable += 1;
             continue;
         };
-        let (input, cached, written, output) = (
-            count(usage.get("input_tokens")),
-            count(usage.get("cached_input_tokens")),
-            count(usage.get("cache_write_input_tokens")),
-            count(usage.get("output_tokens")),
-        );
-        let model = payload["turn_id"]
+        // The turn's own settings, or the latest ones when the record names no known turn.
+        let settings = payload["turn_id"]
             .as_str()
-            .and_then(|t| model_by_turn.get(t))
-            .or(last_model.as_ref());
-        let Some(model) = model.filter(|_| input.is_some() || output.is_some()) else {
+            .and_then(|t| by_turn.get(t))
+            .or(last.as_ref());
+        let Some(settings) = settings.filter(|_| has_token_counts(usage)) else {
             parsed.unusable += 1;
             continue;
         };
-        let tokens = Tokens {
-            input: input.map(|n| {
-                n.saturating_sub(cached.unwrap_or(0))
-                    .saturating_sub(written.unwrap_or(0))
-            }),
-            cache_read: cached,
-            cache_write: written,
-            output,
-            reasoning: count(usage.get("reasoning_output_tokens")),
-        };
+        let tokens = codex_tokens(usage);
         parsed.push(
             payload["response_id"].as_str().map(str::to_string),
             number,
@@ -444,9 +484,10 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
             Entry {
                 session: session.to_string(),
                 ts,
-                model: model.clone(),
+                model: settings.model.clone(),
                 tokens,
                 subagent,
+                effort: settings.effort.clone(),
             },
         );
     }
@@ -528,7 +569,7 @@ fn read_codex(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
 }
 
 /// `YYYY-MM-DD` for milliseconds since the epoch, to compare with the day folders.
-fn civil_day(millis: u64) -> String {
+pub(crate) fn civil_day(millis: u64) -> String {
     crate::usage::format_timestamp(millis)[..10].to_string()
 }
 
@@ -588,6 +629,8 @@ fn parse_copilot(text: &str, session: &str) -> Parsed {
                 model,
                 tokens,
                 subagent: usage["initiator"] == "sub-agent",
+                // Copilot's usage records carry no effort.
+                effort: None,
             },
         );
     }
