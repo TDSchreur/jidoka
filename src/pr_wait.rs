@@ -513,12 +513,12 @@ pub(crate) fn pushed_head(worktree: &std::path::Path, branch: &str) -> Option<St
     (rev(&format!("refs/remotes/origin/{branch}^{{commit}}"))? == head).then_some(head)
 }
 
-/// Whether `url` is an Azure DevOps Services pull request URL, in its canonical or legacy form.
 /// The status and draft flag of an Azure Repos pull request, read with `az` the way `wait` reads it.
 pub(crate) fn azure_pr_status(gh: &dyn Gh, url: &str) -> Result<(String, bool), ToolProblem> {
     azure::status(gh, url)
 }
 
+/// Whether `url` is an Azure DevOps Services pull request URL, in its canonical or legacy form.
 pub(crate) fn is_azure_pr_url(url: &str) -> bool {
     url.starts_with("https://dev.azure.com/")
         || url

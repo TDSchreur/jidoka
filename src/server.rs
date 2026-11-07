@@ -1,6 +1,6 @@
 use crate::{
     current_build, pr_state,
-    pr_wait::RealGh,
+    pr_wait::{self, RealGh},
     run::{NewRun, Run, RunStore, UpdateRun},
     usage::{collect_and_store, UsageSettings},
 };
@@ -450,25 +450,29 @@ pub(crate) fn build_rocket_with(
 /// How often the dashboard server looks for pull requests whose state is due to be read again.
 const PR_STATE_PASS: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// Reads the state of the Runs' pull requests from their hosts, one pass at a time, on a blocking thread so
+/// Reads the state of the Runs' pull requests from their hosts, one pass every `pass`, on a blocking thread so
 /// a slow or missing tool never holds up a request. Merged pull requests are not read again.
-fn watch_pr_states(store: RunStore) {
+fn watch_pr_states(
+    store: RunStore,
+    tool: std::sync::Arc<dyn pr_wait::Gh + Send + Sync>,
+    pass: std::time::Duration,
+) -> rocket::tokio::task::JoinHandle<()> {
     rocket::tokio::spawn(async move {
         loop {
-            let store = store.clone();
+            let (store, tool) = (store.clone(), tool.clone());
             let _ = rocket::tokio::task::spawn_blocking(move || {
                 let now = match crate::run::updated_now() {
                     Ok(now) => now,
                     Err(error) => return eprintln!("Pull request states were not read: {error}"),
                 };
-                if let Err(error) = pr_state::refresh(&store, &RealGh, now) {
+                if let Err(error) = pr_state::refresh(&store, tool.as_ref(), now) {
                     eprintln!("Pull request states were not stored: {error}");
                 }
             })
             .await;
-            rocket::tokio::time::sleep(PR_STATE_PASS).await;
+            rocket::tokio::time::sleep(pass).await;
         }
-    });
+    })
 }
 
 pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> io::Result<()> {
@@ -487,7 +491,11 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
                 |rocket| {
                     Box::pin(async move {
                         if let Some(store) = rocket.state::<RunStore>() {
-                            watch_pr_states(store.clone());
+                            watch_pr_states(
+                                store.clone(),
+                                std::sync::Arc::new(RealGh),
+                                PR_STATE_PASS,
+                            );
                         }
                     })
                 },
@@ -2307,23 +2315,59 @@ mod tests {
         assert_ne!(response.status(), HttpStatus::Ok);
     }
 
-    #[test]
-    fn the_dashboard_server_refreshes_pull_request_states_in_the_background() {
-        // The pass runs off the request path, on a blocking thread, from a loop started at lift-off.
-        let source = include_str!("server.rs");
-        let serve = source
-            .split("pub(crate) fn serve(")
-            .nth(1)
-            .and_then(|rest| rest.split("\n}\n").next())
+    /// Answers every `gh` call with a merged pull request.
+    struct MergedGh;
+
+    impl crate::pr_wait::Gh for MergedGh {
+        fn run(&self, _args: &[&str]) -> Result<crate::pr_wait::GhOutput, crate::pr_wait::GhError> {
+            Ok(crate::pr_wait::GhOutput {
+                code: Some(0),
+                stdout: r#"{"state":"MERGED","isDraft":false}"#.into(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[rocket::async_test]
+    async fn the_dashboard_server_reads_pull_request_states_in_the_background() {
+        use crate::pr_state::PrState;
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let run = store
+            .create(NewRun {
+                title: "t".into(),
+                project: "/work".into(),
+                repository: None,
+                session: None,
+                model_routing: None,
+            })
             .unwrap();
-        assert!(serve.contains("watch_pr_states"));
-        let watch = source
-            .split("fn watch_pr_states(")
-            .nth(1)
-            .and_then(|rest| rest.split("\n}\n").next())
-            .expect("a watch_pr_states function");
-        assert!(watch.contains("spawn_blocking"));
-        assert!(watch.contains("pr_state::refresh(&store, &RealGh, now)"));
+        store
+            .update(
+                &run.id,
+                serde_json::from_str(
+                    r#"{"stage":"finish","status":"done","pr":"https://github.com/o/r/pull/7"}"#,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let watcher = watch_pr_states(
+            store.clone(),
+            std::sync::Arc::new(MergedGh),
+            std::time::Duration::from_millis(10),
+        );
+        // Wait for the first pass, with a deadline instead of a fixed sleep.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let state = loop {
+            let stored = store.list().unwrap()[0].pr_status.clone();
+            if let Some(status) = stored {
+                break status.state;
+            }
+            assert!(std::time::Instant::now() < deadline, "no state was stored");
+            rocket::tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        watcher.abort();
+        assert_eq!(state, PrState::Merged);
     }
 
     #[rocket::async_test]

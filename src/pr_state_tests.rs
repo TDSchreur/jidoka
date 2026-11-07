@@ -3,6 +3,7 @@
 use super::*;
 use crate::pr_wait::{GhError, GhOutput};
 use crate::run::{NewRun, RunStore, UpdateRun};
+use crate::test_support::TestDir;
 use std::sync::Mutex;
 
 const PR: &str = "https://github.com/o/r/pull/7";
@@ -101,32 +102,29 @@ fn problems_say_what_to_do() {
         stderr: String::new(),
     })]);
     assert!(read(&not_json, PR).unwrap_err().0.contains("not JSON"));
+    // Another host, such as GitLab, has no pull request state here, and no tool is asked.
+    let gitlab = ScriptedGh::new(vec![view("OPEN", false)]);
+    let problem = read(&gitlab, "https://gitlab.com/o/r/-/merge_requests/3")
+        .unwrap_err()
+        .0;
+    assert!(problem.contains("GitHub and Azure Repos"), "{problem}");
+    assert!(gitlab.calls().is_empty());
+    // A GitHub Enterprise pull request has the same shape, so gh is asked.
+    let enterprise = ScriptedGh::new(vec![view("MERGED", false)]);
+    assert_eq!(
+        read(&enterprise, "https://github.example.com/o/r/pull/9").unwrap(),
+        PrState::Merged
+    );
     // Only http(s) URLs are pull request links; anything else is never handed to a tool.
     let unused = ScriptedGh::new(vec![view("OPEN", false)]);
     assert!(read(&unused, "--help").is_err());
     assert!(unused.calls().is_empty());
 }
 
-struct Dir(std::path::PathBuf);
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn store() -> (Dir, RunStore) {
-    let dir = std::env::temp_dir().join(format!(
-        "factory-pr-state-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let store = RunStore::open(&dir.join("runs.json")).unwrap();
-    (Dir(dir), store)
+fn store() -> (TestDir, RunStore) {
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    (dir, store)
 }
 
 fn run_with_pr(store: &RunStore, pr: &str) -> String {

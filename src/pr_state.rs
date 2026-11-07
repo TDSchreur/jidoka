@@ -51,6 +51,15 @@ pub(crate) fn read(tool: &dyn Gh, url: &str) -> Result<PrState, ToolProblem> {
             ))),
         };
     }
+    // GitHub and GitHub Enterprise pull requests end in /pull/<number>; no other host has a state here.
+    let github = url.rsplit_once("/pull/").is_some_and(|(_, number)| {
+        !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
+    });
+    if !github {
+        return Err(ToolProblem(
+            "Only GitHub and Azure Repos pull requests have a state on the dashboard.".into(),
+        ));
+    }
     let output = run_gh(tool, &["pr", "view", url, "--json", "state,isDraft"])?;
     if output.code != Some(0) {
         return Err(problem("pr view", &output));
@@ -85,7 +94,7 @@ fn due(status: Option<&PrStatus>, url: &str, now: u64) -> bool {
 /// One pass: reads the state of every Run's pull request that is due and stores it. A problem is stored as
 /// unknown with its reason and tried again on a later pass. Returns how many pull requests were read.
 pub(crate) fn refresh(store: &RunStore, tool: &dyn Gh, now: u64) -> io::Result<usize> {
-    let mut read_count = 0;
+    let mut checked = 0;
     for run in store.list()? {
         let Some(url) = run.pr.as_deref() else {
             continue;
@@ -93,24 +102,20 @@ pub(crate) fn refresh(store: &RunStore, tool: &dyn Gh, now: u64) -> io::Result<u
         if !due(run.pr_status.as_ref(), url, now) {
             continue;
         }
-        let status = match read(tool, url) {
-            Ok(state) => PrStatus {
-                url: url.into(),
-                state,
-                reason: None,
-                checked_at: now,
-            },
-            Err(ToolProblem(reason)) => PrStatus {
-                url: url.into(),
-                state: PrState::Unknown,
-                reason: Some(reason),
-                checked_at: now,
-            },
+        let (state, reason) = match read(tool, url) {
+            Ok(state) => (state, None),
+            Err(ToolProblem(reason)) => (PrState::Unknown, Some(reason)),
+        };
+        let status = PrStatus {
+            url: url.into(),
+            state,
+            reason,
+            checked_at: now,
         };
         store.set_pr_status(&run.id, status)?;
-        read_count += 1;
+        checked += 1;
     }
-    Ok(read_count)
+    Ok(checked)
 }
 
 #[cfg(test)]
