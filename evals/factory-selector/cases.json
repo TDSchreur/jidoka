@@ -1,0 +1,52 @@
+[
+  {
+    "id": "readme-typo",
+    "request": "Fix the typo \"recieve\" in the README.",
+    "accepted": ["fast"]
+  },
+  {
+    "id": "broken-wiki-links",
+    "request": "Replace the three broken links in docs/ that point to the old wiki with links to the new docs site.",
+    "accepted": ["fast"]
+  },
+  {
+    "id": "status-json-flag",
+    "request": "Add a --json flag to the status command that prints the same fields as JSON.",
+    "accepted": ["balanced"]
+  },
+  {
+    "id": "csv-last-row",
+    "request": "The CSV export drops the last row when the file has no trailing newline. Fix it.",
+    "accepted": ["balanced"]
+  },
+  {
+    "id": "serde-bump",
+    "request": "Bump serde from 1.0.190 to 1.0.210.",
+    "accepted": ["balanced", "fast"]
+  },
+  {
+    "id": "admin-impersonation",
+    "request": "Let admins impersonate a user for support.",
+    "accepted": ["full"]
+  },
+  {
+    "id": "sessions-to-database",
+    "request": "Move session storage from cookies to a database table, with a migration for existing sessions.",
+    "accepted": ["full"]
+  },
+  {
+    "id": "project-delete-permission",
+    "request": "Change who may delete a project from owners only to owners and maintainers.",
+    "accepted": ["full"]
+  },
+  {
+    "id": "explicit-fast",
+    "request": "Run factory-fast: add rate limiting to the login endpoint.",
+    "accepted": ["fast"]
+  },
+  {
+    "id": "continue-run",
+    "request": "Continue run 42.",
+    "accepted": ["none"]
+  }
+]
