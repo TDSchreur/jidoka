@@ -277,7 +277,7 @@ Exit status 1 is a problem with what to do.
 
 Azure Repos pull request creation recognizes `dev.azure.com` HTTPS URLs, `ssh.dev.azure.com` v3 SSH URLs, and legacy `visualstudio.com` HTTPS URLs. The Azure DevOps CLI does not support Azure DevOps Server. Azure descriptions must be UTF-8 and at most 4,000 characters. Factory passes the organization, project, and repository explicitly to the CLI and checks for an existing pull request before pushing.
 
-For a GitHub Enterprise host that cannot be identified from its remote, set `git config factory.prProvider github`. For a custom Azure Services remote, explicitly select the target with `git config factory.prProvider azure` and set `factory.azureOrganization`, `factory.azureProject`, and `factory.azureRepository` with `git config`. These values identify the destination of the pull request and must match `origin`. An unknown host without an override is refused.
+For a GitHub Enterprise host that cannot be identified from its remote, set `git config factory.prProvider github`. For a custom Azure Services remote, explicitly select the target with `git config factory.prProvider azure` and set `factory.azureOrganization`, `factory.azureProject`, and `factory.azureRepository` with `git config`. For an unrecognized custom remote, also set `factory.azureOrigin` to its exact `origin` URL, so stale configuration is rejected if the remote changes. For recognized Azure remotes, the configured destination must match `origin`. An unknown host without an override is refused.
 
 Azure support currently covers pull request creation only. `factory pr wait` and the shared factory finish workflow still require GitHub; Azure CI and policy watching are planned separately.
 

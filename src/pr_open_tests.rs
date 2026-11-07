@@ -120,6 +120,7 @@ struct FakeGh {
     create: RefCell<VecDeque<Result<GhOutput, GhError>>>,
     calls: RefCell<Vec<(PathBuf, String)>>,
     remote_url: RefCell<Option<String>>,
+    az_missing: std::cell::Cell<bool>,
 }
 
 fn ok(stdout: &str) -> Result<GhOutput, GhError> {
@@ -147,6 +148,9 @@ fn pop(queue: &RefCell<VecDeque<Result<GhOutput, GhError>>>) -> Result<GhOutput,
 
 impl Gh for FakeGh {
     fn az(&self, dir: &Path, args: &[&str]) -> Result<GhOutput, GhError> {
+        if self.az_missing.get() {
+            return Err(GhError::NotInstalled);
+        }
         self.calls
             .borrow_mut()
             .push((dir.to_path_buf(), args.join(" ")));
@@ -822,6 +826,15 @@ fn azure_remote_opens_pull_request_in_the_selected_repository() {
     );
     assert!(opened.created);
     assert_eq!(project.remote_branch("feature"), Some(opened.commit));
+    let calls = gh.calls.borrow();
+    for (_, command) in calls.iter().filter(|(_, c)| c.starts_with("repos pr")) {
+        assert!(
+            command.contains("--organization https://dev.azure.com/dutchworkz"),
+            "{command}"
+        );
+        assert!(command.contains("--project Projects"), "{command}");
+        assert!(command.contains("--repository Kahoot"), "{command}");
+    }
 }
 
 #[test]
@@ -913,4 +926,106 @@ fn github_enterprise_can_be_selected_explicitly() {
     )
     .unwrap();
     assert_eq!(opened.pull_request, URL);
+}
+
+#[test]
+fn azure_override_cannot_push_a_different_origin() {
+    let project = Project::new();
+    for (key, value) in [
+        ("factory.prProvider", "azure"),
+        ("factory.azureOrganization", "other"),
+        ("factory.azureProject", "Projects"),
+        ("factory.azureRepository", "Kahoot"),
+    ] {
+        run_git(&project.repo, &["config", key, value]);
+    }
+    let gh = FakeGh::default();
+    *gh.remote_url.borrow_mut() =
+        Some("https://dev.azure.com/dutchworkz/Projects/_git/Kahoot".into());
+    let error = open(
+        &run_of(&project),
+        &options(&project),
+        &gh,
+        &FakeApi::default(),
+    )
+    .unwrap_err();
+    assert!(error.0.contains("origin"), "{}", error.0);
+    assert_eq!(project.remote_branch("feature"), None);
+}
+
+#[test]
+fn github_remote_with_username_is_recognized() {
+    let project = Project::new();
+    let gh = FakeGh::new_pr(URL);
+    *gh.remote_url.borrow_mut() = Some("https://user@github.com/o/r.git".into());
+    assert_eq!(
+        open(
+            &run_of(&project),
+            &options(&project),
+            &gh,
+            &FakeApi::default()
+        )
+        .unwrap()
+        .pull_request,
+        URL
+    );
+}
+
+#[test]
+fn azure_missing_cli_and_malformed_list_fail_before_push() {
+    for missing in [true, false] {
+        let project = Project::new();
+        let gh = FakeGh::default();
+        *gh.remote_url.borrow_mut() =
+            Some("https://dutchworkz@dev.azure.com/dutchworkz/Projects/_git/Kahoot".into());
+        gh.az_missing.set(missing);
+        if !missing {
+            gh.list.borrow_mut().push_back(ok("invalid JSON"));
+        }
+        let error = open(
+            &run_of(&project),
+            &options(&project),
+            &gh,
+            &FakeApi::default(),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .0
+                .contains(if missing { "Azure CLI" } else { "invalid JSON" }),
+            "{}",
+            error.0
+        );
+        assert_eq!(project.remote_branch("feature"), None);
+    }
+}
+
+#[test]
+fn azure_explicit_override_uses_confirmed_custom_origin() {
+    let project = Project::new();
+    for (key, value) in [
+        ("factory.prProvider", "azure"),
+        ("factory.azureOrganization", "dutchworkz"),
+        ("factory.azureProject", "Projects"),
+        ("factory.azureRepository", "Kahoot"),
+        ("factory.azureOrigin", "custom:repo"),
+    ] {
+        run_git(&project.repo, &["config", key, value]);
+    }
+    let gh = FakeGh::default();
+    *gh.remote_url.borrow_mut() = Some("custom:repo".into());
+    gh.list
+        .borrow_mut()
+        .push_back(ok(r#"[{"pullRequestId":7,"repository":{"id":"x"}}]"#));
+    let opened = open(
+        &run_of(&project),
+        &options(&project),
+        &gh,
+        &FakeApi::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        opened.pull_request,
+        "https://dev.azure.com/dutchworkz/Projects/_git/Kahoot/pullrequest/7"
+    );
 }

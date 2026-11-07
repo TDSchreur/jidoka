@@ -269,7 +269,25 @@ fn open_pull_request(
     }))
 }
 
+fn is_github_remote(remote: &str) -> bool {
+    if remote.starts_with("git@github.com:") {
+        return true;
+    }
+    let rest = remote
+        .strip_prefix("https://")
+        .or_else(|| remote.strip_prefix("http://"))
+        .or_else(|| remote.strip_prefix("ssh://"));
+    rest.and_then(|url| url.split_once('/'))
+        .is_some_and(|(authority, _)| {
+            let host = authority.rsplit('@').next().unwrap_or(authority);
+            host.eq_ignore_ascii_case("github.com")
+                || host.eq_ignore_ascii_case("github.com:22")
+                || host.eq_ignore_ascii_case("github.com:443")
+        })
+}
+
 /// Azure DevOps Services repository identified by its origin URL.
+#[derive(PartialEq, Eq)]
 struct AzureRepo {
     organization: String,
     project: String,
@@ -436,7 +454,12 @@ fn azure_existing(
     Ok(None)
 }
 
-#[allow(clippy::too_many_arguments)]
+struct PreparedPr {
+    branch: String,
+    base: String,
+    commit: String,
+}
+
 fn open_azure(
     run: &RunInfo,
     options: &Options,
@@ -444,10 +467,13 @@ fn open_azure(
     api: &dyn RunApi,
     dir: &Path,
     repo: &AzureRepo,
-    branch: String,
-    base: String,
-    commit: String,
+    prepared: PreparedPr,
 ) -> Result<Opened, ToolProblem> {
+    let PreparedPr {
+        branch,
+        base,
+        commit,
+    } = prepared;
     let existing = azure_existing(gh, dir, repo, &branch)?;
     let description = if existing.is_none() {
         let text = std::fs::read_to_string(&options.body_file)
@@ -568,7 +594,21 @@ pub(crate) fn open(
                 AzureRepo::encoded(&project),
                 AzureRepo::encoded(&repo)
             );
-            AzureRepo::from_remote(&url)?
+            let selected = AzureRepo::from_remote(&url)?;
+            match AzureRepo::from_remote(&remote)? {
+                Some(actual) if Some(&actual) != selected.as_ref() => {
+                    return Err(ToolProblem(
+                        "Azure provider configuration does not match origin.".into(),
+                    ))
+                }
+                None if get("factory.azureOrigin")? != remote => {
+                    return Err(ToolProblem(
+                        "Azure provider configuration does not match origin.".into(),
+                    ))
+                }
+                _ => {}
+            }
+            selected
         }
         Some(_) => {
             return Err(ToolProblem(
@@ -577,12 +617,8 @@ pub(crate) fn open(
         }
     };
     if azure.is_none() {
-        let known = remote.starts_with("https://github.com/")
-            || remote.starts_with("http://github.com/")
-            || remote.starts_with("git@github.com:")
-            || remote.starts_with("ssh://git@github.com/");
-        let configured = gh.git(dir, &["config", "--get", "factory.prProvider"]).ok();
-        if !known && configured.as_deref() != Some("github") {
+        let known = is_github_remote(&remote);
+        if !known && provider.as_deref() != Some("github") {
             return Err(ToolProblem("Cannot identify the repository provider from origin; set git config factory.prProvider github for a GitHub Enterprise repository.".into()));
         }
         run_gh(gh, dir, &["--version"])?;
@@ -683,7 +719,19 @@ pub(crate) fn open(
 
     // Look for the pull request before pushing: it also shows whether `gh` is signed in.
     if let Some(azure) = azure {
-        return open_azure(run, options, gh, api, dir, &azure, branch, base, commit);
+        return open_azure(
+            run,
+            options,
+            gh,
+            api,
+            dir,
+            &azure,
+            PreparedPr {
+                branch,
+                base,
+                commit,
+            },
+        );
     }
     let existing = open_pull_request(gh, dir, &branch)?;
     // The branch is pushed by its full name on both sides, so that no name is read as a refspec.
