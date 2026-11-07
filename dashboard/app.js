@@ -6,13 +6,16 @@ import { Help } from '/assets/help.js';
 const html = htm.bind(h);
 
 const GROUPS = [
-  ['define', 'Define', 'Clarify the work, write a spec and create tickets.'],
-  ['build', 'Build', 'Implement the spec and run the relevant checks.'],
-  ['check', 'Check', 'Review the code and scan for security issues.'],
-  ['finish', 'Finish', 'Create a pull request for the completed work.'],
-  ['done', 'Done', 'Runs that have finished, whatever their stage.'],
+  ['define', 'Define'],
+  ['build', 'Build'],
+  ['check', 'Check'],
+  ['finish', 'Finish'],
+  ['done', 'Done'],
 ];
 const STATUSES = ['running', 'blocked', 'done'];
+const STATUS_LABEL = { running: 'Running', blocked: 'Blocked', done: 'Done' };
+/** The status in sentence case; an unknown status shows as recorded. */
+const statusLabel = (status) => STATUS_LABEL[status] ?? String(status);
 const TICKET_STATUS = { pending: 'Pending', 'in-progress': 'In progress', done: 'Done' };
 const REWORK_CAP = 2;
 const POLL_MS = 3000;
@@ -47,6 +50,16 @@ function projectNames(runs) {
 function storedCollapsed() {
   try {
     const value = JSON.parse(localStorage.getItem('collapsed-projects'));
+    return new Set(Array.isArray(value) ? value.filter((path) => typeof path === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/** Project paths the visitor expanded, so a Project whose Runs are all done stays open for them. */
+function storedExpanded() {
+  try {
+    const value = JSON.parse(localStorage.getItem('expanded-projects'));
     return new Set(Array.isArray(value) ? value.filter((path) => typeof path === 'string') : []);
   } catch {
     return new Set();
@@ -281,7 +294,7 @@ function ContextLinks({ run }) {
 }
 
 function Ticket({ value }) {
-  return html`<p class="ticket">Ticket: <${TicketLink} value=${value} /></p>`;
+  return html`<p class="ticket"><span class="visually-hidden">Ticket: </span><${TicketLink} value=${value} /></p>`;
 }
 
 const reworkLabel = (count) =>
@@ -330,20 +343,20 @@ function DoneCard({ run, now, onOpen, onDelete }) {
         >
           ${expanded ? 'Hide details' : 'Show details'}<span class="visually-hidden">${` for ${run.title}`}</span>
         </button>
-        <button type="button" class="toggle danger" onClick=${() => onDelete(run)}>
+        <button type="button" class="text-button" onClick=${() => onDelete(run)}>
           Delete<span class="visually-hidden">${` ${run.title}`}</span>
         </button>
       </div>
       <div id=${detailsId} hidden=${!expanded}>
         <div class="chips">
-          <span class="badge done">${String(run.status)}</span>
+          <span class="badge done">${statusLabel(run.status)}</span>
           ${rework !== null
             ? html`<span class="chip">Rework${' '}${reworkLabel(rework)}</span>`
             : null}
           <${ContextChips} run=${run} />
         </div>
         <${ContextLinks} run=${run} />
-        ${run.activity ? html`<p class="activity">Activity: ${run.activity}</p>` : null}
+        ${run.activity ? html`<p class="activity">${run.activity}</p>` : null}
         ${run.current_ticket ? html`<${Ticket} value=${String(run.current_ticket)} />` : null}
         <${Updated} run=${run} now=${now} />
       </div>
@@ -369,7 +382,7 @@ function Card({ run, now, onOpen, onDelete }) {
         </button>
       </h3>
       <div class="chips">
-        <span class=${known ? `badge ${run.status}` : 'badge'}>${String(run.status)}</span>
+        <span class=${known ? `badge ${run.status}` : 'badge'}>${statusLabel(run.status)}</span>
         ${rework !== null
           ? html`<span class="chip"
               >Rework${' '}${reworkLabel(rework)}</span
@@ -378,10 +391,10 @@ function Card({ run, now, onOpen, onDelete }) {
         <${ContextChips} run=${run} />
       </div>
       <${ContextLinks} run=${run} />
-      ${run.activity ? html`<p class="activity">Activity: ${run.activity}</p>` : null}
+      ${run.activity ? html`<p class="activity">${run.activity}</p>` : null}
       ${run.current_ticket ? html`<${Ticket} value=${String(run.current_ticket)} />` : null}
       <${Updated} run=${run} now=${now} />
-      <button type="button" class="toggle danger" onClick=${() => onDelete(run)}>
+      <button type="button" class="text-button" onClick=${() => onDelete(run)}>
         Delete<span class="visually-hidden">${` ${run.title}`}</span>
       </button>
     </article>
@@ -446,7 +459,7 @@ function Detail({ run, now, onClose }) {
         <${Field} label="Stage">${stage ? stage[1] : String(run.stage)}<//>
         <${Field} label="Status">
           <span class=${STATUSES.includes(run.status) ? `badge ${run.status}` : 'badge'}
-            >${String(run.status)}</span
+            >${statusLabel(run.status)}</span
           >
         <//>
         <${Field} label="Activity">${run.activity}<//>
@@ -504,7 +517,7 @@ function Detail({ run, now, onClose }) {
 function Group({ id, entries, now, selected, onOpen, onDelete, onDeleteAll }) {
   return html`<section class=${selected ? 'group selected' : 'group'} aria-label=${GROUPS.find(([key]) => key === id)[1]}>
     ${id === 'done' && entries.length
-      ? html`<button type="button" class="toggle danger delete-all" onClick=${onDeleteAll}>
+      ? html`<button type="button" class="text-button delete-all" onClick=${onDeleteAll}>
           Delete all<span class="visually-hidden">${` ${entries.length} done runs`}</span>
         </button>`
       : null}
@@ -570,7 +583,7 @@ async function deleteRun(id) {
 
 /** Polls the Run list; `runs` stays null until the first answer and `failed` is set while the server is unreachable. */
 function useRuns() {
-  const [state, setState] = useState({ runs: null, failed: false, lastOk: null, beat: 0 });
+  const [state, setState] = useState({ runs: null, failed: false, lastOk: null });
   const reload = useRef(() => {});
   useEffect(() => {
     let active = true;
@@ -580,7 +593,7 @@ function useRuns() {
         if (!response.ok) throw new Error('Failed to load runs');
         const data = await response.json();
         if (!Array.isArray(data)) throw new Error('Unexpected response');
-        if (active) setState((current) => ({ runs: data, failed: false, lastOk: Date.now(), beat: current.beat + 1 }));
+        if (active) setState({ runs: data, failed: false, lastOk: Date.now() });
       } catch {
         if (active) setState((current) => ({ ...current, failed: true }));
       }
@@ -596,9 +609,8 @@ function useRuns() {
   return { ...state, reload: () => reload.current() };
 }
 
-/** The current time, refreshed so relative times keep counting. */
-/** Whether the page can reach the server: a dot that pulses on every answer, with the state in words. */
-function Connection({ failed, lastOk, beat, now }) {
+/** Whether the page can reach the server: a dot that pulses when the state changes, with the state in words. */
+function Connection({ failed, lastOk, now }) {
   const state = failed ? 'offline' : lastOk === null ? 'connecting' : 'connected';
   const label = { offline: 'Offline', connecting: 'Connecting…', connected: 'Connected' }[state];
   const age =
@@ -608,11 +620,12 @@ function Connection({ failed, lastOk, beat, now }) {
         ? `last contact ${ago(now - lastOk)}`
         : `updated ${ago(now - lastOk)}`;
   return html`<p class=${`connection ${state}`}>
-    <span class="pulse" key=${beat} aria-hidden="true"></span>
+    <span class="pulse" key=${state} aria-hidden="true"></span>
     <span role="status">${label}</span>${age ? html`<span class="connection-age">${` · ${age}`}</span>` : null}
   </p>`;
 }
 
+/** The current time, refreshed so relative times keep counting. */
 function useNow() {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -711,8 +724,14 @@ function NotificationsToggle({ state, onToggle }) {
   </button>`;
 }
 
+/** Filled while a Run is waiting; the count is in the text, so the state never rests on colour. */
 function NeedsYouToggle({ count, pressed, onToggle }) {
-  return html`<button type="button" class="toggle" aria-pressed=${String(pressed)} onClick=${onToggle}>
+  return html`<button
+    type="button"
+    class=${count ? 'toggle waiting' : 'toggle'}
+    aria-pressed=${String(pressed)}
+    onClick=${onToggle}
+  >
     Needs you (${count})
   </button>`;
 }
@@ -746,22 +765,38 @@ function StageButtons({ stages, current, onPick }) {
 }
 
 function App() {
-  const { runs, failed, lastOk, beat, reload } = useRuns();
+  const { runs, failed, lastOk, reload } = useRuns();
   const now = useNow();
   const [onlyWaiting, setOnlyWaiting] = useState(false);
   const [wanted] = useState(requestedProject);
   // The requested Project is shown expanded for this visit, without touching what was remembered.
   const [collapsed, setCollapsed] = useState(storedCollapsed);
+  const [expanded, setExpanded] = useState(storedExpanded);
   const [forcedOpen, setForcedOpen] = useState(() => new Set(wanted === null ? [] : [wanted]));
-  const isCollapsed = (project) => collapsed.has(project) && !forcedOpen.has(project);
+  // A Project whose Runs are all done starts collapsed, unless the visitor expanded it.
+  const allDone = (project) => {
+    const own = (runs ?? []).filter((run) => projectOf(run) === project);
+    return own.length > 0 && own.every((run) => run.status === 'done');
+  };
+  const isCollapsed = (project) =>
+    !forcedOpen.has(project) && (collapsed.has(project) || (allDone(project) && !expanded.has(project)));
   const toggleProject = (project) => {
-    const next = new Set(collapsed);
-    if (isCollapsed(project)) next.delete(project);
-    else next.add(project);
-    setCollapsed(next);
+    const closing = !isCollapsed(project);
+    const nextCollapsed = new Set(collapsed);
+    const nextExpanded = new Set(expanded);
+    if (closing) {
+      nextCollapsed.add(project);
+      nextExpanded.delete(project);
+    } else {
+      nextCollapsed.delete(project);
+      nextExpanded.add(project);
+    }
+    setCollapsed(nextCollapsed);
+    setExpanded(nextExpanded);
     setForcedOpen((current) => new Set([...current].filter((path) => path !== project)));
     try {
-      localStorage.setItem('collapsed-projects', JSON.stringify([...next]));
+      localStorage.setItem('collapsed-projects', JSON.stringify([...nextCollapsed]));
+      localStorage.setItem('expanded-projects', JSON.stringify([...nextExpanded]));
     } catch {
       /* storage is blocked: the choice lasts until the page is reloaded */
     }
@@ -842,10 +877,9 @@ function App() {
   const indexed = (visibleRuns ?? [])
     .map((run, index) => ({ run, index }))
     .filter((entry) => !onlyWaiting || needsYou(entry.run));
-  const stages = GROUPS.map(([id, name, description]) => ({
+  const stages = GROUPS.map(([id, name]) => ({
     id,
     name,
-    description,
     entries: indexed.filter((entry) => groupOf(entry.run) === id).sort(compare),
   }));
   const projects = [...new Set(indexed.map((entry) => projectOf(entry.run)))].sort(
@@ -892,30 +926,35 @@ function App() {
       />
       <${NotificationsToggle} state=${notifications.state} onToggle=${notifications.toggle} />
       <button type="button" class="toggle help-open" onClick=${() => setHelpOpen(true)}>Help</button>
-      <${ThemeSwitch} />
-      <${Connection} failed=${failed} lastOk=${lastOk} beat=${beat} now=${now} />
+      <${Connection} failed=${failed} lastOk=${lastOk} now=${now} />
     </div>
     <main tabindex="-1">
       ${hiddenProjects.size ? html`<details class="hidden-projects">
         <summary>Hidden projects (${hiddenProjects.size})</summary>
         <p>Hidden projects are remembered in this browser. Their runs are kept.</p>
-        <ul>${[...hiddenProjects].sort().map((project) => html`<li key=${project}><${ProjectName} path=${project} /> <button type="button" class="toggle" onClick=${() => changeHidden(project, false)} aria-label=${`Restore ${names.get(project) ?? project}`}>Restore</button> ${runs?.some((run) => projectOf(run) === project) ? html`<button type="button" class="toggle danger delete-project" onClick=${() => setPending({ project, runs: runs.filter((run) => projectOf(run) === project) })} aria-label=${`Delete ${names.get(project) ?? project}`}>Delete</button>` : null}</li>`)}</ul>
+        <ul>${[...hiddenProjects].sort().map((project) => html`<li key=${project}><${ProjectName} path=${project} /> <button type="button" class="toggle" onClick=${() => changeHidden(project, false)} aria-label=${`Restore ${names.get(project) ?? project}`}>Restore</button> ${runs?.some((run) => projectOf(run) === project) ? html`<button type="button" class="text-button delete-project" onClick=${() => setPending({ project, runs: runs.filter((run) => projectOf(run) === project) })} aria-label=${`Delete ${names.get(project) ?? project}`}>Delete</button>` : null}</li>`)}</ul>
       </details>` : null}
       <p id="message" role="status" class=${failed || deleteError ? 'error' : ''}>${text}</p>
       ${runs && !runs.length ? html`<${Welcome} onHelp=${() => setHelpOpen(true)} />` : null}
       ${runs?.length ? html`<${StageButtons} stages=${stages} current=${current} onPick=${setPicked} />` : null}
       ${runs?.length
         ? html`<div class="board-headers">
-            ${stages.map((stage) => html`<div class="group-header"><h2>${stage.name}<span class="count">${` (${stage.entries.length})`}</span></h2><p class="group-description">${stage.description}</p></div>`)}
+            ${stages.map((stage) => html`<div class="group-header"><h2>${stage.name}<span class="count">${` (${stage.entries.length})`}</span></h2></div>`)}
           </div>`
         : null}
-      ${runs?.length ? html`<p class="compact-description">${stages.find((stage) => stage.id === current).description}</p>` : null}
+      ${indexed.length && !stages.find((stage) => stage.id === current).entries.length
+        ? html`<p class="empty compact-empty">No runs</p>`
+        : null}
       <div id="groups">
         ${projects.map((project) => {
           const closed = isCollapsed(project);
           const groupsId = `project-groups-${projects.indexOf(project)}`;
           const projectWaiting = indexed.filter((entry) => projectOf(entry.run) === project && needsYou(entry.run)).length;
-          return html`<section class="project-row" key=${project}>
+          // Compact mode hides a row with nothing in the picked Stage, so "No runs" shows once, not per Project.
+          const inCurrent = stages
+            .find((stage) => stage.id === current)
+            .entries.some((entry) => projectOf(entry.run) === project);
+          return html`<section class=${inCurrent ? 'project-row' : 'project-row empty-in-current'} key=${project}>
           <div class="project-heading-row">
           <h2 class="project-heading">
             <button
@@ -939,8 +978,8 @@ function App() {
                   : null}`
               : null}
           </h2>
-          <button type="button" class="toggle danger delete-project" onClick=${() => setPending({ project, runs: runs.filter((run) => projectOf(run) === project) })} aria-label=${`Delete ${names.get(project) ?? project}`}>Delete</button>
-          <button type="button" class="toggle hide-project" onClick=${() => changeHidden(project, true)} aria-label=${`Hide ${names.get(project) ?? project}`}>Hide</button>
+          <button type="button" class="text-button delete-project" onClick=${() => setPending({ project, runs: runs.filter((run) => projectOf(run) === project) })} aria-label=${`Delete ${names.get(project) ?? project}`}>Delete</button>
+          <button type="button" class="text-button hide-project" onClick=${() => changeHidden(project, true)} aria-label=${`Hide ${names.get(project) ?? project}`}>Hide</button>
           </div>
           <div class="project-groups" id=${groupsId} hidden=${closed}>
             ${stages.map((item) => {
@@ -984,3 +1023,5 @@ function App() {
 }
 
 render(html`<${App} />`, document.querySelector('#app'));
+// The theme is a set-once preference, so it sits in the footer, next to the version.
+render(html`<${ThemeSwitch} />`, document.querySelector('#theme-switch'));
