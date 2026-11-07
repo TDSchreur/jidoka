@@ -67,7 +67,8 @@ impl AzurePr {
             id: parts[5].into(),
         })
     }
-    fn show(&self, gh: &dyn Gh) -> Result<Value, ToolProblem> {
+    /// The pull request as Azure reports it, checked to be the one the URL names.
+    fn fetch(&self, gh: &dyn Gh) -> Result<Value, ToolProblem> {
         let data = az_json(
             gh,
             &[
@@ -92,6 +93,10 @@ impl AzurePr {
                 "Azure pull request does not match the recorded repository.".into(),
             ));
         }
+        Ok(data)
+    }
+    fn show(&self, gh: &dyn Gh) -> Result<Value, ToolProblem> {
+        let data = self.fetch(gh)?;
         if !data["forkSource"].is_null() {
             return Err(ToolProblem(
                 "Watching pull requests from Azure forks is not supported yet.".into(),
@@ -184,6 +189,13 @@ impl AzurePr {
             .cloned()
             .ok_or_else(|| ToolProblem("Azure returned an invalid checks response.".into()))
     }
+}
+
+/// The status (`active`, `completed` or `abandoned`) and draft flag of the Azure Repos pull request at `url`.
+pub(super) fn status(gh: &dyn Gh, url: &str) -> Result<(String, bool), ToolProblem> {
+    let data = AzurePr::parse(url)?.fetch(gh)?;
+    let status = required(&data["status"], "pull request status")?.to_string();
+    Ok((status, data["isDraft"].as_bool().unwrap_or(false)))
 }
 
 fn required<'a>(value: &'a Value, label: &str) -> Result<&'a str, ToolProblem> {

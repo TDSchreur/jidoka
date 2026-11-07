@@ -4,6 +4,7 @@ mod doctor;
 mod inspect;
 mod install;
 mod pr_open;
+mod pr_state;
 mod pr_sync;
 mod pr_wait;
 mod repository;

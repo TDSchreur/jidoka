@@ -299,7 +299,7 @@ pub(crate) fn problem(what: &str, output: &GhOutput) -> ToolProblem {
     ToolProblem(format!("`gh {what}` failed: {detail}"))
 }
 
-fn run_gh(gh: &dyn Gh, args: &[&str]) -> Result<GhOutput, ToolProblem> {
+pub(crate) fn run_gh(gh: &dyn Gh, args: &[&str]) -> Result<GhOutput, ToolProblem> {
     gh.run(args).map_err(|error| match error {
         GhError::NotInstalled => ToolProblem(
             "The GitHub CLI (`gh`) is not installed or not on PATH. Install it from https://cli.github.com, run `gh auth login`, and try again."
@@ -511,6 +511,11 @@ pub(crate) fn pushed_head(worktree: &std::path::Path, branch: &str) -> Option<St
     };
     let head = rev("HEAD^{commit}")?;
     (rev(&format!("refs/remotes/origin/{branch}^{{commit}}"))? == head).then_some(head)
+}
+
+/// The status and draft flag of an Azure Repos pull request, read with `az` the way `wait` reads it.
+pub(crate) fn azure_pr_status(gh: &dyn Gh, url: &str) -> Result<(String, bool), ToolProblem> {
+    azure::status(gh, url)
 }
 
 /// Whether `url` is an Azure DevOps Services pull request URL, in its canonical or legacy form.

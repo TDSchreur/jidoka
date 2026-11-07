@@ -201,7 +201,7 @@ function Stages({ reworkCap }) {
     <${Topic} title="Shipped">
       <p>
         Finished Runs leave the line and go to the Shipped list below it, whatever Stage they ended in. It is a table,
-        newest first, grouped by the day of the last update, with the project, the pull request, the fresh tokens and
+        newest first, grouped by the day of the last update, with the project, the pull request and its state, the fresh tokens and
         how long ago. Select a title to open the detail. <em>Clear shipped…</em> removes the records of all shipped
         Runs after you confirm, and <em>Delete run</em> in a Run's detail removes one. Deleting removes the record from
         the dashboard only: the worktree, the branch and the pull request stay as they are. In the command line and
@@ -536,6 +536,7 @@ function Dashboard({ reworkCap }) {
             'The fresh tokens the Run has used, such as 41.2k. It says partial when some of the usage could not be read.',
           ],
           ['Pull request, Spec', 'Links, when the Run has recorded them.'],
+          ['Open, Draft, Merged, Closed', 'The state of the pull request, read from GitHub or Azure Repos by the dashboard and checked again about once a minute until it is merged. The detail says when it was checked, or why it could not be read.'],
           ['Activity', 'What the agent says it is doing.'],
           ['Updated', 'How long ago the agent last reported. It is the time of the last report, not a heartbeat.'],
         ]}

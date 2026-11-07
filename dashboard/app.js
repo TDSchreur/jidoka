@@ -278,6 +278,24 @@ function UsageDetail({ usage }) {
     ${notes.length ? html`<ul class="summaries">${notes.map((note, index) => html`<li key=${index}>${note}</li>`)}</ul>` : null}`;
 }
 
+const PR_STATE = { open: 'Open', draft: 'Draft', merged: 'Merged', closed: 'Closed' };
+
+/** The state of the Run's pull request in words, once the server has read it for that pull request. */
+function PrStateLabel({ run }) {
+  const status = run.pr_status;
+  if (!status || status.url !== run.pr || !PR_STATE[status.state]) return null;
+  return html`<span class=${`pr-state ${status.state}`}>${PR_STATE[status.state]}</span>`;
+}
+
+/** The pull request state for the detail: the state and when it was read, or why it is not known. */
+function PrStateDetail({ run, now }) {
+  const status = run.pr_status;
+  if (!run.pr) return null;
+  if (!status || status.url !== run.pr) return html`<span class="not-set">Not read yet</span>`;
+  if (status.state === 'unknown') return html`Unknown: ${status.reason ?? 'no reason given'}`;
+  return html`<${PrStateLabel} run=${run} />${' '}<span class="updated">checked ${ago(now - status.checked_at)}</span>`;
+}
+
 function ContextLinks({ run }) {
   const named = (label) => html`${label}<span class="visually-hidden">${` of ${run.title}`}</span>`;
   const pr = run.pr ? html`<${RefLink} value=${run.pr} label=${named('Pull request')} />` : null;
@@ -340,7 +358,7 @@ function LineRow({ run, now, onOpen }) {
       <span class="meta-project"><${ProjectName} path=${projectOf(run)} /></span>
       <${ContextChips} run=${run} />
       ${rework !== null ? html`<span class="chip">Rework${' '}${reworkLabel(rework)}</span>` : null}
-      <${ContextLinks} run=${run} />
+      <${ContextLinks} run=${run} /><${PrStateLabel} run=${run} />
       <${Updated} run=${run} now=${now} />
     </div>
     ${run.activity ? html`<p class="activity">${run.activity}</p>` : null}
@@ -431,6 +449,9 @@ function Detail({ run, now, onClose, onDelete }) {
         <${Field} label="Pull request" missing="Unknown">
           ${run.pr ? html`<${TicketLink} value=${String(run.pr)} />` : null}
         <//>
+        <${Field} label="Pull request state" missing="No pull request">
+          ${run.pr ? html`<${PrStateDetail} run=${run} now=${now} />` : null}
+        <//>
         <${Field} label=${progress ? `Tickets (${progress.done} of ${progress.total} done)` : 'Tickets'} missing="None recorded">
           ${progress
             ? html`<ol class="ticket-list">
@@ -519,7 +540,7 @@ function ShippedLog({ entries, now, onOpen, onClear }) {
                   </button>
                 </td>
                 <td><${ProjectName} path=${projectOf(run)} /></td>
-                <td>${run.pr ? html`<${RefLink} value=${run.pr} label=${html`Pull request<span class="visually-hidden">${` of ${run.title}`}</span>`} />` : html`<span class="not-set">None</span>`}</td>
+                <td>${run.pr ? html`<${RefLink} value=${run.pr} label=${html`Pull request<span class="visually-hidden">${` of ${run.title}`}</span>`} />` : html`<span class="not-set">None</span>`}${' '}<${PrStateLabel} run=${run} /></td>
                 <td class="num">${tokens === null ? 'n/a' : compactTokens(tokens)}</td>
                 <td>
                   ${ts === null
