@@ -21,7 +21,7 @@ Follow Workspace in [factory-procedures](../factory-procedures/SKILL.md): every 
 
 ## Writing
 
-Follow Writing in [factory-procedures](../factory-procedures/SKILL.md) for all human-facing prose in every stage. Load `humanizer` when that section says, right before the first text you write, not when the run starts.
+Follow Writing in [factory-procedures](../factory-procedures/SKILL.md) for all human-facing prose in every stage. Load `humanizer` at the moment that section gives, right before the first spec, ticket, plan, summary, commit message or pull request description, so it is not read when the run starts.
 
 ## Define
 
