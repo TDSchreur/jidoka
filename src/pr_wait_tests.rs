@@ -854,7 +854,7 @@ fn run_azure(case: &AzureCase, seconds: u64) -> Result<Waited, ToolProblem> {
         case,
         &Options {
             timeout: Duration::from_secs(seconds),
-            fail_fast: false,
+            ..Options::default()
         },
     )
 }
@@ -1118,6 +1118,7 @@ fn azure_fail_fast_returns_failed_while_another_policy_is_pending() {
     let options = Options {
         timeout: Duration::from_secs(3600),
         fail_fast: true,
+        ..Options::default()
     };
     let waited = run_azure_with(&case, &options).unwrap();
     assert_eq!(waited.outcome, Outcome::Failed);
@@ -1135,4 +1136,71 @@ fn azure_cli_not_installed_or_returning_malformed_json_is_a_tool_problem() {
     gh.azure.borrow_mut().push_back(ok("{not json"));
     let error = run_azure_with(&gh, &Options::default()).unwrap_err();
     assert!(error.0.contains("invalid JSON"), "{}", error.0);
+}
+
+#[test]
+fn a_just_pushed_commit_is_waited_for_before_its_checks_are_watched() {
+    // Right after a push GitHub still reports the old head; it shows the pushed one on the next ask.
+    let gh = FakeGh::script(
+        vec![
+            view("old111", "OPEN", "CLEAN"),
+            view("new222", "OPEN", "CLEAN"),
+        ],
+        vec![checks(&[("build", "pass")])],
+    );
+    let options = Options {
+        pushed_head: Some("new222".into()),
+        ..Options::default()
+    };
+    let (result, _, clock) = run_wait_with(&gh, &options);
+    let waited = result.unwrap();
+    assert_eq!(waited.outcome, Outcome::Passed);
+    assert_eq!(waited.head, "new222");
+    assert_eq!(waited.new_head, None);
+    assert_eq!(*clock.sleeps.borrow(), vec![Duration::from_secs(5)]);
+}
+
+#[test]
+fn a_pushed_commit_the_pull_request_never_shows_is_given_up_on_after_thirty_seconds() {
+    let gh = FakeGh::script(
+        vec![view("old111", "OPEN", "CLEAN")],
+        vec![checks(&[("build", "pass")])],
+    );
+    let options = Options {
+        pushed_head: Some("new222".into()),
+        ..Options::default()
+    };
+    let (result, _, clock) = run_wait_with(&gh, &options);
+    // The wait then watches the head the pull request reports, as it did before.
+    let waited = result.unwrap();
+    assert_eq!(waited.outcome, Outcome::Passed);
+    assert_eq!(waited.head, "old111");
+    assert_eq!(clock.sleeps.borrow().len(), 6);
+    assert_eq!(*clock.now.borrow(), Duration::from_secs(30));
+}
+
+#[test]
+fn the_pushed_head_is_known_only_while_the_worktree_is_on_the_branch_on_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "feature"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "one"]);
+    // No origin branch yet.
+    assert_eq!(pushed_head(dir.path(), "feature"), None);
+    let one = git(&["rev-parse", "HEAD"]);
+    git(&["update-ref", "refs/remotes/origin/feature", &one]);
+    assert_eq!(pushed_head(dir.path(), "feature"), Some(one));
+    // A local commit that is not pushed.
+    git(&["commit", "-q", "--allow-empty", "-m", "two"]);
+    assert_eq!(pushed_head(dir.path(), "feature"), None);
 }

@@ -117,6 +117,9 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long checks may take to appear before the pull request counts as having no CI.
 const GRACE: Duration = Duration::from_secs(90);
+/// How long the pull request may take to show a commit that was just pushed, and how often it is asked.
+const HEAD_GRACE: Duration = Duration::from_secs(30);
+const HEAD_POLL: Duration = Duration::from_secs(5);
 /// The most runs whose failed log is fetched.
 const MAX_LOGS: usize = 3;
 /// The most lines and bytes kept of a failed log: its end is where the cause is.
@@ -128,6 +131,9 @@ pub(crate) struct Options {
     pub(crate) timeout: Duration,
     /// Return `failed` at the first failing check instead of waiting for the others.
     pub(crate) fail_fast: bool,
+    /// The commit the run's branch has on origin, when its worktree is on that commit. Right after a push,
+    /// GitHub can report the previous head for a few seconds; the wait gives it `HEAD_GRACE` to catch up.
+    pub(crate) pushed_head: Option<String>,
 }
 
 impl Default for Options {
@@ -135,6 +141,7 @@ impl Default for Options {
         Self {
             timeout: DEFAULT_TIMEOUT,
             fail_fast: false,
+            pushed_head: None,
         }
     }
 }
@@ -497,6 +504,25 @@ fn failures(gh: &dyn Gh, checks: &[CheckResult]) -> Vec<Failure> {
 }
 
 /// Whether `url` is an Azure DevOps Services pull request URL, in its canonical or legacy form.
+/// The commit `branch` has on origin, when the worktree's `HEAD` is that commit; `None` otherwise, or when
+/// git cannot tell.
+pub(crate) fn pushed_head(worktree: &std::path::Path, branch: &str) -> Option<String> {
+    let rev = |name: &str| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(worktree)
+            .args(["rev-parse", "--verify", "--quiet", name])
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+    };
+    let head = rev("HEAD^{commit}")?;
+    (rev(&format!("refs/remotes/origin/{branch}^{{commit}}"))? == head).then_some(head)
+}
+
 pub(crate) fn is_azure_pr_url(url: &str) -> bool {
     url.starts_with("https://dev.azure.com/")
         || url
@@ -525,7 +551,18 @@ pub(crate) fn wait(
     if is_azure_pr_url(pull_request) {
         return azure::wait(pull_request, options, gh, clock, activity, progress);
     }
-    let first = read_view(gh, pull_request)?;
+    let mut first = read_view(gh, pull_request)?;
+    if let Some(pushed) = &options.pushed_head {
+        let started = clock.elapsed();
+        while first.state == "OPEN"
+            && first.head != *pushed
+            && clock.elapsed().saturating_sub(started) < HEAD_GRACE
+        {
+            progress("Waiting for the pull request to show the pushed commit");
+            clock.sleep(HEAD_POLL);
+            first = read_view(gh, pull_request)?;
+        }
+    }
     let result =
         |outcome: Outcome, view: &View, checks: Vec<CheckResult>, base: BaseState| Waited {
             outcome,

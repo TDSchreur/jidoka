@@ -60,7 +60,7 @@ impl AzurePr {
         Ok(Self {
             org: format!(
                 "https://dev.azure.com/{}",
-                percent_encoding::utf8_percent_encode(&org, percent_encoding::NON_ALPHANUMERIC)
+                percent_encoding::utf8_percent_encode(&org, crate::pr_open::URL_SEGMENT)
             ),
             project,
             repository,
@@ -444,10 +444,7 @@ fn checks_for(
                 format!(
                     "{}/{}/_build/results?buildId={id}",
                     pr.org,
-                    percent_encoding::utf8_percent_encode(
-                        &pr.project,
-                        percent_encoding::NON_ALPHANUMERIC
-                    )
+                    percent_encoding::utf8_percent_encode(&pr.project, crate::pr_open::URL_SEGMENT)
                 )
             })
             .unwrap_or_else(|| url.into());
