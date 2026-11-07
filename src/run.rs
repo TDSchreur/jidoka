@@ -10,7 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory-full|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference>=<skill|activity>:<text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <build|check|finish>=<strong|coding|routine> (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
+pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory-full|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <build|check|finish>=<strong|coding|routine> (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
 const MAX_TICKETS: usize = 100;
@@ -646,11 +646,9 @@ pub(crate) fn parse_update(
                 continue;
             }
             "--ticket-report" => {
-                let value = next_value()?;
-                let (reference, report) = split_pair(flag, value)?;
-                let (kind, text) = report
-                    .split_once(':')
-                    .ok_or("Ticket report needs <reference>=<skill|activity>:<text>")?;
+                let reference = *next_value()?;
+                let kind = *next_value()?;
+                let text = *next_value()?;
                 let kind = serde_json::from_value(kind.into())
                     .map_err(|_| "Ticket report kind must be skill or activity")?;
                 update.ticket_reports.push(NewTicketReport {
@@ -2170,14 +2168,20 @@ mod tests {
         let dir = TestDir::new();
         let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
         let created = new_run(&store, "task");
-        for value in ["missing", "t1=bad:x", "t1=skill:", "t1=activity:bad\ntext"] {
-            assert!(
-                parse_update("build", "running", &["--ticket-report", value]).is_err(),
-                "{value:?}"
-            );
+        for args in [
+            vec!["--ticket-report", "missing"],
+            vec!["--ticket-report", "t1", "bad", "x"],
+            vec!["--ticket-report", "t1", "skill", ""],
+            vec!["--ticket-report", "t1", "activity", "bad\ntext"],
+        ] {
+            assert!(parse_update("build", "running", &args).is_err(), "{args:?}");
         }
-        let update =
-            parse_update("build", "running", &["--ticket-report", "t1=skill:tdd"]).unwrap();
+        let update = parse_update(
+            "build",
+            "running",
+            &["--ticket-report", "t1", "skill", "tdd"],
+        )
+        .unwrap();
         assert!(store.update(&created.id, update).is_err());
         assert!(store
             .get(&created.id)
@@ -2185,6 +2189,55 @@ mod tests {
             .unwrap()
             .ticket_reports
             .is_empty());
+    }
+
+    #[test]
+    fn ticket_report_size_limits_are_enforced() {
+        let valid = "x".repeat(500);
+        let too_long = "x".repeat(501);
+        assert!(parse_update(
+            "build",
+            "running",
+            &["--ticket-report", "t1", "activity", &valid]
+        )
+        .is_ok());
+        assert!(parse_update(
+            "build",
+            "running",
+            &["--ticket-report", "t1", "activity", &too_long]
+        )
+        .is_err());
+        let mut args = Vec::new();
+        for _ in 0..100 {
+            args.extend(["--ticket-report", "t1", "skill", "tdd"]);
+        }
+        assert!(parse_update("build", "running", &args).is_ok());
+        args.extend(["--ticket-report", "t1", "skill", "tdd"]);
+        assert!(parse_update("build", "running", &args).is_err());
+    }
+
+    #[test]
+    fn ticket_reports_accept_equals_in_reference_and_text() {
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let run = new_run(&store, "task");
+        let reference = "https://tracker.example/item/id=42";
+        let update = parse_update(
+            "build",
+            "running",
+            &[
+                "--ticket",
+                "https://tracker.example/item/id=42 Example",
+                "--ticket-report",
+                reference,
+                "activity",
+                "value=skill:test",
+            ],
+        )
+        .unwrap();
+        let saved = store.update(&run.id, update).unwrap().unwrap().run;
+        assert_eq!(saved.ticket_reports[0].ticket, reference);
+        assert_eq!(saved.ticket_reports[0].text, "value=skill:test");
     }
 
     #[test]
@@ -2203,7 +2256,9 @@ mod tests {
                         "--ticket",
                         "t1 First ticket",
                         "--ticket-report",
-                        "t1=skill:tdd",
+                        "t1",
+                        "skill",
+                        "tdd",
                     ],
                 )
                 .unwrap(),
@@ -2216,7 +2271,7 @@ mod tests {
                 parse_update(
                     "build",
                     "running",
-                    &["--ticket-report", "t1=activity:Tests passed"],
+                    &["--ticket-report", "t1", "activity", "Tests passed"],
                 )
                 .unwrap(),
             )

@@ -71,7 +71,7 @@ Besides its stage and status, a run records the context a new session needs to c
 | `--mode <factory-full\|factory-balanced\|factory-fast>` | The workflow mode. |
 | `--spec <http(s)-url\|path>`, `--pr <http(s)-url>` | The spec (a URL or a local path) and the pull request. URLs with credentials are refused. |
 | `--ticket "<reference> <title>"` (repeat), `--ticket-status <reference>=<pending\|in-progress\|done>` | The ordered ticket list, listed whole each time (statuses of kept tickets are preserved), and its progress. At most one ticket is in progress. |
-| `--ticket-report "<reference>=<skill\|activity>:<text>"` (repeat) | Append a short skill or activity report to a listed ticket, with the current stage and server time. |
+| `--ticket-report "<reference>" <skill\|activity> "<text>"` (repeat) | Append a short skill or activity report to a listed ticket, with the current stage and server time. |
 | `--summary <stage>=<text>` | A short summary per stage, kept after later stages begin. |
 | `--blocking-reason <text>` | The status reason of a blocked run. |
 
@@ -103,7 +103,7 @@ Run updates also accept optional reporting fields:
 
 ```sh
 factory run update <id> build running --activity "Implementing ticket #42" --current-ticket "https://github.com/owner/repo/issues/42"
-factory run update <id> build running --ticket-report "https://github.com/owner/repo/issues/42=skill:tdd" --ticket-report "https://github.com/owner/repo/issues/42=activity:Tests passed"
+factory run update <id> build running --ticket-report "https://github.com/owner/repo/issues/42" skill "tdd" --ticket-report "https://github.com/owner/repo/issues/42" activity "Tests passed"
 factory run update <id> build blocked --blocking-reason "Waiting for credentials"
 factory run update <id> build running --clear-blocking-reason
 factory run update <id> build running --rework 1 --activity "Fixing Check findings"

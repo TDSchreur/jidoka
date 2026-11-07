@@ -1565,13 +1565,20 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn ticket_reports_are_visible_with_their_ticket_and_a_coverage_note() {
-        let script = asset("/assets/app.js").await;
-        assert!(script.contains("run.ticket_reports"));
-        assert!(script.contains("report.ticket === ticket.reference"));
-        assert!(script.contains("Agent-reported; entries may be incomplete"));
-        assert!(script.contains("report.stage"));
-        assert!(script.contains("report.at"));
+    async fn ticket_reports_are_recorded_and_rejected_atomically_via_api() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
+        let body = r#"{"stage":"build","status":"running","tickets":[{"reference":"local=42","title":"One"}],"ticket_reports":[{"ticket":"local=42","kind":"skill","text":"tdd"}]}"#;
+        assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
+        let bad = r#"{"stage":"build","status":"running","ticket_reports":[{"ticket":"missing","kind":"activity","text":"oops"}]}"#;
+        assert_eq!(
+            report(&api, &run.id, bad).await.status(),
+            HttpStatus::BadRequest
+        );
+        let saved = fetch(&api, &run.id).await.1.unwrap();
+        assert_eq!(saved.ticket_reports.len(), 1);
+        assert_eq!(saved.ticket_reports[0].text, "tdd");
     }
 
     #[rocket::async_test]
