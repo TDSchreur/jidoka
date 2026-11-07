@@ -341,11 +341,12 @@ mod tests {
                     "{skill} does not point to {section}"
                 );
             }
-            assert_eq!(
-                text.contains("check blocked --blocking-reason \"Decision needed on remaining Check findings\""),
-                skill != "factory-fast",
-                "{skill} reports blocked while waiting for a decision on Check findings"
-            );
+            assert!(text.contains("Verification in [factory-procedures]"));
+            if skill != "factory-fast" {
+                for section in ["Committing for Check", "Reworks"] {
+                    assert!(text.contains(&format!("{section} in [factory-procedures]")));
+                }
+            }
             assert!(
                 !text.contains("Waiting for a decision"),
                 "{skill} still reports a decision wait as running"
@@ -359,11 +360,21 @@ mod tests {
                 text.contains(&format!("`--mode {skill}`")),
                 "{skill} reports its own mode"
             );
-            assert_eq!(
-                text.contains("--rework"),
-                skill != "factory-fast",
-                "{skill} reports Reworks only when it has Check"
-            );
+        }
+    }
+
+    #[test]
+    fn shared_procedures_cover_check_and_rework() {
+        let text = bundled_text("factory-procedures/SKILL.md");
+        for needle in [
+            "## Verification",
+            "## Committing for Check",
+            "## Reworks",
+            "--rework",
+            "Decision needed on remaining Check findings",
+            "Review pinned at <hash>",
+        ] {
+            assert!(text.contains(needle), "shared procedures lack {needle}");
         }
     }
 
