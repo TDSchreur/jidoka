@@ -27,6 +27,7 @@ src/parser.py and tests/test_parser.py
 """
 
 
+@unittest.skipIf(os.name == "nt", "the fake Claude executable uses a Unix shebang")
 class EvalTest(unittest.TestCase):
     def run_eval(self, answer, status=0):
         with tempfile.TemporaryDirectory() as tmp:
