@@ -1,7 +1,7 @@
 //! Pull request state: whether a Run's pull request is open, a draft, merged or closed, read from its host
-//! and kept on the Run so the dashboard can show it.
+//! (GitHub with `gh`, Azure Repos with `az`) and kept on the Run so the dashboard can show it.
 
-use crate::pr_wait::{problem, run_gh, Gh, ToolProblem};
+use crate::pr_wait::{azure_pr_status, is_azure_pr_url, problem, run_gh, Gh, ToolProblem};
 use crate::run::RunStore;
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -39,6 +39,17 @@ pub(crate) fn read(tool: &dyn Gh, url: &str) -> Result<PrState, ToolProblem> {
         return Err(ToolProblem(format!(
             "The pull request is not an http(s) URL: {url}"
         )));
+    }
+    if is_azure_pr_url(url) {
+        return match azure_pr_status(tool, url)? {
+            (status, true) if status == "active" => Ok(PrState::Draft),
+            (status, _) if status == "active" => Ok(PrState::Open),
+            (status, _) if status == "completed" => Ok(PrState::Merged),
+            (status, _) if status == "abandoned" => Ok(PrState::Closed),
+            (status, _) => Err(ToolProblem(format!(
+                "Azure reported an unknown pull request status: {status}"
+            ))),
+        };
     }
     let output = run_gh(tool, &["pr", "view", url, "--json", "state,isDraft"])?;
     if output.code != Some(0) {

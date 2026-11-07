@@ -316,7 +316,7 @@ a:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline
   .shipped-table .day th { padding-left: var(--space-5); }
 }
 /* Pull request state, in words beside the link: merged and open stand out, closed and draft stay quiet. */
-.pr-state { display: inline-block; padding: 0 var(--space-3); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-round); font-size: var(--text-xs); line-height: var(--leading-xs); white-space: nowrap; }
+.pr-state { display: inline-block; margin-left: var(--space-2); padding: 0 var(--space-3); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-round); font-size: var(--text-xs); line-height: var(--leading-xs); white-space: nowrap; }
 .pr-state.open { border-color: var(--color-slate); color: var(--color-slate); font-weight: var(--weight-strong); }
 .pr-state.draft { border-style: dashed; color: var(--color-muted); }
 .pr-state.merged { border-color: var(--color-blue); background: var(--color-blue); color: var(--color-on-blue); font-weight: var(--weight-strong); }

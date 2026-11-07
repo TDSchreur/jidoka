@@ -536,7 +536,7 @@ function Dashboard({ reworkCap }) {
             'The fresh tokens the Run has used, such as 41.2k. It says partial when some of the usage could not be read.',
           ],
           ['Pull request, Spec', 'Links, when the Run has recorded them.'],
-          ['Open, Draft, Merged, Closed', 'The state of the pull request, read from GitHub by the dashboard and checked again about once a minute until it is merged. The detail says when it was checked, or why it could not be read.'],
+          ['Open, Draft, Merged, Closed', 'The state of the pull request, read from GitHub or Azure Repos by the dashboard and checked again about once a minute until it is merged. The detail says when it was checked, or why it could not be read.'],
           ['Activity', 'What the agent says it is doing.'],
           ['Updated', 'How long ago the agent last reported. It is the time of the last report, not a heartbeat.'],
         ]}

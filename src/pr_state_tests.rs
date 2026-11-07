@@ -25,9 +25,9 @@ impl ScriptedGh {
     }
 }
 
-impl Gh for ScriptedGh {
-    fn run(&self, args: &[&str]) -> Result<GhOutput, GhError> {
-        self.calls.lock().unwrap().push(args.join(" "));
+impl ScriptedGh {
+    fn answer(&self, call: String) -> Result<GhOutput, GhError> {
+        self.calls.lock().unwrap().push(call);
         let mut answers = self.answers.lock().unwrap();
         if answers.len() > 1 {
             answers.remove(0)
@@ -38,6 +38,15 @@ impl Gh for ScriptedGh {
                 Err(GhError::Other(text)) => Err(GhError::Other(text.clone())),
             }
         }
+    }
+}
+
+impl Gh for ScriptedGh {
+    fn run(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+        self.answer(args.join(" "))
+    }
+    fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+        self.answer(format!("az {}", args.join(" ")))
     }
 }
 
@@ -224,4 +233,68 @@ fn a_new_pull_request_url_is_checked_at_once_and_runs_without_one_are_left_alone
 fn callers_cannot_set_the_state() {
     let attempt = serde_json::from_str::<UpdateRun>(r#"{"pr_status":{"state":"merged"}}"#);
     assert!(attempt.is_err());
+}
+
+const AZURE_PR: &str = "https://dev.azure.com/org/Proj/_git/Repo/pullrequest/535";
+
+/// What `az repos pr show` prints for pull request 535 of Proj/Repo, cut to the fields that matter here.
+fn azure(status: &str, draft: bool) -> Result<GhOutput, GhError> {
+    Ok(GhOutput {
+        code: Some(0),
+        stdout: format!(
+            r#"{{"pullRequestId":535,"status":"{status}","isDraft":{draft},"repository":{{"name":"Repo","project":{{"name":"Proj"}}}},"forkSource":null}}"#
+        ),
+        stderr: String::new(),
+    })
+}
+
+#[test]
+fn an_azure_repos_pull_request_reads_as_open_draft_merged_or_closed() {
+    // Azure Repos reports active, completed or abandoned, and isDraft for an active draft.
+    for (status, draft, expected) in [
+        ("active", false, PrState::Open),
+        ("active", true, PrState::Draft),
+        ("completed", false, PrState::Merged),
+        ("abandoned", false, PrState::Closed),
+    ] {
+        let az = ScriptedGh::new(vec![azure(status, draft)]);
+        assert_eq!(
+            read(&az, AZURE_PR).unwrap(),
+            expected,
+            "{status} draft={draft}"
+        );
+        assert_eq!(
+            az.calls(),
+            ["az repos pr show --id 535 --organization https://dev.azure.com/org --output json --detect false"]
+        );
+    }
+}
+
+#[test]
+fn azure_problems_say_what_to_do() {
+    let missing = ScriptedGh::new(vec![Err(GhError::NotInstalled)]);
+    assert!(read(&missing, AZURE_PR)
+        .unwrap_err()
+        .0
+        .contains("azure-devops extension"));
+    let signed_out = ScriptedGh::new(vec![failed(1, "Please run 'az login' to setup account.")]);
+    assert!(read(&signed_out, AZURE_PR)
+        .unwrap_err()
+        .0
+        .contains("az login"));
+    let odd = ScriptedGh::new(vec![azure("notSet", false)]);
+    assert!(read(&odd, AZURE_PR).unwrap_err().0.contains("notSet"));
+    // A pull request from another repository than the URL names is not trusted.
+    let elsewhere = ScriptedGh::new(vec![Ok(GhOutput {
+        code: Some(0),
+        stdout: r#"{"pullRequestId":535,"status":"active","isDraft":false,"repository":{"name":"Other","project":{"name":"Proj"}},"forkSource":null}"#.into(),
+        stderr: String::new(),
+    })]);
+    assert!(read(&elsewhere, AZURE_PR)
+        .unwrap_err()
+        .0
+        .contains("does not match"));
+    // Azure output is never echoed: it can hold credentials.
+    let secret = ScriptedGh::new(vec![failed(1, "token=abc123 rejected")]);
+    assert!(!read(&secret, AZURE_PR).unwrap_err().0.contains("abc123"));
 }
