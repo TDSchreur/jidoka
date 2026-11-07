@@ -1,6 +1,7 @@
 ---
 name: factory-procedures
-description: Shared operating procedures for the factory-full, factory-balanced and factory-fast workflows: run reporting, continuing a run, workspace, tracker setup, model routing, writing, and pull request and CI. Read by those workflows; do not run it on its own.
+description: "Shared operating procedures for the factory-full, factory-balanced and factory-fast workflows: run reporting, continuing a run, workspace, tracker setup, model routing, writing, and pull request and CI. Read by those workflows; do not run it on its own."
+disable-model-invocation: true
 ---
 
 # Factory procedures
