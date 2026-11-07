@@ -78,6 +78,8 @@ pub(crate) struct Synced {
     pub(crate) merge_commit: Option<String>,
     /// Commits on the branch that are not on the remote and that this command did not push.
     pub(crate) unpushed: u64,
+    /// Whether the branch exists on origin.
+    pub(crate) on_origin: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -278,13 +280,23 @@ pub(crate) fn sync(
             .map(|_| ())
             .map_err(|error| {
                 let lower = error.to_lowercase();
-                if lower.contains("rejected") || lower.contains("non-fast-forward") || lower.contains("fetch first") {
+                // `[remote rejected]` is a hook or a branch rule saying no; only these mean the branch moved on.
+                if lower.contains("non-fast-forward") || lower.contains("fetch first") || lower.contains("[rejected]") {
                     format!(
                         "origin rejected it: the remote branch moved on. Run the command again; it says what the remote has. ({})",
                         shown(last_line(&error))
                     )
                 } else {
-                    format!("{}. Run the command again to push it.", shown(last_line(&error)))
+                    // git puts its reason on the `!` line; the last line only says that the push failed.
+                    let reason = error
+                        .lines()
+                        .map(str::trim)
+                        .find(|line| line.starts_with('!'))
+                        .unwrap_or_else(|| last_line(&error));
+                    format!(
+                        "{}. Fix what it says, then run the command again to push it.",
+                        shown(reason)
+                    )
                 }
             })
     };
@@ -299,6 +311,7 @@ pub(crate) fn sync(
         files,
         merge_commit,
         unpushed,
+        on_origin: remote.is_some(),
     };
 
     match git
@@ -325,12 +338,23 @@ pub(crate) fn sync(
                     let own = files_between(&start, ours, "Listing the change's files")?;
                     let base_files = files_between(&start, theirs, "Listing the base's files")?;
                     let untouched = own.iter().all(|file| !base_files.contains(file));
-                    let automatic = match (
-                        git.git(dir, &["merge-tree", "--write-tree", ours, theirs]),
-                        git.git(dir, &["rev-parse", "HEAD^{tree}"]),
-                    ) {
-                        (Ok(tree), Ok(head_tree)) => first_line(&tree) == head_tree,
-                        _ => false,
+                    // 0 is a clean merge, 1 a conflict (resolved by hand here); anything else is a git that
+                    // cannot answer, such as one before 2.38.
+                    let automatic = match git
+                        .status(dir, &["merge-tree", "--write-tree", ours, theirs])
+                        .map_err(problem)?
+                    {
+                        0 => {
+                            let tree = read(&["merge-tree", "--write-tree", ours, theirs], "Merging in memory")?;
+                            first_line(&tree) == read(&["rev-parse", "HEAD^{tree}"], "Reading HEAD")?
+                        }
+                        1 => false,
+                        _ => {
+                            return Err(problem(format!(
+                                "HEAD is a merge of {} that is not pushed, and this git cannot check whether it is the plain merge (`git merge-tree --write-tree` needs git 2.38 or later). Verify it and push it by hand, or update git.",
+                                shown(&base)
+                            )))
+                        }
                     };
                     if untouched && automatic {
                         push().map_err(|detail| {
@@ -436,6 +460,9 @@ pub(crate) fn render(synced: &Synced) -> String {
             "  Merge commit: {}\n",
             shown(&commit.chars().take(7).collect::<String>())
         ));
+    }
+    if synced.outcome == Outcome::NeedsVerification && !synced.on_origin {
+        out.push_str("  The branch is not on origin yet.\n");
     }
     if synced.unpushed > 0 {
         out.push_str(&format!(

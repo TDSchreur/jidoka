@@ -50,6 +50,8 @@ fn run_git(dir: &Path, args: &[&str]) -> String {
 #[derive(Default)]
 struct TestGit {
     fail_merge_base: bool,
+    /// Plays a git older than 2.38, which has no `merge-tree --write-tree`.
+    old_git: bool,
 }
 
 impl Git for TestGit {
@@ -72,6 +74,9 @@ impl Git for TestGit {
     }
 
     fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
+        if self.old_git && args.first() == Some(&"merge-tree") {
+            return Ok(129);
+        }
         // Only the behind test: is the base in HEAD?
         if self.fail_merge_base
             && args.first() == Some(&"merge-base")
@@ -319,6 +324,9 @@ fn a_push_that_failed_is_finished_by_running_the_command_again() {
     let before = project.remote_branch("feature");
     let problem = sync_now(&project, &FakeApi::default()).unwrap_err();
     assert!(problem.0.contains("again"), "{}", problem.0);
+    // A hook that refuses the push is not a remote branch that moved on: git's reason is shown.
+    assert!(!problem.0.contains("moved on"), "{}", problem.0);
+    assert!(problem.0.contains("declined"), "{}", problem.0);
     assert_eq!(project.remote_branch("feature"), before);
     let merge = project.head();
     assert_ne!(merge, before, "the merge commit is kept");
@@ -414,6 +422,7 @@ fn an_odd_failure_of_merge_base_is_an_error_and_not_behind() {
     let head = project.head();
     let git = TestGit {
         fail_merge_base: true,
+        ..TestGit::default()
     };
     let problem = sync(&run_of(&project), &options(), &git, &FakeApi::default()).unwrap_err();
     assert!(problem.0.contains("merge-base"), "{}", problem.0);
@@ -442,6 +451,7 @@ fn the_options_and_the_outputs() {
         files: vec!["a\u{1b}[2J.txt".into()],
         merge_commit: None,
         unpushed: 0,
+        on_origin: true,
     };
     let text = render(&synced);
     assert!(text.starts_with("Conflict"), "{text}");
@@ -607,4 +617,51 @@ fn a_remote_branch_that_moved_on_is_reported_before_anything_is_merged() {
         );
         assert_eq!(project.head(), head, "nothing was merged");
     }
+}
+
+// --- rework 2 ---------------------------------------------------------------------------------------
+
+#[test]
+fn a_git_too_old_to_check_the_merge_says_so_instead_of_staying_silent() {
+    let project = Project::new();
+    project.base_moves("b.txt", "b changed\n");
+    let hook = project.remote.join("hooks/pre-receive");
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    sync_now(&project, &FakeApi::default()).unwrap_err();
+    fs::remove_file(&hook).unwrap();
+    let before = project.remote_branch("feature");
+    let git = TestGit {
+        old_git: true,
+        ..TestGit::default()
+    };
+    let problem = sync(&run_of(&project), &options(), &git, &FakeApi::default()).unwrap_err();
+    assert!(problem.0.contains("2.38"), "{}", problem.0);
+    assert_eq!(
+        project.remote_branch("feature"),
+        before,
+        "nothing was pushed"
+    );
+}
+
+#[test]
+fn a_branch_that_is_not_on_origin_is_told_why_it_is_not_pushed() {
+    let project = Project::new();
+    let start = run_git(&project.wt, &["rev-parse", "origin/develop"]);
+    run_git(&project.wt, &["checkout", "-q", "-b", "empty", &start]);
+    project.base_moves("b.txt", "b changed\n");
+    let mut run = run_of(&project);
+    run.branch = Some("empty".into());
+    let synced = sync(&run, &options(), &TestGit::default(), &FakeApi::default()).unwrap();
+    assert_eq!(synced.outcome, Outcome::NeedsVerification);
+    assert!(!synced.on_origin);
+    assert!(
+        render(&synced).contains("not on origin"),
+        "{}",
+        render(&synced)
+    );
 }
