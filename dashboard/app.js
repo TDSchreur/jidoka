@@ -201,6 +201,25 @@ function rowBucket(row) {
   return row.stage === 'build' ? 'No ticket' : '';
 }
 
+/** A short name for a ticket link: #202 for an issue, pull request or work item, else the last part of the path. */
+function shortRef(url) {
+  const number = url.pathname.match(/(?:issues|pull|pullrequest|workitems\/edit)\/(\d+)\/?$/);
+  if (number) return `#${number[1]}`;
+  return url.pathname.split('/').filter(Boolean).at(-1) ?? url.host;
+}
+
+/** A row's ticket in the token table: a short link with the whole URL as its tooltip, or the text as it is. */
+function TicketRef({ value }) {
+  try {
+    const url = new URL(String(value));
+    if (url.protocol === 'http:' || url.protocol === 'https:')
+      return html`<a href=${url.href} title=${url.href} target="_blank" rel="noopener noreferrer">${shortRef(url)}</a>`;
+  } catch {
+    /* not a URL: show as text */
+  }
+  return value;
+}
+
 /** The stage, model and ticket breakdown of a Run's token usage, with what is missing from it. */
 function UsageDetail({ usage }) {
   const stageName = (id) => (GROUPS.find(([key]) => key === id) ?? [id, id])[1];
@@ -234,7 +253,7 @@ function UsageDetail({ usage }) {
                   (row, index) => html`<tr key=${index}>
                     <td>${stageName(row.stage)}</td>
                     <td>${row.model}</td>
-                    <td>${rowBucket(row)}</td>
+                    <td><${TicketRef} value=${rowBucket(row)} /></td>
                     <td>${tokenCount(freshTokens(row))}</td>
                     <td>${tokenCount(row.input)}</td>
                     <td>${tokenCount(row.cache_read)}</td>
@@ -332,8 +351,10 @@ function LineRow({ run, now, onOpen }) {
   </li>`;
 }
 
-/** One labelled value of the Run detail; an empty value reads "Not set". */
-/** `wide` puts the label above the value and gives the value the whole width, for the token table. */
+/**
+ * One labelled value of the Run detail; an empty value reads "Not set". `wide` puts the label above the value and
+ * gives the value the whole width, for the token table.
+ */
 function Field({ label, children, missing = 'Not set', wide = false }) {
   const empty = children === null || children === undefined || children === '';
   const classes = [wide ? 'wide' : null, empty ? 'not-set' : null].filter(Boolean).join(' ') || null;

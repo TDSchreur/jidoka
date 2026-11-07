@@ -2151,6 +2151,30 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn the_token_table_shows_tickets_as_short_links_so_it_fits() {
+        // A ticket URL in the breakdown made the table wider than the sheet. It shows as #202, with the URL as a tooltip.
+        let script = asset("/assets/app.js").await;
+        let short = script
+            .split("function shortRef(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a shortRef function");
+        // GitHub issues and pull requests, and Azure Boards work items, by number; anything else by its last part.
+        assert!(short.contains("/(?:issues|pull|pullrequest|workitems\\/edit)\\/(\\d+)\\/?$/"));
+        assert!(short.contains("`#${number[1]}`"));
+        assert!(script.contains("<td><${TicketRef} value=${rowBucket(row)} /></td>"));
+        assert!(script.contains("title=${url.href}"));
+        // Model and ticket may wrap, so a long name never widens the table.
+        let css = stylesheet().await;
+        assert!(css.contains(
+            ".usage-table td:nth-child(2), .usage-table td:nth-child(3) { white-space: normal; overflow-wrap: anywhere; }"
+        ));
+        // One doc comment on Field, and the token usage label keeps the same gap as the others.
+        assert!(!script.contains("reads \"Not set\". */\n/**"));
+        assert!(!css.contains(".fields dd.wide"));
+    }
+
+    #[rocket::async_test]
     async fn dashboard_tokens_are_all_used_and_all_declared() {
         let css = stylesheet().await;
         let (layer, rules) = split_tokens(&css);
