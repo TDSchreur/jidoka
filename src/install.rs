@@ -573,6 +573,57 @@ mod tests {
     }
 
     #[test]
+    fn setup_stops_on_missing_azure_boards_details_without_a_partial_tracker_file() {
+        let setup = bundled_text("setup-matt-pocock-skills/SKILL.md");
+        let (_, azure) = setup
+            .split_once("An Azure Boards tracker needs")
+            .expect("setup has an Azure Boards part");
+        assert!(azure.contains("stop and tell the user exactly what is missing"));
+        assert!(azure.contains("Do not write a partial `docs/agents/issue-tracker.md`"));
+    }
+
+    #[test]
+    fn azure_boards_template_names_no_process_specific_types_or_states() {
+        let template = bundled_text("setup-matt-pocock-skills/issue-tracker-azure-boards.md");
+        let found: Vec<&str> = [
+            "User Story",
+            "Product Backlog Item",
+            "Active",
+            "Resolved",
+            "Done",
+            "To Do",
+            "Closed",
+        ]
+        .into_iter()
+        .filter(|name| template.contains(name))
+        .collect();
+        assert!(
+            found.is_empty(),
+            "template hardcodes process names: {found:?}"
+        );
+    }
+
+    #[test]
+    fn azure_boards_route_parameters_are_quoted_pairs() {
+        const FLAG: &str = "--route-parameters";
+        for path in [
+            "setup-matt-pocock-skills/issue-tracker-azure-boards.md",
+            "setup-matt-pocock-skills/SKILL.md",
+        ] {
+            let text = bundled_text(path);
+            assert!(text.contains(FLAG), "{path} has no {FLAG}");
+            for (index, _) in text.match_indices(FLAG) {
+                let after = &text[index + FLAG.len()..];
+                assert!(
+                    after.starts_with(" \"") && after.contains("\" \""),
+                    "{path}: route parameters must be quoted: {}",
+                    after.lines().next().unwrap_or("")
+                );
+            }
+        }
+    }
+
+    #[test]
     fn skills_roots_resolves_every_listed_agent_once() {
         let home = Path::new("/home/user");
         let unset = |_: &str| None;
