@@ -341,10 +341,16 @@ mod tests {
                     "{skill} does not point to {section}"
                 );
             }
-            assert!(text.contains("Verification in [factory-procedures]"));
+            assert!(
+                text.contains("Verification in [factory-procedures]"),
+                "{skill} lacks Verification"
+            );
             if skill != "factory-fast" {
                 for section in ["Committing for Check", "Reworks"] {
-                    assert!(text.contains(&format!("{section} in [factory-procedures]")));
+                    assert!(
+                        text.contains(&format!("{section} in [factory-procedures]")),
+                        "{skill} lacks {section}"
+                    );
                 }
             }
             assert!(
