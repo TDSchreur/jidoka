@@ -224,6 +224,10 @@ fn each_command_lands_in_the_category_the_rules_give_it() {
             Category::ReadingEditingAnalysis,
         ),
         ("az repos pr show --id 7", Category::ReadingEditingAnalysis),
+        (
+            "az devops invoke --resource pullRequests --query Statuses",
+            Category::ReadingEditingAnalysis,
+        ),
         ("scripts/verify.sh", Category::Verification),
         (
             "cd /repo && cargo clippy --all-targets -- -D warnings",

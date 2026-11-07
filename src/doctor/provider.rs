@@ -13,14 +13,15 @@ use std::{
 const AZURE_PAT: &str = "AZURE_DEVOPS_EXT_PAT";
 
 pub(super) fn checks(project: &Path, machine: &Machine) -> Vec<Check> {
-    if git_output(project, &["remote", "get-url", "origin"]).is_none() {
-        return vec![Check::skipped(
-            "host",
-            "there is no `origin` remote, so the pull request host was not checked",
-        )];
-    }
-    let origin = match detect_host(&|args| git_output(project, args)) {
-        Ok(origin) => origin,
+    let host = match detect_host(&|args| git_output(project, args)) {
+        Ok(origin) => origin.host,
+        // Detection asks for origin first, so a failure here with no origin means there is none.
+        Err(_) if git_output(project, &["remote", "get-url", "origin"]).is_none() => {
+            return vec![Check::skipped(
+                "host",
+                "there is no `origin` remote, so the pull request host was not checked",
+            )];
+        }
         Err(problem) => {
             return vec![Check::warning(
                 "host",
@@ -29,23 +30,21 @@ pub(super) fn checks(project: &Path, machine: &Machine) -> Vec<Check> {
             )]
         }
     };
-    let mut checks = match origin.host {
-        Host::GitHub => {
-            let mut checks = vec![Check::pass("host", "pull requests go to GitHub")];
-            checks.extend(github_checks(machine));
-            checks
-        }
-        Host::Azure(repo) => {
-            let mut checks = vec![Check::pass(
+    let (host_check, tool_checks) = match host {
+        Host::GitHub => (
+            Check::pass("host", "pull requests go to GitHub"),
+            github_checks(machine),
+        ),
+        Host::Azure(repo) => (
+            Check::pass(
                 "host",
                 format!(
                     "pull requests go to Azure Repos ({}/{}/{})",
                     repo.organization, repo.project, repo.repository
                 ),
-            )];
-            checks.extend(azure_checks(machine));
-            checks
-        }
+            ),
+            azure_checks(machine),
+        ),
         Host::Unknown => {
             return vec![Check::warning(
                 "host",
@@ -54,6 +53,8 @@ pub(super) fn checks(project: &Path, machine: &Machine) -> Vec<Check> {
             )]
         }
     };
+    let mut checks = vec![host_check];
+    checks.extend(tool_checks);
     checks.push(Check::skipped(
         "not-verified",
         "not checked: whether the token is valid, project permissions, and branch policies",
@@ -69,8 +70,7 @@ fn github_checks(machine: &Machine) -> Vec<Check> {
             "Install the GitHub CLI and make sure `gh` is on PATH.",
         )];
     };
-    let mut checks = vec![Check::pass("gh", format!("`gh` found at {}", gh.display()))];
-    checks.push(if succeeds(&gh, &["auth", "status"]) {
+    let sign_in = if succeeds(&gh, &["auth", "status"]) {
         Check::pass("sign-in", "`gh auth status` reports a signed-in account")
     } else {
         Check::warning(
@@ -78,8 +78,11 @@ fn github_checks(machine: &Machine) -> Vec<Check> {
             "`gh auth status` reports no signed-in account",
             "Run `gh auth login`.",
         )
-    });
-    checks
+    };
+    vec![
+        Check::pass("gh", format!("`gh` found at {}", gh.display())),
+        sign_in,
+    ]
 }
 
 fn azure_checks(machine: &Machine) -> Vec<Check> {
@@ -90,22 +93,21 @@ fn azure_checks(machine: &Machine) -> Vec<Check> {
             "Install the Azure CLI and its azure-devops extension (`az extension add --name azure-devops`).",
         )];
     };
-    let mut checks = vec![Check::pass("az", format!("`az` found at {}", az.display()))];
-    if !succeeds(&az, &["extension", "show", "--name", "azure-devops"]) {
-        checks.push(Check::warning(
+    let extension = if succeeds(&az, &["extension", "show", "--name", "azure-devops"]) {
+        Check::pass(
+            "azure-devops-extension",
+            "the azure-devops extension is installed",
+        )
+    } else {
+        Check::warning(
             "azure-devops-extension",
             "the azure-devops extension of `az` is not installed",
             "Run `az extension add --name azure-devops`.",
-        ));
-        return checks;
-    }
-    checks.push(Check::pass(
-        "azure-devops-extension",
-        "the azure-devops extension is installed",
-    ));
+        )
+    };
     // Only whether the token is set: it is never read further, validated or printed.
     let pat = (machine.var)(AZURE_PAT).is_some_and(|value| !value.is_empty());
-    checks.push(if pat {
+    let sign_in = if pat {
         Check::pass("sign-in", format!("{AZURE_PAT} is set"))
     } else if succeeds(&az, &["account", "show"]) {
         Check::pass("sign-in", "`az account show` reports a signed-in account")
@@ -115,8 +117,12 @@ fn azure_checks(machine: &Machine) -> Vec<Check> {
             format!("`az account show` reports no signed-in account and {AZURE_PAT} is not set"),
             format!("Run `az login`, or set {AZURE_PAT} to a personal access token."),
         )
-    });
-    checks
+    };
+    vec![
+        Check::pass("az", format!("`az` found at {}", az.display())),
+        extension,
+        sign_in,
+    ]
 }
 
 /// Whether `program args` exits successfully. Its output is discarded, so nothing it prints, such as

@@ -1864,7 +1864,8 @@ mod tests {
         report.provider.iter().find(|check| check.id == id)
     }
 
-    /// A fake host tool on PATH: a shell script that exits 0 only for the listed argument lines.
+    /// A fake host tool on PATH: a shell script that exits 0 only for the listed argument lines. Tests that
+    /// use it run on Unix only, because the fake is a `#!/bin/sh` script.
     #[cfg(unix)]
     fn fake_tool(bin: &Path, name: &str, succeeds_for: &[&str]) {
         use std::os::unix::fs::PermissionsExt;
@@ -1964,6 +1965,11 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("az extension add --name azure-devops"));
+        // The sign-in needs no extension, so it is still reported.
+        assert_eq!(
+            provider_check(&report, "sign-in").unwrap().status,
+            Status::Pass
+        );
 
         let signed_out = with_origin(World::ready(), AZURE_ORIGIN);
         fake_tool(
@@ -2030,7 +2036,7 @@ mod tests {
     }
 
     #[test]
-    fn a_misconfigured_azure_override_is_reported_as_unsupported() {
+    fn an_unknown_provider_override_is_reported_as_unsupported() {
         let world = World::ready().claude_ready();
         git(
             world.project.path(),
@@ -2041,6 +2047,29 @@ mod tests {
         let host = provider_check(&report, "host").unwrap();
         assert_eq!(host.status, Status::Warning);
         assert!(host.message.contains("not supported"), "{}", host.message);
+        assert!(host.message.contains("choose github or azure"));
+    }
+
+    #[test]
+    fn an_azure_override_that_does_not_match_origin_is_reported_as_unsupported() {
+        let world = with_origin(World::ready().claude_ready(), AZURE_ORIGIN);
+        for (key, value) in [
+            ("factory.prProvider", "azure"),
+            ("factory.azureOrganization", "other-org"),
+            ("factory.azureProject", "My Project"),
+            ("factory.azureRepository", "repo"),
+        ] {
+            git(world.project.path(), &["config", key, value]);
+        }
+        let report = world.report(None);
+        assert!(report.ok, "{}", render(&report));
+        let host = provider_check(&report, "host").unwrap();
+        assert_eq!(host.status, Status::Warning);
+        assert!(
+            host.message.contains("does not match origin"),
+            "{}",
+            host.message
+        );
     }
 
     #[test]
