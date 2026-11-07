@@ -2217,6 +2217,39 @@ mod tests {
     }
 
     #[test]
+    fn run_rejects_reports_beyond_its_limit_without_losing_existing_reports() {
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let run = new_run(&store, "task");
+        store
+            .update(
+                &run.id,
+                parse_update("build", "running", &["--ticket", "t1 One"]).unwrap(),
+            )
+            .unwrap();
+        let mut args = Vec::new();
+        for _ in 0..100 {
+            args.extend(["--ticket-report", "t1", "skill", "tdd"]);
+        }
+        for _ in 0..10 {
+            store
+                .update(&run.id, parse_update("build", "running", &args).unwrap())
+                .unwrap();
+        }
+        let extra = parse_update(
+            "build",
+            "running",
+            &["--ticket-report", "t1", "skill", "tdd"],
+        )
+        .unwrap();
+        assert!(store.update(&run.id, extra).is_err());
+        assert_eq!(
+            store.get(&run.id).unwrap().unwrap().ticket_reports.len(),
+            1000
+        );
+    }
+
+    #[test]
     fn ticket_reports_accept_equals_in_reference_and_text() {
         let dir = TestDir::new();
         let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();

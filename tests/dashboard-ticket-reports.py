@@ -40,7 +40,11 @@ class TicketReportsTest(unittest.TestCase):
                     result = rows.RESULTS.get(timeout=30)
                 finally:
                     process.terminate()
-                    process.wait(timeout=10)
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
             self.assertIn("Skill: tdd", result["items"][0])
             self.assertIn("build", result["items"][0])
             self.assertIn("may be incomplete", result["items"][0])
