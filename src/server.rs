@@ -781,7 +781,7 @@ mod tests {
     async fn selecting_a_card_opens_a_modal_detail_with_every_run_field() {
         let script = asset("/assets/app.js").await;
         // The card's title is the button that opens the detail, found again by the Run id.
-        assert!(script.contains("class=\"card-open\""));
+        assert!(script.contains("class=\"line-open\""));
         assert!(script.contains("data-run-key="));
         // A native modal dialog named by the Run title.
         assert!(script.contains("<dialog"));
@@ -1639,8 +1639,10 @@ mod tests {
     async fn the_page_opens_on_the_requested_project_expanded_and_first() {
         let script = asset("/assets/app.js").await;
         assert!(script.contains("new URLSearchParams(location.search).get('project')"));
-        // The requested Project's Runs come first on the line.
-        assert!(script.contains("first(b.run) - first(a.run) || compare(a, b)"));
+        // Blocked Runs come first, then the requested Project's Runs, then the most recent.
+        assert!(
+            script.contains("blockedFirst(a, b) || first(b.run) - first(a.run) || compare(a, b)")
+        );
     }
 
     #[rocket::async_test]
@@ -1704,7 +1706,7 @@ mod tests {
         );
         assert!(rules.contains("body:has(.detail[open]) { overflow: hidden; }"));
         // The whole row is the click target, with its links kept above it.
-        assert!(rules.contains(".card-open::after {"));
+        assert!(rules.contains(".line-open::after {"));
         assert!(rules.contains(".line-row .meta a { position: relative; z-index: 1; }"));
     }
 
@@ -1854,6 +1856,10 @@ mod tests {
         assert!(rule("#message.error").contains("var(--color-red)"));
         // The line sits flat on the floor; only dialogs and menus cast a shadow.
         assert!(!rule(".line").contains("box-shadow"));
+        assert!(
+            !rules.contains("box-shadow: inset"),
+            "a blocked row is marked with a bar, not a shadow"
+        );
         assert_eq!(
             rules.matches("var(--shadow-dialog)").count(),
             3,
@@ -1872,12 +1878,14 @@ mod tests {
             .and_then(|rest| rest.split("\n}\n").next())
             .expect("an Andon component");
         // Quiet: one line that says so, with how many Runs are on the line. Lit: how many need you.
-        assert!(andon.contains("Nothing needs you."));
-        assert!(andon.contains("on the line."));
+        assert!(andon.contains("'Nothing needs you.'"));
+        assert!(andon.contains("on the line.`"));
         assert!(andon.contains("'1 run needs you'"));
         assert!(andon.contains("`${waiting.length} runs need you`"));
-        // The count is announced; the list is not, so a change is read once.
-        assert!(andon.contains("<p class=\"andon-summary\" role=\"status\">"));
+        // Only whether and how many Runs need you is announced: not the list, and not the count on the line,
+        // so a Run starting or finishing elsewhere is not read out.
+        assert!(andon.contains("<span role=\"status\">${needs}</span>"));
+        assert_eq!(andon.matches("role=\"status\"").count(), 1);
         // Each waiting Run shows its title, Project and status reason, and opens its detail.
         assert!(andon.contains("class=\"andon-run\""));
         assert!(andon.contains("onClick=${() => onOpen(runKey(run))}"));
@@ -1893,8 +1901,10 @@ mod tests {
         );
         // Hidden Projects stay out of the strip.
         assert!(script.contains("<${Andon}\n        waiting=${visibleRuns"));
-        // Focus goes back to the control that opened the detail, wherever it was.
+        // Focus goes back to the control that opened the detail, wherever it was; failing that, to the Run's
+        // row on the board before its entry in the strip.
         assert!(script.contains("opener.current = document.activeElement"));
+        assert!(script.contains("document.querySelector(`main [data-run-key=\"${key}\"]`)"));
         let css = stylesheet().await;
         let lit = css
             .lines()
@@ -1914,7 +1924,7 @@ mod tests {
             .and_then(|rest| rest.split("\n}\n").next())
             .expect("a LineRow component");
         // The title opens the detail and is found again by the Run key.
-        assert!(row.contains("class=\"card-open\" data-run-key=${runKey(run)}"));
+        assert!(row.contains("class=\"line-open\" data-run-key=${runKey(run)}"));
         // The rail is drawn for sighted users; its position is also given in words.
         assert!(row.contains("<div class=\"rail\" aria-hidden=\"true\">"));
         assert!(row.contains("<p class=\"where\">${where}</p>"));
@@ -1932,6 +1942,9 @@ mod tests {
         // Active Runs only, blocked first, and the requested Project before the rest.
         assert!(script.contains("run.status !== 'done'"));
         assert!(script.contains("const first = (run) => Number(projectOf(run) === wanted);"));
+        assert!(script.contains(
+            "const blockedFirst = (a, b) => Number(needsYou(b.run)) - Number(needsYou(a.run));"
+        ));
         // The old grid and its Stage buttons are gone.
         for gone in [
             "board-headers",
@@ -1958,17 +1971,24 @@ mod tests {
             .nth(1)
             .and_then(|rest| rest.split("\n}\n").next())
             .expect("a ProjectsMenu component");
-        assert!(menu.contains("<details class=\"projects-menu\">"));
+        assert!(
+            menu.contains("<details class=\"projects-menu\" ref=${menu} onKeyDown=${onKeyDown}>")
+        );
         assert!(menu.contains("<summary>Projects (${projects.length})</summary>"));
-        assert!(menu.contains(
-            "aria-label=${`${hidden ? 'Restore' : 'Hide'} ${names.get(project) ?? project}`}"
-        ));
-        assert!(menu.contains("aria-label=${`Delete ${names.get(project) ?? project}`}"));
+        assert!(menu.contains("const name = names.get(project) ?? project;"));
+        assert!(menu.contains("aria-label=${`${hidden ? 'Restore' : 'Hide'} ${name}`}"));
+        assert!(menu.contains("aria-label=${`Delete ${name}`}"));
         assert!(menu.contains("onClick=${() => onDelete(project)}"));
         // Hiding is remembered in this browser, and deleting a Project still asks first.
         assert!(script.contains("localStorage.setItem('hidden-projects'"));
         assert!(script.contains("onDelete=${(project) => setPending({ project, runs: runs.filter((run) => projectOf(run) === project) })}"));
         assert!(script.contains("<${ProjectsMenu}"));
+        // It closes with Escape (focus back on its summary) and with a click elsewhere.
+        assert!(menu.contains("event.key === 'Escape'"));
+        assert!(menu.contains("document.addEventListener('pointerdown', onOutside)"));
+        let css = stylesheet().await;
+        assert!(css.contains(".toolbar { position: relative;"));
+        assert!(css.contains(".projects-menu { position: static; }"));
     }
 
     #[rocket::async_test]
@@ -2050,6 +2070,66 @@ mod tests {
         let script = asset("/assets/app.js").await;
         assert!(script.contains("<${LineRow} key=${runKey(entry.run)}"));
         assert!(script.contains("style=${`--station: ${index}`}"));
+    }
+
+    /// The relative luminance of a `#RRGGBB` colour, as WCAG 2 defines it.
+    fn luminance(hex: &str) -> f64 {
+        let channel = |at: usize| {
+            let value = f64::from(u8::from_str_radix(&hex[at..at + 2], 16).unwrap()) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5)
+    }
+
+    fn contrast(a: &str, b: &str) -> f64 {
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn contrast_follows_the_wcag_formula() {
+        // Worked examples: black on white is 21:1, and #767676 on white is the classic 4.54:1.
+        assert!((contrast("#000000", "#FFFFFF") - 21.0).abs() < 0.01);
+        assert!((contrast("#767676", "#FFFFFF") - 4.54).abs() < 0.01);
+    }
+
+    #[rocket::async_test]
+    async fn text_colours_have_enough_contrast_in_both_themes() {
+        let css = stylesheet().await;
+        let (layer, _) = split_tokens(&css);
+        let colour_in = |marker: &str, name: &str| -> String {
+            let start = layer.find(marker).unwrap();
+            let body = &layer[start..start + layer[start..].find('}').unwrap()];
+            let at = body
+                .find(&format!("--color-{name}: "))
+                .unwrap_or_else(|| panic!("no --color-{name} in {marker}"));
+            body[at..].split(": ").nth(1).unwrap()[..7].to_string()
+        };
+        for marker in [":root {", ":root[data-theme=\"dark\"] {"] {
+            let colour = |name: &str| colour_in(marker, name);
+            for (text, background, minimum) in [
+                ("slate", "panel", 4.5),
+                ("muted", "panel", 4.5),
+                ("muted", "floor", 4.5),
+                ("muted", "tint", 4.5),
+                ("blue", "panel", 4.5),
+                ("red", "floor", 4.5),
+                ("on-amber", "amber", 4.5),
+                ("on-blue", "blue", 4.5),
+                ("on-red", "red", 4.5),
+                ("slate", "tint", 4.5),
+            ] {
+                let ratio = contrast(&colour(text), &colour(background));
+                assert!(
+                    ratio >= minimum,
+                    "{text} on {background} in {marker}: {ratio:.2}"
+                );
+            }
+        }
     }
 
     #[rocket::async_test]

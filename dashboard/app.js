@@ -157,14 +157,14 @@ const ticketProgress = (run) => {
   return tickets.length ? { done: tickets.filter((t) => t.status === 'done').length, total: tickets.length } : null;
 };
 
-/** A link for a stored reference, only when it is an http(s) URL. */
+/** A link for a stored reference, only when it is an http(s) URL; nothing otherwise. */
 function RefLink({ value, label }) {
   try {
     const url = new URL(String(value));
     if (url.protocol === 'http:' || url.protocol === 'https:')
       return html`<a href=${url.href} target="_blank" rel="noopener noreferrer">${label}</a>`;
   } catch {
-    /* not a URL: no link on a card */
+    /* not a URL: no link */
   }
   return null;
 }
@@ -183,7 +183,7 @@ function usageTotal(run) {
 const compactTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
 const tokenCount = (n) => (n === undefined || n === null ? 'n/a' : n.toLocaleString('en-US'));
 
-/** Ticket progress and fresh tokens as chips, and the pull request and spec as links: the context a card shows. */
+/** Ticket progress and fresh tokens as chips: the context a Run's row shows. */
 function ContextChips({ run }) {
   const progress = ticketProgress(run);
   const tokens = usageTotal(run);
@@ -310,7 +310,7 @@ function LineRow({ run, now, onOpen }) {
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   return html`<li class=${blocked ? 'line-row blocked' : 'line-row'} style=${`--station: ${index}`}>
     <h3 class="line-title">
-      <button type="button" class="card-open" data-run-key=${runKey(run)} onClick=${() => onOpen(runKey(run))}>
+      <button type="button" class="line-open" data-run-key=${runKey(run)} onClick=${() => onOpen(runKey(run))}>
         ${run.title}
       </button>
     </h3>
@@ -713,14 +713,16 @@ function NotificationsToggle({ state, onToggle }) {
  * opens its detail. Only the summary is a live region, so a change is announced once, not the whole list.
  */
 function Andon({ waiting, active, filtered, onFilter, onOpen }) {
-  const summary = waiting.length
+  const needs = waiting.length
     ? waiting.length === 1
       ? '1 run needs you'
       : `${waiting.length} runs need you`
-    : `Nothing needs you. ${active} ${active === 1 ? 'run' : 'runs'} on the line.`;
+    : 'Nothing needs you.';
   return html`<section class=${waiting.length ? 'andon lit' : 'andon'} aria-label="Needs you">
     <div class="andon-head">
-      <p class="andon-summary" role="status">${summary}</p>
+      <p class="andon-summary">
+        <span role="status">${needs}</span>${waiting.length ? null : ` ${active} ${active === 1 ? 'run' : 'runs'} on the line.`}
+      </p>
       ${waiting.length || filtered
         ? html`<button type="button" class="toggle andon-filter" aria-pressed=${String(filtered)} onClick=${onFilter}>
             Show only these
@@ -749,19 +751,35 @@ function Andon({ waiting, active, filtered, onFilter, onOpen }) {
  */
 function ProjectsMenu({ projects, hiddenProjects, counts, onHide, onDelete }) {
   const names = useContext(ProjectNames);
-  return html`<details class="projects-menu">
+  const menu = useRef(null);
+  useEffect(() => {
+    // A click outside closes the menu, as Escape does.
+    const onOutside = (event) => {
+      if (menu.current?.open && !menu.current.contains(event.target)) menu.current.open = false;
+    };
+    document.addEventListener('pointerdown', onOutside);
+    return () => document.removeEventListener('pointerdown', onOutside);
+  }, []);
+  const onKeyDown = (event) => {
+    if (event.key === 'Escape' && menu.current?.open) {
+      menu.current.open = false;
+      menu.current.querySelector('summary')?.focus();
+    }
+  };
+  return html`<details class="projects-menu" ref=${menu} onKeyDown=${onKeyDown}>
     <summary>Projects (${projects.length})</summary>
     <div class="projects-panel">
     <ul class="projects-list">
       ${projects.map((project) => {
         const hidden = hiddenProjects.has(project);
+        const name = names.get(project) ?? project;
         return html`<li key=${project} class=${hidden ? 'hidden-project' : null}>
           <span class="projects-name"><${ProjectName} path=${project} /></span>
           <span class="projects-count">${hidden ? 'Hidden' : `${counts.get(project) ?? 0} ${counts.get(project) === 1 ? 'run' : 'runs'}`}</span>
           <button
             type="button"
             class="text-button"
-            aria-label=${`${hidden ? 'Restore' : 'Hide'} ${names.get(project) ?? project}`}
+            aria-label=${`${hidden ? 'Restore' : 'Hide'} ${name}`}
             onClick=${() => onHide(project, !hidden)}
           >
             ${hidden ? 'Restore' : 'Hide'}
@@ -770,7 +788,7 @@ function ProjectsMenu({ projects, hiddenProjects, counts, onHide, onDelete }) {
             ? html`<button
                 type="button"
                 class="text-button"
-                aria-label=${`Delete ${names.get(project) ?? project}`}
+                aria-label=${`Delete ${name}`}
                 onClick=${() => onDelete(project)}
               >
                 Delete
@@ -813,7 +831,7 @@ function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const closeHelp = () => {
     setHelpOpen(false);
-    // The opener may be gone (the welcome card left); fall back to the header button.
+    // The opener may be gone (the welcome message left); fall back to the header button.
     setTimeout(() => {
       if (!document.activeElement || document.activeElement === document.body)
         document.querySelector('.help-open')?.focus();
@@ -846,13 +864,13 @@ function App() {
   else if (runs) {
     if (!runs.length) text = '';
     else if (!visibleRuns.length) text = 'All projects are hidden.';
-    else if (onlyWaiting && !waiting) text = 'Nothing needs you right now.';
     else text = '';
   }
   const indexed = (visibleRuns ?? []).map((run, index) => ({ run, index }));
-  // The Project the page was opened on (`?project=`) comes first, then blocked Runs, then the most recent.
+  // Blocked Runs first, then the Project the page was opened on (`?project=`), then the most recent.
+  const blockedFirst = (a, b) => Number(needsYou(b.run)) - Number(needsYou(a.run));
   const first = (run) => Number(projectOf(run) === wanted);
-  const byPriority = (a, b) => first(b.run) - first(a.run) || compare(a, b);
+  const byPriority = (a, b) => blockedFirst(a, b) || first(b.run) - first(a.run) || compare(a, b);
   const line = indexed
     .filter((entry) => entry.run.status !== 'done' && (!onlyWaiting || needsYou(entry.run)))
     .sort(byPriority);
@@ -886,10 +904,12 @@ function App() {
     // Back to what opened the detail, once it is gone: the same control, else another for the same Run.
     if (openKey === null && lastOpened.current !== null) {
       const same = opener.current?.isConnected ? opener.current : null;
-      const card = same ?? document.querySelector(`[data-run-key="${CSS.escape(String(lastOpened.current))}"]`);
-      card?.focus();
+      const key = CSS.escape(String(lastOpened.current));
+      const target =
+        same ?? document.querySelector(`main [data-run-key="${key}"]`) ?? document.querySelector(`[data-run-key="${key}"]`);
+      target?.focus();
       // The control is gone (its Run left): keep focus on the board.
-      if (!card || document.activeElement !== card) document.querySelector('main')?.focus();
+      if (!target || document.activeElement !== target) document.querySelector('main')?.focus();
       lastOpened.current = null;
       opener.current = null;
     }
@@ -937,7 +957,7 @@ function App() {
               ? html`<ul class="line-rows">
                   ${line.map((entry) => html`<${LineRow} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${open} />`)}
                 </ul>`
-              : html`<p class="empty">Nothing on the line.</p>`}
+              : html`<p class="empty">${onlyWaiting ? 'Nothing needs you right now.' : 'Nothing on the line.'}</p>`}
           </section>`
         : null}
       ${shipped.length
