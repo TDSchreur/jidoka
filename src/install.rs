@@ -578,7 +578,7 @@ mod tests {
         let (_, azure) = setup
             .split_once("An Azure Boards tracker needs")
             .expect("setup has an Azure Boards part");
-        assert!(azure.contains("missing"));
+        assert!(azure.contains("is missing, stop and tell the user"));
         assert!(azure.contains("partial `docs/agents/issue-tracker.md`"));
     }
 
