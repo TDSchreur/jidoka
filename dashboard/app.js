@@ -798,7 +798,7 @@ function App() {
   useEffect(() => {
     document.title = waiting ? `(${waiting}) ${TITLE}` : TITLE;
   }, [waiting]);
-  // What the visitor is asked to confirm deleting: one Run, or every Done Run.
+  // What the visitor is asked to confirm deleting.
   const [pending, setPending] = useState(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const closeHelp = () => {
@@ -812,6 +812,7 @@ function App() {
   const [deleteError, setDeleteError] = useState('');
   const confirmDelete = async () => {
     const targets = pending.runs;
+    const project = pending.project;
     setPending(null);
     let failures = 0;
     for (const run of targets) {
@@ -824,6 +825,7 @@ function App() {
     setDeleteError(
       failures ? `Could not delete ${failures} of ${targets.length} ${targets.length === 1 ? 'run' : 'runs'}.` : '',
     );
+    if (project && !failures) changeHidden(project, false);
     await reload();
     // The card and the button that opened the dialog are gone: keep focus on the board.
     document.querySelector('main')?.focus();
@@ -897,7 +899,7 @@ function App() {
       ${hiddenProjects.size ? html`<details class="hidden-projects">
         <summary>Hidden projects (${hiddenProjects.size})</summary>
         <p>Hidden projects are remembered in this browser. Their runs are kept.</p>
-        <ul>${[...hiddenProjects].sort().map((project) => html`<li key=${project}><${ProjectName} path=${project} /> <button type="button" class="toggle" onClick=${() => changeHidden(project, false)} aria-label=${`Restore ${names.get(project) ?? project}`}>Restore</button></li>`)}</ul>
+        <ul>${[...hiddenProjects].sort().map((project) => html`<li key=${project}><${ProjectName} path=${project} /> <button type="button" class="toggle" onClick=${() => changeHidden(project, false)} aria-label=${`Restore ${names.get(project) ?? project}`}>Restore</button> ${runs?.some((run) => projectOf(run) === project) ? html`<button type="button" class="toggle danger delete-project" onClick=${() => setPending({ project, runs: runs.filter((run) => projectOf(run) === project) })} aria-label=${`Delete ${names.get(project) ?? project}`}>Delete</button>` : null}</li>`)}</ul>
       </details>` : null}
       <p id="message" role="status" class=${failed || deleteError ? 'error' : ''}>${text}</p>
       ${runs && !runs.length ? html`<${Welcome} onHelp=${() => setHelpOpen(true)} />` : null}
@@ -937,6 +939,7 @@ function App() {
                   : null}`
               : null}
           </h2>
+          <button type="button" class="toggle danger delete-project" onClick=${() => setPending({ project, runs: runs.filter((run) => projectOf(run) === project) })} aria-label=${`Delete ${names.get(project) ?? project}`}>Delete</button>
           <button type="button" class="toggle hide-project" onClick=${() => changeHidden(project, true)} aria-label=${`Hide ${names.get(project) ?? project}`}>Hide</button>
           </div>
           <div class="project-groups" id=${groupsId} hidden=${closed}>
@@ -960,16 +963,18 @@ function App() {
       ${helpOpen ? html`<${Help} onClose=${closeHelp} reworkCap=${REWORK_CAP} />` : null}
       ${pending
         ? html`<${Confirm}
-            title=${pending.runs.length === 1 ? 'Delete this run?' : `Delete all ${pending.runs.length} done runs in ${names.get(projectOf(pending.runs[0])) ?? projectOf(pending.runs[0])}?`}
-            confirmLabel=${pending.runs.length === 1 ? 'Delete' : 'Delete all'}
+            title=${pending.project ? `Delete ${names.get(pending.project) ?? pending.project}?` : pending.runs.length === 1 ? 'Delete this run?' : `Delete all ${pending.runs.length} done runs in ${names.get(projectOf(pending.runs[0])) ?? projectOf(pending.runs[0])}?`}
+            confirmLabel=${pending.project || pending.runs.length === 1 ? 'Delete' : 'Delete all'}
             onConfirm=${confirmDelete}
             onCancel=${() => setPending(null)}
           >
             <p>
-              ${pending.runs.length === 1
+              ${pending.project
+                ? `This removes all ${pending.runs.length} run records for this project from the dashboard.`
+                : pending.runs.length === 1
                 ? html`This removes the record of <strong>${pending.runs[0].title}</strong> from the dashboard.`
                 : `This removes the records of these runs in ${names.get(projectOf(pending.runs[0])) ?? projectOf(pending.runs[0])} from the dashboard.`}
-              The worktree, branch and pull request stay as they are.
+              The repository, worktrees, branches and pull requests stay as they are.
             </p>
           <//>`
         : null}

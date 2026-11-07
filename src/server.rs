@@ -913,7 +913,8 @@ mod tests {
             2,
             "one definition, one use"
         );
-        assert!(script.contains("The worktree, branch and pull request stay as they are."));
+        assert!(script
+            .contains("The repository, worktrees, branches and pull requests stay as they are."));
         // Cards in every other column offer Delete too, so a stuck Run can be removed.
         assert_eq!(
             script
