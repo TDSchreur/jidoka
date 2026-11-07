@@ -302,8 +302,10 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
         return Err("Invalid run id".into());
     }
     let gh = pr_wait::RealGh;
-    pr_wait::check_gh(&gh).map_err(|problem| problem.0)?;
     let run = fetch_run(ADDRESS, id)?;
+    if !run.pr.as_deref().is_some_and(pr_wait::is_azure_pr_url) {
+        pr_wait::check_gh(&gh).map_err(|problem| problem.0)?;
+    }
     // The run's activity follows the wait, keeping its stage and status. Only a running run is updated.
     let stage = serde_json::to_value(run.stage)?
         .as_str()

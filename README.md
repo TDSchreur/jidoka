@@ -279,11 +279,11 @@ Azure Repos pull request creation recognizes `dev.azure.com` HTTPS URLs, `ssh.de
 
 For a GitHub Enterprise host that cannot be identified from its remote, set `git config factory.prProvider github`. For a custom Azure Services remote, explicitly select the target with `git config factory.prProvider azure` and set `factory.azureOrganization`, `factory.azureProject`, and `factory.azureRepository` with `git config`. For an unrecognized custom remote, also set `factory.azureOrigin` to its exact `origin` URL, so stale configuration is rejected if the remote changes. For recognized Azure remotes, the configured destination must match `origin`. An unknown host without an override is refused.
 
-Azure support currently covers pull request creation only. `factory pr wait` and the shared factory finish workflow still require GitHub; Azure CI and policy watching are planned separately.
+The shared factory finish workflow still contains GitHub-specific guidance; host-aware workflow guidance is planned separately.
 
 #### Watching CI
 
-`factory pr wait <run-id>` watches the checks of the run's pull request and prints one CI outcome, so an agent does not poll with repeated model requests. It reads the pull request URL recorded on the run (`factory run update <id> finish running --pr <url>`) and needs the GitHub CLI (`gh`), signed in with `gh auth login`.
+`factory pr wait <run-id>` watches the checks of the run's pull request and prints one CI outcome, so an agent does not poll with repeated model requests. It reads the pull request URL recorded on the run (`factory run update <id> finish running --pr <url>`) and uses the GitHub CLI (`gh`, signed in with `gh auth login`) for GitHub, or the Azure CLI with the `azure-devops` extension (signed in with `az login` or `az devops login`) for Azure DevOps Services.
 
 | Outcome | Exit status | Meaning |
 | --- | ---: | --- |
@@ -297,7 +297,18 @@ Azure support currently covers pull request creation only. `factory pr wait` and
 
 Exit status 1 is a problem with the tools or the run (no `gh`, not signed in, no network, no pull request recorded), with what to do. Checks are asked for every 15 seconds, and the progress goes to standard error. By default it waits until every check has ended; `--fail-fast` returns `failed` at the first failing check and lists the others as still running. `--json` prints the same data.
 
-Next to the outcome it says whether the branch is up to date with its base, behind it, in conflict with it, or not yet known (GitHub is asked again up to five times). The command only reads: it never merges, pushes or updates the branch, and a `passed` outcome does not mark Finish done. While it waits, the run's activity is "Waiting for CI", and it is set to the outcome when the wait ends; a run that is blocked or done is left alone. Names, links and log lines come from the pull request's checks and are printed with control characters replaced. Ctrl-C ends the process; the activity text then stays until the next update of the run. The Finish procedure of the workflows uses this command, and falls back to watching by hand when the installed `factory` does not know it.
+Next to the outcome it says whether the branch is up to date with its base, behind it, in conflict with it, or not yet known. GitHub is asked again up to five times. Azure reports a conflict when its merge calculation finds one and otherwise reports unknown, because a successful merge does not prove the branch is up to date; check it with `factory pr sync`. The command only reads: it never merges, pushes or updates the branch, and a `passed` outcome does not mark Finish done. While it waits, the run's activity is "Waiting for CI", and it is set to the outcome when the wait ends; a run that is blocked or done is left alone. Names, links and log lines come from the pull request's checks and are printed with control characters replaced. Ctrl-C ends the process; the activity text then stays until the next update of the run. The Finish procedure of the workflows uses this command, and falls back to watching by hand when the installed `factory` does not know it.
+
+For Azure DevOps Services, record the canonical `https://dev.azure.com/<organization>/<project>/_git/<repository>/pullrequest/<id>` URL; a legacy `visualstudio.com` URL is refused with a request for the canonical one. Factory checks the source branch against the latest PR iteration and merge calculation before it accepts results, and checks it again after collecting them. It watches enabled, required policies and statuses of the current iteration:
+
+- Approved policies and successful statuses pass.
+- Rejected or broken policies and failed statuses fail. A rejected build policy is reported as cancelled only when its build run says it was cancelled.
+- Queued, running, expired, or unknown states remain pending.
+- A build policy counts only when its evaluation started at or after the current iteration; a missing or older start stays pending, even when Azure reports an approval. Other policies, such as minimum reviewers or linked work items, are re-evaluated by Azure, so their reported state counts as is.
+- PR-wide statuses without an iteration cannot prove a result for the current head and remain pending. A newer status in the same context replaces an older one.
+- Optional policies are shown but do not block. Disabled and not-applicable policies do not count as CI.
+
+Failure links point to the build when there is one, otherwise to the PR. Failed log excerpts are only available for GitHub Actions, and PRs from Azure forks are not supported.
 
 #### Request analysis
 

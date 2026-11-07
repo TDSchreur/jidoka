@@ -33,18 +33,6 @@ fn wait_refuses_unknown_options_and_bad_ids() {
 }
 
 #[test]
-fn a_missing_gh_says_what_to_install_before_the_server_is_asked() {
-    let output = factory(&["pr", "wait", "1"]);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("GitHub CLI") && stderr.contains("cli.github.com"),
-        "{stderr}"
-    );
-}
-
-#[test]
 fn a_bad_timeout_is_refused_before_anything_else_is_looked_at() {
     for value in ["0", "abc", "25h", "5x"] {
         let output = factory(&["pr", "wait", "1", "--timeout", value]);

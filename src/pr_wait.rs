@@ -22,9 +22,15 @@ pub(crate) enum GhError {
     Other(String),
 }
 
-/// Runs `gh`. The real one starts the program; tests answer from a script.
+#[path = "pr_wait_azure.rs"]
+mod azure;
+
+/// Runs host tools. The real implementation starts programs; tests answer from a script.
 pub(crate) trait Gh {
     fn run(&self, args: &[&str]) -> Result<GhOutput, GhError>;
+    fn az(&self, _args: &[&str]) -> Result<GhOutput, GhError> {
+        Err(GhError::NotInstalled)
+    }
 }
 
 /// Time, so that tests never sleep.
@@ -183,6 +189,25 @@ pub(crate) fn parse_options(options: &[&str]) -> Result<(Options, bool), String>
 pub(crate) struct RealGh;
 
 impl Gh for RealGh {
+    fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+        let output = Command::new("az")
+            .args(args)
+            .env("AZURE_CORE_ONLY_SHOW_ERRORS", "true")
+            .env("AZURE_EXTENSION_USE_DYNAMIC_INSTALL", "no")
+            .output()
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    GhError::NotInstalled
+                } else {
+                    GhError::Other(error.to_string())
+                }
+            })?;
+        Ok(GhOutput {
+            code: output.status.code(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
     fn run(&self, args: &[&str]) -> Result<GhOutput, GhError> {
         let output = Command::new("gh")
             .args(args)
@@ -471,6 +496,15 @@ fn failures(gh: &dyn Gh, checks: &[CheckResult]) -> Vec<Failure> {
     out
 }
 
+/// Whether `url` is an Azure DevOps Services pull request URL, in its canonical or legacy form.
+pub(crate) fn is_azure_pr_url(url: &str) -> bool {
+    url.starts_with("https://dev.azure.com/")
+        || url
+            .strip_prefix("https://")
+            .and_then(|rest| rest.split('/').next())
+            .is_some_and(|host| host.ends_with(".visualstudio.com"))
+}
+
 /// Watches the checks of `pull_request` for its current head commit until they have ended, and returns the
 /// CI outcome. `activity` is told what the run is doing, and `progress` how far the checks are. It only
 /// reads: it never merges, pushes or updates the branch.
@@ -488,6 +522,9 @@ pub(crate) fn wait(
                 .into(),
         )
     })?;
+    if is_azure_pr_url(pull_request) {
+        return azure::wait(pull_request, options, gh, clock, activity, progress);
+    }
     let first = read_view(gh, pull_request)?;
     let result =
         |outcome: Outcome, view: &View, checks: Vec<CheckResult>, base: BaseState| Waited {
@@ -604,7 +641,7 @@ pub(crate) fn render(waited: &Waited) -> String {
         BaseState::Conflicts => {
             "  The branch conflicts with its base: resolve it before calling the pull request ready.\n"
         }
-        BaseState::Unknown => "  GitHub has not said whether the branch is behind its base; ask again.\n",
+        BaseState::Unknown => "  The host has not said whether the branch is behind its base; check it before calling the pull request ready.\n",
     });
     out
 }
