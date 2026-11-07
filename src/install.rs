@@ -590,14 +590,14 @@ mod tests {
     #[test]
     fn the_model_routing_procedure_says_how_to_read_and_apply_the_selection() {
         // A Windows checkout may have CRLF line endings.
-        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
-        let section = procedures
-            .split_once("## Model routing\n")
-            .map(|(_, rest)| {
-                rest.split_once("\n## ")
-                    .map_or(rest, |(section, _)| section)
-            })
-            .expect("the procedures have a Model routing section");
+        // Only Check uses it, so it lives in a reference file read when Check starts.
+        let section =
+            bundled_text("factory-procedures/references/model-routing.md").replace("\r\n", "\n");
+        assert!(
+            bundled_text("factory-procedures/SKILL.md")
+                .contains("[references/model-routing.md](references/model-routing.md)"),
+            "the procedures do not point to the model routing reference"
+        );
         for needle in [
             "factory run inspect <id> --json",
             "`model_routing`",
@@ -624,10 +624,9 @@ mod tests {
         for skill in ["factory-full", "factory-balanced"] {
             let text = bundled_text(&format!("{skill}/SKILL.md"));
             assert!(
-                text.contains(
-                    "Model routing in [factory-procedures](../factory-procedures/SKILL.md)"
-                ),
-                "{skill} does not point to Model routing"
+                text.contains("(../factory-procedures/references/model-routing.md)")
+                    && text.contains("at the start of every Check pass, including after a Rework"),
+                "{skill} does not read Model routing at every Check pass"
             );
         }
         let fast = bundled_text("factory-fast/SKILL.md");
@@ -925,6 +924,9 @@ mod tests {
         assert!(root.join("implement-spec-balanced/SKILL.md").is_file());
         assert!(!root.join("factory-balanced/LICENSE").exists());
         assert!(root.join("factory-procedures/SKILL.md").is_file());
+        assert!(root
+            .join("factory-procedures/references/model-routing.md")
+            .is_file());
         assert!(!root.join("factory-procedures/LICENSE").exists());
         assert!(!root.join("implement-spec-balanced/LICENSE").exists());
         assert!(!root.join("implement-spec-fast/LICENSE").exists());
