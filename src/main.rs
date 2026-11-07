@@ -303,11 +303,7 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     }
     let gh = pr_wait::RealGh;
     let run = fetch_run(ADDRESS, id)?;
-    if !run
-        .pr
-        .as_deref()
-        .is_some_and(|url| url.starts_with("https://dev.azure.com/"))
-    {
+    if !run.pr.as_deref().is_some_and(pr_wait::is_azure_pr_url) {
         pr_wait::check_gh(&gh).map_err(|problem| problem.0)?;
     }
     // The run's activity follows the wait, keeping its stage and status. Only a running run is updated.

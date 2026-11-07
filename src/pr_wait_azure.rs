@@ -6,6 +6,13 @@ use super::{
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+/// Policies asked for per `az repos pr policy list` call.
+const POLICY_PAGE_SIZE: usize = 100;
+/// Pages of policies read before giving up, so a misbehaving response cannot loop forever.
+const MAX_POLICY_PAGES: usize = 100;
+/// Configuration type ID of the Azure Repos Build policy.
+const BUILD_POLICY_TYPE: &str = "0609b952-1397-4640-95ec-e00a01b2c241";
+
 struct AzurePr {
     org: String,
     project: String,
@@ -15,11 +22,12 @@ struct AzurePr {
 
 impl AzurePr {
     fn parse(url: &str) -> Result<Self, ToolProblem> {
-        let parts: Vec<_> = url
-            .strip_prefix("https://dev.azure.com/")
-            .unwrap_or("")
-            .split('/')
-            .collect();
+        let Some(path) = url.strip_prefix("https://dev.azure.com/") else {
+            return Err(ToolProblem(
+                "Legacy visualstudio.com pull request URLs are not supported; record the canonical https://dev.azure.com/<organization>/<project>/_git/<repository>/pullrequest/<id> URL with `factory run update <run-id> finish running --pr <url>`.".into(),
+            ));
+        };
+        let parts: Vec<_> = path.split('/').collect();
         if parts.len() != 6
             || parts[2] != "_git"
             || parts[4] != "pullrequest"
@@ -247,12 +255,21 @@ fn az_json(gh: &dyn Gh, args: &[&str]) -> Result<Value, ToolProblem> {
     })
 }
 
+/// Azure's merge calculation proves conflicts; a successful merge does not prove the branch is up to date.
+fn base_state(data: &Value) -> BaseState {
+    match data["mergeStatus"].as_str() {
+        Some("conflicts") => BaseState::Conflicts,
+        _ => BaseState::Unknown,
+    }
+}
+
 fn result(
     url: &str,
     head: &str,
     current: &str,
     outcome: Outcome,
     checks: Vec<CheckResult>,
+    base: BaseState,
 ) -> Waited {
     let failures = checks
         .iter()
@@ -269,7 +286,7 @@ fn result(
         pull_request: url.into(),
         head: head.into(),
         new_head: (head != current).then(|| current.into()),
-        base: BaseState::Unknown,
+        base,
         checks,
         failures,
     }
@@ -307,9 +324,9 @@ fn checks_for(
         .filter(|id| *id > 0)
         .ok_or_else(|| ToolProblem("Azure PR iteration has no valid ID.".into()))?;
     let mut policies = Vec::new();
-    const PAGE_SIZE: usize = 100;
-    for page in 0..100 {
-        let skip = (page * PAGE_SIZE).to_string();
+    let top = POLICY_PAGE_SIZE.to_string();
+    for page in 0..MAX_POLICY_PAGES {
+        let skip = (page * POLICY_PAGE_SIZE).to_string();
         let response = az_json(
             gh,
             &[
@@ -322,7 +339,7 @@ fn checks_for(
                 "--organization",
                 &pr.org,
                 "--top",
-                "100",
+                &top,
                 "--skip",
                 &skip,
                 "--output",
@@ -335,10 +352,10 @@ fn checks_for(
             .as_array()
             .ok_or_else(|| ToolProblem("Azure policy response is not an array.".into()))?;
         policies.extend(items.iter().cloned());
-        if items.len() < PAGE_SIZE {
+        if items.len() < POLICY_PAGE_SIZE {
             break;
         }
-        if page == 99 {
+        if page + 1 == MAX_POLICY_PAGES {
             return Err(ToolProblem(
                 "Azure returned too many policies to evaluate safely.".into(),
             ));
@@ -363,8 +380,14 @@ fn checks_for(
         if required_policy && state != "notApplicable" {
             applicable = true;
         }
+        let build_id = policy["context"]["buildId"].as_u64();
+        let build_policy = build_id.is_some()
+            || policy["configuration"]["type"]["id"].as_str() == Some(BUILD_POLICY_TYPE)
+            || policy["configuration"]["type"]["displayName"].as_str() == Some("Build");
+        // Azure re-evaluates other policies itself; only a build must have started for the current iteration.
         let evaluation_time = policy["startedDate"].as_str().and_then(parse_time);
-        let fresh = matches!((iteration_time, evaluation_time), (Some(iteration), Some(evaluation)) if evaluation >= iteration);
+        let fresh = !build_policy
+            || matches!((iteration_time, evaluation_time), (Some(iteration), Some(evaluation)) if evaluation >= iteration);
         let bucket = if !required_policy || state == "notApplicable" {
             "skipping"
         } else if !fresh
@@ -375,11 +398,9 @@ fn checks_for(
         } else {
             match state {
                 "approved" => "pass",
-                "rejected" if policy["context"]["buildId"].as_u64().is_some() => {
-                    let id = policy["context"]["buildId"]
-                        .as_u64()
-                        .expect("build ID was checked")
-                        .to_string();
+                "rejected" if build_id.is_some() => {
+                    let id = build_id.expect("build ID was checked").to_string();
+                    // The lookup only tells a cancelled build from a failed one; it never undoes the rejection.
                     let build = az_json(
                         gh,
                         &[
@@ -397,11 +418,18 @@ fn checks_for(
                             "--detect",
                             "false",
                         ],
-                    )?;
-                    match (build["status"].as_str(), build["result"].as_str()) {
-                        (Some("completed"), Some("canceled" | "cancelled")) => "cancel",
-                        (Some("completed"), Some("failed" | "partiallySucceeded")) => "fail",
-                        _ => "pending",
+                    );
+                    match build {
+                        Ok(build)
+                            if build["status"].as_str() == Some("completed")
+                                && matches!(
+                                    build["result"].as_str(),
+                                    Some("canceled" | "cancelled")
+                                ) =>
+                        {
+                            "cancel"
+                        }
+                        _ => "fail",
                     }
                 }
                 "rejected" | "broken" => "fail",
@@ -411,8 +439,7 @@ fn checks_for(
         let name = policy["configuration"]["type"]["displayName"]
             .as_str()
             .unwrap_or("Azure policy");
-        let link = policy["context"]["buildId"]
-            .as_u64()
+        let link = build_id
             .map(|id| {
                 format!(
                     "{}/{}/_build/results?buildId={id}",
@@ -493,6 +520,52 @@ fn checks_for(
     Ok((checks, applicable))
 }
 
+/// Whether the pull request is still active; `completed` and `abandoned` are not, anything else is an error.
+fn is_active(data: &Value) -> Result<bool, ToolProblem> {
+    match required(&data["status"], "pull request status")? {
+        "active" => Ok(true),
+        "completed" | "abandoned" => Ok(false),
+        _ => Err(ToolProblem(
+            "Azure returned an unknown pull request status.".into(),
+        )),
+    }
+}
+
+/// Ends the wait when the pull request is no longer open or its source moved away from `head`.
+fn moved_on(
+    pr: &AzurePr,
+    gh: &dyn Gh,
+    data: &Value,
+    url: &str,
+    head: &str,
+    activity: &mut dyn FnMut(&str),
+) -> Result<Option<Waited>, ToolProblem> {
+    if !is_active(data)? {
+        activity("Pull request is not open");
+        return Ok(Some(result(
+            url,
+            head,
+            head,
+            Outcome::NotOpen,
+            vec![],
+            BaseState::Unknown,
+        )));
+    }
+    let current = pr.head(gh, data)?;
+    if current != head {
+        activity("Head commit changed while waiting for CI");
+        return Ok(Some(result(
+            url,
+            head,
+            &current,
+            Outcome::HeadChanged,
+            vec![],
+            BaseState::Unknown,
+        )));
+    }
+    Ok(None)
+}
+
 pub(super) fn wait(
     url: &str,
     options: &Options,
@@ -503,55 +576,32 @@ pub(super) fn wait(
 ) -> Result<Waited, ToolProblem> {
     let pr = AzurePr::parse(url)?;
     let first = pr.show(gh)?;
-    let state = required(&first["status"], "pull request status")?;
-    if state != "active" {
-        if !matches!(state, "completed" | "abandoned") {
-            return Err(ToolProblem(
-                "Azure returned an unknown pull request status.".into(),
-            ));
-        }
+    if !is_active(&first)? {
         let head = first["lastMergeSourceCommit"]["commitId"]
             .as_str()
             .unwrap_or("");
         activity("Pull request is not open");
-        return Ok(result(url, head, head, Outcome::NotOpen, vec![]));
+        return Ok(result(
+            url,
+            head,
+            head,
+            Outcome::NotOpen,
+            vec![],
+            BaseState::Unknown,
+        ));
     }
     let head = pr.head(gh, &first)?;
     activity("Waiting for CI");
     let started = clock.elapsed();
     loop {
         let data = pr.show(gh)?;
-        let state = required(&data["status"], "pull request status")?;
-        if state != "active" {
-            if !matches!(state, "completed" | "abandoned") {
-                return Err(ToolProblem(
-                    "Azure returned an unknown pull request status.".into(),
-                ));
-            }
-            activity("Pull request is not open");
-            return Ok(result(url, &head, &head, Outcome::NotOpen, vec![]));
-        }
-        let current = pr.head(gh, &data)?;
-        if current != head {
-            activity("Head commit changed while waiting for CI");
-            return Ok(result(url, &head, &current, Outcome::HeadChanged, vec![]));
+        if let Some(waited) = moved_on(&pr, gh, &data, url, &head, activity)? {
+            return Ok(waited);
         }
         let (checks, applicable) = checks_for(&pr, gh, &data, &head, url)?;
         let after = pr.show(gh)?;
-        let after_state = required(&after["status"], "pull request status")?;
-        if matches!(after_state, "completed" | "abandoned") {
-            activity("Pull request is not open");
-            return Ok(result(url, &head, &head, Outcome::NotOpen, vec![]));
-        }
-        if after_state != "active" {
-            return Err(ToolProblem(
-                "Azure returned an unknown pull request status.".into(),
-            ));
-        }
-        let current = pr.head(gh, &after)?;
-        if current != head {
-            activity("Head commit changed while waiting for CI");
-            return Ok(result(url, &head, &current, Outcome::HeadChanged, vec![]));
+        if let Some(waited) = moved_on(&pr, gh, &after, url, &head, activity)? {
+            return Ok(waited);
         }
         let elapsed = clock.elapsed().saturating_sub(started);
         let pending = checks.iter().any(|check| check.bucket == "pending");
@@ -572,7 +622,7 @@ pub(super) fn wait(
             Some(Outcome::Passed)
         };
         if let Some(outcome) = outcome {
-            let waited = result(url, &head, &head, outcome, checks);
+            let waited = result(url, &head, &head, outcome, checks, base_state(&after));
             activity(&super::activity_text(&waited));
             return Ok(waited);
         }

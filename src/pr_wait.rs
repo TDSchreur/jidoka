@@ -496,6 +496,15 @@ fn failures(gh: &dyn Gh, checks: &[CheckResult]) -> Vec<Failure> {
     out
 }
 
+/// Whether `url` is an Azure DevOps Services pull request URL, in its canonical or legacy form.
+pub(crate) fn is_azure_pr_url(url: &str) -> bool {
+    url.starts_with("https://dev.azure.com/")
+        || url
+            .strip_prefix("https://")
+            .and_then(|rest| rest.split('/').next())
+            .is_some_and(|host| host.ends_with(".visualstudio.com"))
+}
+
 /// Watches the checks of `pull_request` for its current head commit until they have ended, and returns the
 /// CI outcome. `activity` is told what the run is doing, and `progress` how far the checks are. It only
 /// reads: it never merges, pushes or updates the branch.
@@ -513,7 +522,7 @@ pub(crate) fn wait(
                 .into(),
         )
     })?;
-    if pull_request.starts_with("https://dev.azure.com/") {
+    if is_azure_pr_url(pull_request) {
         return azure::wait(pull_request, options, gh, clock, activity, progress);
     }
     let first = read_view(gh, pull_request)?;
