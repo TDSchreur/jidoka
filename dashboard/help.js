@@ -516,7 +516,7 @@ function Dashboard({ reworkCap }) {
           ['Projects', 'Lists every project, with Hide or Restore and Delete.'],
           [
             'Connection',
-            'Shows whether the dashboard is receiving updates from its server, and when the last one arrived.',
+            'Shows whether the dashboard is receiving updates from its server, and when the last one arrived. When a new server starts, for example after an update, the page reloads itself once no dialog or menu is open.',
           ],
         ]}
       />

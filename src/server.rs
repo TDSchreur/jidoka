@@ -71,6 +71,9 @@ const ASSETS: &[(&str, ContentType, &[u8])] = &[
 const BUILD_PLACEHOLDER: &str = "__BUILD__";
 /// Placeholder in the dashboard page that is replaced with this server's session token.
 const TOKEN_PLACEHOLDER: &str = "__TOKEN__";
+/// Placeholder in the dashboard page that is replaced with this server's process id, so the page can tell when a
+/// new server is running and reload itself.
+const PID_PLACEHOLDER: &str = "__PID__";
 /// The header the dashboard sends its session token in.
 const TOKEN_HEADER: &str = "X-Session-Token";
 const BODY_LIMIT: u64 = 64 * 1024;
@@ -151,7 +154,8 @@ fn dashboard(
     Ok(RawHtml(
         DASHBOARD
             .replace(BUILD_PLACEHOLDER, &current_build())
-            .replace(TOKEN_PLACEHOLDER, &token.0),
+            .replace(TOKEN_PLACEHOLDER, &token.0)
+            .replace(PID_PLACEHOLDER, &std::process::id().to_string()),
     ))
 }
 
@@ -2522,6 +2526,32 @@ mod tests {
         assert!(rules.contains(".projects-menu:not([open]) .projects-panel { display: none; }"));
         // Visually hidden labels in a scrolled table are positioned inside it, so they cannot widen the page.
         assert!(rule(".table-scroll").contains("position: relative"));
+    }
+
+    #[rocket::async_test]
+    async fn the_page_reloads_itself_when_a_new_server_answers() {
+        // The page knows which server served it, by process id, the same id /api/info reports.
+        let page = dashboard_page().await;
+        assert!(!page.contains(PID_PLACEHOLDER), "placeholder left in page");
+        assert!(page.contains(&format!(
+            "<meta name=\"server-pid\" content=\"{}\">",
+            std::process::id()
+        )));
+        let script = asset("/assets/app.js").await;
+        let hook = script
+            .split("function useReloadOnNewServer(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a reload hook");
+        assert!(hook.contains("fetch('/api/info', { cache: 'no-store' })"));
+        assert!(hook.contains("changed = String(info.pid) !== page;"));
+        // Never while a dialog or the Projects menu is open, and never because the server is unreachable.
+        assert!(hook.contains("if (changed && !somethingOpen()) location.reload();"));
+        assert!(
+            script.contains("document.querySelector('dialog[open], details.projects-menu[open]')")
+        );
+        assert!(hook.contains("if (!response.ok) return;"));
+        assert!(script.contains("  useReloadOnNewServer();\n"));
     }
 
     #[rocket::async_test]
