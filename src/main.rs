@@ -296,7 +296,7 @@ fn pr_sync_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
 /// `factory pr wait <run-id>`: watches the CI of the run's pull request and prints the outcome. The exit
 /// status is the outcome's; 1 is a problem with the tools or the run.
 fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
-    let (wait_options, json) =
+    let (mut wait_options, json) =
         pr_wait::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
         return Err("Invalid run id".into());
@@ -323,6 +323,11 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
             }
         }
     };
+    // Only GitHub can lag behind a push in what it reports; the Azure wait does not use the hint.
+    let github = !run.pr.as_deref().is_some_and(pr_wait::is_azure_pr_url);
+    if let (true, Some(worktree), Some(branch)) = (github, &run.worktree, &run.branch) {
+        wait_options.pushed_head = pr_wait::pushed_head(std::path::Path::new(worktree), branch);
+    }
     let clock = pr_wait::RealClock(std::time::Instant::now());
     let waited = pr_wait::wait(
         run.pr.as_deref(),

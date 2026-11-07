@@ -847,6 +847,30 @@ fn azure_remote_opens_pull_request_in_the_selected_repository() {
 }
 
 #[test]
+fn azure_urls_keep_unreserved_characters_and_encode_the_rest() {
+    let project = Project::new();
+    let gh = FakeGh::default();
+    // Seen live: a `discord-workshop` repository was recorded as `discord%2Dworkshop`.
+    *gh.remote_url.borrow_mut() =
+        Some("https://dev.azure.com/my-org/My%20Project/_git/discord-workshop.v2_x~y".into());
+    gh.list.borrow_mut().push_back(ok("[]"));
+    gh.create.borrow_mut().push_back(ok(
+        r#"{"pullRequestId":538,"repository":{"id":"96a543bd-0277-4ba4-acc6-2e45294010fe"}}"#,
+    ));
+    let opened = open(
+        &run_of(&project),
+        &options(&project),
+        &gh,
+        &FakeApi::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        opened.pull_request,
+        "https://dev.azure.com/my-org/My%20Project/_git/discord-workshop.v2_x~y/pullrequest/538"
+    );
+}
+
+#[test]
 fn azure_reuses_the_matching_pr_and_skips_a_fork() {
     let project = Project::new();
     let gh = FakeGh::default();

@@ -583,6 +583,23 @@ mod tests {
     }
 
     #[test]
+    fn azure_boards_template_removes_tags_with_a_replace_the_cli_cannot_send() {
+        // Checked against Azure DevOps: `az boards work-item update --fields System.Tags=...` adds to
+        // the tags, and `show --fields` fails with the expanded output, so neither can remove a role.
+        let template = bundled_text("setup-matt-pocock-skills/issue-tracker-azure-boards.md");
+        let roles = template
+            .split_once("- **Apply / remove triage roles**:")
+            .and_then(|(_, rest)| rest.split_once("\n- **"))
+            .expect("the template explains triage roles")
+            .0;
+        assert!(!roles.contains("replaces the whole list"));
+        assert!(!roles.contains("--fields System.Tags"));
+        assert!(roles.contains(r#"--query 'fields."System.Tags"'"#));
+        assert!(roles.contains(r#""op":"replace","path":"/fields/System.Tags""#));
+        assert!(roles.contains("Content-Type=application/json-patch+json"));
+    }
+
+    #[test]
     fn azure_boards_template_names_no_process_specific_types_or_states() {
         let template = bundled_text("setup-matt-pocock-skills/issue-tracker-azure-boards.md");
         let found: Vec<String> = [

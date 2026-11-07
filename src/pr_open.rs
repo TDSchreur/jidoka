@@ -358,6 +358,19 @@ fn is_github_remote(remote: &str) -> bool {
         })
 }
 
+/// What is percent-encoded in an Azure URL path segment: everything but letters, digits and the unreserved
+/// `-`, `.`, `_` and `~` of RFC 3986, so a name like `my-repo` appears as Azure itself shows it.
+const URL_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+/// `value` percent-encoded as one segment of an Azure URL path.
+pub(crate) fn encode_segment(value: &str) -> String {
+    percent_encoding::utf8_percent_encode(value, URL_SEGMENT).to_string()
+}
+
 /// Azure DevOps Services repository identified by its origin URL.
 #[derive(PartialEq, Eq)]
 pub(crate) struct AzureRepo {
@@ -442,7 +455,7 @@ impl AzureRepo {
         }))
     }
     fn encoded(value: &str) -> String {
-        percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC).to_string()
+        encode_segment(value)
     }
     fn org_url(&self) -> String {
         format!(
