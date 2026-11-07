@@ -163,29 +163,13 @@ p { color: var(--color-slate); margin: var(--space-2) 0; }
 #message:empty { margin: 0; }
 #message.error { color: var(--color-red); font-weight: var(--weight-strong); }
 /* The Project name wraps; Delete and Hide stay on its line, also on a phone. */
-.group { margin-bottom: var(--space-8); }
-.group h2 { font-size: var(--text-m); line-height: var(--leading-s); font-weight: var(--weight-strong); margin: 0; }
 .count { color: var(--color-muted); font-weight: normal; }
 .empty { margin: 0; font-style: italic; }
-.runs { display: grid; gap: var(--space-5); list-style: none; margin: 0; padding: 0; }
-.run { position: relative; background: var(--color-panel); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-m); padding: var(--space-6) var(--space-6); }
-.run.blocked { border-left: calc(var(--stroke-thick) * 3) solid var(--color-amber); }
-.run h3 { margin: 0; font-size: var(--text-s); line-height: var(--leading-s); font-weight: var(--weight-strong); overflow-wrap: anywhere; }
-.run p { margin: var(--space-2) 0 0; overflow-wrap: anywhere; }
 .card-open { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-.card-open::after { content: ''; position: absolute; inset: 0; border-radius: var(--radius-m); }
+.card-open::after { content: ''; position: absolute; inset: 0; }
 .card-open:focus-visible { outline: none; }
 .card-open:focus-visible::after { outline: var(--stroke-thick) solid var(--color-slate); outline-offset: var(--stroke-thick); }
-.run:has(.card-open:hover) { background: var(--color-tint); }
-.run a { position: relative; z-index: 1; }
-/* Done cards: one line, with the rest behind Show details. */
-.done-run { padding: var(--space-4) var(--space-6); }
-.done-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); }
-.done-line h3 { flex: 1 1 8rem; min-width: 0; }
-.done-run [hidden] { display: none; }
-.run .toggle, .run .text-button { position: relative; z-index: 1; }
 .toggle.danger { border-color: var(--color-red); background: var(--color-red); color: var(--color-on-red); font-weight: var(--weight-strong); }
-.run > .text-button { margin-top: var(--space-2); margin-left: calc(-1 * var(--space-2)); }
 /* Help: a large modal with tabs. Its height is fixed so a tab change does not resize it; each tab scrolls on its own.
    `.confirm.help` outranks `.confirm`, which comes later and sets the small width. */
 .confirm.help { width: min(64rem, calc(100% - 2 * var(--space-6))); height: min(46rem, calc(100% - 2 * var(--space-7))); padding-bottom: 0; }
@@ -228,7 +212,6 @@ p { color: var(--color-slate); margin: var(--space-2) 0; }
 .link { padding: 0; border: 0; background: none; font: inherit; color: var(--color-blue); text-decoration: underline; cursor: pointer; }
 .link:hover { color: var(--color-blue-hover); }
 .link:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline-offset: var(--stroke-thick); border-radius: var(--radius-s); }
-.delete-all { margin-bottom: var(--space-4); }
 /* Delete confirmation: a small centred modal. */
 .confirm { box-sizing: border-box; width: min(28rem, calc(100% - 2 * var(--space-6))); padding: var(--space-7) var(--space-7); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-l); background: var(--color-panel); color: var(--color-slate); box-shadow: var(--shadow-dialog); }
 .confirm::backdrop { background: var(--color-overlay); }
@@ -267,10 +250,6 @@ main:focus { outline: none; }
 .badge { display: inline-block; margin-top: var(--space-2); padding: var(--space-1) var(--space-3); border: var(--stroke-thin) solid var(--color-muted); border-radius: var(--radius-s); font-size: var(--text-xs); line-height: var(--leading-xs); font-weight: var(--weight-strong); color: var(--color-slate); background: var(--color-tint); }
 .badge.blocked { color: var(--color-on-amber); background: var(--color-amber); border-color: var(--color-amber); }
 .badge.done { color: var(--color-slate); background: var(--color-tint); border-color: var(--color-rule); }
-.run .needs-you { margin: 0 0 var(--space-4); color: var(--color-slate); font-weight: var(--weight-strong); }
-.needs-you-label { display: inline-block; margin-right: var(--space-2); padding: var(--space-1) var(--space-3); border-radius: var(--radius-s); background: var(--color-amber); color: var(--color-on-amber); font-size: var(--text-xs); line-height: var(--leading-xs); }
-.chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
-.chips .badge { margin-top: 0; }
 .chip { display: inline-block; padding: var(--space-1) var(--space-3); border: var(--stroke-thin) solid var(--color-muted); border-radius: var(--radius-s); font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-slate); background: var(--color-tint); }
 /* The footer, and the version in it, stays in view: at the bottom of a short page, and stuck to the bottom of the window while a long page scrolls. */
 #app { margin-bottom: var(--space-7); }
@@ -296,7 +275,6 @@ a:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline
 .line-row:has(.card-open:hover) { background: var(--color-tint); }
 .line-row.blocked { box-shadow: inset calc(var(--stroke-thick) * 3) 0 0 var(--color-amber); }
 .line-title { grid-area: title; margin: 0; font-size: var(--text-s); line-height: var(--leading-s); font-weight: var(--weight-strong); overflow-wrap: anywhere; }
-.line-row .card-open::after { border-radius: 0; }
 .line-row .where { grid-area: where; margin: 0; font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); text-align: center; }
 .line-row.blocked .where { color: var(--color-slate); font-weight: var(--weight-strong); }
 .line-row .meta { grid-area: meta; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-5); font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); }
@@ -316,6 +294,26 @@ a:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline
   .line-row { grid-template-areas: "title" "rail" "where" "meta" "activity"; }
   .line-row .where { text-align: left; }
   .stations { display: none; }
+}
+/* The shipped log: finished Runs in a compact table, grouped by day. */
+.shipped { margin: 0 0 var(--space-8); }
+.shipped-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-4); margin: 0 0 var(--space-4); }
+.shipped-head h2 { margin: 0; font-size: var(--text-m); line-height: var(--leading-s); font-weight: var(--weight-strong); }
+.shipped-table { width: 100%; border-collapse: collapse; background: var(--color-panel); font-variant-numeric: tabular-nums; }
+.shipped-table th, .shipped-table td { padding: var(--space-3) var(--space-5); border-bottom: var(--stroke-thin) solid var(--color-rule); text-align: left; vertical-align: baseline; }
+.shipped-table thead th { font-size: var(--text-xs); line-height: var(--leading-xs); font-weight: normal; color: var(--color-muted); }
+.shipped-table .day th { padding-top: var(--space-6); background: var(--color-floor); font-weight: var(--weight-strong); }
+.shipped-table td { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); }
+.shipped-table td:first-child { font-size: var(--text-s); line-height: var(--leading-s); color: var(--color-slate); }
+.shipped-table .num { text-align: right; }
+.shipped-table thead th:nth-child(4) { text-align: right; }
+.log-open { text-align: left; color: var(--color-slate); text-decoration: none; font-weight: var(--weight-strong); overflow-wrap: anywhere; }
+.log-open:hover { color: var(--color-blue); text-decoration: underline; }
+.not-set { font-style: italic; }
+.detail-bar { gap: var(--space-5); align-items: center; }
+@media (max-width: 40rem) {
+  .shipped-table thead th:nth-child(2), .shipped-table td:nth-child(2), .shipped-table thead th:nth-child(4), .shipped-table td:nth-child(4) { display: none; }
+  .shipped-table .day th { padding-left: var(--space-5); }
 }
 /* Projects: a menu in the toolbar with Hide or Restore and Delete for each Project. */
 .projects-menu { position: relative; }

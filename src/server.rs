@@ -820,17 +820,11 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn done_cards_collapse_to_one_line_and_delete_asks_first() {
+    async fn every_delete_asks_first_and_sends_the_session_token() {
         let script = asset("/assets/app.js").await;
-        // A Done card hides its details behind a toggle that tells assistive technology its state.
-        assert!(script.contains("DoneCard"));
-        assert!(script.contains("aria-expanded=${String(expanded)}"));
-        assert!(script.contains("aria-controls=${detailsId}"));
-        assert!(script.contains("Show details"));
-        assert!(script.contains("hidden=${!expanded}"));
-        // Delete per Run and Delete all (Done column only) both open a confirmation dialog first.
+        // Delete in a Run's detail and Clear shipped both open a confirmation dialog first.
         assert!(script.contains("onDelete=${(run) => setPending({ runs: [run] })}"));
-        assert!(script.contains("Delete all"));
+        assert!(script.contains("onClear=${() => setPending({ shipped: true, runs: shipped.map((entry) => entry.run) })}"));
         assert!(script.contains("<${Confirm}"));
         assert!(script.contains("aria-labelledby=\"confirm-title\""));
         assert!(script.contains("autofocus"), "Cancel takes focus first");
@@ -844,14 +838,8 @@ mod tests {
         );
         assert!(script
             .contains("The repository, worktrees, branches and pull requests stay as they are."));
-        // Done cards offer Delete; Runs on the line are deleted from their detail.
-        assert_eq!(
-            script
-                .matches("now=${now} onOpen=${onOpen} onDelete=${onDelete} />")
-                .count(),
-            1,
-            "DoneCard gets onDelete"
-        );
+        // No row on the board has a Delete of its own.
+        assert!(!script.contains("now=${now} onOpen=${onOpen} onDelete=${onDelete} />"));
     }
 
     #[rocket::async_test]
@@ -1564,11 +1552,11 @@ mod tests {
                 .to_string()
         };
         // Badges read in sentence case.
-        for selector in [".badge", ".needs-you-label"] {
+        for selector in [".badge"] {
             let badge = rule(selector);
             assert!(!badge.contains("text-transform") && !badge.contains("letter-spacing"));
         }
-        assert!(script.contains("running: 'Running', blocked: 'Blocked', done: 'Done'"));
+        assert!(script.contains("running: 'Running', blocked: 'Blocked', done: 'Shipped'"));
         // Delete on cards and rows is a text button; only the confirm dialog's Delete is red.
         assert_eq!(script.matches("class=\"toggle danger\"").count(), 1);
         assert!(!script.contains("toggle danger delete"));
@@ -1592,7 +1580,6 @@ mod tests {
         assert!(!toolbar.contains("ThemeSwitch"));
         // Cards drop the labels the detail sheet keeps.
         assert!(!script.contains("Activity: ${run.activity}"));
-        assert!(script.contains("<span class=\"visually-hidden\">Ticket: </span>"));
         // Stage descriptions live in Help, not on the board.
         assert!(!script.contains("group-description") && !script.contains("compact-description"));
     }
@@ -1718,9 +1705,9 @@ mod tests {
             "the sheet sits on the right"
         );
         assert!(rules.contains("body:has(.detail[open]) { overflow: hidden; }"));
-        // The whole card is the click target, with the ticket link kept above it.
+        // The whole row is the click target, with its links kept above it.
         assert!(rules.contains(".card-open::after {"));
-        assert!(rules.contains(".run a { position: relative; z-index: 1; }"));
+        assert!(rules.contains(".line-row .meta a { position: relative; z-index: 1; }"));
     }
 
     #[rocket::async_test]
@@ -1857,7 +1844,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("no {selector} rule"))
                 .to_string()
         };
-        for selector in [".badge.blocked", ".needs-you-label", ".andon.lit"] {
+        for selector in [".badge.blocked", ".andon.lit"] {
             let needs_you = rule(selector);
             assert!(needs_you.contains("var(--color-amber)"), "{selector}");
             assert!(
@@ -1867,8 +1854,13 @@ mod tests {
         }
         assert!(rule(".toggle.danger").contains("var(--color-red)"));
         assert!(rule("#message.error").contains("var(--color-red)"));
-        // Cards sit flat on the panel.
-        assert!(!rule(".run").contains("box-shadow"));
+        // The line sits flat on the floor; only dialogs and menus cast a shadow.
+        assert!(!rule(".line").contains("box-shadow"));
+        assert_eq!(
+            rules.matches("var(--shadow-dialog)").count(),
+            3,
+            "confirm, detail and the Projects menu"
+        );
         let license = include_str!("../third-party/barlow-LICENSE");
         assert!(license.contains("SIL Open Font License"));
     }
@@ -1979,6 +1971,61 @@ mod tests {
         assert!(script.contains("localStorage.setItem('hidden-projects'"));
         assert!(script.contains("onDelete=${(project) => setPending({ project, runs: runs.filter((run) => projectOf(run) === project) })}"));
         assert!(script.contains("<${ProjectsMenu}"));
+    }
+
+    #[rocket::async_test]
+    async fn shipped_runs_are_listed_by_day_and_cleared_after_confirming() {
+        let script = asset("/assets/app.js").await;
+        let log = script
+            .split("function ShippedLog(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a ShippedLog component");
+        assert!(log.contains("<h2 id=\"shipped-title\">Shipped"));
+        assert!(log.contains("<table class=\"shipped-table\">"));
+        assert!(log.contains("<caption class=\"visually-hidden\">"));
+        for column in ["Run", "Project", "Pull request", "Fresh tokens", "Shipped"] {
+            assert!(
+                log.contains(&format!("<th scope=\"col\">{column}</th>")),
+                "{column}"
+            );
+        }
+        // One group per day, newest first; a Run without a time goes last.
+        assert!(log.contains("<th scope=\"rowgroup\" colspan=\"5\">${group.label}</th>"));
+        let day = script
+            .split("function dayLabel(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a dayLabel function");
+        for label in ["'Today'", "'Yesterday'", "'Undated'"] {
+            assert!(day.contains(label), "{label}");
+        }
+        // Unknown usage is never shown as zero.
+        assert!(log.contains("tokens === null ? 'n/a' : compactTokens(tokens)"));
+        // Clear shipped asks first, naming how many.
+        assert!(log.contains("Clear shipped…"));
+        assert!(script.contains(
+            "`Clear ${pending.runs.length} shipped ${pending.runs.length === 1 ? 'run' : 'runs'}?`"
+        ));
+        // Single Runs are deleted from their detail, through the same dialog.
+        let detail = script
+            .split("function Detail(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .unwrap();
+        assert!(detail.contains("onClick=${() => onDelete(run)}"));
+        assert!(script.contains("onDelete=${(run) => setPending({ runs: [run] })}"));
+        assert!(!script.contains("DoneCard"), "rows have no Delete");
+        // People read Shipped; the status stays done.
+        assert!(script.contains("done: 'Shipped'"));
+        assert!(script.contains("run.status === 'done'"));
+        let help = asset("/assets/help.js").await;
+        assert!(!help.contains("Done column"));
+        assert!(help.contains("['Shipped', "));
+        let glossary = include_str!("../GLOSSARY.md");
+        for term in ["Shipped", "Andon strip", "The line"] {
+            assert!(glossary.contains(&format!("**{term}**")), "{term}");
+        }
     }
 
     #[rocket::async_test]

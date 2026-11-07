@@ -25,7 +25,7 @@ function Flow({ reworkCap }) {
     ['Build', 'Implement it and run the project’s checks.'],
     ['Check', `Review the code. Findings go back to Build for a Rework, up to ${reworkCap} times.`],
     ['Finish', 'Open a pull request and watch its CI.'],
-    ['Done', 'The pull request is open and CI is green.'],
+    ['Shipped', 'The pull request is open and CI is green.'],
   ];
   return html`<ol class="flow">
     ${steps.map(([name, text]) => html`<li key=${name}><strong>${name}</strong><span>${text}</span></li>`)}
@@ -178,7 +178,7 @@ function Stages({ reworkCap }) {
     <${Topic} title="Rework">
       <p>
         A <strong>Rework</strong> is a return from Check to Build to fix findings, followed by another Check that covers
-        only the fixes. A Run gets at most ${reworkCap} Reworks; the card shows the current one as${' '}
+        only the fixes. A Run gets at most ${reworkCap} Reworks; its row shows the current one as${' '}
         <em>Rework 1/${reworkCap}</em>. Findings alone never block a Run: the agent fixes them within the
         ${reworkCap} Reworks. When findings remain after the last Rework, or one cannot be resolved, the Run shows${' '}
         <em>Needs you</em> and waits for you to choose: one more Rework, finish with the findings listed in the pull
@@ -192,23 +192,26 @@ function Stages({ reworkCap }) {
         branch it chose at the start. Then it watches the pull request’s CI until every check has finished. When a
         check fails it reads the log, fixes the cause in a new commit, verifies again and pushes. When another pull
         request lands first and leaves this one behind its base branch, the agent merges the base into the branch
-        with a normal commit and watches CI again. Neither the CI fixes nor the base updates are Reworks. The Run is
-        Done when the pull request is open, up to date and CI is green, or when the project has no CI. If the
+        with a normal commit and watches CI again. Neither the CI fixes nor the base updates are Reworks. The Run has
+        shipped when the pull request is open, up to date and CI is green, or when the project has no CI. If the
         failure cannot be fixed, such as an infrastructure problem or a missing permission, the Run is blocked with that
         reason.
       </p>
     <//>
-    <${Topic} title="Done">
+    <${Topic} title="Shipped">
       <p>
-        Finished Runs move to the Done column whatever Stage they ended in. Each shows as one line; <em>Show details</em>
-        ${' '}reveals the rest. Deleting a Run removes its record from the dashboard only. The worktree, the branch and the
-        pull request stay as they are.
+        Finished Runs leave the line and go to the Shipped list below it, whatever Stage they ended in. It is a table,
+        newest first, grouped by the day of the last update, with the project, the pull request, the fresh tokens and
+        how long ago. Select a title to open the detail. <em>Clear shipped…</em> removes the records of all shipped
+        Runs after you confirm, and <em>Delete run</em> in a Run's detail removes one. Deleting removes the record from
+        the dashboard only: the worktree, the branch and the pull request stay as they are. In the command line and
+        the API a shipped Run has the status done.
       </p>
     <//>
     <${Topic} title="Needs you">
       <p>
-        A Run that is blocked is waiting for you. Its card says <strong>Needs you</strong> with the reason, and it comes
-        first in its column. Typical reasons:
+        A Run that is blocked is waiting for you. The andon strip at the top turns amber and lists it with the reason,
+        and its row on the line comes first, marked amber. Typical reasons:
       </p>
       <ul>
         <li>The issue tracker is not set up yet. Run <${Code}>/setup-matt-pocock-skills<//> and start again.</li>

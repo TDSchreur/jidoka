@@ -10,10 +10,10 @@ const GROUPS = [
   ['build', 'Build'],
   ['check', 'Check'],
   ['finish', 'Finish'],
-  ['done', 'Done'],
 ];
 const STATUSES = ['running', 'blocked', 'done'];
-const STATUS_LABEL = { running: 'Running', blocked: 'Blocked', done: 'Done' };
+// A finished Run is called Shipped; its status stays `done` in the CLI, the API and runs.json.
+const STATUS_LABEL = { running: 'Running', blocked: 'Blocked', done: 'Shipped' };
 /** The status in sentence case; an unknown status shows as recorded. */
 const statusLabel = (status) => STATUS_LABEL[status] ?? String(status);
 const TICKET_STATUS = { pending: 'Pending', 'in-progress': 'In progress', done: 'Done' };
@@ -272,10 +272,6 @@ function ContextLinks({ run }) {
     : null;
 }
 
-function Ticket({ value }) {
-  return html`<p class="ticket"><span class="visually-hidden">Ticket: </span><${TicketLink} value=${value} /></p>`;
-}
-
 const reworkLabel = (count) =>
   count <= REWORK_CAP ? `${count}/${REWORK_CAP}` : `${count} (past the cap of ${REWORK_CAP})`;
 
@@ -298,49 +294,6 @@ function Updated({ run, now }) {
       >${ago(now - ts)}</time
     >
   </span>`;
-}
-
-/** A Done card is one line: the title, a Show details toggle and Delete. The rest shows on demand. */
-function DoneCard({ run, now, onOpen, onDelete }) {
-  const [expanded, setExpanded] = useState(false);
-  const detailsId = `done-details-${runKey(run).replace(/\W/g, '-')}`;
-  const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
-  return html`<li>
-    <article class="run done-run">
-      <div class="done-line">
-        <h3>
-          <button type="button" class="card-open" data-run-key=${runKey(run)} onClick=${() => onOpen(runKey(run))}>
-            ${run.title}
-          </button>
-        </h3>
-        <button
-          type="button"
-          class="toggle"
-          aria-expanded=${String(expanded)}
-          aria-controls=${detailsId}
-          onClick=${() => setExpanded((current) => !current)}
-        >
-          ${expanded ? 'Hide details' : 'Show details'}<span class="visually-hidden">${` for ${run.title}`}</span>
-        </button>
-        <button type="button" class="text-button" onClick=${() => onDelete(run)}>
-          Delete<span class="visually-hidden">${` ${run.title}`}</span>
-        </button>
-      </div>
-      <div id=${detailsId} hidden=${!expanded}>
-        <div class="chips">
-          <span class="badge done">${statusLabel(run.status)}</span>
-          ${rework !== null
-            ? html`<span class="chip">Rework${' '}${reworkLabel(rework)}</span>`
-            : null}
-          <${ContextChips} run=${run} />
-        </div>
-        <${ContextLinks} run=${run} />
-        ${run.activity ? html`<p class="activity">${run.activity}</p>` : null}
-        ${run.current_ticket ? html`<${Ticket} value=${String(run.current_ticket)} />` : null}
-        <${Updated} run=${run} now=${now} />
-      </div>
-    </article>
-  </li>`;
 }
 
 const STATIONS = ['define', 'build', 'check', 'finish'];
@@ -387,7 +340,7 @@ function Field({ label, children, missing = 'Not set' }) {
 }
 
 /** Every field of a Run in a native modal dialog on the right. The browser handles focus containment and Escape. */
-function Detail({ run, now, onClose }) {
+function Detail({ run, now, onClose, onDelete }) {
   const dialog = useRef(null);
   // The listener below is added once; it calls whatever `onClose` is current.
   const closing = useRef(onClose);
@@ -427,6 +380,9 @@ function Detail({ run, now, onClose }) {
   >
     <div class="detail-body">
       <div class="detail-bar">
+        <button type="button" class="text-button detail-delete" onClick=${() => onDelete(run)}>
+          Delete run<span class="visually-hidden">${` ${run.title}`}</span>
+        </button>
         <button type="button" class="toggle detail-close" onClick=${dismiss}>
           <span class="detail-close-wide">Close</span><span class="detail-close-compact">Back</span>
         </button>
@@ -492,19 +448,71 @@ function Detail({ run, now, onClose }) {
   </dialog>`;
 }
 
-/** Finished Runs, one line each, with Delete all. */
-function Group({ entries, now, onOpen, onDelete, onDeleteAll }) {
-  return html`<section class="group" aria-labelledby="done-title">
-    <h2 id="done-title">Done<span class="count">${` (${entries.length})`}</span></h2>
-    <button type="button" class="text-button delete-all" onClick=${onDeleteAll}>
-      Delete all<span class="visually-hidden">${` ${entries.length} done runs`}</span>
-    </button>
-    <ul class="runs">
-      ${entries.map(
-        (entry) =>
-          html`<${DoneCard} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${onOpen} onDelete=${onDelete} />`,
-      )}
-    </ul>
+/** The day a Run shipped, by its last update: Today, Yesterday, the date, or Undated without a time. */
+function dayLabel(ts, now) {
+  if (ts === null) return 'Undated';
+  const day = (ms) => new Date(ms).setHours(0, 0, 0, 0);
+  const days = Math.round((day(now) - day(ts)) / 86400000);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  return new Date(ts).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+/** Finished Runs in a compact table, newest first, grouped by day. Clear shipped removes their records after confirming. */
+function ShippedLog({ entries, now, onOpen, onClear }) {
+  const groups = [];
+  for (const entry of entries) {
+    const label = dayLabel(timestamp(entry.run), now);
+    if (groups.at(-1)?.label !== label) groups.push({ label, runs: [] });
+    groups.at(-1).runs.push(entry.run);
+  }
+  return html`<section class="shipped" aria-labelledby="shipped-title">
+    <div class="shipped-head">
+      <h2 id="shipped-title">Shipped<span class="count">${` (${entries.length})`}</span></h2>
+      <button type="button" class="text-button" onClick=${onClear}>
+        Clear shipped…<span class="visually-hidden">${` ${entries.length} runs`}</span>
+      </button>
+    </div>
+    <div class="table-scroll" role="region" aria-labelledby="shipped-title" tabindex="0">
+      <table class="shipped-table">
+        <caption class="visually-hidden">Shipped runs, newest first, grouped by day</caption>
+        <thead>
+          <tr>
+            <th scope="col">Run</th>
+            <th scope="col">Project</th>
+            <th scope="col">Pull request</th>
+            <th scope="col">Fresh tokens</th>
+            <th scope="col">Shipped</th>
+          </tr>
+        </thead>
+        ${groups.map(
+          (group) => html`<tbody key=${group.label}>
+            <tr class="day">
+              <th scope="rowgroup" colspan="5">${group.label}</th>
+            </tr>
+            ${group.runs.map((run) => {
+              const tokens = usageTotal(run);
+              const ts = timestamp(run);
+              return html`<tr key=${runKey(run)}>
+                <td>
+                  <button type="button" class="link log-open" data-run-key=${runKey(run)} onClick=${() => onOpen(runKey(run))}>
+                    ${run.title}
+                  </button>
+                </td>
+                <td><${ProjectName} path=${projectOf(run)} /></td>
+                <td>${run.pr ? html`<${RefLink} value=${run.pr} label=${html`Pull request<span class="visually-hidden">${` of ${run.title}`}</span>`} />` : html`<span class="not-set">None</span>`}</td>
+                <td class="num">${tokens === null ? 'n/a' : compactTokens(tokens)}</td>
+                <td>
+                  ${ts === null
+                    ? html`<span class="not-set">Not reported</span>`
+                    : html`<time datetime=${new Date(ts).toISOString()} title=${new Date(ts).toLocaleString()}>${ago(now - ts)}</time>`}
+                </td>
+              </tr>`;
+            })}
+          </tbody>`,
+        )}
+      </table>
+    </div>
   </section>`;
 }
 
@@ -848,7 +856,8 @@ function App() {
   const line = indexed
     .filter((entry) => entry.run.status !== 'done' && (!onlyWaiting || needsYou(entry.run)))
     .sort(byPriority);
-  const done = onlyWaiting ? [] : indexed.filter((entry) => entry.run.status === 'done').sort(byPriority);
+  // Newest first, so the day groups run from today backwards.
+  const shipped = onlyWaiting ? [] : indexed.filter((entry) => entry.run.status === 'done').sort(compare);
   const projects = [...new Set([...(runs ?? []).map(projectOf), ...hiddenProjects])]
     .filter((path) => typeof path === 'string')
     .sort(
@@ -931,34 +940,45 @@ function App() {
               : html`<p class="empty">Nothing on the line.</p>`}
           </section>`
         : null}
-      ${done.length
-        ? html`<${Group}
+      ${shipped.length
+        ? html`<${ShippedLog}
+            entries=${shipped}
             now=${now}
-            entries=${done}
             onOpen=${open}
-            onDelete=${(run) => setPending({ runs: [run] })}
-            onDeleteAll=${() => setPending({ runs: done.map((entry) => entry.run) })}
+            onClear=${() => setPending({ shipped: true, runs: shipped.map((entry) => entry.run) })}
           />`
         : null}
       ${helpOpen ? html`<${Help} onClose=${closeHelp} reworkCap=${REWORK_CAP} />` : null}
       ${pending
         ? html`<${Confirm}
-            title=${pending.project ? `Delete ${names.get(pending.project) ?? pending.project}?` : pending.runs.length === 1 ? 'Delete this run?' : `Delete all ${pending.runs.length} done runs?`}
-            confirmLabel=${pending.project || pending.runs.length === 1 ? 'Delete' : 'Delete all'}
+            title=${pending.project
+              ? `Delete ${names.get(pending.project) ?? pending.project}?`
+              : pending.shipped
+                ? `Clear ${pending.runs.length} shipped ${pending.runs.length === 1 ? 'run' : 'runs'}?`
+                : 'Delete this run?'}
+            confirmLabel=${pending.shipped ? 'Clear shipped' : 'Delete'}
             onConfirm=${confirmDelete}
             onCancel=${() => setPending(null)}
           >
             <p>
               ${pending.project
                 ? `This removes all ${pending.runs.length} run records for this project from the dashboard.`
-                : pending.runs.length === 1
-                ? html`This removes the record of <strong>${pending.runs[0].title}</strong> from the dashboard.`
-                : `This removes the records of these runs from the dashboard.`}
+                : pending.shipped
+                  ? `This removes the records of the shipped runs from the dashboard.`
+                  : html`This removes the record of <strong>${pending.runs[0].title}</strong> from the dashboard.`}
               The repository, worktrees, branches and pull requests stay as they are.
             </p>
           <//>`
         : null}
-      ${openRun ? html`<${Detail} key=${runKey(openRun)} run=${openRun} now=${now} onClose=${close} />` : null}
+      ${openRun
+        ? html`<${Detail}
+            key=${runKey(openRun)}
+            run=${openRun}
+            now=${now}
+            onClose=${close}
+            onDelete=${(run) => setPending({ runs: [run] })}
+          />`
+        : null}
     </main>
   <//>`;
 }
