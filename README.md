@@ -353,7 +353,7 @@ Write one policy file, `model-routing.json`, in the factory's config folder: `$X
   "agents": {
     "claude": {
       "roles": {
-        "strong": { "model": "opus", "effort": "high" },
+        "strong": { "model": "sonnet", "effort": "medium" },
         "coding": { "model": "sonnet", "effort": "medium" },
         "routine": { "model": "haiku", "effort": "low" }
       },
@@ -361,7 +361,9 @@ Write one policy file, `model-routing.json`, in the factory's config folder: `$X
     },
     "codex": {
       "roles": {
-        "strong": { "model": "gpt-6-astra", "effort": "high" }
+        "strong": { "model": "gpt-6.1-terra", "effort": "medium" },
+        "coding": { "model": "gpt-6.1-terra", "effort": "medium" },
+        "routine": { "model": "gpt-6-luna", "effort": "low" }
       },
       "tasks": { "check": "strong" }
     }
@@ -369,7 +371,7 @@ Write one policy file, `model-routing.json`, in the factory's config folder: `$X
 }
 ```
 
-`factory doctor --create-model-routing` writes a starter like this for you, with an entry for each agent (or only one with `--agent claude` or `--agent codex`); see [Checking readiness](#checking-readiness). It never overwrites a file that is already there.
+`factory install` and `factory update` create this policy when no file exists. They preserve an existing policy, including a symbolic link. `factory doctor --create-model-routing` can also create it explicitly, with both agents or just the one named by `--agent`; see [Checking readiness](#checking-readiness).
 
 - Each entry under `agents` is `claude` or `codex` and has `roles` and `tasks`, and optionally `enabled`. `roles` defines up to three roles (`strong`, `coding`, `routine`), each with a `model` and an optional `effort`. `tasks` maps `build`, `check` and `finish` to one of those roles; a task you leave out is not routed. `enabled` defaults to `true`; set it to `false` at the top to switch routing off for every agent, or inside an entry to switch off that agent only, without deleting anything.
 - The original single-agent form still works and is never rewritten for you: `agent` (`claude` or `codex`), `roles` and `tasks` at the top of the file, instead of `agents`. Use one form or the other; a file that has both is refused.
@@ -414,7 +416,7 @@ Copilot CLI is not supported. It chooses a subagent's model from its own setting
 
 Each line is `pass`, `missing` (something to supply), `fail` (something broken), `warning` (a risk to read about that does not stop the factory) or `skipped` (not checked, with the reason), with a fix where there is one. Model routing problems other than a policy file that cannot be used are warnings, because model routing is optional and without it a stage uses the session's model. The exit status is 0 when the project checks pass and at least one agent is usable, and the model-routing policy, if there is one, loads. Use `--agent codex|claude|copilot` to check, and require, one agent, and `--json` for structured output.
 
-Doctor writes one file, and only when you ask: a starter model-routing policy. `factory doctor --create-model-routing` creates `model-routing.json` in the config folder in the `agents` form, with an entry for Claude Code and one for Codex, each with the three roles and only the `check` task routed to `strong`. Add `--agent claude` or `--agent codex` for an entry for that agent only. Doctor then runs its checks, so the new file is verified straight away. Giving the option is the confirmation: there is no prompt. The file is switched on, so the next run's review agents use it; edit the models and efforts, or set `"enabled": false`. Doctor never overwrites anything already at that path, and never writes through a symbolic link there. If it cannot write the file, it stops with the reason and does not run its checks. The option is refused with `--agent copilot`, because Copilot CLI is not supported. With `--json`, the note about the file goes to stderr and stdout stays JSON.
+Doctor writes a starter model-routing policy only when you ask. The installer and updater create the same two-agent policy if it is missing. `factory doctor --create-model-routing` creates `model-routing.json` in the config folder in the `agents` form, with an entry for Claude Code and one for Codex, each with the three roles and only the `check` task routed to `strong`. Add `--agent claude` or `--agent codex` for an entry for that agent only. Doctor then runs its checks, so the new file is verified straight away. Giving the option is the confirmation: there is no prompt. The file is switched on, so the next run's review agents use it; edit the models and efforts, or set `"enabled": false`. Doctor never overwrites anything already at that path, and never writes through a symbolic link there. If it cannot write the file, it stops with the reason and does not run its checks. The option is refused with `--agent copilot`, because Copilot CLI is not supported. With `--json`, the note about the file goes to stderr and stdout stays JSON.
 
 ### First use in a repository
 

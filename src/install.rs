@@ -33,6 +33,34 @@ pub fn install(agents: &str) -> io::Result<()> {
     for root in roots {
         install_to(&root)?;
     }
+    ensure_default_policy(|name| env::var_os(name))?;
+    Ok(())
+}
+
+/// Create the initial routing policy without replacing any existing user configuration.
+pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> io::Result<()> {
+    let path = crate::routing::policy_path_in(var).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "cannot find the factory config directory for model routing",
+        )
+    })?;
+    let agents = [
+        crate::routing::RoutingAgent::Claude,
+        crate::routing::RoutingAgent::Codex,
+    ];
+    let created = crate::routing::create_starter(&path, &agents).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "cannot create model routing policy {}: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    if created {
+        println!("Created default model routing policy: {}", path.display());
+    }
     Ok(())
 }
 

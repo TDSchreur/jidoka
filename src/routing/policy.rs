@@ -495,10 +495,10 @@ pub(crate) fn load(path: &Path, host: Option<Host>) -> Result<Resolution, String
 fn starter_entry(agent: RoutingAgent) -> String {
     let ((strong, strong_effort), (coding, coding_effort), (routine, routine_effort)) = match agent
     {
-        RoutingAgent::Claude => (("opus", "high"), ("sonnet", "medium"), ("haiku", "low")),
+        RoutingAgent::Claude => (("sonnet", "medium"), ("sonnet", "medium"), ("haiku", "low")),
         RoutingAgent::Codex => (
-            ("gpt-6-astra", "high"),
-            ("gpt-6.1-sol", "medium"),
+            ("gpt-6.1-terra", "medium"),
+            ("gpt-6.1-terra", "medium"),
             ("gpt-6-luna", "low"),
         ),
     };
