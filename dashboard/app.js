@@ -139,15 +139,19 @@ function ThemeSwitch() {
   </fieldset>`;
 }
 
+/** The value as a URL when it is an absolute http(s) URL, else null. Only these become links. */
+function httpUrl(value) {
+  try {
+    const url = new URL(String(value));
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The ticket as a link when it is an http(s) URL, else as plain text. */
 function TicketLink({ value }) {
-  let url = null;
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') url = parsed;
-  } catch {
-    /* not a URL: show as text */
-  }
+  const url = httpUrl(value);
   return url ? html`<a href=${url.href} target="_blank" rel="noopener noreferrer">${value}</a>` : value;
 }
 
@@ -159,14 +163,8 @@ const ticketProgress = (run) => {
 
 /** A link for a stored reference, only when it is an http(s) URL; nothing otherwise. */
 function RefLink({ value, label }) {
-  try {
-    const url = new URL(String(value));
-    if (url.protocol === 'http:' || url.protocol === 'https:')
-      return html`<a href=${url.href} target="_blank" rel="noopener noreferrer">${label}</a>`;
-  } catch {
-    /* not a URL: no link */
-  }
-  return null;
+  const url = httpUrl(value);
+  return url ? html`<a href=${url.href} target="_blank" rel="noopener noreferrer">${label}</a>` : null;
 }
 
 /** Fresh tokens: input excluding cache reads, plus cache writes and output; null when neither input nor output is known. */
@@ -210,14 +208,12 @@ function shortRef(url) {
 
 /** A row's ticket in the token table: a short link with the whole URL as its tooltip, or the text as it is. */
 function TicketRef({ value }) {
-  try {
-    const url = new URL(String(value));
-    if (url.protocol === 'http:' || url.protocol === 'https:')
-      return html`<a href=${url.href} title=${url.href} target="_blank" rel="noopener noreferrer">${shortRef(url)}</a>`;
-  } catch {
-    /* not a URL: show as text */
-  }
-  return value;
+  const url = httpUrl(value);
+  return url
+    ? html`<a href=${url.href} title=${url.href} target="_blank" rel="noopener noreferrer"
+        ><span class="visually-hidden">Ticket </span>${shortRef(url)}</a
+      >`
+    : value;
 }
 
 /** The stage, model and ticket breakdown of a Run's token usage, with what is missing from it. */

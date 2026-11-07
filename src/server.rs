@@ -2175,6 +2175,38 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn links_share_one_http_check_and_short_ticket_links_say_what_they_are() {
+        let script = asset("/assets/app.js").await;
+        // One place decides what becomes a link: an http(s) URL, nothing else.
+        assert!(script.contains("function httpUrl(value) {"));
+        assert_eq!(
+            script
+                .matches("url.protocol === 'http:' || url.protocol === 'https:'")
+                .count(),
+            1,
+            "the protocol check lives only in httpUrl"
+        );
+        for component in [
+            "function TicketLink(",
+            "function RefLink(",
+            "function TicketRef(",
+        ] {
+            let body = script
+                .split(component)
+                .nth(1)
+                .and_then(|rest| rest.split("\n}\n").next())
+                .unwrap_or_else(|| panic!("no {component}"));
+            assert!(body.contains("httpUrl("), "{component} uses httpUrl");
+            assert!(
+                !body.contains("new URL("),
+                "{component} parses no URL itself"
+            );
+        }
+        // A screen reader hears "Ticket #202", not just "#202".
+        assert!(script.contains("<span class=\"visually-hidden\">Ticket </span>${shortRef(url)}"));
+    }
+
+    #[rocket::async_test]
     async fn dashboard_tokens_are_all_used_and_all_declared() {
         let css = stylesheet().await;
         let (layer, rules) = split_tokens(&css);
