@@ -834,11 +834,8 @@ mod tests {
 
     #[test]
     fn the_procedures_keep_the_pull_request_current_without_rewriting_history() {
-        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
-        let section = procedures
-            .split_once("## Pull request and CI")
-            .map(|(_, rest)| rest)
-            .expect("the procedures have a Pull request and CI section");
+        let section = bundled_text("factory-procedures/references/pull-request-and-ci.md")
+            .replace("\r\n", "\n");
         for needle in [
             "factory pr sync <run-id> --base <base>",
             "gh pr view --json mergeStateStatus",
@@ -856,7 +853,14 @@ mod tests {
 
     #[test]
     fn the_procedures_ask_for_an_upgrade_instead_of_working_around_an_outdated_factory() {
-        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
+        let skill = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
+        let reference = bundled_text("factory-procedures/references/pull-request-and-ci.md")
+            .replace("\r\n", "\n");
+        assert!(
+            skill.contains("(references/pull-request-and-ci.md)"),
+            "the procedures do not link the pull request and CI reference"
+        );
+        let procedures = format!("{skill}\n{reference}");
         // The skills ship with the binary, so a command it lacks means the two are out of step.
         for gone in [
             "unknown command",
@@ -899,12 +903,12 @@ mod tests {
         }
         // Both commands still explain their exit status 1.
         assert_eq!(
-            procedures.matches("Exit status 1 is a problem").count(),
+            reference.matches("Exit status 1 is a problem").count(),
             2,
             "pr wait and pr sync both explain exit status 1"
         );
         // So does a host without factory support.
-        assert!(procedures.contains("Watch every check there until all have completed"));
+        assert!(reference.contains("Watch every check there until all have completed"));
         // The hard rules say why.
         for reason in [
             "the user may be working in it",
@@ -1524,6 +1528,9 @@ mod tests {
         assert!(root.join("factory-procedures/SKILL.md").is_file());
         assert!(root
             .join("factory-procedures/references/model-routing.md")
+            .is_file());
+        assert!(root
+            .join("factory-procedures/references/pull-request-and-ci.md")
             .is_file());
         assert!(!root.join("factory-procedures/LICENSE").exists());
         assert!(!root.join("factory-implement-balanced/LICENSE").exists());

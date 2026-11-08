@@ -28,7 +28,7 @@ Break the work into **tracer bullet** tickets.
 
 <vertical-slice-rules>
 
-- Each slice cuts a narrow but COMPLETE path through every layer (schema, API, UI, tests): vertical, NOT a horizontal slice of one layer
+- Each slice cuts a narrow but complete path through every layer (schema, API, UI, tests): vertical, not a horizontal slice of one layer, because only a vertical slice can be demoed or verified on its own
 - A completed slice is demoable or verifiable on its own
 - Each slice is sized to fit in a single fresh context window
 - Any prefactoring should be done first
@@ -64,7 +64,7 @@ Publish the approved tickets. **How** depends on the tracker `/factory-setup` co
 
 Work the **frontier**: any ticket whose blockers are all done. For a purely linear chain that means top to bottom.
 
-Do NOT close or modify any parent issue.
+Do not close or modify any parent issue; it stays open until its tickets are done.
 
 <local-ticket-template>
 

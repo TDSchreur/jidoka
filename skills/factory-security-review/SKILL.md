@@ -26,17 +26,11 @@ Use this skill when the request involves:
 
 ## How This Skill Works
 
-Unlike traditional static analysis tools that match patterns, this skill:
-1. **Reads code like a security researcher** — understanding context, intent, and data flow
-2. **Traces across files** — following how user input moves through your application
-3. **Self-verifies findings** — re-examines each result to filter false positives
-4. **Assigns severity ratings** — CRITICAL / HIGH / MEDIUM / LOW / INFO
-5. **Proposes targeted patches** — every finding includes a concrete fix
-6. **Requires human approval** — nothing is auto-applied; you always review first
+Reason about the code like a security researcher rather than matching patterns: follow how user input moves across files, and re-examine each finding before reporting it. Every finding gets a severity rating and a concrete fix, and nothing is auto-applied.
 
 ## Execution Workflow
 
-Follow these steps **in order** every time:
+Follow these steps in order every time, because each step feeds the next (for example, the self-verification pass needs the findings of the scans before it):
 
 ### Step 1 — Scope Resolution
 Determine what to scan:
@@ -114,7 +108,7 @@ After the per-file scan, perform a **holistic review**:
 - Check for insecure trust boundaries between services or modules
 
 ### Step 6 — Self-Verification Pass
-For EACH finding:
+For each finding, so no false positive reaches the report:
 1. Re-read the relevant code with fresh eyes
 2. Ask: "Is this actually exploitable, or is there sanitization I missed?"
 3. Check if a framework or middleware already handles this upstream
@@ -138,17 +132,17 @@ Explicitly state: **"Review each patch before applying. Nothing has been changed
 
 | Severity | Meaning | Example |
 |----------|---------|---------|
-| 🔴 CRITICAL | Immediate exploitation risk, data breach likely | SQLi, RCE, auth bypass |
-| 🟠 HIGH | Serious vulnerability, exploit path exists | XSS, IDOR, hardcoded secrets |
-| 🟡 MEDIUM | Exploitable with conditions or chaining | CSRF, open redirect, weak crypto |
-| 🔵 LOW | Best practice violation, low direct risk | Verbose errors, missing headers |
-| ⚪ INFO | Observation worth noting, not a vulnerability | Outdated dependency (no CVE) |
+| CRITICAL | Immediate exploitation risk, data breach likely | SQLi, RCE, auth bypass |
+| HIGH | Serious vulnerability, exploit path exists | XSS, IDOR, hardcoded secrets |
+| MEDIUM | Exploitable with conditions or chaining | CSRF, open redirect, weak crypto |
+| LOW | Best practice violation, low direct risk | Verbose errors, missing headers |
+| INFO | Observation worth noting, not a vulnerability | Outdated dependency (no CVE) |
 
 ## Output Rules
 
-- **Always** produce a findings summary table first (counts by severity)
-- **Never** auto-apply any patch — present patches for human review only
-- **Always** include a confidence rating per finding (High / Medium / Low)
+- Always produce a findings summary table first (counts by severity), so the reader sees the overall picture before the details
+- Never auto-apply any patch, because a security fix needs a human to confirm it; present patches for human review only
+- Always include a confidence rating per finding (High / Medium / Low)
 - **Group findings** by category, not by file
 - **Be specific** — include file path, line number, and the exact vulnerable code snippet
 - **Explain the risk** in plain English — what could an attacker do with this?

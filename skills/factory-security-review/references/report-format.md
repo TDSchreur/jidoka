@@ -30,11 +30,11 @@ Always show this first — at a glance overview:
 ┌────────────────────────────────────────────────┐
 │           FINDINGS SUMMARY                     │
 ├──────────────┬──────────────────────────────── ┤
-│ 🔴 CRITICAL  │  <n> findings                  │
-│ 🟠 HIGH      │  <n> findings                  │
-│ 🟡 MEDIUM    │  <n> findings                  │
-│ 🔵 LOW       │  <n> findings                  │
-│ ⚪ INFO      │  <n> findings                  │
+│ CRITICAL     │  <n> findings                  │
+│ HIGH         │  <n> findings                  │
+│ MEDIUM       │  <n> findings                  │
+│ LOW          │  <n> findings                  │
+│ INFO         │  <n> findings                  │
 ├──────────────┼─────────────────────────────────┤
 │ TOTAL        │  <n> findings                  │
 └──────────────┴─────────────────────────────────┘
@@ -51,7 +51,7 @@ For EACH finding, use this card format:
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[SEVERITY EMOJI] [SEVERITY] — [VULNERABILITY TYPE]
+[SEVERITY] — [VULNERABILITY TYPE]
 Confidence: HIGH / MEDIUM / LOW
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -86,15 +86,15 @@ Confidence: HIGH / MEDIUM / LOW
 📦 DEPENDENCY AUDIT
 ══════════════════
 
-🟠 HIGH — lodash@4.17.20 (package.json)
+HIGH — lodash@4.17.20 (package.json)
   CVE-2021-23337: Prototype pollution via zipObjectDeep()
   Fix: npm install lodash@4.17.21
 
-🟡 MEDIUM — axios@0.27.2 (package.json)
+MEDIUM — axios@0.27.2 (package.json)
   CVE-2023-45857: CSRF via withCredentials
   Fix: npm install axios@1.6.0
 
-⚪ INFO — express@4.18.2
+INFO — express@4.18.2
   No known CVEs. Current version is 4.19.2 — consider updating.
 ```
 
@@ -106,7 +106,7 @@ Confidence: HIGH / MEDIUM / LOW
 🔑 SECRETS & EXPOSURE SCAN
 ═══════════════════════════
 
-🔴 CRITICAL — Hardcoded API Key
+CRITICAL — Hardcoded API Key
   File: src/config/database.js, Line 12
   
   Found: STRIPE_SECRET_KEY = "sk_live_FAKE_KEY_..."
