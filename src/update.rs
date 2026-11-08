@@ -190,7 +190,7 @@ pub(crate) fn installed_agents(
 }
 
 /// The arguments of the `factory install` that update runs: the agents, and one `--config-dir` per folder.
-fn install_args(agents: &str, claude_dirs: &[PathBuf]) -> Vec<OsString> {
+pub(crate) fn install_args(agents: &str, claude_dirs: &[PathBuf]) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec!["install".into(), "--agent".into(), agents.into()];
     for dir in claude_dirs {
         args.push("--config-dir".into());

@@ -118,6 +118,16 @@ It runs five checks and reports each as `matches`, `differs` with what it found,
 
 Commits of `HEAD` that no remote-tracking branch has (as of the last fetch) are listed as not pushed, which does not count as a difference. A repository without remote-tracking branches says the list is not known. The exit status is 0 when nothing differs, also when some fields are unknown, 2 when a check differs, and 1 for a problem such as bad arguments or an unreachable dashboard. `--json` prints the same data (`run`, `consistent`, `exit_code`, `checks` with `check`, `state`, `recorded` and `found`, `changes`, `unpushed` and, when the list is not known, `unpushed_unknown`).
 
+`factory run cleanup <run-id>` removes the worktree and local branch of a run after its pull request merged, so you do not clean up by hand. Run it from the main checkout, not from inside the worktree.
+
+```text
+factory run cleanup <run-id> [--reinstall] [--config-dir <path>]...
+```
+
+It reads the pull request state fresh and refuses, with exit status 1 and nothing removed, unless the pull request is merged. It also refuses when the run records no pull request, when the worktree has uncommitted changes, when the local branch is not at the head commit of the merged pull request (it may hold commits that were never pushed), and when your current directory is inside the worktree. Otherwise it runs `git worktree remove` (without `--force`) and then `git branch -D`, which a squash merge needs, in the run's repository. The remote branch is left alone. The run stays on the dashboard with its worktree and branch cleared and the activity "Cleaned up worktree and branch"; its stage and status are kept. Running it again finishes what is left and reports what was already gone.
+
+When the run's repository is the factory itself (a `Cargo.toml` that names the package `factory`, with `.agents/skills/factory-procedures`), a successful cleanup, also one that found nothing left to remove, offers to reinstall the factory so the next run uses what just merged. It does so only when the pull request is merged and the repository's checkout already contains the merge commit; otherwise it prints a hint to pull the base branch there first, followed by the commands. The reinstall runs `cargo install --path <repository> --locked --force` and then `factory install --agent <agents>` (found on `PATH`) in the repository, without switching branches. The agents are the ones that have the factory installed, as in `factory update`; `--config-dir` (repeatable) or `CLAUDE_CONFIG_DIR` picks the Claude folders. On a terminal it asks `Reinstall the factory for <agents>? [y/N]` (default no); off a terminal it only prints the commands. `--reinstall` skips the question. Afterwards restart the dashboard with `factory dashboard`; cleanup does not restart it. If a reinstall command fails, the command exits non-zero naming it; the cleanup itself had already succeeded.
+
 Run updates also accept optional reporting fields:
 
 ```sh
@@ -149,7 +159,7 @@ The workflow skills [`factory-full`](.agents/skills/factory-full/SKILL.md), [`fa
 
 ### Workflow modes
 
-TDS Factory has three workflow modes that trade speed against rigor: `/factory-full` favors quality, `/factory-fast` favors speed, and `/factory-balanced` sits between them. All three report progress to the dashboard and end with the same Finish stage; `/factory-fast` skips Check. Each run uses its own fresh git worktree based on `origin/<base branch>`, so several runs can proceed at once. Start the run in a fresh, dedicated worktree if your agent environment provides one, or the workflow creates one next to the repository. The original checkout is not modified, and the worktree is kept after the pull request opens until you remove it with `git worktree remove`.
+TDS Factory has three workflow modes that trade speed against rigor: `/factory-full` favors quality, `/factory-fast` favors speed, and `/factory-balanced` sits between them. All three report progress to the dashboard and end with the same Finish stage; `/factory-fast` skips Check. Each run uses its own fresh git worktree based on `origin/<base branch>`, so several runs can proceed at once. Start the run in a fresh, dedicated worktree if your agent environment provides one, or the workflow creates one next to the repository. The original checkout is not modified, and the worktree is kept after the pull request opens until the pull request merges and you remove it with `factory run cleanup`.
 
 | Stage | `/factory-full` (quality) | `/factory-balanced` | `/factory-fast` (speed) |
 | --- | --- | --- | --- |

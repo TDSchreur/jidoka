@@ -518,6 +518,15 @@ pub(crate) fn azure_pr_status(gh: &dyn Gh, url: &str) -> Result<(String, bool), 
     azure::status(gh, url)
 }
 
+/// The last source commit of the Azure Repos pull request at `url`.
+pub(crate) fn azure_pr_source_commit(gh: &dyn Gh, url: &str) -> Result<String, ToolProblem> {
+    azure::source_commit(gh, url)
+}
+
+pub(crate) fn azure_pr_merge_commit(gh: &dyn Gh, url: &str) -> Result<String, ToolProblem> {
+    azure::merge_commit(gh, url)
+}
+
 /// Whether `url` is an Azure DevOps Services pull request URL, in its canonical or legacy form.
 pub(crate) fn is_azure_pr_url(url: &str) -> bool {
     url.starts_with("https://dev.azure.com/")

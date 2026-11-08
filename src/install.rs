@@ -580,6 +580,30 @@ mod tests {
     }
 
     #[test]
+    fn finish_reports_tell_the_user_to_clean_up_the_run_after_merge() {
+        let procedures = bundled_text("factory-procedures/SKILL.md");
+        assert!(
+            procedures.contains("`factory run cleanup <id>`"),
+            "the shared procedures do not mention factory run cleanup"
+        );
+        assert!(
+            !procedures.contains("git worktree remove"),
+            "the shared procedures still send the user to git worktree remove"
+        );
+        for skill in WORKFLOW_SKILLS {
+            let text = bundled_text(&format!("{skill}/SKILL.md"));
+            let finish = text
+                .split_once("## Finish")
+                .unwrap_or_else(|| panic!("{skill} has no Finish"))
+                .1;
+            assert!(
+                finish.contains("`factory run cleanup <id>`"),
+                "{skill} Finish does not mention factory run cleanup"
+            );
+        }
+    }
+
+    #[test]
     fn workflow_skills_use_the_shared_procedures_and_report_their_own_mode() {
         for skill in WORKFLOW_SKILLS {
             let text = bundled_text(&format!("{skill}/SKILL.md"));
