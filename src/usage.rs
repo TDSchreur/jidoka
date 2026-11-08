@@ -134,6 +134,11 @@ pub(crate) enum PauseKind {
 impl PauseKind {
     pub(crate) const ALL: [Self; 2] = [Self::UsageLimit, Self::Compaction];
 
+    /// The pause kind whose blocking reason this is: `None` for a reason the agent gave.
+    pub(crate) fn from_reason(reason: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.reason() == reason)
+    }
+
     /// The blocking reason set while this pause lasts.
     pub(crate) fn reason(self) -> &'static str {
         match self {
@@ -162,7 +167,9 @@ pub(crate) struct IdleGap {
 
 /// Activity further apart than this is an idle gap.
 pub(crate) const IDLE_GAP_MS: u64 = 10 * 60 * 1000;
-/// Most pauses and idle gaps one run keeps, so a long or made-up log cannot grow the record.
+/// Most pauses and most idle gaps one run keeps (the cap applies to each list), so a long or made-up log
+/// cannot grow the record. Pauses keep the newest, dropping the oldest; idle gaps keep the longest, in
+/// time order.
 const MAX_PAUSES: usize = 50;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -843,10 +850,7 @@ fn collect_locked(
     {
         store.set_usage(id, usage)?;
     }
-    match latest {
-        Some(pause) => store.apply_pause(id, &pause),
-        None => Ok(()),
-    }
+    store.apply_pause(id, latest.as_ref())
 }
 
 /// How long a run may go without an update before it is no longer watched for pauses.
@@ -862,21 +866,26 @@ pub(crate) fn collect_active(
     if !settings.enabled {
         return Ok(());
     }
+    let mut first_error = None;
     for run in store.list()? {
         let automatic = run.status == crate::run::RunStatus::Blocked
             && run
                 .blocking_reason
                 .as_deref()
-                .is_some_and(|reason| PauseKind::ALL.iter().any(|kind| kind.reason() == reason));
+                .is_some_and(|reason| PauseKind::from_reason(reason).is_some());
         let watched = run.status == crate::run::RunStatus::Running || automatic;
         let recent = run
             .updated_at
             .is_some_and(|at| at.saturating_add(WATCH_WINDOW_MS) >= now);
         if watched && recent {
-            collect_and_store(store, &run.id, settings)?;
+            // One failing run must not stop the others from being checked.
+            if let Err(error) = collect_and_store(store, &run.id, settings) {
+                eprintln!("Run {} was not checked for pauses: {error}", run.id);
+                first_error.get_or_insert(error);
+            }
         }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 #[cfg(test)]

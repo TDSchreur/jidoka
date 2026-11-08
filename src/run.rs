@@ -1,6 +1,6 @@
 use crate::pr_state::PrStatus;
 use crate::routing::{ModelChoice, ModelRouting};
-use crate::usage::{Collection, Mark, Usage};
+use crate::usage::{Collection, Mark, Pause, PauseKind, Usage};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -40,6 +40,11 @@ pub(crate) struct Run {
     pub(crate) rework: Option<u32>,
     #[serde(default)]
     pub(crate) updated_at: Option<u64>,
+    /// When the agent last updated the run. Unlike `updated_at`, the dashboard's own pause blocks and
+    /// resumes leave it alone, so a pause logged after the agent's last update is never mistaken for
+    /// older. Records from before it existed fall back to `updated_at`.
+    #[serde(default)]
+    pub(crate) agent_updated_at: Option<u64>,
     // Run context. Records from before it existed have none of it: it stays unknown, never guessed.
     /// The canonical repository (main checkout), the same for every linked worktree of it.
     #[serde(default)]
@@ -884,6 +889,7 @@ impl RunStore {
         while runs.iter().any(|run| run.id == id.to_string()) {
             id += 1;
         }
+        let created = updated_now()?;
         let run = Run {
             id: id.to_string(),
             title: new.title,
@@ -894,7 +900,8 @@ impl RunStore {
             current_ticket: None,
             blocking_reason: None,
             rework: None,
-            updated_at: Some(updated_now()?),
+            updated_at: Some(created),
+            agent_updated_at: Some(created),
             repository: new.repository,
             worktree: None,
             branch: None,
@@ -1072,6 +1079,7 @@ impl RunStore {
             next.sessions.drain(..next.sessions.len() - KEEP_SESSIONS);
         }
         next.updated_at = Some(updated_at);
+        next.agent_updated_at = Some(updated_at);
         let is_blocked = matches!(next.status, RunStatus::Blocked);
         if was_blocked != is_blocked && next.events.len() < MAX_EVENTS {
             next.events.push(RunEvent {
@@ -1106,25 +1114,59 @@ impl RunStore {
         }))
     }
 
-    /// Blocks a running run for a pause its log shows, or sets it running again once the log shows work
-    /// after it. Only a state the pause itself set is cleared: a block or reason the agent set is
-    /// never changed, nor is a done run, nor a run the agent updated after the pause began.
-    pub(crate) fn apply_pause(&self, id: &str, pause: &crate::usage::Pause) -> io::Result<()> {
+    /// Brings the run in line with the latest pause its log shows (`None` when it shows none). A running
+    /// run is blocked for an unresumed pause; a run this method blocked takes the reason of the current
+    /// pause, and is set running again once the log shows later activity or no pause at all. Only a state
+    /// the dashboard itself set is changed: never a block or reason the agent set, a done run, or a run the
+    /// agent updated after the pause began.
+    pub(crate) fn apply_pause(&self, id: &str, latest: Option<&Pause>) -> io::Result<()> {
         let mut runs = self.shared.runs.lock().map_err(lock_error)?;
         let Some(index) = runs.iter().position(|run| run.id == id) else {
             return Ok(());
         };
         let mut next = runs[index].clone();
-        let (kind, at) = match (next.status, pause.resumed_at) {
-            (RunStatus::Running, None) if Some(pause.at) >= next.updated_at => {
+        let agent_at = next.agent_updated_at.or(next.updated_at);
+        let automatic = is_automatic_reason(&next.blocking_reason);
+        let now = updated_now()?;
+        let (kind, at) = match (next.status, latest) {
+            (
+                RunStatus::Running,
+                Some(
+                    pause @ Pause {
+                        resumed_at: None, ..
+                    },
+                ),
+            ) if Some(pause.at) >= agent_at => {
                 next.status = RunStatus::Blocked;
                 next.blocking_reason = Some(pause.kind.reason().to_string());
                 (RunEventKind::Blocked, pause.at)
             }
-            (RunStatus::Blocked, Some(resumed)) if is_automatic_reason(&next.blocking_reason) => {
+            (
+                RunStatus::Blocked,
+                Some(
+                    pause @ Pause {
+                        resumed_at: None, ..
+                    },
+                ),
+            ) if automatic && next.blocking_reason.as_deref() != Some(pause.kind.reason()) => {
+                next.blocking_reason = Some(pause.kind.reason().to_string());
+                (RunEventKind::Blocked, pause.at)
+            }
+            (
+                RunStatus::Blocked,
+                Some(Pause {
+                    resumed_at: Some(resumed),
+                    ..
+                }),
+            ) if automatic => {
                 next.status = RunStatus::Running;
                 next.blocking_reason = None;
-                (RunEventKind::Resumed, resumed)
+                (RunEventKind::Resumed, *resumed)
+            }
+            (RunStatus::Blocked, None) if automatic => {
+                next.status = RunStatus::Running;
+                next.blocking_reason = None;
+                (RunEventKind::Resumed, now)
             }
             _ => return Ok(()),
         };
@@ -1136,7 +1178,8 @@ impl RunStore {
                 reason: next.blocking_reason.clone(),
             });
         }
-        next.updated_at = Some(updated_now()?);
+        next.agent_updated_at = agent_at;
+        next.updated_at = Some(now);
         let old = std::mem::replace(&mut runs[index], next);
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs[index] = old;
@@ -1206,16 +1249,15 @@ impl FieldUpdate {
     }
 }
 
-/// Appends a mark when the stage, rework or ticket in progress differs from the last one. The mark keeps
-/// the activity given with the update that created it.
+/// Whether the blocking reason is one the dashboard sets for a pause, not one the agent gave.
 fn is_automatic_reason(reason: &Option<String>) -> bool {
-    reason.as_deref().is_some_and(|reason| {
-        crate::usage::PauseKind::ALL
-            .iter()
-            .any(|kind| kind.reason() == reason)
-    })
+    reason
+        .as_deref()
+        .is_some_and(|reason| PauseKind::from_reason(reason).is_some())
 }
 
+/// Appends a mark when the stage, rework or ticket in progress differs from the last one. The mark keeps
+/// the activity given with the update that created it.
 fn mark(run: &mut Run, at: u64, activity: Option<String>) {
     let stage = run.stage;
     let building = matches!(stage, Stage::Build);

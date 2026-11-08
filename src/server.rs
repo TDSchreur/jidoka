@@ -491,7 +491,7 @@ fn watch_pauses(
         loop {
             rocket::tokio::time::sleep(pass).await;
             let (store, settings) = (store.clone(), settings.clone());
-            let _ = rocket::tokio::task::spawn_blocking(move || {
+            let joined = rocket::tokio::task::spawn_blocking(move || {
                 let result = crate::run::updated_now()
                     .and_then(|now| crate::usage::collect_active(&store, &settings, now));
                 if let Err(error) = result {
@@ -499,6 +499,9 @@ fn watch_pauses(
                 }
             })
             .await;
+            if let Err(error) = joined {
+                eprintln!("Pauses were not checked: the check stopped: {error}");
+            }
         }
     })
 }

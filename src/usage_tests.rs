@@ -1598,10 +1598,65 @@ mod auto_block {
             blocked.blocking_reason.as_deref(),
             Some("Context compaction in progress")
         );
+        let event = blocked.events.last().unwrap();
+        assert_eq!(event.kind, RunEventKind::Blocked);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("Context compaction in progress")
+        );
         let resumed = f.activity(5_000);
         assert_eq!(resumed.status, RunStatus::Running);
         assert_eq!(resumed.blocking_reason, None);
         assert_eq!(resumed.events.last().unwrap().kind, RunEventKind::Resumed);
+    }
+
+    #[test]
+    fn a_second_pause_after_a_resume_blocks_again_though_the_watcher_wrote_in_between() {
+        let mut f = Fixture::new();
+        assert_eq!(f.limit(1_000).status, RunStatus::Blocked);
+        let resumed = f.activity(3_600_000);
+        assert_eq!(resumed.status, RunStatus::Running);
+        // The watcher's resume write is stamped with the current time, later than the next pause below.
+        assert!(resumed.updated_at.unwrap() > f.began + 7_200_000);
+        let blocked = f.limit(7_200_000);
+        assert_eq!(blocked.status, RunStatus::Blocked);
+        assert_eq!(
+            blocked.blocking_reason.as_deref(),
+            Some("Usage limit reached")
+        );
+        assert_eq!(blocked.events.len(), 3);
+    }
+
+    #[test]
+    fn a_pause_block_takes_the_reason_of_the_current_pause() {
+        let mut f = Fixture::new();
+        f.limit(1_000);
+        let run = f.compaction(2_000);
+        assert_eq!(run.status, RunStatus::Blocked);
+        assert_eq!(
+            run.blocking_reason.as_deref(),
+            Some("Context compaction in progress")
+        );
+        assert_eq!(run.events.last().unwrap().kind, RunEventKind::Blocked);
+    }
+
+    #[test]
+    fn a_pause_block_whose_log_shows_no_pause_any_more_is_resumed() {
+        let mut f = Fixture::new();
+        assert_eq!(f.limit(1_000).status, RunStatus::Blocked);
+        f.lines.truncate(1);
+        f.world.write("claude/projects/-w/S1.jsonl", &f.lines);
+        collect_and_store(&f.store, &f.id, &f.settings).unwrap();
+        let run = f.run();
+        assert_eq!(run.status, RunStatus::Running);
+        assert_eq!(run.blocking_reason, None);
+        assert_eq!(run.events.last().unwrap().kind, RunEventKind::Resumed);
+
+        // An agent-set block is left alone when the log shows no pause.
+        let agent = Fixture::new();
+        agent.agent_update(RunStatus::Blocked, Some("Need keys"));
+        collect_and_store(&agent.store, &agent.id, &agent.settings).unwrap();
+        assert_eq!(agent.run().blocking_reason.as_deref(), Some("Need keys"));
     }
 
     #[test]
