@@ -167,7 +167,7 @@ class HelpTest(unittest.TestCase):
             self.assertTrue(result["every"][tab]["scrolls"], tab)
         # The Stages tab covers each Stage, Rework and Needs you; the Skills tab names each skill the flow uses.
         stages = result["every"]["Stages"]["headings"]
-        for heading in ["Define", "Build", "Check", "Rework", "Finish", "Done", "Needs you"]:
+        for heading in ["Define", "Build", "Check", "Rework", "Finish", "Shipped", "Needs you"]:
             self.assertIn(heading, stages)
         skills = result["every"]["Skills"]["terms"]
         for name in ["/factory", "/factory-full", "/factory-balanced", "/factory-fast", "factory-procedures", "grill-with-docs",
