@@ -1,6 +1,6 @@
 ---
 name: factory-implement
-description: "Implement the result of /factory-to-spec and /factory-to-tickets in code, test-first with factory-tdd."
+description: "Implement the result of /factory-to-spec and /factory-to-tickets in code, test-first with factory-tdd. Use for the Build stage of factory-full, or when test-first implementation of a spec and tickets is requested."
 disable-model-invocation: true
 ---
 

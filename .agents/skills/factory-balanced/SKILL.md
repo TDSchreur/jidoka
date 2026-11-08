@@ -1,6 +1,6 @@
 ---
 name: factory-balanced
-description: Lightweight-planning factory workflow with tests after implementation and one review pass. Usually entered from `factory`; use directly only when the user names factory-balanced.
+description: Lightweight-planning factory workflow with tests after implementation and one code review, plus a review of each Rework. Usually entered from `factory`; use directly only when the user names factory-balanced.
 ---
 
 # TDS Factory Balanced

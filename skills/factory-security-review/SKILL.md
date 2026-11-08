@@ -1,6 +1,6 @@
 ---
 name: factory-security-review
-description: 'AI-powered codebase security scanner that reasons about code like a security researcher — tracing data flows, understanding component interactions, and catching vulnerabilities that pattern-matching tools miss. Use this skill when asked to scan code for security vulnerabilities, find bugs, check for SQL injection, XSS, command injection, exposed API keys, hardcoded secrets, insecure dependencies, access control issues, or any request like "is my code secure?", "review for security issues", "audit this codebase", or "check for vulnerabilities". Covers injection flaws, authentication and access control bugs, secrets exposure, weak cryptography, insecure dependencies, and business logic issues across JavaScript, TypeScript, Python, Java, PHP, Go, Ruby, and Rust.'
+description: 'Scan code for security vulnerabilities by tracing data flows like a security researcher: injection flaws, XSS, exposed secrets, insecure dependencies, access control, weak cryptography. Use for security reviews and vulnerability checks of a path, a commit range or the whole project, or when asked "is my code secure?".'
 ---
 
 # Security Review
@@ -41,7 +41,9 @@ Follow these steps **in order** every time:
 ### Step 1 — Scope Resolution
 Determine what to scan:
 - If a path was provided (`/factory-security-review src/auth/`), scan only that scope
-- If no path given, scan the **entire project** starting from the root
+- If a commit range was provided (`/factory-security-review <from>..HEAD`), scan the files and hunks it
+  changed, and trace data flows outward into unchanged code only as far as needed to judge them
+- If neither is given, scan the **entire project** starting from the root
 - Identify the language(s) and framework(s) in use (check package.json, requirements.txt,
   go.mod, Cargo.toml, pom.xml, Gemfile, composer.json, etc.)
 - Read `references/language-patterns.md` to load language-specific vulnerability patterns
@@ -58,7 +60,7 @@ Before scanning source code, audit dependencies first (fast wins):
 - Read `references/vulnerable-packages.md` for a curated watchlist
 
 ### Step 3 — Secrets & Exposure Scan
-Scan ALL files (including config, env, CI/CD, Dockerfiles, IaC) for:
+Scan all files in scope (including config, env, CI/CD, Dockerfiles, IaC) for:
 - Hardcoded API keys, tokens, passwords, private keys
 - `.env` files accidentally committed
 - Secrets in comments or debug logs
