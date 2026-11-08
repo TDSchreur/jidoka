@@ -68,6 +68,7 @@ pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> i
         crate::routing::RoutingAgent::Claude,
         crate::routing::RoutingAgent::Codex,
     ];
+    use crate::routing::Starter;
     let created = crate::routing::install_starter(&path, &agents).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -77,8 +78,11 @@ pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> i
             ),
         )
     })?;
-    if let Some(summary) = created.message(&path.display().to_string(), None) {
-        println!("{summary}");
+    let shown = path.display().to_string();
+    match created {
+        Starter::Created => println!("{}", Starter::created_message(&shown, None)),
+        Starter::Replaced(off) => println!("{}", Starter::replaced_message(&shown, off, None)),
+        Starter::Left => {}
     }
     Ok(())
 }

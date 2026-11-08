@@ -336,7 +336,7 @@ fn doctor_leaves_a_current_format_or_unrecognised_policy_alone() {
 }
 
 #[test]
-fn doctor_says_nothing_was_off_when_nothing_was() {
+fn doctor_offers_only_switching_off_when_nothing_was_off() {
     let (_, stdout) = create_over(OLD_MULTI);
     assert!(!stdout.contains("stays off"), "{stdout}");
     assert!(!stdout.contains("is switched off"), "{stdout}");

@@ -134,7 +134,7 @@ fn install_leaves_a_current_format_or_unrecognised_policy_alone() {
 const SWITCH_ON: &str = "remove its \"enabled\": false";
 
 #[test]
-fn install_says_nothing_was_off_when_nothing_was() {
+fn install_offers_only_switching_off_when_nothing_was_off() {
     let (_, stdout, _) = install_over(OLD_MULTI);
     assert!(!stdout.contains("stays off"), "{stdout}");
     assert!(
