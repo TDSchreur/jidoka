@@ -238,8 +238,8 @@ return {shipped: await snap('run-shipped'), active: await snap('run-active'), bl
     def test_estimated_cost_is_shown_per_row_model_stage_and_run_with_unknown_as_text(self):
         # Costs as the server computed them: define $0.50, build $0.25 + $0.05, check unpriced.
         self.assertEqual(self.shipped["rowCosts"], ["$0.50", "$0.25", "$0.05", "unknown"])
-        self.assertEqual(self.shipped["totalCost"], ">= $0.80 (partial)")
-        self.assertIn("Est. cost >= $0.80 (partial)", self.shipped["usageSummary"])
+        self.assertEqual(self.shipped["totalCost"], ">= $0.80 (partial), 1 unpriced: gpt-x")
+        self.assertIn("Est. cost >= $0.80 (partial), 1 unpriced: gpt-x", self.shipped["usageSummary"])
         self.assertIn("28,500 fresh", self.shipped["usageSummary"])
         self.assertEqual(self.shipped["modelHeader"], ["Model", "Fresh", "Cache read", "Est. cost"])
         # Cache read per model is summed by hand: 5,000 per row.

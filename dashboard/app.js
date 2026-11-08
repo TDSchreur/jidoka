@@ -172,12 +172,17 @@ function usageTotal(run) {
   return counts.length ? counts.reduce((a, b) => a + b, 0) : null;
 }
 
-/** An estimated cost from the server: `$1.23`, `unknown` (never $0), or `>= $1.23 (partial)`. */
-function costText(cost) {
-  const usd = cost?.usd;
+/** Dollars as text: `$1.23`, `<$0.01`, or `unknown` (never $0) for null. */
+function usdText(usd) {
   if (usd === null || usd === undefined) return 'unknown';
-  const amount = usd > 0 && usd < 0.005 ? '<$0.01' : `$${usd.toFixed(2)}`;
-  return cost.partial ? `>= ${amount} (partial)` : amount;
+  return usd > 0 && usd < 0.005 ? '<$0.01' : `$${usd.toFixed(2)}`;
+}
+
+/** An estimated cost from the server: `$1.23`, `unknown`, or `>= $1.23 (partial)`. For a total, `withModels` also names the unpriced models. */
+function costText(cost, withModels = false) {
+  const text = cost?.partial && cost.usd != null ? `>= ${usdText(cost.usd)} (partial)` : usdText(cost?.usd);
+  const models = withModels ? cost?.unpriced_models ?? [] : [];
+  return models.length ? `${text}, ${models.length} unpriced: ${models.join(', ')}` : text;
 }
 
 const compactTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
@@ -270,7 +275,7 @@ function UsageDetail({ usage }) {
                     <td>${tokenCount(row.output)}</td>
                     <td>${tokenCount(row.reasoning)}</td>
                     <td>${row.subagents ? tokenCount(freshTokens(row.subagents)) : '-'}</td>
-                    <td>${costText({ usd: row.cost_usd })}</td>
+                    <td>${usdText(row.cost_usd)}</td>
                   </tr>`,
                 )}
               </tbody>
@@ -279,7 +284,7 @@ function UsageDetail({ usage }) {
                   <th scope="row" colspan="3">Total fresh</th>
                   <td>${tokenCount(total)}</td>
                   <td colspan="5"></td>
-                  <td>${costText(usage.cost)}</td>
+                  <td>${costText(usage.cost, true)}</td>
                 </tr>
               </tfoot>
             </table>
@@ -841,7 +846,7 @@ function Detail({ run, now, onClose, onDelete }) {
         ? html`<details class="usage" open=${active}>
             <summary>
               Token usage${total !== null ? html`<span class="usage-total">${tokenCount(total)}${' fresh'}</span>` : null}${run.usage.cost
-                ? html`<span class="usage-total">${'Est. cost '}${costText(run.usage.cost)}</span>`
+                ? html`<span class="usage-total">${'Est. cost '}${costText(run.usage.cost, true)}</span>`
                 : null}
             </summary>
             <${UsageDetail} usage=${run.usage} />

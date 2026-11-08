@@ -1,7 +1,7 @@
 //! `factory run stats`: token usage per stage, model and ticket, in plain text.
 
 use crate::{
-    cost::{self, Cost, PRICES},
+    cost::{self, PRICES},
     inspect::shown,
     run::{Run, Stage},
     usage::{format_timestamp, Tokens, Usage, UsageRow, UsageStatus},
@@ -66,7 +66,7 @@ pub(crate) fn table_with(rows: &[Vec<String>], header: &[&str], text_columns: us
     out
 }
 
-fn token_cells(tokens: &Tokens, subagents: &Tokens, cost: &Cost) -> Vec<String> {
+fn token_cells(tokens: &Tokens, subagents: &Tokens, cost: String) -> Vec<String> {
     vec![
         number(tokens.fresh()),
         number(tokens.cache_read),
@@ -79,7 +79,7 @@ fn token_cells(tokens: &Tokens, subagents: &Tokens, cost: &Cost) -> Vec<String> 
         } else {
             number(subagents.fresh())
         },
-        cost::format(cost),
+        cost,
     ]
 }
 
@@ -114,7 +114,11 @@ fn model_rows(rows: &[UsageRow]) -> Vec<Vec<String>> {
         .into_iter()
         .map(|(model, (tokens, subagents))| {
             let mut cells = vec![String::new(), shown(&model), String::new()];
-            cells.extend(token_cells(&tokens, &subagents, &costs[&model]));
+            cells.extend(token_cells(
+                &tokens,
+                &subagents,
+                cost::format(&costs[&model]),
+            ));
             cells
         })
         .collect()
@@ -152,11 +156,8 @@ pub(crate) fn render_run(run: &Run) -> String {
             .iter()
             .map(|row| {
                 let mut cells = vec![row.stage.name().to_string(), shown(&row.model), bucket(row)];
-                let row_cost = Cost {
-                    usd: cost::row_cost(row, PRICES),
-                    ..Cost::default()
-                };
-                cells.extend(token_cells(&row.tokens, &row.subagents, &row_cost));
+                let row_cost = cost::format_usd(cost::row_cost(row, PRICES));
+                cells.extend(token_cells(&row.tokens, &row.subagents, row_cost));
                 cells
             })
             .collect();
@@ -331,10 +332,11 @@ mod tests {
             ticket.contains("120") && ticket.contains("n/a"),
             "no cache fields reported: {ticket}"
         );
-        assert!(
-            ticket.ends_with("45     unknown")
-                || ticket.split_whitespace().rev().take(2).collect::<Vec<_>>() == ["unknown", "45"],
-            "subagent fresh: {ticket}"
+        let fields: Vec<&str> = ticket.split_whitespace().collect();
+        assert_eq!(
+            fields[fields.len() - 2..],
+            ["45", "unknown"],
+            "subagent fresh and cost: {ticket}"
         );
         assert!(
             text.lines()

@@ -30,11 +30,13 @@ const fn price(input: f64, output: f64, cache_read: f64, cache_write: f64) -> Pr
 
 /// Built-in prices by exact model id, USD per million tokens (cache write is the 5-minute price).
 ///
-/// Source: Anthropic API pricing as listed in the claude-api skill reference (model table, models guide and
-/// prompt-caching guide), read on 2026-11-08. Cache reads are listed explicitly for Fable 5.1 ($0.25),
-/// Opus 5.5 and Sonnet 5.5 ($0.20); Opus 4.8 uses the documented 0.1x input rule. Cache writes are the
-/// documented 1.25x input price. Haiku 5.5 is left out (its reference lists tiered input/output prices and
-/// no cache prices). No OpenAI, Codex or Copilot prices are listed: those models show as unknown.
+/// Source: Anthropic's published API prices, as given in the claude-api skill's pricing reference (model
+/// table, models guide and prompt-caching guide), read on 2026-11-08. Cache reads are listed explicitly for
+/// Fable 5.1 ($0.25), Opus 5.5 and Sonnet 5.5 ($0.20). The claude-opus-4-8 cache prices are derived from
+/// Anthropic's documented multipliers: 0.1x input for a cache read, 1.25x input for a 5-minute cache write.
+/// Other cache writes are the documented 1.25x input price. Haiku 5.5 is left out (its reference lists
+/// tiered input/output prices and no cache prices). No OpenAI, Codex or Copilot prices are listed: those
+/// models show as unknown.
 pub(crate) const PRICES: &[(&str, Price)] = &[
     ("claude-fable-5-1", price(10.0, 50.0, 0.25, 12.5)),
     ("claude-opus-5-5", price(4.0, 20.0, 0.20, 5.0)),
@@ -103,17 +105,19 @@ pub(crate) fn total<'a>(rows: impl IntoIterator<Item = &'a UsageRow>, table: Tab
     }
 }
 
+/// `$1.23`, `<$0.01` for a positive amount that rounds to nothing, or `unknown` for `None`.
+pub(crate) fn format_usd(usd: Option<f64>) -> String {
+    match usd {
+        None => "unknown".into(),
+        Some(usd) if usd > 0.0 && usd < 0.005 => "<$0.01".into(),
+        Some(usd) => format!("${usd:.2}"),
+    }
+}
+
 /// `$1.23`, `<$0.01` for a positive amount that rounds to nothing, `unknown`, or `>= $1.23 (partial)`.
 pub(crate) fn format(cost: &Cost) -> String {
-    let Some(usd) = cost.usd else {
-        return "unknown".into();
-    };
-    let amount = if usd > 0.0 && usd < 0.005 {
-        "<$0.01".to_string()
-    } else {
-        format!("${usd:.2}")
-    };
-    if cost.partial {
+    let amount = format_usd(cost.usd);
+    if cost.usd.is_some() && cost.partial {
         format!(">= {amount} (partial)")
     } else {
         amount
@@ -158,18 +162,18 @@ pub(crate) fn by_stage(rows: &[UsageRow], table: Table) -> BTreeMap<&'static str
 
 /// A run's usage as the API shows it: the stored usage plus the estimated cost, per row, Stage, model and
 /// in total. Unknown costs are `null`.
-pub(crate) fn usage_json(usage: &Usage, table: Table) -> serde_json::Value {
-    let mut value = serde_json::to_value(usage).unwrap_or_default();
+pub(crate) fn usage_json(usage: &Usage, table: Table) -> serde_json::Result<serde_json::Value> {
+    let mut value = serde_json::to_value(usage)?;
     if let Some(rows) = value.get_mut("rows").and_then(|r| r.as_array_mut()) {
         for (json, row) in rows.iter_mut().zip(&usage.rows) {
             json["cost_usd"] = serde_json::json!(row_cost(row, table));
         }
     }
-    let mut cost = serde_json::to_value(total(&usage.rows, table)).unwrap_or_default();
+    let mut cost = serde_json::to_value(total(&usage.rows, table))?;
     cost["by_stage"] = serde_json::json!(by_stage(&usage.rows, table));
     cost["by_model"] = serde_json::json!(by_model(&usage.rows, table));
     value["cost"] = cost;
-    value
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -306,7 +310,7 @@ mod tests {
                 json!({"input": 1_000_000, "output": 0})
             ),
         ]));
-        let v = usage_json(&u, TABLE);
+        let v = usage_json(&u, TABLE).unwrap();
         assert!(v["rows"][0]["cost_usd"].is_null());
         assert_eq!(v["rows"][1]["cost_usd"], json!(2.0));
         assert_eq!(v["cost"]["partial"], json!(true));
@@ -317,7 +321,7 @@ mod tests {
             json!({"status": "not-tracked", "reason": "x", "collected_at": 0}),
         )
         .unwrap();
-        let v = usage_json(&none, TABLE);
+        let v = usage_json(&none, TABLE).unwrap();
         assert!(v["cost"]["usd"].is_null());
         assert_eq!(v["cost"]["partial"], json!(false));
     }

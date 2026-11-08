@@ -207,21 +207,28 @@ fn list_runs(
     }
     store
         .list()
-        .map(|runs| Json(runs.iter().map(run_with_cost).collect()))
         .map_err(|error| {
             eprintln!("Run storage error: {error}");
+            HttpStatus::InternalServerError
+        })?
+        .iter()
+        .map(run_with_cost)
+        .collect::<Result<Vec<_>, _>>()
+        .map(Json)
+        .map_err(|error| {
+            eprintln!("Run cost serialization error: {error}");
             HttpStatus::InternalServerError
         })
 }
 
 /// A run as the API shows it: the stored record plus the estimated cost of its usage, from the price
 /// table as it is now. The cost is never stored.
-fn run_with_cost(run: &Run) -> serde_json::Value {
-    let mut value = serde_json::to_value(run).unwrap_or_default();
+fn run_with_cost(run: &Run) -> serde_json::Result<serde_json::Value> {
+    let mut value = serde_json::to_value(run)?;
     if let Some(usage) = &run.usage {
-        value["usage"] = crate::cost::usage_json(usage, crate::cost::PRICES);
+        value["usage"] = crate::cost::usage_json(usage, crate::cost::PRICES)?;
     }
-    value
+    Ok(value)
 }
 
 #[rocket::post("/api/runs", data = "<new>")]
@@ -296,8 +303,13 @@ fn get_run(
             eprintln!("Run storage error: {error}");
             HttpStatus::InternalServerError
         })?
-        .map(|run| Json(run_with_cost(&run)))
         .ok_or(HttpStatus::NotFound)
+        .and_then(|run| {
+            run_with_cost(&run).map(Json).map_err(|error| {
+                eprintln!("Run cost serialization error: {error}");
+                HttpStatus::InternalServerError
+            })
+        })
 }
 
 /// Deletes the Run record only; nothing the Run created (worktree, branch, pull request) is touched.
