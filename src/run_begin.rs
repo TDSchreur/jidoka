@@ -143,7 +143,7 @@ pub(crate) struct Begun {
     pub(crate) branch: String,
     pub(crate) base: String,
     pub(crate) base_commit: String,
-    /// The `.gitignore` entries `begin` added; the agent commits the file with its first commit.
+    /// The entries `begin` added to the worktree's `.gitignore`.
     pub(crate) gitignore_added: Vec<String>,
     /// Why `.gitignore` could not be updated; the run itself is fine.
     pub(crate) gitignore_warning: Option<String>,
@@ -169,7 +169,21 @@ const MAX_REASON_CHARS: usize = 300;
 /// The longest branch name derived from a title.
 const MAX_NAME_CHARS: usize = 40;
 /// What every run's worktree keeps out of git: the factory's own folder and the local tracker.
-const RUN_IGNORED: &[&str] = &[".factory/", ".scratch/"];
+pub(crate) const RUN_IGNORED: &[&str] = &[".factory/", ".scratch/"];
+
+/// Adds the run folders to the worktree's `.gitignore`: the entries added and, when the file could not be
+/// updated, a warning (the run itself is fine).
+fn ignore_run_folders(worktree: &Path) -> (Vec<String>, Option<String>) {
+    match ensure_ignored(worktree, RUN_IGNORED) {
+        Ok(added) => (added, None),
+        Err(error) => (
+            Vec::new(),
+            Some(format!(
+                "Could not update the worktree's .gitignore: {error}"
+            )),
+        ),
+    }
+}
 
 /// Runs git in `dir`. The error is what git printed, or why it could not be started.
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -325,15 +339,7 @@ pub(crate) fn begin(
             match api.update(&run, "define", "running", &args) {
                 Ok(()) => {
                     let (gitignore_added, gitignore_warning) =
-                        match ensure_ignored(Path::new(&workspace.worktree), RUN_IGNORED) {
-                            Ok(added) => (added, None),
-                            Err(error) => (
-                                Vec::new(),
-                                Some(format!(
-                                    "Could not update the worktree's .gitignore: {error}"
-                                )),
-                            ),
-                        };
+                        ignore_run_folders(Path::new(&workspace.worktree));
                     Ok(Begun {
                         run,
                         worktree: workspace.worktree,

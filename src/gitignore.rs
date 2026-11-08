@@ -59,7 +59,7 @@ pub(crate) fn ensure_ignored(worktree: &Path, entries: &[&str]) -> io::Result<Ve
 mod tests {
     use super::*;
 
-    const ENTRIES: &[&str] = &[".factory/", ".scratch/"];
+    use crate::run_begin::RUN_IGNORED as ENTRIES;
 
     fn read(dir: &Path) -> String {
         fs::read_to_string(dir.join(".gitignore")).unwrap()
@@ -120,7 +120,8 @@ mod tests {
         let work = dir.path().join("work");
         fs::create_dir(&work).unwrap();
         std::os::unix::fs::symlink(&target, work.join(".gitignore")).unwrap();
-        assert!(ensure_ignored(&work, ENTRIES).is_err());
+        let error = ensure_ignored(&work, ENTRIES).unwrap_err();
+        assert!(error.to_string().contains("is a symlink"), "{error}");
         assert_eq!(fs::read_to_string(&target).unwrap(), "secret\n");
     }
 

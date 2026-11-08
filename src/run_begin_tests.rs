@@ -262,7 +262,28 @@ fn an_unreadable_gitignore_is_a_warning_not_a_failed_begin() {
     let api = FakeApi::default();
     let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
     assert!(begun.gitignore_added.is_empty());
-    assert!(begun.gitignore_warning.unwrap().contains(".gitignore"));
+    let warning = begun.gitignore_warning.unwrap();
+    // Reading a directory fails with EISDIR; the "os error" suffix is not localised.
+    #[cfg(unix)]
+    assert!(warning.contains("(os error 21)"), "{warning}");
+    assert!(!warning.contains("symlink"), "{warning}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_gitignore_is_a_warning_and_its_target_is_untouched() {
+    let project = Project::new();
+    fs::write(project.repo.join("elsewhere"), "secret\n").unwrap();
+    std::os::unix::fs::symlink("elsewhere", project.repo.join(".gitignore")).unwrap();
+    git(&project.repo, &["add", "elsewhere", ".gitignore"]);
+    git(&project.repo, &["commit", "-q", "-m", "link"]);
+    git(&project.repo, &["push", "-q", "origin", "develop"]);
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
+    assert!(begun.gitignore_added.is_empty());
+    assert!(begun.gitignore_warning.unwrap().contains("symlink"));
+    let target = Path::new(&begun.worktree).join("elsewhere");
+    assert_eq!(fs::read_to_string(target).unwrap(), "secret\n");
 }
 
 #[test]
