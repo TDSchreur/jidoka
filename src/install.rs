@@ -590,15 +590,26 @@ mod tests {
             !procedures.contains("git worktree remove"),
             "the shared procedures still send the user to git worktree remove"
         );
+        let finish = procedures
+            .split_once("\n## Finish\n")
+            .expect("the shared procedures have no Finish")
+            .1
+            .split("\n## ")
+            .next()
+            .unwrap();
+        assert!(
+            finish.contains("`factory run cleanup <id>`"),
+            "the shared Finish does not mention factory run cleanup"
+        );
         for skill in WORKFLOW_SKILLS {
             let text = bundled_text(&format!("{skill}/SKILL.md"));
-            let finish = text
+            let workflow_finish = text
                 .split_once("## Finish")
                 .unwrap_or_else(|| panic!("{skill} has no Finish"))
                 .1;
             assert!(
-                finish.contains("`factory run cleanup <id>`"),
-                "{skill} Finish does not mention factory run cleanup"
+                workflow_finish.contains("Finish in [factory-procedures]"),
+                "{skill} Finish does not point to the shared Finish"
             );
         }
     }
@@ -611,13 +622,20 @@ mod tests {
                 text.contains("(../factory-procedures/SKILL.md)"),
                 "{skill} does not link the shared procedures"
             );
-            for section in [
-                "Run reporting",
-                "Continuing a run",
-                "Workspace",
-                "Tracker setup",
-                "Pull request and CI",
-            ] {
+            let shared = text
+                .split_once("## Shared procedures\n")
+                .unwrap_or_else(|| panic!("{skill} has no Shared procedures"))
+                .1
+                .split("\n## ")
+                .next()
+                .unwrap();
+            assert!(
+                shared.contains(
+                    "Run reporting, Continuing a run (to continue an existing run) and Workspace in [factory-procedures]"
+                ),
+                "{skill} does not point to Run reporting, Continuing a run and Workspace"
+            );
+            for section in ["Tracker setup", "Define rules", "Finish"] {
                 assert!(
                     text.contains(&format!("{section} in [factory-procedures]")),
                     "{skill} does not point to {section}"
@@ -649,6 +667,30 @@ mod tests {
                 "{skill} reports its own mode"
             );
         }
+    }
+
+    #[test]
+    fn shared_procedures_say_how_workflows_use_the_bundled_skills() {
+        let procedures = bundled_text("factory-procedures/SKILL.md");
+        for needle in [
+            "## Using the bundled skills",
+            "they are siblings of this directory",
+            "`factory-grill-with-docs`, `factory-to-spec` and `factory-to-tickets` can only be invoked by the user",
+            "A workflow's instructions take precedence where they differ from those skills",
+            "## Define rules",
+            "Do not require extra approval of test seams or a separate ticket-breakdown approval",
+        ] {
+            assert!(procedures.contains(needle), "procedures lack {needle}");
+        }
+        for skill in WORKFLOW_SKILLS {
+            let text = bundled_text(&format!("{skill}/SKILL.md"));
+            assert!(
+                text.contains("Using the bundled skills in the shared procedures"),
+                "{skill} does not point to Using the bundled skills"
+            );
+        }
+        assert!(bundled_text("factory-full/SKILL.md")
+            .contains("`factory-implement` can also only be invoked by the user"));
     }
 
     #[test]
@@ -727,6 +769,20 @@ mod tests {
             .into_iter()
             .filter(|skill| is_user_only(skill))
             .collect();
+        // The shared procedures name the user-only skills every workflow uses and say how to
+        // load them; a workflow names any further one it uses.
+        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
+        let shared = procedures
+            .split_once("\n## Using the bundled skills\n")
+            .expect("the shared procedures have no Using the bundled skills")
+            .1
+            .split("\n## ")
+            .next()
+            .unwrap();
+        assert!(
+            shared.contains("read their `SKILL.md` from that location instead of invoking them"),
+            "the shared procedures do not say how to load user-only skills"
+        );
         for skill in WORKFLOW_SKILLS {
             let text = bundled_text(&format!("{skill}/SKILL.md")).replace("\r\n", "\n");
             let (preamble, body) = text
@@ -741,16 +797,18 @@ mod tests {
             let named: Vec<&str> = user_only
                 .iter()
                 .copied()
-                .filter(|name| preamble.contains(&format!("`{name}`")))
+                .filter(|name| {
+                    let name = format!("`{name}`");
+                    shared.contains(&name) || preamble.contains(&name)
+                })
                 .collect();
             assert_eq!(
                 named, used,
-                "{skill} must name exactly the user-only skills it uses"
+                "{skill} and the shared procedures must name exactly the user-only skills it uses"
             );
             assert!(
-                preamble
-                    .contains("read their `SKILL.md` from that location instead of invoking them"),
-                "{skill} does not say how to load its user-only skills"
+                preamble.contains("Using the bundled skills in the shared procedures"),
+                "{skill} does not point to how its user-only skills are loaded"
             );
         }
     }
@@ -934,43 +992,58 @@ mod tests {
     }
 
     #[test]
-    fn every_workflow_reads_model_routing_at_each_of_its_stages() {
+    fn model_routing_is_read_at_every_stage_the_workflow_routes() {
         let link = "[Model routing](../factory-procedures/references/model-routing.md)";
+        let procedures = bundled_text("factory-procedures/SKILL.md");
+        let rule = procedures
+            .split_once("\n## Model routing\n")
+            .expect("the shared procedures have no Model routing")
+            .1
+            .split("\n## ")
+            .next()
+            .unwrap();
+        for needle in [
+            "Read it at the start of each Stage the workflow has, and again at the start of every Rework and every Check pass after one",
+            "factory-fast: it never routes Define and Finish, so it reads this only at the start of Build and does not read it for Define or Finish",
+        ] {
+            assert!(rule.contains(needle), "Model routing rule lacks {needle}");
+        }
         for skill in WORKFLOW_SKILLS {
             let text = bundled_text(&format!("{skill}/SKILL.md")).replace("\r\n", "\n");
-            let stages: &[&str] = if skill == "factory-fast" {
-                &["Define", "Build", "Finish"]
-            } else {
-                &["Define", "Build", "Check", "Finish"]
-            };
-            for stage in stages {
-                let body = text
-                    .split_once(&format!("\n## {stage}\n"))
-                    .map(|(_, rest)| rest.split("\n## ").next().unwrap_or(rest))
-                    .unwrap_or_else(|| panic!("{skill} has no {stage} section"));
-                assert!(
-                    body.contains(link),
-                    "{skill} does not read Model routing in {stage}"
-                );
-            }
             // A routed Build hands each ticket to a fresh agent, overriding the build skill's
             // "do not require subagents".
             assert!(
-                text.contains("When Build is routed, hand each ticket"),
+                text.contains("When Build is routed (see [Model routing]")
+                    && text.contains("hand each ticket"),
                 "{skill} does not hand routed Build tickets to agents"
+            );
+            // The rule lives in the procedures; a workflow names it only where it adds something.
+            assert!(
+                !text.contains("At the start of Define, read")
+                    && !text.contains("At the start of Finish, read"),
+                "{skill} repeats the Model routing rule for Define or Finish"
             );
         }
         for skill in ["factory-full", "factory-balanced"] {
             let text = bundled_text(&format!("{skill}/SKILL.md"));
             assert!(
-                text.contains("At the start of every Check pass, including after a Rework"),
-                "{skill} does not read Model routing at every Check pass"
+                text.contains(&format!(
+                    "Follow {link} for Check: it says which model and effort"
+                )),
+                "{skill} does not name Model routing for Check"
             );
         }
+        let full = bundled_text("factory-full/SKILL.md");
+        assert!(
+            full.contains(&format!("Then read {link} and follow it for Define")),
+            "factory-full reads Model routing after Tracker setup in Define"
+        );
         let fast = bundled_text("factory-fast/SKILL.md");
         assert!(
-            !fast.contains("for Check") && !fast.contains("Check pass"),
-            "factory-fast has no Check to route"
+            !fast.contains("for Check")
+                && !fast.contains("Check pass")
+                && !fast.contains("for Define"),
+            "factory-fast has no Check to route and does not route Define"
         );
     }
 
