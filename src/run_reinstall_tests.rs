@@ -89,12 +89,17 @@ struct Fixture {
     head: String,
     /// A commit that HEAD does not contain.
     other: String,
+    windows: std::cell::Cell<bool>,
 }
 
 impl Fixture {
     fn new(factory: bool) -> Self {
+        Self::named(factory, "repo")
+    }
+
+    fn named(factory: bool, name: &str) -> Self {
         let tmp = TempDir::new().unwrap();
-        let repo = tmp.path().join("repo");
+        let repo = tmp.path().join(name);
         fs::create_dir(&repo).unwrap();
         git(&repo, &["init", "-q", "-b", "develop"]);
         if factory {
@@ -119,6 +124,7 @@ impl Fixture {
             repo,
             head,
             other,
+            windows: Default::default(),
         }
     }
 
@@ -138,6 +144,7 @@ impl Fixture {
             claude_dirs: &dirs,
             tty,
             reinstall,
+            windows: self.windows.get(),
         };
         offer(&input, &FakeGh(merge.map(str::to_string)), &RealGit, io)
     }
@@ -185,7 +192,17 @@ fn yes_on_a_terminal_runs_both_commands_in_order() {
     };
     fx.offer(Some(&fx.head), &["claude"], true, false, &mut io)
         .unwrap();
-    assert_eq!(io.asked, ["Reinstall the factory for claude? [y/N]"]);
+    assert_eq!(
+        io.asked,
+        [format!(
+            "Reinstall the factory for claude from {}? [y/N]",
+            fx.repo.display()
+        )]
+    );
+    assert!(
+        io.said.contains("cargo install"),
+        "commands come before the question"
+    );
     let [cargo, factory] = &io.ran[..] else {
         panic!("{:?}", io.ran)
     };
@@ -263,6 +280,7 @@ fn a_pull_request_that_is_not_merged_gets_no_offer() {
         claude_dirs: &[],
         tty: true,
         reinstall: true,
+        windows: false,
     };
     offer(&input, &Open, &RealGit, &mut io).unwrap();
     assert!(io.said.is_empty() && io.ran.is_empty());
@@ -290,4 +308,66 @@ fn a_failing_command_is_named_and_the_cleanup_is_said_to_have_succeeded() {
     assert!(error.0.contains("factory install --agent claude"));
     assert!(error.0.contains("cleanup itself succeeded"));
     assert!(!io.said.contains("factory dashboard"));
+}
+
+#[test]
+fn printed_commands_quote_a_path_with_a_space() {
+    let fx = Fixture::named(true, "my repo");
+    let path = fx.repo.display().to_string();
+    let mut io = Recorder::default();
+    fx.offer(Some(&fx.head), &["claude"], false, false, &mut io)
+        .unwrap();
+    assert!(
+        io.said.contains(&format!("--path '{path}' --locked")),
+        "{}",
+        io.said
+    );
+    let mut io = Recorder::default();
+    fx.offer(Some(&fx.other), &["claude"], false, false, &mut io)
+        .unwrap();
+    assert!(
+        io.said.contains(&format!("git -C '{path}' pull")),
+        "{}",
+        io.said
+    );
+    assert_eq!(quote("it's"), r"'it'\''s'");
+    assert_eq!(quote(""), "''");
+    assert_eq!(quote("--locked"), "--locked");
+}
+
+#[test]
+fn control_characters_in_a_path_never_reach_the_terminal() {
+    let fx = Fixture::named(true, "re\u{1b}[31mpo");
+    for (tty, merge) in [(false, &fx.head), (true, &fx.head), (false, &fx.other)] {
+        let mut io = Recorder::default();
+        fx.offer(Some(merge), &["claude"], tty, false, &mut io)
+            .unwrap();
+        let all = format!("{}{}", io.said, io.asked.concat());
+        assert!(!all.contains('\u{1b}') && all.contains("po"), "{all:?}");
+    }
+    let mut io = Recorder {
+        fail: true,
+        ..Default::default()
+    };
+    let error = fx
+        .offer(Some(&fx.head), &["claude"], false, true, &mut io)
+        .unwrap_err();
+    assert!(!error.0.contains('\u{1b}'));
+}
+
+#[test]
+fn on_windows_the_commands_are_printed_and_never_run() {
+    let fx = Fixture::new(true);
+    fx.windows.set(true);
+    for (tty, reinstall) in [(true, true), (false, false), (true, false)] {
+        let mut io = Recorder {
+            answer: true,
+            ..Default::default()
+        };
+        fx.offer(Some(&fx.head), &["claude"], tty, reinstall, &mut io)
+            .unwrap();
+        assert!(io.ran.is_empty() && io.asked.is_empty());
+        assert!(io.said.contains("after this command exits"), "{}", io.said);
+        assert!(io.said.contains("cargo install"));
+    }
 }

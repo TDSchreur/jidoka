@@ -70,12 +70,17 @@ struct FakeGh {
     state: &'static str,
     draft: bool,
     head: String,
+    /// The pull request's head branch.
+    branch: String,
 }
 
 impl Gh for FakeGh {
     fn run(&self, args: &[&str]) -> Result<GhOutput, GhError> {
-        let stdout = if args.contains(&"headRefOid") {
-            format!(r#"{{"headRefOid":"{}"}}"#, self.head)
+        let stdout = if args.iter().any(|a| a.contains("headRefOid")) {
+            format!(
+                r#"{{"headRefOid":"{}","headRefName":"{}"}}"#,
+                self.head, self.branch
+            )
         } else {
             format!(r#"{{"state":"{}","isDraft":{}}}"#, self.state, self.draft)
         };
@@ -146,6 +151,7 @@ impl Fixture {
             state: "MERGED",
             draft: false,
             head: self.head.clone(),
+            branch: "feature".into(),
         }
     }
 
@@ -205,6 +211,7 @@ fn anything_but_merged_refuses_and_removes_nothing() {
             state,
             draft,
             head: fx.head.clone(),
+            branch: "feature".into(),
         };
         let message = refusal(fx.cleanup(&fx.recorded(), &gh));
         assert!(!message.is_empty(), "{state}");
@@ -253,14 +260,74 @@ fn a_rerun_after_the_worktree_went_deletes_the_branch() {
 }
 
 #[test]
-fn a_rerun_after_the_branch_went_removes_the_worktree() {
+fn a_rerun_after_the_worktree_was_deleted_by_hand_succeeds() {
     let fx = Fixture::new();
-    run_git(&fx.wt, &["checkout", "-q", "--detach"]);
-    run_git(&fx.repo, &["branch", "-D", "feature"]);
+    fs::remove_dir_all(&fx.wt).unwrap();
     let cleaned = fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
     assert_eq!(cleaned.worktree, Step::Removed);
-    assert_eq!(cleaned.branch, Step::AlreadyGone);
-    assert!(!fx.wt.exists());
+    assert_eq!(cleaned.branch, Step::Removed);
+    assert!(!fx.branch_exists());
+    assert!(!run_git(&fx.repo, &["worktree", "list", "--porcelain"]).contains("wt"));
+}
+
+#[test]
+fn a_pull_request_from_another_branch_refuses() {
+    let fx = Fixture::new();
+    let gh = FakeGh {
+        branch: "other".into(),
+        ..fx.gh()
+    };
+    let message = refusal(fx.cleanup(&fx.recorded(), &gh));
+    assert!(message.contains("other"), "{message}");
+    fx.assert_untouched();
+}
+
+#[test]
+fn a_worktree_on_another_branch_or_detached_refuses() {
+    let fx = Fixture::new();
+    run_git(&fx.wt, &["checkout", "-q", "-b", "elsewhere"]);
+    let message = refusal(fx.cleanup(&fx.recorded(), &fx.gh()));
+    assert!(message.contains("not on the recorded branch"), "{message}");
+    fx.assert_untouched();
+    run_git(&fx.wt, &["checkout", "-q", "--detach"]);
+    let message = refusal(fx.cleanup(&fx.recorded(), &fx.gh()));
+    assert!(message.contains("not on the recorded branch"), "{message}");
+    fx.assert_untouched();
+}
+
+/// Moves the branch just before it is deleted, like a push or commit that lands after the check.
+struct MovingGit<'a>(&'a Fixture);
+
+impl Git for MovingGit<'_> {
+    fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
+        if args.first() == Some(&"update-ref") {
+            let moved = run_git(
+                &self.0.repo,
+                &[
+                    "commit-tree",
+                    "-p",
+                    &self.0.head,
+                    "-m",
+                    "late",
+                    "HEAD^{tree}",
+                ],
+            );
+            run_git(&self.0.repo, &["update-ref", "refs/heads/feature", &moved]);
+        }
+        TestGit.git(dir, args)
+    }
+
+    fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
+        TestGit.status(dir, args)
+    }
+}
+
+#[test]
+fn a_branch_that_moved_after_the_check_is_not_deleted() {
+    let fx = Fixture::new();
+    let result = cleanup(&fx.recorded(), &fx.gh(), &MovingGit(&fx), &fx.root);
+    assert!(result.is_err());
+    assert!(fx.branch_exists());
 }
 
 #[test]

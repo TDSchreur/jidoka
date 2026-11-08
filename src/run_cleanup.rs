@@ -74,18 +74,31 @@ pub(crate) fn cleanup(
     if state != PrState::Merged {
         return refuse(format!(
             "The pull request is not merged (it is {}). Nothing was removed.",
-            format!("{state:?}").to_lowercase()
+            state.label()
         ));
     }
     let Some(repository) = run.repository.as_deref() else {
         return refuse("The run records no repository. Nothing was removed.");
     };
     let repository = Path::new(repository);
-    if let Some(branch) = run.branch.as_deref() {
-        if !valid_branch_name(branch) {
-            return refuse("The recorded branch name is not valid. Nothing was removed.");
+    // The pull request must come from the branch the run recorded, or its merge says nothing about that branch.
+    let head = match run.branch.as_deref() {
+        None => None,
+        Some(branch) => {
+            if !valid_branch_name(branch) {
+                return refuse("The recorded branch name is not valid. Nothing was removed.");
+            }
+            let head = pr_state::head(gh, url)?;
+            if head.branch != branch {
+                return refuse(format!(
+                    "The pull request comes from branch {}, not the run's branch {}. Nothing was removed.",
+                    shown(&head.branch),
+                    shown(branch)
+                ));
+            }
+            Some(head)
         }
-    }
+    };
 
     // Is the worktree still registered with the repository?
     let worktree = match run.worktree.as_deref() {
@@ -94,21 +107,34 @@ pub(crate) fn cleanup(
             let list = git
                 .git(repository, &["worktree", "list", "--porcelain"])
                 .map_err(|e| git_problem("worktree list", &e))?;
+            // A directory deleted by hand cannot be resolved, but git still lists it (as prunable).
             let wanted = canonical_dir(Path::new(path));
-            let listed = wanted.is_some()
-                && list
-                    .lines()
-                    .filter_map(|line| line.strip_prefix("worktree "))
-                    .any(|listed| canonical_dir(Path::new(listed)) == wanted);
-            listed.then_some((path, wanted.unwrap_or_default()))
+            let listed = list
+                .lines()
+                .filter_map(|line| line.strip_prefix("worktree "))
+                .any(|listed| match &wanted {
+                    Some(wanted) => canonical_dir(Path::new(listed)).as_ref() == Some(wanted),
+                    None => Path::new(listed) == Path::new(path),
+                });
+            listed.then_some((path, wanted))
         }
     };
-    if let Some((path, real)) = &worktree {
+    if let Some((path, Some(real))) = &worktree {
         if canonical_dir(cwd).is_some_and(|here| here.starts_with(real)) {
             return refuse(format!(
                 "You are inside the worktree {}. Run the command from the main checkout. Nothing was removed.",
                 shown(path)
             ));
+        }
+        if let Some(branch) = run.branch.as_deref() {
+            let on = git.git(Path::new(path), &["symbolic-ref", "-q", "HEAD"]);
+            if on.ok().as_deref() != Some(format!("refs/heads/{branch}").as_str()) {
+                return refuse(format!(
+                    "The worktree {} is not on the recorded branch {} (it is detached or on another branch). Nothing was removed.",
+                    shown(path),
+                    shown(branch)
+                ));
+            }
         }
         let status = git
             .git(Path::new(path), &["status", "--porcelain"])
@@ -134,18 +160,20 @@ pub(crate) fn cleanup(
                 == 0
         }
     };
-    if let (true, Some(branch)) = (branch_exists, run.branch.as_deref()) {
+    let mut checked = None;
+    if let (true, Some(branch), Some(head)) = (branch_exists, run.branch.as_deref(), &head) {
         let reference = format!("refs/heads/{branch}");
         let local = git
             .git(repository, &["rev-parse", &reference])
             .map_err(|e| git_problem("rev-parse", &e))?;
-        let merged = pr_state::head_commit(gh, url)?;
-        if !local.eq_ignore_ascii_case(&merged) {
+        let merged = &head.commit;
+        if !local.eq_ignore_ascii_case(merged) {
             return refuse(format!(
                 "The local branch {} is at {local}, but the merged pull request ended at {merged}. It may hold commits that were never pushed. Nothing was removed.",
                 shown(branch)
             ));
         }
+        checked = Some(local);
     }
 
     let mut cleaned = Cleaned {
@@ -160,14 +188,22 @@ pub(crate) fn cleanup(
             Step::NotRecorded
         },
     };
-    if let Some((path, _)) = worktree {
-        git.git(repository, &["worktree", "remove", "--", path])
+    if let Some((path, real)) = worktree {
+        // A registration whose directory is gone is dropped; git would otherwise still hold the branch.
+        let removal: &[&str] = if real.is_some() {
+            &["worktree", "remove", "--", path]
+        } else {
+            &["worktree", "prune"]
+        };
+        git.git(repository, removal)
             .map_err(|e| git_problem("worktree remove", &e))?;
         cleaned.worktree = Step::Removed;
     }
-    if let (true, Some(branch)) = (branch_exists, run.branch.as_deref()) {
-        git.git(repository, &["branch", "-D", "--", branch])
-            .map_err(|e| git_problem("branch -D", &e))?;
+    if let (Some(oid), Some(branch)) = (checked, run.branch.as_deref()) {
+        // Deleting only at the checked commit keeps a branch that moved since the check.
+        let reference = format!("refs/heads/{branch}");
+        git.git(repository, &["update-ref", "-d", &reference, &oid])
+            .map_err(|e| git_problem("update-ref -d", &e))?;
         cleaned.branch = Step::Removed;
     }
     Ok(cleaned)

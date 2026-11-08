@@ -339,6 +339,7 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
             tty: std::io::IsTerminal::is_terminal(&std::io::stdin())
                 && std::io::IsTerminal::is_terminal(&std::io::stdout()),
             reinstall,
+            windows: cfg!(windows),
         };
         run_reinstall::offer(
             &input,

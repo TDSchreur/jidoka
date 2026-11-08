@@ -518,9 +518,9 @@ pub(crate) fn azure_pr_status(gh: &dyn Gh, url: &str) -> Result<(String, bool), 
     azure::status(gh, url)
 }
 
-/// The last source commit of the Azure Repos pull request at `url`.
-pub(crate) fn azure_pr_source_commit(gh: &dyn Gh, url: &str) -> Result<String, ToolProblem> {
-    azure::source_commit(gh, url)
+/// The last source commit and source branch of the Azure Repos pull request at `url`.
+pub(crate) fn azure_pr_head(gh: &dyn Gh, url: &str) -> Result<(String, String), ToolProblem> {
+    azure::head(gh, url)
 }
 
 pub(crate) fn azure_pr_merge_commit(gh: &dyn Gh, url: &str) -> Result<String, ToolProblem> {

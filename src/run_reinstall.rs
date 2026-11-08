@@ -2,6 +2,7 @@
 //! repository's own build replaces the installed command and skills, so the next Run uses what just merged.
 
 use crate::{
+    inspect::shown,
     pr_state,
     pr_sync::Git,
     pr_wait::{Gh, ToolProblem},
@@ -30,12 +31,25 @@ impl Command {
         }
     }
 
+    /// The command as a shell line that can be pasted, and is safe to print on a terminal.
     pub(crate) fn display(&self) -> String {
         let args = self.args.iter().map(|a| a.to_string_lossy());
-        std::iter::once(self.program.as_str().into())
+        let line = std::iter::once(self.program.as_str().into())
             .chain(args)
+            .map(|word| quote(&word))
             .collect::<Vec<_>>()
-            .join(" ")
+            .join(" ");
+        shown(&line)
+    }
+}
+
+/// `word` as one shell word: left alone when it is plain, otherwise in POSIX single quotes.
+pub(crate) fn quote(word: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_-./:=,@%+".contains(c);
+    if !word.is_empty() && word.chars().all(plain) {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
     }
 }
 
@@ -69,7 +83,7 @@ impl Io for RealIo {
             .args(&command.args)
             .current_dir(&command.dir)
             .status()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| shown(&error.to_string()))?;
         if status.success() {
             Ok(())
         } else {
@@ -87,6 +101,8 @@ pub(crate) struct Inputs<'a> {
     /// Whether stdin and stdout are a terminal, so that a question can be asked.
     pub(crate) tty: bool,
     pub(crate) reinstall: bool,
+    /// Whether this is Windows, where the running `factory.exe` is locked and cannot replace itself.
+    pub(crate) windows: bool,
 }
 
 /// Whether `repository` is the factory's own source: its crate is `factory` and it ships the procedures skill.
@@ -174,9 +190,19 @@ pub(crate) fn offer(
         });
     if !contained {
         io.say(&format!(
-            "The merged change is not in the checkout of {} yet, or its merge commit could not be read. Pull the base branch there first, then reinstall the factory:\n  git -C {} pull\n{}",
-            input.repository.display(),
-            input.repository.display(),
+            "The merged change is not in the checkout of {} yet, or its merge commit could not be read. Pull the base branch there first, then reinstall the factory:\n  {}\n{}",
+            shown(&input.repository.display().to_string()),
+            shown(&format!(
+                "git -C {} pull",
+                quote(&input.repository.to_string_lossy())
+            )),
+            listed(&commands)
+        ));
+        return Ok(());
+    }
+    if input.windows {
+        io.say(&format!(
+            "The running factory.exe is locked on Windows, so run these after this command exits:\n{}",
             listed(&commands)
         ));
         return Ok(());
@@ -190,15 +216,23 @@ pub(crate) fn offer(
             ));
             return Ok(());
         }
-        if !io.confirm(&format!("Reinstall the factory for {agents}? [y/N]")) {
+        io.say(&format!(
+            "This run changed the factory itself. Reinstalling runs:\n{}",
+            listed(&commands)
+        ));
+        let from = shown(&input.repository.display().to_string());
+        if !io.confirm(&format!(
+            "Reinstall the factory for {agents} from {from}? [y/N]"
+        )) {
             return Ok(());
         }
     }
     for command in &commands {
         io.run(command).map_err(|error| {
             ToolProblem(format!(
-                "`{}` failed: {error}. The cleanup itself succeeded.",
-                command.display()
+                "`{}` failed: {}. The cleanup itself succeeded.",
+                command.display(),
+                shown(&error)
             ))
         })?;
     }

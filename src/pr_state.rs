@@ -2,8 +2,8 @@
 //! (GitHub with `gh`, Azure Repos with `az`) and kept on the Run so the dashboard can show it.
 
 use crate::pr_wait::{
-    azure_pr_merge_commit, azure_pr_source_commit, azure_pr_status, is_azure_pr_url, problem,
-    run_gh, Gh, ToolProblem,
+    azure_pr_head, azure_pr_merge_commit, azure_pr_status, is_azure_pr_url, problem, run_gh, Gh,
+    ToolProblem,
 };
 use crate::run::RunStore;
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,19 @@ pub(crate) enum PrState {
     Closed,
     /// The host could not be asked; the reason says why.
     Unknown,
+}
+
+impl PrState {
+    /// How the state reads in a message.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            PrState::Open => "open",
+            PrState::Draft => "a draft",
+            PrState::Merged => "merged",
+            PrState::Closed => "closed",
+            PrState::Unknown => "unknown",
+        }
+    }
 }
 
 /// The state of the pull request at `url`, as last read. The dashboard server owns it: callers cannot set it.
@@ -83,9 +96,37 @@ pub(crate) fn read(tool: &dyn Gh, url: &str) -> Result<PrState, ToolProblem> {
     }
 }
 
-/// The head commit of the pull request at `url`: GitHub's `headRefOid`, or the last source commit on Azure.
-pub(crate) fn head_commit(tool: &dyn Gh, url: &str) -> Result<String, ToolProblem> {
-    commit(tool, url, "headRefOid", azure_pr_source_commit)
+/// The head of a pull request: its last commit and the branch it comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Head {
+    pub(crate) commit: String,
+    pub(crate) branch: String,
+}
+
+/// The head of the pull request at `url`, read in one call: GitHub's `headRefOid` and `headRefName`, or
+/// Azure's last source commit and `sourceRefName`.
+pub(crate) fn head(tool: &dyn Gh, url: &str) -> Result<Head, ToolProblem> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(ToolProblem(format!(
+            "The pull request is not an http(s) URL: {url}"
+        )));
+    }
+    let (commit, branch) = if is_azure_pr_url(url) {
+        azure_pr_head(tool, url)?
+    } else {
+        let Some(pull_request) = github_pull_request(url) else {
+            return Err(ToolProblem(
+                "Only GitHub and Azure Repos pull requests have a commit.".into(),
+            ));
+        };
+        let data = view_json(tool, &pull_request, "headRefOid,headRefName")?;
+        let text = |field: &str| data[field].as_str().unwrap_or("").to_string();
+        (text("headRefOid"), text("headRefName"))
+    };
+    Ok(Head {
+        commit: valid_commit(commit)?,
+        branch,
+    })
 }
 
 /// The commit a merged pull request created: GitHub's `mergeCommit`, or Azure's `lastMergeCommit`.
@@ -112,15 +153,7 @@ fn commit(
                 "Only GitHub and Azure Repos pull requests have a commit.".into(),
             ));
         };
-        let output = run_gh(tool, &["pr", "view", &pull_request, "--json", field])?;
-        if output.code != Some(0) {
-            return Err(problem("pr view", &output));
-        }
-        let data: serde_json::Value = serde_json::from_str(&output.stdout).map_err(|error| {
-            ToolProblem(format!(
-                "`gh pr view` gave output that is not JSON: {error}"
-            ))
-        })?;
+        let data = view_json(tool, &pull_request, field)?;
         // `mergeCommit` is an object with an `oid`; `headRefOid` is the string itself.
         data[field]
             .as_str()
@@ -128,12 +161,33 @@ fn commit(
             .unwrap_or("")
             .to_string()
     };
+    valid_commit(commit)
+}
+
+fn valid_commit(commit: String) -> Result<String, ToolProblem> {
     if commit.len() < 4 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(ToolProblem(
             "The host did not report a valid commit for the pull request.".into(),
         ));
     }
     Ok(commit.to_ascii_lowercase())
+}
+
+/// `gh pr view <pull request> --json <fields>`, parsed.
+fn view_json(
+    tool: &dyn Gh,
+    pull_request: &str,
+    fields: &str,
+) -> Result<serde_json::Value, ToolProblem> {
+    let output = run_gh(tool, &["pr", "view", pull_request, "--json", fields])?;
+    if output.code != Some(0) {
+        return Err(problem("pr view", &output));
+    }
+    serde_json::from_str(&output.stdout).map_err(|error| {
+        ToolProblem(format!(
+            "`gh pr view` gave output that is not JSON: {error}"
+        ))
+    })
 }
 
 /// The GitHub (or GitHub Enterprise) pull request a link points to, as `<repository>/pull/<number>`: a link to

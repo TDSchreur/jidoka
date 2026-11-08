@@ -198,11 +198,16 @@ pub(super) fn status(gh: &dyn Gh, url: &str) -> Result<(String, bool), ToolProbl
     Ok((status, data["isDraft"].as_bool().unwrap_or(false)))
 }
 
-/// The last commit of the source branch of the Azure Repos pull request at `url`, as Azure reports it.
-pub(super) fn source_commit(gh: &dyn Gh, url: &str) -> Result<String, ToolProblem> {
+/// The last source commit and the source branch name of the Azure Repos pull request at `url`.
+pub(super) fn head(gh: &dyn Gh, url: &str) -> Result<(String, String), ToolProblem> {
     let data = AzurePr::parse(url)?.fetch(gh)?;
     let commit = required(&data["lastMergeSourceCommit"]["commitId"], "source commit")?;
-    Ok(commit.to_string())
+    let reference = required(&data["sourceRefName"], "source branch")?;
+    let branch = reference
+        .strip_prefix("refs/heads/")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ToolProblem("Azure pull request has an invalid source branch.".into()))?;
+    Ok((commit.to_string(), branch.to_string()))
 }
 
 /// The commit Azure created when the pull request completed.
