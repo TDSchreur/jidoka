@@ -75,7 +75,7 @@ function Overview({ reworkCap }) {
       <ol>
         <li>Install the command and the skills for your agent. The README lists the steps for each system.</li>
         <li>
-          Once per repository, ask your agent to run <${Code}>/setup-tds-factory<//>. It records the issue
+          Once per repository, ask your agent to run <${Code}>/factory-setup<//>. It records the issue
           tracker, the triage labels and where the domain docs live. <${Code}>/factory-full<//> needs it; the other
           workflows need it only when they read or publish specs or tickets in the tracker.
         </li>
@@ -110,8 +110,8 @@ function Stages({ reworkCap }) {
       </p>
       <ul>
         <li>
-          <strong>Full</strong> always interviews you (<${Code}>grill-with-docs<//>), records domain decisions, writes a
-          spec (<${Code}>to-spec<//>) and breaks it into tickets (<${Code}>to-tickets<//>) in the issue tracker.
+          <strong>Full</strong> always interviews you (<${Code}>factory-grill-with-docs<//>), records domain decisions, writes a
+          spec (<${Code}>factory-to-spec<//>) and breaks it into tickets (<${Code}>factory-to-tickets<//>) in the issue tracker.
         </li>
         <li>
           <strong>Balanced</strong> uses a clear request as the spec and always writes acceptance criteria. It writes a
@@ -137,16 +137,16 @@ function Stages({ reworkCap }) {
       </p>
       <ul>
         <li>
-          <strong>Full</strong> builds each ticket test-first with red-green cycles (<${Code}>implement-spec<//> and${' '}
-          <${Code}>tdd<//>) and runs the full verification after each ticket.
+          <strong>Full</strong> builds each ticket test-first with red-green cycles (<${Code}>factory-implement<//> and${' '}
+          <${Code}>factory-tdd<//>) and runs the full verification after each ticket.
         </li>
         <li>
           <strong>Balanced</strong> implements each ticket, then adds behavior tests through public interfaces
-          (<${Code}>implement-spec-balanced<//>), and runs the full verification once on the finished work.
+          (<${Code}>factory-implement-balanced<//>), and runs the full verification once on the finished work.
         </li>
         <li>
           <strong>Fast</strong> implements directly and writes tests only where they help
-          (<${Code}>implement-spec-fast<//>), with the full verification once at the end.
+          (<${Code}>factory-implement-fast<//>), with the full verification once at the end.
         </li>
       </ul>
     <//>
@@ -157,12 +157,12 @@ function Stages({ reworkCap }) {
       </p>
       <ul>
         <li>
-          <${Code}>code-review<//> compares everything since the Run’s base commit with two questions, answered by
+          <${Code}>factory-code-review<//> compares everything since the Run’s base commit with two questions, answered by
           two reviewers in parallel: does the code follow the project’s standards, and does it do what the spec
           asked.
         </li>
         <li>
-          <${Code}>security-review<//> looks for vulnerabilities by following the data. Full always runs it. Balanced
+          <${Code}>factory-security-review<//> looks for vulnerabilities by following the data. Full always runs it. Balanced
           runs it only when the change touches input parsing, authentication or secrets, network access, file or process
           handling, or dependencies.
         </li>
@@ -187,7 +187,7 @@ function Stages({ reworkCap }) {
     <//>
     <${Topic} title="Finish">
       <p>
-        The agent writes the pull request description (<${Code}>pr<//>), verifies the final commit (reusing the latest
+        The agent writes the pull request description (<${Code}>factory-pr<//>), verifies the final commit (reusing the latest
         passing verification when nothing has changed), pushes the branch and opens the pull request against the base
         branch it chose at the start. Then it watches the pull request’s CI until every check has finished. When a
         check fails it reads the log, fixes the cause in a new commit, verifies again and pushes. When another pull
@@ -214,7 +214,7 @@ function Stages({ reworkCap }) {
         and its row on the line comes first, marked amber. Typical reasons:
       </p>
       <ul>
-        <li>The issue tracker is not set up yet. Run <${Code}>/setup-tds-factory<//> and start again.</li>
+        <li>The issue tracker is not set up yet. Run <${Code}>/factory-setup<//> and start again.</li>
         <li>Check findings remain after the last Rework and the agent needs your decision.</li>
         <li>A tool, a permission or a check the agent cannot fix by itself, such as a failing CI check caused by infrastructure.</li>
         <li>An answer or a decision only you can give.</li>
@@ -397,17 +397,17 @@ function Skills() {
       title="Define"
       skills=${[
         [
-          'grill-with-docs',
-          'An interview that sharpens a plan or design one question at a time, and records the domain terms and decisions it settles in the glossary and in decision records. Builds on grilling and domain-modeling.',
+          'factory-grill-with-docs',
+          'An interview that sharpens a plan or design one question at a time, and records the domain terms and decisions it settles in the glossary and in decision records. Builds on factory-grilling and factory-domain-modeling.',
           'Full always; Balanced and Fast only when unclear requirements would get in the way of the work',
         ],
         [
-          'to-spec',
+          'factory-to-spec',
           'Turns what has been discussed into a spec and publishes it as an issue in the project’s tracker, labelled ready for an agent. It does not interview you.',
           'Full always; Balanced when the request needs a written spec; Fast when the task needs a lasting one',
         ],
         [
-          'to-tickets',
+          'factory-to-tickets',
           'Breaks a spec into small, vertical tickets that each name the tickets blocking them, and publishes them to the tracker with native blocking links where the tracker has them.',
           'Full always; Balanced and Fast for work with several dependent pieces',
         ],
@@ -417,18 +417,18 @@ function Skills() {
       title="Build"
       skills=${[
         [
-          'implement-spec',
-          'Implements the spec and its tickets on the feature branch, each ticket test-first with tdd, and runs the project’s verification after each ticket.',
+          'factory-implement',
+          'Implements the spec and its tickets on the feature branch, each ticket test-first with `factory-tdd`, and runs the project’s verification after each ticket.',
           'Full',
         ],
         [
-          'implement-spec-balanced',
+          'factory-implement-balanced',
           'Implements each ticket, then covers it with behavior tests through public interfaces, without red-green cycles.',
           'Balanced',
         ],
-        ['implement-spec-fast', 'Implements the spec directly, with tests only where they help.', 'Fast'],
+        ['factory-implement-fast', 'Implements the spec directly, with tests only where they help.', 'Fast'],
         [
-          'tdd',
+          'factory-tdd',
           'Test-driven development: write a failing test, make it pass, repeat, with rules for what a good test is and where tests belong.',
           'Full always; Balanced borrows its test-quality rules',
         ],
@@ -438,12 +438,12 @@ function Skills() {
       title="Check"
       skills=${[
         [
-          'code-review',
+          'factory-code-review',
           'Reviews the changes since a fixed commit along two axes, standards and spec, with two reviewers in parallel, and reports them side by side. Takes the model and effort a routing policy names.',
           'Full and Balanced',
         ],
         [
-          'security-review',
+          'factory-security-review',
           'Reads the code the way a security researcher would: it follows data flows, checks for exposed secrets and unsafe dependencies, double-checks its own findings and rates them by severity.',
           'Full always; Balanced for sensitive changes',
         ],
@@ -453,7 +453,7 @@ function Skills() {
       title="Finish"
       skills=${[
         [
-          'pr',
+          'factory-pr',
           'Writes the pull request description: a summary, the evidence that it works, and how risky the merge is.',
           'all workflows',
         ],
@@ -463,7 +463,7 @@ function Skills() {
       title="Everywhere"
       skills=${[
         [
-          'setup-tds-factory',
+          'factory-setup',
           'Run once per repository, in your normal checkout. Records which issue tracker the repository uses, its triage labels and where the domain docs live, and adds a short section to the agent instructions. Later Runs pick the output up.',
           'before the first Run',
         ],

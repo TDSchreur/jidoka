@@ -122,7 +122,7 @@ Run updates also accept optional reporting fields:
 
 ```sh
 factory run update <id> build running --activity "Implementing ticket #42" --current-ticket "https://github.com/owner/repo/issues/42"
-factory run update <id> build running --ticket-report "https://github.com/owner/repo/issues/42" skill "tdd" --ticket-report "https://github.com/owner/repo/issues/42" activity "Tests passed"
+factory run update <id> build running --ticket-report "https://github.com/owner/repo/issues/42" skill "factory-tdd" --ticket-report "https://github.com/owner/repo/issues/42" activity "Tests passed"
 factory run update <id> build blocked --blocking-reason "Waiting for credentials"
 factory run update <id> build running --clear-blocking-reason
 factory run update <id> build running --rework 1 --activity "Fixing Check findings"
@@ -153,16 +153,16 @@ TDS Factory has three workflow modes that trade speed against rigor: `/factory-f
 
 | Stage | `/factory-full` (quality) | `/factory-balanced` | `/factory-fast` (speed) |
 | --- | --- | --- | --- |
-| Define | Always grills with [`grill-with-docs`](skills/grill-with-docs/SKILL.md) (`grilling`, `domain-modeling`), writes a spec with [`to-spec`](skills/to-spec/SKILL.md), and breaks it into tickets with [`to-tickets`](skills/to-tickets/SKILL.md) | Uses a clear request as the spec, otherwise one `to-spec` pass without grilling (tracker setup only when it reads or publishes tracker specs or tickets); always writes explicit acceptance criteria; `to-tickets` only for multi-piece work; `grill-with-docs` only when ambiguity blocks implementation | Uses a clear request as the spec with a short plan and acceptance criteria, no tracker setup for a clear request; `grill-with-docs`, `to-spec`, and `to-tickets` only when needed |
-| Build | [`implement-spec`](skills/implement-spec/SKILL.md), test-first with `tdd` red-green cycles | [`implement-spec-balanced`](skills/implement-spec-balanced/SKILL.md): implements each ticket, then adds behavior tests through public interfaces using `tdd`'s test-quality rules, without red-green cycles or seam approval | [`implement-spec-fast`](skills/implement-spec-fast/SKILL.md): implements directly; tests only where useful |
-| Check | [`code-review`](skills/code-review/SKILL.md), then [`security-review`](skills/security-review/SKILL.md); findings go back to Build for a Rework, then both reviews run again over the fixes | One initial `code-review`, with follow-up reviews of the Rework fixes; `security-review` only when the diff touches input parsing, auth or secrets, network, file or process handling, or dependencies; findings go back to Build for a Rework | Skipped |
-| Finish | [`pr`](skills/pr/SKILL.md) writes the description and opens a pull request against the selected base branch, then the agent watches its CI, fixes failures with new commits and merges the base branch in when the pull request falls behind, until it is up to date and green | Same | Same |
+| Define | Always grills with [`factory-grill-with-docs`](skills/factory-grill-with-docs/SKILL.md) (`factory-grilling`, `factory-domain-modeling`), writes a spec with [`factory-to-spec`](skills/factory-to-spec/SKILL.md), and breaks it into tickets with [`factory-to-tickets`](skills/factory-to-tickets/SKILL.md) | Uses a clear request as the spec, otherwise one `factory-to-spec` pass without grilling (tracker setup only when it reads or publishes tracker specs or tickets); always writes explicit acceptance criteria; `factory-to-tickets` only for multi-piece work; `factory-grill-with-docs` only when ambiguity blocks implementation | Uses a clear request as the spec with a short plan and acceptance criteria, no tracker setup for a clear request; `factory-grill-with-docs`, `factory-to-spec`, and `factory-to-tickets` only when needed |
+| Build | [`factory-implement`](skills/factory-implement/SKILL.md), test-first with `factory-tdd` red-green cycles | [`factory-implement-balanced`](skills/factory-implement-balanced/SKILL.md): implements each ticket, then adds behavior tests through public interfaces using `factory-tdd`'s test-quality rules, without red-green cycles or seam approval | [`factory-implement-fast`](skills/factory-implement-fast/SKILL.md): implements directly; tests only where useful |
+| Check | [`factory-code-review`](skills/factory-code-review/SKILL.md), then [`factory-security-review`](skills/factory-security-review/SKILL.md); findings go back to Build for a Rework, then both reviews run again over the fixes | One initial `factory-code-review`, with follow-up reviews of the Rework fixes; `factory-security-review` only when the diff touches input parsing, auth or secrets, network, file or process handling, or dependencies; findings go back to Build for a Rework | Skipped |
+| Finish | [`factory-pr`](skills/factory-pr/SKILL.md) writes the description and opens a pull request against the selected base branch, then the agent watches its CI, fixes failures with new commits and merges the base branch in when the pull request falls behind, until it is up to date and green | Same | Same |
 
 `/factory-fast` saves time through lighter planning, selective test writing and no Check stage, but it still runs the project's verification and waits for green CI before it reports the pull request ready. All modes build one ticket at a time in one worktree, handing each ticket to a fresh agent only when [model routing](#model-routing) routes Build, and run the project's relevant checks as they go. Full verification, meaning every command the project requires before merging, runs after each ticket in `/factory-full`, but once on the finished candidate in `/factory-balanced` and `/factory-fast`; `/factory-full` and `/factory-balanced` also rerun it after a Rework. Finish verifies the final commit, reusing the latest passing full verification when nothing has changed since it ran. Stricter project-required checks always apply. The three workflows share their run reporting, continuation, workspace, tracker setup and pull request procedures in the installed `factory-procedures` skill, which they read before starting; each workflow keeps its own planning, testing, review and verification rules.
 
 For Codex, start a new chat in Worktree mode on the intended base branch and tell the factory to use that fresh worktree. The workflow verifies it is clean and matches the fetched remote base before creating the feature branch. Codex-managed worktrees may have their own lifecycle; retain the worktree while review follow-ups are needed. Depending on the sandbox, Git operations that write shared repository metadata, network access for fetch and GitHub, and dashboard access may still require permission. In other environments, configure the sibling worktree location as writable before starting the session if needed; that alone may not grant access to shared Git metadata.
 
-In `/factory-full` and `/factory-balanced`, the agent commits the finished implementation before Check, because `code-review` only sees committed changes; it reviews everything since the run's base commit. Actionable Check findings send the run back to Build for a **Rework** with that mode's build approach; the fixes, including new files, are committed, and Check runs again over the commits since the previously reviewed one. A run gets at most two Reworks, and the dashboard shows the current one as "Rework 1/2". Findings alone never block a run, and the agent fixes them within the two Reworks. When findings remain after the second Rework, or one cannot be resolved, the run shows as blocked while the agent lists them and asks you whether to do one more Rework, finish with the findings listed in the pull request, or stop; the block clears when work resumes. `/factory-fast` has no Check and so no Rework.
+In `/factory-full` and `/factory-balanced`, the agent commits the finished implementation before Check, because `factory-code-review` only sees committed changes; it reviews everything since the run's base commit. Actionable Check findings send the run back to Build for a **Rework** with that mode's build approach; the fixes, including new files, are committed, and Check runs again over the commits since the previously reviewed one. A run gets at most two Reworks, and the dashboard shows the current one as "Rework 1/2". Findings alone never block a run, and the agent fixes them within the two Reworks. When findings remain after the second Rework, or one cannot be resolved, the run shows as blocked while the agent lists them and asks you whether to do one more Rework, finish with the findings listed in the pull request, or stop; the block clears when work resumes. `/factory-fast` has no Check and so no Rework.
 
 ### Choosing a mode
 
@@ -180,23 +180,23 @@ flowchart TB
 
     subgraph define [Define]
         direction TB
-        grill[grill-with-docs] --> spec[to-spec] --> tickets[to-tickets]
-        grill -.-> grilling[grilling]
-        grill -.-> domain[domain-modeling]
+        grill[factory-grill-with-docs] --> spec[factory-to-spec] --> tickets[factory-to-tickets]
+        grill -.-> grilling[factory-grilling]
+        grill -.-> domain[factory-domain-modeling]
     end
 
     subgraph build [Build]
-        impl[implement-spec] -.-> tdd[tdd]
-        implbal[implement-spec-balanced] -.->|test-quality rules| tdd
-        implfast[implement-spec-fast]
+        impl[factory-implement] -.-> tdd[factory-tdd]
+        implbal[factory-implement-balanced] -.->|test-quality rules| tdd
+        implfast[factory-implement-fast]
     end
 
     subgraph check [Check]
-        review[code-review] -->|/factory-full always, /factory-balanced for security-sensitive diffs| security[security-review]
+        review[factory-code-review] -->|/factory-full always, /factory-balanced for security-sensitive diffs| security[factory-security-review]
     end
 
     subgraph finish [Finish]
-        pr[pr] --> pull([Pull request to the selected base branch])
+        pr[factory-pr] --> pull([Pull request to the selected base branch])
         pull --> ci{CI green?}
         ci -->|no, fix in a new commit and push| pull
         ci -->|yes| done([Ready for review])
@@ -213,7 +213,7 @@ flowchart TB
     implfast -->|/factory-fast skips Check| pr
 ```
 
-`factory install` also installs `codebase-design` and `triage`, which no workflow calls directly, and `setup-tds-factory`, which you run yourself (see below).
+`factory install` also installs `factory-codebase-design` and `factory-triage`, which no workflow calls directly, and `factory-setup`, which you run yourself (see below).
 
 #### Token usage
 
@@ -405,7 +405,7 @@ Write one policy file, `model-routing.json`, in the factory's config folder: `$X
 - When a run's selection routes a Stage, the work of that Stage runs on the Stage's model and effort:
   - Define: the spec, the tickets and fact-finding agents. The interview stays with you, in the coordinating session.
   - Build: each ticket, and each Rework, in a fresh agent.
-  - Check: the review agents of `code-review`, and `security-review` when it runs as a separate agent; run inside the coordinating session it keeps the session's model.
+  - Check: the review agents of `factory-code-review`, and `factory-security-review` when it runs as a separate agent; run inside the coordinating session it keeps the session's model.
   - Finish: the pull request description and CI fixes. The coordinator runs the `factory pr` commands.
   - On Claude Code the agents are fresh subagents started with the Agent tool's `model` and `effort`, which accepts only the aliases `opus`, `sonnet`, `haiku` and `fable`. On Codex they use its subagent model and effort settings.
   - Each Stage summary says which model and effort its agents ran on, or why routing did not apply.
@@ -424,7 +424,7 @@ Copilot CLI is not supported. It chooses a subagent's model from its own setting
 
 `factory doctor` reports whether the current repository and your machine are ready for the factory, without changing anything, installing anything or starting the dashboard, unless you ask it to create the model-routing policy file (see below). It checks:
 
-- the project: a Git repository, an `origin` remote, origin's default branch (`git remote set-head origin --auto` sets it when unknown), the setup output of `/setup-tds-factory` (`docs/agents/issue-tracker.md` and the `## Agent skills` section), which `/factory-full` always needs and the lighter workflows only when they read or publish specs or tickets, and the verification commands listed as bullets under `## Commands` in `AGENTS.md` or `CLAUDE.md`. It looks for each command's tool but never runs it.
+- the project: a Git repository, an `origin` remote, origin's default branch (`git remote set-head origin --auto` sets it when unknown), the setup output of `/factory-setup` (`docs/agents/issue-tracker.md` and the `## Agent skills` section), which `/factory-full` always needs and the lighter workflows only when they read or publish specs or tickets, and the verification commands listed as bullets under `## Commands` in `AGENTS.md` or `CLAUDE.md`. It looks for each command's tool but never runs it.
 - each agent (Codex, Claude Code, Copilot): its command is on `PATH`, and every file of every skill `factory install` bundles is installed in the folder `factory install` would use (honoring `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `COPILOT_HOME`). With `--config-dir`, Claude Code gets one `skills` check per folder, each naming its path.
 - the pull request host, in a "Provider" section after the agents. `host` says whether origin is on GitHub or Azure Repos, worked out the way `factory pr open` does it (including `factory.prProvider`). An unknown host, or an override that does not match origin, is a warning that says to open pull requests with the host's own tooling; without an origin the section is `skipped`. For GitHub, doctor looks for `gh` on `PATH` and runs `gh auth status`. For Azure Repos, it looks for `az`, runs `az extension show --name azure-devops`, and counts you as signed in when `AZURE_DEVOPS_EXT_PAT` is set or `az account show` succeeds. It only checks that the variable is set, never reads or prints the token, and discards what these commands print. A `not-verified` line says what it did not check: whether the token is valid, project permissions and branch policies. A missing tool or sign-in is a warning, so this section never changes whether the factory is ready.
 
@@ -442,7 +442,7 @@ Doctor writes a starter model-routing policy only when you ask. The installer an
 
 ### First use in a repository
 
-Run `/setup-tds-factory` once in each repository before the first workflow run. It records the repository's issue tracker (GitHub, Azure Boards, or local Markdown files), triage labels and domain-doc layout in `docs/agents/` and adds an `## Agent skills` section to `AGENTS.md` or `CLAUDE.md`. Run it in your normal checkout; there is no need to commit it or push it to a protected branch first. Each workflow run starts in a fresh worktree and carries the uncommitted setup output over from the checkout it was started in, so the output lands in that run's pull request. `/factory-full` stops at the start of Define when `docs/agents/issue-tracker.md` exists neither in the worktree nor in the original checkout. `/factory-balanced` and `/factory-fast` need it only when a run reads or publishes a spec or tickets in the tracker; a clear, bounded request planned in the conversation runs without it. A run whose plan exists only in the conversation saves its plan and acceptance criteria in a file outside the pull request (in the worktree's git directory, or beside the worktree) and records it with `--spec`, so another session can continue from `factory run inspect` without the original chat.
+Run `/factory-setup` once in each repository before the first workflow run. It records the repository's issue tracker (GitHub, Azure Boards, or local Markdown files), triage labels and domain-doc layout in `docs/agents/` and adds an `## Agent skills` section to `AGENTS.md` or `CLAUDE.md`. Run it in your normal checkout; there is no need to commit it or push it to a protected branch first. Each workflow run starts in a fresh worktree and carries the uncommitted setup output over from the checkout it was started in, so the output lands in that run's pull request. `/factory-full` stops at the start of Define when `docs/agents/issue-tracker.md` exists neither in the worktree nor in the original checkout. `/factory-balanced` and `/factory-fast` need it only when a run reads or publishes a spec or tickets in the tracker; a clear, bounded request planned in the conversation runs without it. A run whose plan exists only in the conversation saves its plan and acceptance criteria in a file outside the pull request (in the worktree's git directory, or beside the worktree) and records it with `--spec`, so another session can continue from `factory run inspect` without the original chat.
 
 The [Rust skill](skills/rust/SKILL.md) and [project instructions](AGENTS.md) guide Rust development in this repository.
 

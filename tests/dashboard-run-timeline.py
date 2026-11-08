@@ -45,7 +45,7 @@ SHIPPED = {
     "run_reports": [
         {"kind": "skill", "text": "frontend-design", "stage": "build", "at": T["build"]},
         {"kind": "activity", "text": "Plan written", "stage": "build", "at": T["build"]},
-        {"kind": "skill", "text": "code-review", "stage": "check", "at": T["check1"] + 5000},
+        {"kind": "skill", "text": "factory-code-review", "stage": "check", "at": T["check1"] + 5000},
         {"kind": "activity", "text": "Screenshots reviewed", "stage": "check", "at": T["check1"] + 5000},
         {"kind": "activity", "text": "Third rework approved", "stage": "finish", "at": T["check4"] + 1000},
         {"kind": "activity", "text": "Pull request opened", "stage": "finish", "at": T["end"]},
@@ -253,7 +253,7 @@ return [0, 59999, min, 12 * min + 59000, 59 * min, 60 * min, 65 * min, 125 * min
         self.assertEqual(by_label[1]["skills"], ["frontend-design"])
         self.assertTrue(by_label[1]["reports"][0].endswith("Plan written"))
         # Filed 5 s into the first Check pass, whatever stage the report names.
-        self.assertEqual(by_label[2]["skills"], ["code-review"])
+        self.assertEqual(by_label[2]["skills"], ["factory-code-review"])
         self.assertTrue(by_label[2]["reports"][0].endswith("Screenshots reviewed"))
         # The first report of the last pass's open-ended window is the one at the run's end.
         self.assertTrue(by_label[9]["reports"][0].endswith("Pull request opened"))

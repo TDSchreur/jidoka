@@ -109,9 +109,9 @@ class HelpTest(unittest.TestCase):
         for heading in ["Define", "Build", "Check", "Rework", "Finish", "Shipped", "Needs you"]:
             self.assertIn(heading, stages)
         skills = result["every"]["Skills"]["terms"]
-        for name in ["/factory", "/factory-full", "/factory-balanced", "/factory-fast", "factory-procedures", "grill-with-docs",
-                     "to-spec", "to-tickets", "implement-spec", "implement-spec-balanced", "implement-spec-fast", "tdd",
-                     "code-review", "security-review", "pr", "setup-tds-factory"]:
+        for name in ["/factory", "/factory-full", "/factory-balanced", "/factory-fast", "factory-procedures", "factory-grill-with-docs",
+                     "factory-to-spec", "factory-to-tickets", "factory-implement", "factory-implement-balanced", "factory-implement-fast", "factory-tdd",
+                     "factory-code-review", "factory-security-review", "factory-pr", "factory-setup"]:
             self.assertIn(name, skills)
         self.assertTrue(result["focusBack"])
 

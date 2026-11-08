@@ -22,9 +22,9 @@ Read it with `factory run inspect <id> --json`. `model_routing` holds `agent` (`
 
 ## Per Stage
 
-- **Define**: the interview (grilling) stays with you, because it is a conversation with the user. Writing the spec, writing the tickets and fact-finding lookups in the code or docs run in agents on the define choice. A workflow that plans in the conversation hands the writing of its plan to such an agent.
+- **Define**: the interview (factory-grilling) stays with you, because it is a conversation with the user. Writing the spec, writing the tickets and fact-finding lookups in the code or docs run in agents on the define choice. A workflow that plans in the conversation hands the writing of its plan to such an agent.
 - **Build**: each ticket runs in its own fresh agent on the build choice, one at a time and sequentially in the run's worktree, following the workflow's build skill; so do a Rework's fixes. You still run the verification the workflow requires, or confirm the agent ran it on exactly this code, and you update the run's tickets and Stage.
-- **Check**: tell `code-review` the check choice, because its Standards and Spec sub-agents are the agents to route. Run `security-review` on the check choice only when you start it as a separate agent the same way. Run inline in your own session, it uses your model: do not claim a switch for it.
+- **Check**: tell `factory-code-review` the check choice, because its Standards and Spec sub-agents are the agents to route. Run `factory-security-review` on the check choice only when you start it as a separate agent the same way. Run inline in your own session, it uses your model: do not claim a switch for it.
 - **Finish**: an agent on the finish choice writes the pull request description and fixes CI failures. You run `factory pr open`, `factory pr wait` and `factory pr sync` yourself.
 
 When a Stage is not routed, do its work as the workflow says, without handing it to agents for routing's sake.

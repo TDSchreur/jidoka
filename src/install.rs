@@ -8,13 +8,28 @@ use std::{
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
 /// Skill directories from earlier releases that are no longer bundled: the pre-rename
-/// `factory2` skills and development-only skills that were once installed.
-const LEGACY_SKILLS: [&str; 5] = [
+/// `factory2` skills, development-only skills and the generic-name skills of earlier releases.
+const LEGACY_SKILLS: [&str; 20] = [
     "factory2",
     "factory2-fast",
     "github-actions-hardening",
     "rust-best-practices",
     "setup-matt-pocock-skills",
+    "grill-with-docs",
+    "grilling",
+    "domain-modeling",
+    "codebase-design",
+    "to-spec",
+    "to-tickets",
+    "implement-spec",
+    "implement-spec-fast",
+    "implement-spec-balanced",
+    "tdd",
+    "code-review",
+    "security-review",
+    "pr",
+    "setup-tds-factory",
+    "triage",
 ];
 
 /// Skills maintained in this project, installed without a third-party license.
@@ -24,8 +39,8 @@ const LOCAL_SKILLS: [&str; 7] = [
     "factory-procedures",
     "factory-fast",
     "factory-balanced",
-    "implement-spec-fast",
-    "implement-spec-balanced",
+    "factory-implement-fast",
+    "factory-implement-balanced",
 ];
 
 /// Reads `[--agent <list>] [--config-dir <path>]...` in any order. `--agent` can be given once.
@@ -397,7 +412,7 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
         fs::write(destination, content)?;
     }
     let license = match name {
-        "security-review" => "licenses/awesome-copilot-LICENSE",
+        "factory-security-review" => "licenses/awesome-copilot-LICENSE",
         _ if LOCAL_SKILLS.contains(&name) => "",
         _ => "licenses/mattpocock-skills-LICENSE",
     };
@@ -821,16 +836,19 @@ mod tests {
             "only the entry of the agent named with `--agent`",
             "never another agent's",
             // Each Stage says what is handed to agents and what stays with the coordinator.
-            "the interview (grilling) stays with you",
+            "the interview (factory-grilling) stays with you",
             "each ticket runs in its own fresh agent on the build choice",
-            "tell `code-review` the check choice",
+            "tell `factory-code-review` the check choice",
             "You run `factory pr open`, `factory pr wait` and `factory pr sync` yourself",
         ] {
             assert!(section.contains(needle), "Model routing lacks {needle}");
         }
-        let review = bundled_text("code-review/SKILL.md");
+        let review = bundled_text("factory-code-review/SKILL.md");
         for needle in ["model and an effort for the review agents", "not forks"] {
-            assert!(review.contains(needle), "code-review lacks {needle}");
+            assert!(
+                review.contains(needle),
+                "factory-code-review lacks {needle}"
+            );
         }
     }
 
@@ -884,12 +902,7 @@ mod tests {
                 continue;
             }
             let text = String::from_utf8_lossy(content);
-            // The setup skill is named after the factory; that name is not this repository's. Only
-            // the command form `/setup-tds-factory` and, in that skill, the line `name: setup-tds-factory` are exempt.
-            let mut lowercase = text.to_lowercase().replace("/setup-tds-factory", "");
-            if skill == "setup-tds-factory" {
-                lowercase = lowercase.replace("name: setup-tds-factory", "");
-            }
+            let lowercase = text.to_lowercase();
             for term in PROJECT_SPECIFIC {
                 if lowercase.contains(term) {
                     offenders.push(format!("{path}: {term}"));
@@ -912,7 +925,7 @@ mod tests {
 
     #[test]
     fn setup_links_exactly_the_bundled_issue_tracker_templates() {
-        let setup = bundled_text("setup-tds-factory/SKILL.md");
+        let setup = bundled_text("factory-setup/SKILL.md");
         let mut linked: Vec<&str> = setup
             .split("](./")
             .skip(1)
@@ -923,7 +936,7 @@ mod tests {
         linked.sort_unstable();
         linked.dedup();
         let mut bundled: Vec<&str> = bundled_skill_files()
-            .filter_map(|path| path.strip_prefix("setup-tds-factory/"))
+            .filter_map(|path| path.strip_prefix("factory-setup/"))
             .filter(|name| name.starts_with("issue-tracker-") && name.ends_with(".md"))
             .collect();
         bundled.sort_unstable();
@@ -933,7 +946,7 @@ mod tests {
 
     #[test]
     fn setup_stops_on_missing_azure_boards_details_without_a_partial_tracker_file() {
-        let setup = bundled_text("setup-tds-factory/SKILL.md");
+        let setup = bundled_text("factory-setup/SKILL.md");
         let (_, azure) = setup
             .split_once("An Azure Boards tracker needs")
             .expect("setup has an Azure Boards part");
@@ -945,7 +958,7 @@ mod tests {
     fn azure_boards_template_removes_tags_with_a_replace_the_cli_cannot_send() {
         // Checked against Azure DevOps: `az boards work-item update --fields System.Tags=...` adds to
         // the tags, and `show --fields` fails with the expanded output, so neither can remove a role.
-        let template = bundled_text("setup-tds-factory/issue-tracker-azure-boards.md");
+        let template = bundled_text("factory-setup/issue-tracker-azure-boards.md");
         let roles = template
             .split_once("- **Apply / remove triage roles**:")
             .and_then(|(_, rest)| rest.split_once("\n- **"))
@@ -960,7 +973,7 @@ mod tests {
 
     #[test]
     fn azure_boards_template_names_no_process_specific_types_or_states() {
-        let template = bundled_text("setup-tds-factory/issue-tracker-azure-boards.md");
+        let template = bundled_text("factory-setup/issue-tracker-azure-boards.md");
         let found: Vec<String> = [
             "User Story",
             "Product Backlog Item",
@@ -1020,8 +1033,8 @@ mod tests {
     fn azure_boards_route_parameters_are_quoted_pairs() {
         const FLAG: &str = "--route-parameters ";
         for path in [
-            "setup-tds-factory/issue-tracker-azure-boards.md",
-            "setup-tds-factory/SKILL.md",
+            "factory-setup/issue-tracker-azure-boards.md",
+            "factory-setup/SKILL.md",
         ] {
             let text = bundled_text(path);
             assert!(text.contains(FLAG), "{path} has no {FLAG}");
@@ -1198,7 +1211,7 @@ mod tests {
             write_retired_humanizer(&root, false);
             install_to(&root).unwrap();
             assert!(!root.join("humanizer").exists(), "{root:?}");
-            assert!(root.join("tdd/SKILL.md").is_file(), "{root:?}");
+            assert!(root.join("factory-tdd/SKILL.md").is_file(), "{root:?}");
         }
     }
 
@@ -1240,7 +1253,7 @@ mod tests {
             mutate(&root.join("humanizer"));
             install_to(&root).unwrap();
             assert!(root.join("humanizer").is_dir(), "{name}");
-            assert!(root.join("tdd/SKILL.md").is_file(), "{name}");
+            assert!(root.join("factory-tdd/SKILL.md").is_file(), "{name}");
         }
     }
 
@@ -1311,6 +1324,21 @@ mod tests {
             "github-actions-hardening",
             "rust-best-practices",
             "setup-matt-pocock-skills",
+            "grill-with-docs",
+            "grilling",
+            "domain-modeling",
+            "codebase-design",
+            "to-spec",
+            "to-tickets",
+            "implement-spec",
+            "implement-spec-fast",
+            "implement-spec-balanced",
+            "tdd",
+            "code-review",
+            "security-review",
+            "pr",
+            "setup-tds-factory",
+            "triage",
         ] {
             fs::create_dir_all(root.join(legacy)).unwrap();
             fs::write(root.join(legacy).join("SKILL.md"), "legacy").unwrap();
@@ -1327,41 +1355,65 @@ mod tests {
         assert!(!root.join("github-actions-hardening").exists());
         assert!(!root.join("rust-best-practices").exists());
         assert!(!root.join("setup-matt-pocock-skills").exists());
+        for old in [
+            "grill-with-docs",
+            "grilling",
+            "domain-modeling",
+            "codebase-design",
+            "to-spec",
+            "to-tickets",
+            "implement-spec",
+            "implement-spec-fast",
+            "implement-spec-balanced",
+            "tdd",
+            "code-review",
+            "security-review",
+            "pr",
+            "setup-tds-factory",
+            "triage",
+        ] {
+            assert!(!root.join(old).exists(), "{old}");
+        }
+        let mut installed: Vec<_> = fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("factory-") || name == "factory")
+            .collect();
+        installed.sort();
+        assert_eq!(installed.len(), 20, "{installed:?}");
         assert_eq!(
             fs::read_to_string(root.join("my-skill/SKILL.md")).unwrap(),
             "user skill"
         );
         assert!(root
-            .join("security-review/references/language-patterns.md")
+            .join("factory-security-review/references/language-patterns.md")
             .is_file());
-        assert!(root.join("security-review/LICENSE").is_file());
-        assert!(root.join("setup-tds-factory/SKILL.md").is_file());
+        assert!(root.join("factory-security-review/LICENSE").is_file());
+        assert!(root.join("factory-setup/SKILL.md").is_file());
+        assert!(root.join("factory-setup/issue-tracker-github.md").is_file());
         assert!(root
-            .join("setup-tds-factory/issue-tracker-github.md")
+            .join("factory-setup/issue-tracker-azure-boards.md")
             .is_file());
-        assert!(root
-            .join("setup-tds-factory/issue-tracker-azure-boards.md")
-            .is_file());
-        assert!(root.join("setup-tds-factory/LICENSE").is_file());
-        assert!(root.join("to-spec/SKILL.md").is_file());
+        assert!(root.join("factory-setup/LICENSE").is_file());
+        assert!(root.join("factory-to-spec/SKILL.md").is_file());
         assert!(root.join("factory-full/SKILL.md").is_file());
         assert!(!root.join("factory-full/LICENSE").exists());
         assert!(root.join("factory-fast/SKILL.md").is_file());
-        assert!(root.join("implement-spec-fast/SKILL.md").is_file());
-        assert!(root.join("tdd/mocking.md").is_file());
+        assert!(root.join("factory-implement-fast/SKILL.md").is_file());
+        assert!(root.join("factory-tdd/mocking.md").is_file());
         assert!(!root.join("factory-fast/LICENSE").exists());
         assert!(root.join("factory-balanced/SKILL.md").is_file());
-        assert!(root.join("implement-spec-balanced/SKILL.md").is_file());
+        assert!(root.join("factory-implement-balanced/SKILL.md").is_file());
         assert!(!root.join("factory-balanced/LICENSE").exists());
         assert!(root.join("factory-procedures/SKILL.md").is_file());
         assert!(root
             .join("factory-procedures/references/model-routing.md")
             .is_file());
         assert!(!root.join("factory-procedures/LICENSE").exists());
-        assert!(!root.join("implement-spec-balanced/LICENSE").exists());
-        assert!(!root.join("implement-spec-fast/LICENSE").exists());
-        assert!(root.join("triage/AGENT-BRIEF.md").is_file());
-        assert!(root.join("triage/LICENSE").is_file());
+        assert!(!root.join("factory-implement-balanced/LICENSE").exists());
+        assert!(!root.join("factory-implement-fast/LICENSE").exists());
+        assert!(root.join("factory-triage/AGENT-BRIEF.md").is_file());
+        assert!(root.join("factory-triage/LICENSE").is_file());
         install_to(root).unwrap();
         let leftovers: Vec<_> = fs::read_dir(root)
             .unwrap()
