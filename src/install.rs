@@ -460,7 +460,7 @@ mod tests {
         BUNDLED
             .iter()
             .find(|(bundled, _)| *bundled == path)
-            .map(|(_, content)| String::from_utf8_lossy(content).replace("\r\n", "\n"))
+            .map(|(_, content)| String::from_utf8_lossy(content).into_owned())
             .unwrap_or_else(|| panic!("{path} is not bundled"))
     }
 
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn finish_reports_tell_the_user_to_clean_up_the_run_after_merge() {
-        let procedures = bundled_text("factory-procedures/SKILL.md");
+        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
         assert!(
             procedures.contains("`factory run cleanup <id>`"),
             "the shared procedures do not mention factory run cleanup"
@@ -617,7 +617,7 @@ mod tests {
     #[test]
     fn workflow_skills_use_the_shared_procedures_and_report_their_own_mode() {
         for skill in WORKFLOW_SKILLS {
-            let text = bundled_text(&format!("{skill}/SKILL.md"));
+            let text = bundled_text(&format!("{skill}/SKILL.md")).replace("\r\n", "\n");
             assert!(
                 text.contains("(../factory-procedures/SKILL.md)"),
                 "{skill} does not link the shared procedures"
@@ -994,7 +994,7 @@ mod tests {
     #[test]
     fn model_routing_is_read_at_every_stage_the_workflow_routes() {
         let link = "[Model routing](../factory-procedures/references/model-routing.md)";
-        let procedures = bundled_text("factory-procedures/SKILL.md");
+        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
         let rule = procedures
             .split_once("\n## Model routing\n")
             .expect("the shared procedures have no Model routing")
