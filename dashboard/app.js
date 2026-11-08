@@ -149,12 +149,6 @@ function httpUrl(value) {
   }
 }
 
-/** The ticket as a link when it is an http(s) URL, else as plain text. */
-function TicketLink({ value }) {
-  const url = httpUrl(value);
-  return url ? html`<a href=${url.href} target="_blank" rel="noopener noreferrer">${value}</a>` : value;
-}
-
 /** The tickets listed on a Run, with how many are done; null when none are recorded. */
 const ticketProgress = (run) => {
   const tickets = Array.isArray(run.tickets) ? run.tickets : [];
@@ -463,6 +457,7 @@ function Station({ run, id, name, at, now }) {
   const reports = (Array.isArray(run.run_reports) ? run.run_reports : []).filter((r) => r.stage === id);
   const tickets = id === 'build' && Array.isArray(run.tickets) ? run.tickets : [];
   const ticketReports = Array.isArray(run.ticket_reports) ? run.ticket_reports : [];
+  const progress = id === 'build' ? ticketProgress(run) : null;
   const rework = id === 'check' && Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   const summary = run.summaries?.[id];
   const tokens = stageTokens(run, id);
@@ -476,15 +471,17 @@ function Station({ run, id, name, at, now }) {
     </div>
     ${summary ? html`<p class="stop-summary">${summary}</p>` : null}
     ${rework !== null ? html`<p class="rework"><span class="chip">Rework${' '}${reworkLabel(rework)}</span></p>` : null}
+    ${progress ? html`<p class="ticket-count"><span class="chip">Tickets${' '}${progress.done}/${progress.total} done</span></p>` : null}
     <${SkillChips} reports=${reports} />
     <${ReportList} reports=${reports} now=${now} />
     ${tickets.length
       ? html`<ol class="ticket-list">
           ${tickets.map((ticket) => {
             const own = ticketReports.filter((report) => report.ticket === ticket.reference);
+            const current = ticket.status !== 'done' && run.current_ticket != null && run.current_ticket === ticket.reference;
             return html`<li key=${ticket.reference} class=${ticket.status === 'done' ? 'ticket done' : 'ticket'}>
               <p class="ticket-line">
-                <span class="ticket-status">${TICKET_STATUS[ticket.status] ?? String(ticket.status)}</span>
+                <span class="ticket-status">${current ? TICKET_STATUS['in-progress'] : (TICKET_STATUS[ticket.status] ?? String(ticket.status))}</span>
                 <span class="ticket-name"><${TicketRef} value=${String(ticket.reference)} />${' '}${ticket.title}</span>
               </p>
               <${SkillChips} reports=${own} />
@@ -494,6 +491,21 @@ function Station({ run, id, name, at, now }) {
         </ol>`
       : null}
   </li>`;
+}
+
+/** Reports that belong to no station or no listed ticket, so they are never dropped silently. */
+function OtherReports({ run, now }) {
+  const tickets = Array.isArray(run.tickets) ? run.tickets : [];
+  const stray = [
+    ...(Array.isArray(run.run_reports) ? run.run_reports : []).filter((r) => !STATIONS.includes(r.stage)),
+    ...(Array.isArray(run.ticket_reports) ? run.ticket_reports : []).filter((r) => !tickets.some((t) => t.reference === r.ticket)),
+  ];
+  if (!stray.length) return null;
+  return html`<section class="other-reports" aria-labelledby="other-reports-title">
+    <h3 id="other-reports-title">Other reports</h3>
+    <${SkillChips} reports=${stray} />
+    <${ReportList} reports=${stray} now=${now} />
+  </section>`;
 }
 
 /** The pull request as a link with its state in words, once the server has read that pull request. */
@@ -506,6 +518,7 @@ function PrLink({ run }) {
   return html`<span class="status-item">
     ${url ? html`<a href=${url.href} target="_blank" rel="noopener noreferrer">PR ${shortRef(url)}</a>` : `PR ${run.pr}`}
     ${state ? html`${' '}<span class=${`pr-word ${known && status.state}`} title=${status.state === 'unknown' ? status.reason : null}>${state}</span>` : null}
+    ${known && status.state === 'unknown' && status.reason ? html`${' '}<span class="pr-reason">${status.reason}</span>` : null}
   </span>`;
 }
 
@@ -536,6 +549,7 @@ function Detail({ run, now, onClose, onDelete }) {
   const spec = run.spec ? httpUrl(run.spec) : null;
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   const total = usageTotal(run);
+  const listed = Array.isArray(run.tickets) && run.tickets.some((t) => t.reference === run.current_ticket);
   return html`<dialog
     ref=${dialog}
     class="detail"
@@ -562,6 +576,7 @@ function Detail({ run, now, onClose, onDelete }) {
         ${run.branch ? html`<span class="branch"><code>${run.branch}</code><${CopyButton} value=${run.branch} what="branch" /></span>` : null}
       </p>
       ${active && run.activity ? html`<p class="detail-activity">${run.activity}</p>` : null}
+      ${active && run.current_ticket && !listed ? html`<p class="detail-ticket">Current ticket: ${run.current_ticket}</p>` : null}
       <div class=${blocked ? 'status-row blocked' : 'status-row'}>
         <span class=${STATUSES.includes(run.status) ? `badge ${run.status}` : 'badge'}>${statusLabel(run.status)}</span>
         <${PrLink} run=${run} />
@@ -573,6 +588,7 @@ function Detail({ run, now, onClose, onDelete }) {
       <ol class="route" aria-label="Route">
         ${GROUPS.map(([id, name], at) => html`<${Station} key=${id} run=${run} id=${id} name=${name} at=${at} now=${now} />`)}
       </ol>
+      <${OtherReports} run=${run} now=${now} />
       ${run.usage
         ? html`<details class="usage" open=${active}>
             <summary>

@@ -56,7 +56,22 @@ BLOCKED = {
     "updated_at": AT, "activity": "Waiting for a decision",
     "blocking_reason": "The migration drops a column that the reporting job still reads; confirm it can go before the Run continues.",
 }
-RUNS = [SHIPPED, ACTIVE, BLOCKED]
+STRAY = {
+    "id": "run-stray", "title": "Tidy the cart", "project": "/work/shop", "stage": "build", "status": "running", "updated_at": AT,
+    "activity": "Working", "current_ticket": "local-9",
+    "pr": PR, "pr_status": {"url": PR, "state": "unknown", "reason": "gh is not signed in", "checked_at": AT},
+    "tickets": [{"reference": "local-1", "title": "First", "status": "done"}, {"reference": "local-2", "title": "Second", "status": "pending"}],
+    "run_reports": [
+        {"kind": "activity", "text": "No stage given", "at": AT},
+        {"kind": "skill", "text": "odd-skill", "stage": "ship", "at": AT},
+        {"kind": "activity", "text": "Normal build note", "stage": "build", "at": AT},
+    ],
+    "ticket_reports": [{"ticket": "local-404", "kind": "activity", "text": "Orphan ticket note", "stage": "build", "at": AT}],
+}
+CURRENT = {**ACTIVE, "id": "run-current", "title": "Current one", "current_ticket": "local-1",
+           "tickets": [{"reference": "local-1", "title": "Index in the background", "status": "pending"},
+                       {"reference": "local-2", "title": "Other", "status": "pending"}]}
+RUNS = [SHIPPED, ACTIVE, BLOCKED, STRAY, CURRENT]
 
 # Opens each Run's sheet in turn like a visitor and reports what it shows.
 HELPERS = """
@@ -93,7 +108,7 @@ def drive(body, runs=RUNS, **options):
 class RunDetailsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.shipped, cls.active, cls.blocked = cls.snapshots()
+        cls.shipped, cls.active, cls.blocked, cls.stray, cls.current = cls.snapshots()
 
     @staticmethod
     def snapshots():
@@ -118,6 +133,9 @@ const snap = async (id) => {
     sub: text(dialog.querySelector('.detail-sub')),
     activity: text(dialog.querySelector('.detail-activity')),
     statusRow: text(dialog.querySelector('.status-row')),
+    otherReports: text(dialog.querySelector('.other-reports')),
+    detailTicket: text(dialog.querySelector('.detail-ticket')),
+    prReason: text(dialog.querySelector('.pr-reason')),
     statusRowBlocked: dialog.querySelector('.status-row').classList.contains('blocked'),
     amber,
     statusBeforeRepository: order('.status-row') < order('.ids'),
@@ -148,10 +166,10 @@ const snap = async (id) => {
   await closeRun();
   return out;
 };
-return {shipped: await snap('run-shipped'), active: await snap('run-active'), blocked: await snap('run-blocked')};
+return {shipped: await snap('run-shipped'), active: await snap('run-active'), blocked: await snap('run-blocked'), stray: await snap('run-stray'), current: await snap('run-current')};
 """
         result = drive(body)
-        return result["shipped"], result["active"], result["blocked"]
+        return result["shipped"], result["active"], result["blocked"], result["stray"], result["current"]
 
     def stop(self, snapshot, name):
         return next(s for s in snapshot["stops"] if s["name"] == name)
@@ -214,6 +232,35 @@ return {shipped: await snap('run-shipped'), active: await snap('run-active'), bl
         self.assertEqual(check["skills"], ["code-review"])
         self.assertEqual(check["tickets"] + define["tickets"] + finish["tickets"], [])
         self.assertNotIn("tdd", define["full"] + check["full"] + finish["full"])
+
+    def test_unplaceable_reports_show_in_other_reports_only_when_present(self):
+        other = self.stray["otherReports"]
+        for shown in ("Other reports", "No stage given", "odd-skill", "Orphan ticket note"):
+            self.assertIn(shown, other)
+        self.assertNotIn("Normal build note", other)
+        self.assertIn("Normal build note", self.stop(self.stray, "Build")["full"])
+        for snapshot in (self.shipped, self.active, self.blocked, self.current):
+            self.assertIsNone(snapshot["otherReports"])
+
+    def test_current_ticket_is_marked_in_progress_in_the_ticket_list(self):
+        tickets = self.stop(self.current, "Build")["tickets"]
+        self.assertTrue(tickets[0].startswith("In progress"))
+        self.assertTrue(tickets[1].startswith("Pending"))
+        self.assertIsNone(self.current["detailTicket"])
+
+    def test_current_ticket_missing_from_the_list_shows_under_the_title(self):
+        self.assertEqual(self.stray["detailTicket"], "Current ticket: local-9")
+        self.assertIsNone(self.active["detailTicket"])
+
+    def test_unknown_pr_state_reason_is_visible_text(self):
+        self.assertIn("state unknown", self.stray["statusRow"])
+        self.assertEqual(self.stray["prReason"], "gh is not signed in")
+        self.assertIsNone(self.shipped["prReason"])
+
+    def test_build_shows_the_ticket_progress_count(self):
+        self.assertIn("Tickets 2/2 done", self.stop(self.shipped, "Build")["full"])
+        self.assertIn("Tickets 1/2 done", self.stop(self.stray, "Build")["full"])
+        self.assertNotIn("Tickets", self.stop(self.blocked, "Build")["full"])
 
     def test_rework_marker_is_on_check_only_when_rework_is_above_zero(self):
         self.assertEqual(self.stop(self.shipped, "Check")["rework"], "Rework 1/2")

@@ -2244,9 +2244,6 @@ mod tests {
         assert!(css.contains(
             ".usage-table td:nth-child(2), .usage-table td:nth-child(3) { white-space: normal; overflow-wrap: anywhere; }"
         ));
-        // One doc comment on Field, and the token usage label keeps the same gap as the others.
-        assert!(!script.contains("reads \"Not set\". */\n/**"));
-        assert!(!css.contains(".fields dd.wide"));
     }
 
     #[rocket::async_test]
@@ -2261,11 +2258,7 @@ mod tests {
             1,
             "the protocol check lives only in httpUrl"
         );
-        for component in [
-            "function TicketLink(",
-            "function RefLink(",
-            "function TicketRef(",
-        ] {
+        for component in ["function RefLink(", "function TicketRef("] {
             let body = script
                 .split(component)
                 .nth(1)
