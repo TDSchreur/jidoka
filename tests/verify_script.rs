@@ -81,7 +81,12 @@ fn runs_the_ci_checks_in_order_and_reports_success() {
             "fmt --check",
             "clippy --all-targets --locked -- -D warnings",
             "test --locked",
-            "python3 tests/dashboard-help.py"
+            "python3 tests/dashboard-delete-project.py",
+            "python3 tests/dashboard-help.py",
+            "python3 tests/dashboard-hidden-projects.py",
+            "python3 tests/dashboard-project-rows.py",
+            "python3 tests/dashboard-run-reports.py",
+            "python3 tests/dashboard-ticket-reports.py"
         ]
     );
     assert!(run.output.contains("All checks passed"), "{}", run.output);
@@ -121,12 +126,12 @@ fn refuses_to_skip_a_missing_tool() {
 }
 
 #[test]
-fn a_failing_dashboard_help_test_fails_the_run() {
+fn a_failing_dashboard_test_fails_the_run() {
     let run = verify_with(true, "none", &["python3", "chromium"], true);
     assert!(!run.success, "{}", run.output);
     assert_eq!(
         run.checks.last().unwrap(),
-        "python3 tests/dashboard-help.py"
+        "python3 tests/dashboard-delete-project.py"
     );
     assert!(!run.output.contains("All checks passed"));
 }
