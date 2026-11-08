@@ -520,6 +520,11 @@ export function timelinePasses(run, now) {
   return { passes, unstartedTickets: firstBuildPass ? [] : notStarted };
 }
 
+/** Appends `item` to the list stored under `key`. */
+function push(map, key, item) {
+  map.set(key, [...(map.get(key) ?? []), item]);
+}
+
 /** Where each report belongs on a timeline: in the pass whose time window holds its `at`; the rest in `other`. */
 function placeByTime(run, passes, unstartedTickets) {
   const tickets = listOf(run.tickets);
@@ -535,9 +540,9 @@ function placeByTime(run, passes, unstartedTickets) {
     const at = windowOf(report);
     const listed = tickets.find((ticket) => ticket.reference === report.ticket);
     if (!listed) other.push(report);
-    else if (unstartedTickets.includes(listed)) unstarted.set(listed.reference, [...(unstarted.get(listed.reference) ?? []), report]);
+    else if (unstartedTickets.includes(listed)) push(unstarted, listed.reference, report);
     else if (at === -1) other.push(report);
-    else if (passes[at].tickets.includes(listed)) placed[at].byTicket.set(listed.reference, [...(placed[at].byTicket.get(listed.reference) ?? []), report]);
+    else if (passes[at].tickets.includes(listed)) push(placed[at].byTicket, listed.reference, report);
     else placed[at].reports.push(report);
   }
   return { placed, other, unstarted };

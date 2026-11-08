@@ -347,10 +347,11 @@ const lum = (c) => c.map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((
 const row = dialog.querySelector('.status-row.blocked');
 const reason = getComputedStyle(dialog.querySelector('.status-reason'));
 const [x, y] = [lum(rgb(reason.color)), lum(rgb(getComputedStyle(row).backgroundColor))].sort((p, q) => q - p);
-return {reason: reason.color, onAmber: getComputedStyle(row).color, ratio: (x + 0.05) / (y + 0.05)};
+return {panel: getComputedStyle(dialog).backgroundColor, reason: reason.color, onAmber: getComputedStyle(row).color, ratio: (x + 0.05) / (y + 0.05)};
 """
-        for args in ([], ["--force-dark-mode", "--enable-features=WebContentsForceDark"]):
+        for args, panel in (([], "rgb(255, 255, 255)"), (["--force-dark-mode", "--enable-features=WebContentsForceDark"], "rgb(31, 37, 44)")):
             result = drive(body, extra_args=[*LANG, *args])
+            self.assertEqual(result["panel"], panel)
             self.assertEqual(result["reason"], result["onAmber"])
             self.assertGreaterEqual(result["ratio"], 4.5, result)
 
