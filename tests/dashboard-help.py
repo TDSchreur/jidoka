@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Browser behavior test; run with python3 tests/dashboard-help.py (requires Chromium)."""
+"""Browser behavior test; run with python3 tests/dashboard-help.py (requires Chromium or Chrome; set CHROMIUM to pick one)."""
 import http.server
 import json
+import os
 import pathlib
 import queue
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -109,6 +111,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+def find_browser():
+    """The CHROMIUM environment variable, else the first of chromium, chromium-browser and google-chrome on PATH."""
+    found = os.environ.get("CHROMIUM") or next(filter(None, map(shutil.which, ["chromium", "chromium-browser", "google-chrome"])), None)
+    if not found:
+        raise RuntimeError("No Chromium found. Install chromium or google-chrome, or set CHROMIUM to its path.")
+    return found
+
 def run_browser(width, height):
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever)
@@ -116,7 +125,7 @@ def run_browser(width, height):
     try:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile:
             process = subprocess.Popen(
-                ["chromium", "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+                [find_browser(), "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
                  f"--window-size={width},{height}", "--user-data-dir=" + profile, f"http://127.0.0.1:{server.server_port}/"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
