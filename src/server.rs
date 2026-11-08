@@ -1560,8 +1560,7 @@ mod tests {
         let dir = TestDir::new();
         let api = client(&dir).await;
         let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
-        let body =
-            r#"{"stage":"build","status":"running","run_reports":[{"kind":"skill","text":"tdd"}]}"#;
+        let body = r#"{"stage":"build","status":"running","run_reports":[{"kind":"skill","text":"factory-tdd"}]}"#;
         assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
         let bad =
             r#"{"stage":"build","status":"running","run_reports":[{"kind":"skill","text":""}]}"#;
@@ -1571,7 +1570,7 @@ mod tests {
         );
         let saved = fetch(&api, &run.id).await.1.unwrap();
         assert_eq!(saved.run_reports.len(), 1);
-        assert_eq!(saved.run_reports[0].text, "tdd");
+        assert_eq!(saved.run_reports[0].text, "factory-tdd");
     }
 
     #[rocket::async_test]
@@ -1579,7 +1578,7 @@ mod tests {
         let dir = TestDir::new();
         let api = client(&dir).await;
         let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
-        let body = r#"{"stage":"build","status":"running","tickets":[{"reference":"local=42","title":"One"}],"ticket_reports":[{"ticket":"local=42","kind":"skill","text":"tdd"}]}"#;
+        let body = r#"{"stage":"build","status":"running","tickets":[{"reference":"local=42","title":"One"}],"ticket_reports":[{"ticket":"local=42","kind":"skill","text":"factory-tdd"}]}"#;
         assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
         let bad = r#"{"stage":"build","status":"running","ticket_reports":[{"ticket":"missing","kind":"activity","text":"oops"}]}"#;
         assert_eq!(
@@ -1588,7 +1587,7 @@ mod tests {
         );
         let saved = fetch(&api, &run.id).await.1.unwrap();
         assert_eq!(saved.ticket_reports.len(), 1);
-        assert_eq!(saved.ticket_reports[0].text, "tdd");
+        assert_eq!(saved.ticket_reports[0].text, "factory-tdd");
     }
 
     #[rocket::async_test]

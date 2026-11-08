@@ -2472,7 +2472,7 @@ mod tests {
         let update = parse_update(
             "build",
             "running",
-            &["--ticket-report", "t1", "skill", "tdd"],
+            &["--ticket-report", "t1", "skill", "factory-tdd"],
         )
         .unwrap();
         assert!(store.update(&created.id, update).is_err());
@@ -2502,10 +2502,10 @@ mod tests {
         .is_err());
         let mut args = Vec::new();
         for _ in 0..100 {
-            args.extend(["--ticket-report", "t1", "skill", "tdd"]);
+            args.extend(["--ticket-report", "t1", "skill", "factory-tdd"]);
         }
         assert!(parse_update("build", "running", &args).is_ok());
-        args.extend(["--ticket-report", "t1", "skill", "tdd"]);
+        args.extend(["--ticket-report", "t1", "skill", "factory-tdd"]);
         assert!(parse_update("build", "running", &args).is_err());
     }
 
@@ -2522,7 +2522,7 @@ mod tests {
             .unwrap();
         let mut args = Vec::new();
         for _ in 0..100 {
-            args.extend(["--ticket-report", "t1", "skill", "tdd"]);
+            args.extend(["--ticket-report", "t1", "skill", "factory-tdd"]);
         }
         for _ in 0..10 {
             store
@@ -2532,7 +2532,7 @@ mod tests {
         let extra = parse_update(
             "build",
             "running",
-            &["--ticket-report", "t1", "skill", "tdd"],
+            &["--ticket-report", "t1", "skill", "factory-tdd"],
         )
         .unwrap();
         assert!(store.update(&run.id, extra).is_err());
@@ -2584,7 +2584,7 @@ mod tests {
                         "--ticket-report",
                         "t1",
                         "skill",
-                        "tdd",
+                        "factory-tdd",
                     ],
                 )
                 .unwrap(),
@@ -2608,7 +2608,7 @@ mod tests {
         let json = serde_json::to_value(saved).unwrap();
         assert_eq!(json["ticket_reports"][0]["ticket"], "t1");
         assert_eq!(json["ticket_reports"][0]["kind"], "skill");
-        assert_eq!(json["ticket_reports"][0]["text"], "tdd");
+        assert_eq!(json["ticket_reports"][0]["text"], "factory-tdd");
         assert_eq!(json["ticket_reports"][1]["text"], "Tests passed");
         assert_eq!(json["ticket_reports"][1]["stage"], "build");
         assert!(json["ticket_reports"][1]["at"].as_u64().is_some());

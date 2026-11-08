@@ -320,7 +320,7 @@ fn read_doc(path: &Path) -> io::Result<String> {
 }
 
 fn setup_docs_check(root: &Path) -> Check {
-    const FIX: &str = "Run `/setup-tds-factory` once in the project and commit its output.";
+    const FIX: &str = "Run `/factory-setup` once in the project and commit its output.";
     let mut missing = Vec::new();
     if !root.join("docs/agents/issue-tracker.md").is_file() {
         missing.push("docs/agents/issue-tracker.md".to_string());
@@ -1035,7 +1035,7 @@ mod tests {
         let docs = project_check(&report, "setup-docs");
         assert_eq!(docs.status, Status::Missing);
         assert!(docs.message.contains("issue-tracker.md") && docs.message.contains("Agent skills"));
-        assert!(docs.fix.as_ref().unwrap().contains("/setup-tds-factory"));
+        assert!(docs.fix.as_ref().unwrap().contains("/factory-setup"));
 
         // A command whose tool is absent is reported, and a script path is looked up in the project.
         fs::write(

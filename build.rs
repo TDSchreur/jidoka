@@ -57,20 +57,20 @@ fn main() {
     println!("cargo:rerun-if-changed=third-party");
     let mut output = Vec::new();
     for name in [
-        "grill-with-docs",
-        "grilling",
-        "domain-modeling",
-        "codebase-design",
-        "to-spec",
-        "to-tickets",
-        "implement-spec",
-        "implement-spec-fast",
-        "implement-spec-balanced",
-        "tdd",
-        "code-review",
-        "security-review",
-        "pr",
-        "setup-tds-factory",
+        "factory-grill-with-docs",
+        "factory-grilling",
+        "factory-domain-modeling",
+        "factory-codebase-design",
+        "factory-to-spec",
+        "factory-to-tickets",
+        "factory-implement",
+        "factory-implement-fast",
+        "factory-implement-balanced",
+        "factory-tdd",
+        "factory-code-review",
+        "factory-security-review",
+        "factory-pr",
+        "factory-setup",
     ] {
         files(
             Path::new("skills"),
@@ -84,7 +84,7 @@ fn main() {
         "factory-fast",
         "factory-balanced",
         "factory-procedures",
-        "triage",
+        "factory-triage",
     ] {
         files(
             Path::new(".agents/skills"),
