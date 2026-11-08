@@ -1286,3 +1286,509 @@ fn only_a_run_command_naming_the_whole_run_id_counts_as_naming_the_run() {
         );
     }
 }
+
+// --- pauses and idle gaps ---------------------------------------------------------------------------
+
+const MINUTE: u64 = 60;
+
+fn usage_limit_line(at: u64) -> String {
+    json!({"type": "assistant", "isApiErrorMessage": true, "error": "rate_limit", "timestamp": iso(at),
+        "message": {"model": "<synthetic>", "content": [{"type": "text", "text": "SECRET limit text"}],
+            "usage": {"input_tokens": 0, "output_tokens": 0}}})
+    .to_string()
+}
+
+fn compaction_line(at: u64) -> String {
+    json!({"type": "system", "subtype": "compact_boundary", "timestamp": iso(at), "content": "SECRET"}).to_string()
+}
+
+fn activity_line(kind: &str, at: u64) -> String {
+    json!({"type": kind, "timestamp": iso(at), "message": {"content": "SECRET text"}}).to_string()
+}
+
+fn compact_summary_line(at: u64) -> String {
+    json!({"type": "user", "isCompactSummary": true, "timestamp": iso(at), "message": {"content": "SECRET summary"}}).to_string()
+}
+
+/// A run from second 0 whose Claude session `S1` names it, with the given extra log lines.
+fn pause_world(lines: Vec<String>) -> (World, Run) {
+    let world = World::new();
+    let target = run(RUN_A, &[(0, "build", None, None)], None, &[]);
+    let mut all = vec![mention(RUN_A)];
+    all.extend(lines);
+    world.write("claude/projects/-w/S1.jsonl", &all);
+    (world, target)
+}
+
+fn at(seconds: u64) -> u64 {
+    T0 + seconds * 1000
+}
+
+#[test]
+fn a_usage_limit_with_no_later_activity_is_an_unresumed_pause_and_is_not_a_model_row() {
+    let (world, target) = pause_world(vec![activity_line("assistant", 10), usage_limit_line(20)]);
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert_eq!(
+        usage.pauses,
+        vec![Pause {
+            kind: PauseKind::UsageLimit,
+            at: at(20),
+            resumed_at: None
+        }]
+    );
+    assert!(usage.idle.is_empty());
+    // The synthetic limit message is neither a row nor a note about a skipped line.
+    assert!(usage.rows.is_empty());
+    assert!(!usage
+        .notes
+        .iter()
+        .any(|note| note.contains("no usable model")));
+}
+
+#[test]
+fn activity_after_a_marker_resumes_it_and_a_compaction_summary_is_not_activity() {
+    let (world, target) = pause_world(vec![
+        usage_limit_line(20),
+        activity_line("user", 20 + 2 * 3600),
+        compaction_line(8_000),
+        compact_summary_line(8_000 + 1),
+        activity_line("assistant", 8_000 + 30),
+    ]);
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert_eq!(
+        usage.pauses,
+        vec![
+            Pause {
+                kind: PauseKind::UsageLimit,
+                at: at(20),
+                resumed_at: Some(at(20 + 2 * 3600))
+            },
+            Pause {
+                kind: PauseKind::Compaction,
+                at: at(8_000),
+                resumed_at: Some(at(8_000 + 30))
+            },
+        ]
+    );
+}
+
+#[test]
+fn only_gaps_over_ten_minutes_are_idle_and_a_gap_a_pause_explains_is_not() {
+    let (world, target) = pause_world(vec![
+        activity_line("assistant", 0),
+        // 9 minutes: not idle.
+        activity_line("user", 9 * MINUTE),
+        // 11 minutes: idle.
+        activity_line("assistant", 20 * MINUTE),
+        // A long gap with a limit in it is the pause, not idle.
+        usage_limit_line(30 * MINUTE),
+        activity_line("user", 150 * MINUTE),
+    ]);
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert_eq!(
+        usage.idle,
+        vec![IdleGap {
+            from: at(9 * MINUTE),
+            to: at(20 * MINUTE)
+        }]
+    );
+    assert_eq!(usage.pauses.len(), 1);
+    assert_eq!(usage.pauses[0].resumed_at, Some(at(150 * MINUTE)));
+}
+
+#[test]
+fn subagent_activity_counts_and_activity_outside_the_run_window_does_not() {
+    let world = World::new();
+    let target = run(RUN_A, &[(100, "build", None, None)], Some(40 * MINUTE), &[]);
+    world.write(
+        "claude/projects/-w/S1.jsonl",
+        &[
+            mention(RUN_A),
+            // Before the run began and after it finished: outside the window.
+            activity_line("assistant", 0),
+            activity_line("assistant", 200),
+            activity_line("assistant", 100 * MINUTE),
+        ],
+    );
+    world.write(
+        "claude/projects/-w/S1/subagents/agent-1.jsonl",
+        &[activity_line("assistant", 20 * MINUTE)],
+    );
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    // Activity at 200 s and 20 min: the gap between them is idle; the one at 100 min is after the end.
+    assert_eq!(
+        usage.idle,
+        vec![IdleGap {
+            from: at(200),
+            to: at(20 * MINUTE)
+        }]
+    );
+}
+
+#[test]
+fn logs_without_markers_codex_only_runs_and_old_records_have_no_pauses() {
+    let (world, target) = pause_world(vec![activity_line("assistant", 5)]);
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert!(usage.pauses.is_empty() && usage.idle.is_empty());
+
+    let world = World::new();
+    world.write(
+        "codex/sessions/2026/11/05/rollout-x.jsonl",
+        &[
+            codex_meta_line("C1", None),
+            mention(RUN_A),
+            codex_context("gpt-test"),
+            codex_usage(10, "resp-1", 10, 0, 0, 5, 100),
+        ],
+    );
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert!(usage.pauses.is_empty() && usage.idle.is_empty());
+    let empty = World::new().collect(&target, std::slice::from_ref(&target));
+    assert!(empty.pauses.is_empty());
+
+    let old: Usage = serde_json::from_str(r#"{"status":"tracked","collected_at":5}"#).unwrap();
+    assert!(old.pauses.is_empty() && old.idle.is_empty());
+}
+
+#[test]
+fn no_log_text_reaches_the_stored_usage() {
+    let (world, target) = pause_world(vec![
+        usage_limit_line(20),
+        compaction_line(30),
+        activity_line("assistant", 40 * MINUTE),
+    ]);
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert!(!serde_json::to_string(&usage).unwrap().contains("SECRET"));
+}
+
+#[test]
+fn a_partial_read_that_finds_no_pause_keeps_the_pauses_found_before() {
+    let old: Usage = serde_json::from_value(json!({
+        "status": "tracked", "collected_at": 5,
+        "rows": [{"stage": "build", "model": "m", "input": 100, "output": 10}],
+        "pauses": [{"kind": "usage_limit", "at": 7}]
+    }))
+    .unwrap();
+    let new = Usage::not_tracked("logs gone", 9);
+    let kept = keep_more(Some(&old), new);
+    assert_eq!(kept.status, UsageStatus::Partial);
+    assert_eq!(kept.pauses, old.pauses);
+    assert_eq!(kept.collected_at, 9);
+    assert!(!kept.log_complete);
+}
+
+// --- blocking and resuming through the store --------------------------------------------------------
+
+mod auto_block {
+    use super::*;
+    use crate::run::{FieldUpdate, RunEventKind, RunStatus, RunStore, UpdateRun};
+
+    struct Fixture {
+        world: World,
+        store: RunStore,
+        settings: UsageSettings,
+        id: String,
+        /// When the run's timeline began, in milliseconds.
+        began: u64,
+        lines: Vec<String>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let world = World::new();
+            // A run that began six hours ago, so the log moments after it are in the past.
+            let began = crate::run::updated_now().unwrap() - 6 * 3_600_000;
+            let id = format!("{}", u128::from(began) * 1_000_000);
+            let path = world.dir.path().join("runs.json");
+            fs::write(
+                &path,
+                json!([{"id": id, "title": "task", "project": "/work", "stage": "build", "status": "running",
+                    "updated_at": began, "timeline": [{"at": began, "stage": "build"}]}])
+                .to_string(),
+            )
+            .unwrap();
+            let store = RunStore::open(&path).unwrap();
+            let settings = UsageSettings {
+                enabled: true,
+                roots: world.roots(),
+                budget: Duration::from_secs(10),
+                settle: Vec::new(),
+            };
+            Self {
+                world,
+                store,
+                settings,
+                lines: vec![mention(&id)],
+                id,
+                began,
+            }
+        }
+
+        /// Appends a log line `ms` after the run began and collects.
+        fn log(&mut self, make: impl Fn(&str) -> String, ms: u64) -> Run {
+            let ts = iso_timestamp(self.began + ms);
+            self.lines.push(make(&ts));
+            self.world.write("claude/projects/-w/S1.jsonl", &self.lines);
+            collect_and_store(&self.store, &self.id, &self.settings).unwrap();
+            self.run()
+        }
+
+        fn limit(&mut self, ms: u64) -> Run {
+            self.log(
+                |ts| json!({"type": "assistant", "isApiErrorMessage": true, "error": "rate_limit", "timestamp": ts,
+                    "message": {"model": "<synthetic>", "usage": {"input_tokens": 0, "output_tokens": 0}}}).to_string(),
+                ms,
+            )
+        }
+
+        fn compaction(&mut self, ms: u64) -> Run {
+            self.log(
+                |ts| {
+                    json!({"type": "system", "subtype": "compact_boundary", "timestamp": ts})
+                        .to_string()
+                },
+                ms,
+            )
+        }
+
+        fn activity(&mut self, ms: u64) -> Run {
+            self.log(
+                |ts| {
+                    json!({"type": "assistant", "timestamp": ts, "message": {"content": "x"}})
+                        .to_string()
+                },
+                ms,
+            )
+        }
+
+        fn run(&self) -> Run {
+            self.store.get(&self.id).unwrap().unwrap()
+        }
+
+        fn agent_update(&self, status: RunStatus, reason: Option<&str>) {
+            let mut update = UpdateRun::new(Stage::Build, status);
+            if let Some(reason) = reason {
+                update.blocking_reason = FieldUpdate::Set(reason.into());
+            }
+            self.store.update(&self.id, update).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_repeated_complete_collection_with_unchanged_logs_saves_nothing() {
+        let mut f = Fixture::new();
+        f.activity(1_000);
+        // A reopened store holds the saved usage, whose `log_complete` is not stored.
+        let path = f.world.dir.path().join("runs.json");
+        let stored = RunStore::open(&path).unwrap();
+        let before = stored.get(&f.id).unwrap().unwrap().usage.unwrap();
+        assert!(!before.log_complete);
+        // Wait until a new collection would carry a later timestamp, so a save would show.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while crate::run::updated_now().unwrap() <= before.collected_at {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "clock did not advance"
+            );
+            std::thread::yield_now();
+        }
+        collect_and_store(&stored, &f.id, &f.settings).unwrap();
+        let after = stored.get(&f.id).unwrap().unwrap().usage.unwrap();
+        assert_eq!(after.collected_at, before.collected_at);
+    }
+
+    #[test]
+    fn a_usage_limit_blocks_the_run_and_later_activity_resumes_it() {
+        let mut f = Fixture::new();
+        let blocked = f.limit(1_000);
+        assert_eq!(blocked.status, RunStatus::Blocked);
+        assert_eq!(
+            blocked.blocking_reason.as_deref(),
+            Some("Usage limit reached")
+        );
+        let event = blocked.events.last().unwrap();
+        assert_eq!(event.kind, RunEventKind::Blocked);
+        assert_eq!(event.reason.as_deref(), Some("Usage limit reached"));
+        assert_eq!(event.at, f.began + 1_000);
+
+        // Collecting again with nothing new adds no event.
+        collect_and_store(&f.store, &f.id, &f.settings).unwrap();
+        assert_eq!(f.run().events.len(), 1);
+
+        let resumed = f.activity(3_600_000);
+        assert_eq!(resumed.status, RunStatus::Running);
+        assert_eq!(resumed.blocking_reason, None);
+        let event = resumed.events.last().unwrap();
+        assert_eq!(event.kind, RunEventKind::Resumed);
+        assert_eq!(event.at, f.began + 3_600_000);
+        assert_eq!(resumed.events.len(), 2);
+        assert_eq!(
+            resumed.usage.unwrap().pauses[0].resumed_at,
+            Some(f.began + 3_600_000)
+        );
+    }
+
+    #[test]
+    fn a_compaction_blocks_with_its_own_reason_and_resumes_the_same_way() {
+        let mut f = Fixture::new();
+        let blocked = f.compaction(1_000);
+        assert_eq!(blocked.status, RunStatus::Blocked);
+        assert_eq!(
+            blocked.blocking_reason.as_deref(),
+            Some("Context compaction in progress")
+        );
+        let event = blocked.events.last().unwrap();
+        assert_eq!(event.kind, RunEventKind::Blocked);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("Context compaction in progress")
+        );
+        let resumed = f.activity(5_000);
+        assert_eq!(resumed.status, RunStatus::Running);
+        assert_eq!(resumed.blocking_reason, None);
+        assert_eq!(resumed.events.last().unwrap().kind, RunEventKind::Resumed);
+    }
+
+    #[test]
+    fn a_second_pause_after_a_resume_blocks_again_though_the_watcher_wrote_in_between() {
+        let mut f = Fixture::new();
+        assert_eq!(f.limit(1_000).status, RunStatus::Blocked);
+        let resumed = f.activity(3_600_000);
+        assert_eq!(resumed.status, RunStatus::Running);
+        // The watcher's resume write is stamped with the current time, later than the next pause below.
+        assert!(resumed.updated_at.unwrap() > f.began + 7_200_000);
+        let blocked = f.limit(7_200_000);
+        assert_eq!(blocked.status, RunStatus::Blocked);
+        assert_eq!(
+            blocked.blocking_reason.as_deref(),
+            Some("Usage limit reached")
+        );
+        assert_eq!(blocked.events.len(), 3);
+    }
+
+    #[test]
+    fn a_pause_block_takes_the_reason_of_the_current_pause() {
+        let mut f = Fixture::new();
+        f.limit(1_000);
+        let run = f.compaction(2_000);
+        assert_eq!(run.status, RunStatus::Blocked);
+        assert_eq!(
+            run.blocking_reason.as_deref(),
+            Some("Context compaction in progress")
+        );
+        assert_eq!(run.events.last().unwrap().kind, RunEventKind::Blocked);
+    }
+
+    #[test]
+    fn a_pause_block_whose_log_shows_no_pause_any_more_is_resumed() {
+        let mut f = Fixture::new();
+        assert_eq!(f.limit(1_000).status, RunStatus::Blocked);
+        f.lines.truncate(1);
+        f.world.write("claude/projects/-w/S1.jsonl", &f.lines);
+        collect_and_store(&f.store, &f.id, &f.settings).unwrap();
+        let run = f.run();
+        assert_eq!(run.status, RunStatus::Running);
+        assert_eq!(run.blocking_reason, None);
+        assert_eq!(run.events.last().unwrap().kind, RunEventKind::Resumed);
+
+        // An agent-set block is left alone when the log shows no pause.
+        let agent = Fixture::new();
+        agent.agent_update(RunStatus::Blocked, Some("Need keys"));
+        collect_and_store(&agent.store, &agent.id, &agent.settings).unwrap();
+        assert_eq!(agent.run().blocking_reason.as_deref(), Some("Need keys"));
+    }
+
+    #[test]
+    fn a_pause_block_stays_when_the_collection_cannot_show_the_pause_is_over() {
+        // Tracking switched off.
+        let mut off = Fixture::new();
+        assert_eq!(off.limit(1_000).status, RunStatus::Blocked);
+        off.settings.enabled = false;
+        collect_and_store(&off.store, &off.id, &off.settings).unwrap();
+        assert_eq!(off.run().status, RunStatus::Blocked);
+        assert_eq!(off.run().events.len(), 1);
+
+        // The session logs are gone.
+        let mut gone = Fixture::new();
+        assert_eq!(gone.limit(1_000).status, RunStatus::Blocked);
+        fs::remove_dir_all(gone.world.dir.path().join("claude")).unwrap();
+        collect_and_store(&gone.store, &gone.id, &gone.settings).unwrap();
+        assert_eq!(gone.run().status, RunStatus::Blocked);
+        assert_eq!(gone.run().events.len(), 1);
+
+        // The read ran out of time.
+        let mut slow = Fixture::new();
+        assert_eq!(slow.limit(1_000).status, RunStatus::Blocked);
+        slow.settings.budget = Duration::ZERO;
+        collect_and_store(&slow.store, &slow.id, &slow.settings).unwrap();
+        assert_eq!(slow.run().status, RunStatus::Blocked);
+        assert_eq!(slow.run().events.len(), 1);
+    }
+
+    #[test]
+    fn a_block_the_agent_set_is_never_changed_by_a_pause() {
+        let mut f = Fixture::new();
+        f.agent_update(RunStatus::Blocked, Some("Need keys"));
+        f.limit(1_000);
+        let after_activity = f.activity(5_000);
+        assert_eq!(after_activity.status, RunStatus::Blocked);
+        assert_eq!(after_activity.blocking_reason.as_deref(), Some("Need keys"));
+        // Only the agent's own Blocked event exists.
+        assert_eq!(after_activity.events.len(), 1);
+    }
+
+    #[test]
+    fn a_done_run_is_never_changed_by_a_pause() {
+        let mut f = Fixture::new();
+        f.agent_update(RunStatus::Done, None);
+        let run = f.limit(1_000);
+        assert_eq!(run.status, RunStatus::Done);
+        assert!(run.events.is_empty());
+    }
+
+    #[test]
+    fn a_run_the_agent_updated_after_the_marker_is_not_blocked() {
+        let mut f = Fixture::new();
+        // The marker is older than the agent's latest update: the agent is evidently working.
+        f.agent_update(RunStatus::Running, None);
+        let updated = f.run().updated_at.unwrap();
+        let run = f.limit(updated.saturating_sub(f.began).saturating_sub(1));
+        assert_eq!(run.status, RunStatus::Running);
+        assert!(run.events.is_empty());
+    }
+
+    #[test]
+    fn watching_collects_working_and_pause_blocked_runs_but_not_done_or_long_idle_ones() {
+        let mut f = Fixture::new();
+        f.limit(1_000);
+        // A pause seen only by the watcher: wipe the block, keep the log, and let the watcher find it.
+        f.lines.push(
+            json!({"type": "assistant", "timestamp": iso_timestamp(f.began + 3_600_000), "message": {"content": "x"}})
+                .to_string(),
+        );
+        f.world.write("claude/projects/-w/S1.jsonl", &f.lines);
+        let now = crate::run::updated_now().unwrap();
+        collect_active(&f.store, &f.settings, now).unwrap();
+        assert_eq!(f.run().status, RunStatus::Running, "resumed with no update");
+
+        // Long idle: the watcher leaves a run alone.
+        let mut idle = Fixture::new();
+        idle.lines.push(
+            json!({"type": "assistant", "isApiErrorMessage": true, "error": "rate_limit",
+                "timestamp": iso_timestamp(idle.began + 1_000), "message": {"model": "<synthetic>", "usage": {}}}).to_string(),
+        );
+        idle.world.write("claude/projects/-w/S1.jsonl", &idle.lines);
+        let later = crate::run::updated_now().unwrap() + 8 * 24 * 60 * 60 * 1000;
+        collect_active(&idle.store, &idle.settings, later).unwrap();
+        assert_eq!(idle.run().status, RunStatus::Running);
+        let now = crate::run::updated_now().unwrap();
+        collect_active(&idle.store, &idle.settings, now).unwrap();
+        assert_eq!(idle.run().status, RunStatus::Blocked);
+
+        // Done runs are not collected at all.
+        let done = Fixture::new();
+        done.agent_update(RunStatus::Done, None);
+        collect_active(&done.store, &done.settings, now).unwrap();
+        assert!(done.run().usage.is_none());
+    }
+}

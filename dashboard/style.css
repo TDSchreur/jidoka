@@ -303,7 +303,9 @@ body:has(.confirm[open]) { overflow: hidden; }
 .pass-activity { margin: var(--space-2) 0 0; overflow-wrap: anywhere; }
 /* A moment the Run was blocked or resumed in this pass, in words with its time. */
 .pass-event { margin: var(--space-2) 0 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-.pass-event.blocked { font-weight: 600; }
+.pass-event.blocked, .pass-event.pause { font-weight: 600; }
+/* An idle gap is quieter than a pause; both say what they are in words. */
+.pass-event.idle { color: var(--color-muted); }
 /* A Build pass that follows a rework request: its mark carries a second ring. */
 .stop.rework-pass .mark { outline: var(--stroke-thick) solid var(--color-slate); outline-offset: var(--stroke-thick); }
 /* A Check pass that was sent back ends in a dashed connector, labelled in words. */

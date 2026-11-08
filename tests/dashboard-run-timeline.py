@@ -330,6 +330,29 @@ return [0, 59999, min, 12 * min + 59000, 59 * min, 60 * min, 65 * min, 125 * min
         self.assertIn("Resumed", snaps["a"]["other"])
         self.assertIn("Blocked: No timeline.", snaps["b"]["other"])
 
+    def test_pauses_and_idle_gaps_show_in_the_pass_that_holds_them_and_otherwise_under_other_reports(self):
+        usage = {
+            "status": "tracked", "collected_at": T["end"],
+            "pauses": [
+                {"kind": "usage_limit", "at": T["build"] + 60000, "resumed_at": T["build"] + 60000 + 3 * 3600000},
+                {"kind": "compaction", "at": T["check1"] + 1000},
+                {"kind": "usage_limit", "at": T["define"] - 5000, "resumed_at": T["define"] + 55000},
+            ],
+            "idle": [{"from": T["build"] + 400000, "to": T["build"] + 400000 + 42 * 60000}],
+        }
+        runs = [{**BLOCKED, "id": "run-pauses", "status": "running", "timeline": MARKS[:3], "blocking_reason": None, "usage": usage}]
+        snap = drive("return await snap('run-pauses');", runs=runs)
+        passes = snap["passes"]
+        self.assertEqual(passes[0]["events"], [])
+        self.assertEqual(len(passes[1]["events"]), 2)
+        self.assertTrue(passes[1]["events"][0].startswith("Usage limit reached · resumed after 3 h"))
+        self.assertTrue(passes[1]["events"][1].startswith("Idle 42 min"))
+        self.assertEqual(len(passes[2]["events"]), 1)
+        self.assertTrue(passes[2]["events"][0].startswith("Context compaction · not resumed yet"))
+        self.assertIn("Usage limit reached · resumed after 1 min", snap["other"])
+        # A run without usage shows none of them.
+        self.assertEqual(self.snaps["run-rework"]["passes"][1]["events"], [])
+
     def test_reports_before_the_first_mark_and_for_unlisted_tickets_go_to_other_reports(self):
         other = self.snaps["run-rework"]["other"]
         self.assertIn("Other reports", other)
