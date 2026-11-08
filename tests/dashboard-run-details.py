@@ -72,7 +72,7 @@ STRAY = {
 CURRENT = {**ACTIVE, "id": "run-current", "title": "Current one", "current_ticket": "local-1",
            "tickets": [{"reference": "local-1", "title": "Index in the background", "status": "pending"},
                        {"reference": "local-2", "title": "Other", "status": "pending"}]}
-NO_CURRENT = {**ACTIVE, "id": "run-no-current", "title": "No current one", "current_ticket": None,
+NO_CURRENT = {**{k: v for k, v in ACTIVE.items() if k != "current_ticket"}, "id": "run-no-current", "title": "No current one",
               "tickets": [{"title": "Unreferenced work", "status": "pending"}]}
 RUNS = [SHIPPED, ACTIVE, BLOCKED, STRAY, CURRENT, NO_CURRENT]
 
