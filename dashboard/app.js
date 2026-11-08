@@ -422,12 +422,14 @@ function SkillChips({ reports }) {
 }
 
 /** Activity reports as a list of when and what. */
-function ReportList({ reports, now }) {
+function ReportList({ reports, now, showTicket = false }) {
   const activity = reports.filter((r) => r.kind !== 'skill');
   return activity.length
     ? html`<ul class="reports">
         ${activity.map(
-          (report, index) => html`<li key=${index}><${SheetTime} at=${report.at} now=${now} /><span>${report.text}</span></li>`,
+          (report, index) => html`<li key=${index}>
+            <${SheetTime} at=${report.at} now=${now} /><span>${showTicket && report.ticket != null ? html`<${TicketRef} value=${String(report.ticket)} />${' '}` : null}${report.text}</span>
+          </li>`,
         )}
       </ul>`
     : null;
@@ -452,11 +454,14 @@ function stationState(run, at) {
   return 'ahead';
 }
 
+/** `value` when it is an array, else an empty one: stored runs may lack a list or hold something else. */
+const listOf = (value) => (Array.isArray(value) ? value : []);
+
 /** Where each report belongs: a run report by its stage, a ticket report by its listed ticket, anything else in `other`. */
 function placeReports(run) {
-  const runReports = Array.isArray(run.run_reports) ? run.run_reports : [];
-  const ticketReports = Array.isArray(run.ticket_reports) ? run.ticket_reports : [];
-  const tickets = Array.isArray(run.tickets) ? run.tickets : [];
+  const runReports = listOf(run.run_reports);
+  const ticketReports = listOf(run.ticket_reports);
+  const tickets = listOf(run.tickets);
   const listed = (r) => tickets.some((t) => t.reference === r.ticket);
   return {
     byStage: (id) => runReports.filter((r) => r.stage === id),
@@ -476,68 +481,66 @@ export function durationWords(ms) {
 
 /**
  * The passes through the stages that the run's timeline records, oldest first: consecutive Build marks that differ
- * only by ticket form one pass that lists those tickets. Empty when the run has no usable marks.
+ * only by ticket form one pass that lists those tickets. `unstartedTickets` are tickets no Build pass started and
+ * that have no first Build pass to wait in. `now` ends the last pass of a run that is not finished.
  */
-function timelinePasses(run) {
-  const marks = (Array.isArray(run.timeline) ? run.timeline : [])
+export function timelinePasses(run, now) {
+  const marks = listOf(run.timeline)
     .filter((mark) => mark && Number.isFinite(mark.at) && STATIONS.includes(mark.stage))
     .sort((a, b) => a.at - b.at);
-  const allTickets = Array.isArray(run.tickets) ? run.tickets : [];
+  const allTickets = listOf(run.tickets);
   const passes = [];
   for (const mark of marks) {
     const rework = Number.isInteger(mark.rework) && mark.rework > 0 ? mark.rework : null;
+    const activity = typeof mark.activity === 'string' && mark.activity ? mark.activity : null;
     const previous = passes[passes.length - 1];
     if (previous && mark.stage === 'build' && previous.stage === 'build' && previous.rework === rework) {
       previous.refs.push(mark.ticket);
+      if (activity && !previous.activities.includes(activity)) previous.activities.push(activity);
       continue;
     }
-    passes.push({
-      stage: mark.stage,
-      rework,
-      start: mark.at,
-      activity: typeof mark.activity === 'string' && mark.activity ? mark.activity : null,
-      refs: [mark.ticket],
-    });
+    passes.push({ stage: mark.stage, rework, start: mark.at, activities: activity ? [activity] : [], refs: [mark.ticket] });
   }
-  if (!passes.length) return passes;
-  const finished = Number.isFinite(run.finished_at) ? run.finished_at : timestamp(run);
+  if (!passes.length) return { passes, unstartedTickets: [] };
+  const finished = run.status === 'done' ? (Number.isFinite(run.finished_at) ? run.finished_at : timestamp(run)) : now;
   const used = new Set(passes.flatMap((pass) => pass.refs).filter((ref) => ref != null));
-  // Tickets no Build pass has started yet are still pending work of the original Build pass.
-  const idle = allTickets.filter((ticket) => !used.has(ticket.reference));
-  const home = [...passes].reverse().find((pass) => pass.stage === 'build' && pass.rework === null);
+  // Tickets no Build pass has started yet are still pending work of the first Build pass, or stand apart without one.
+  const notStarted = allTickets.filter((ticket) => !used.has(ticket.reference));
+  const firstBuildPass = passes.find((pass) => pass.stage === 'build' && pass.rework === null);
   passes.forEach((pass, index) => {
     const next = passes[index + 1];
     const end = next ? next.start : finished;
     pass.duration = Number.isFinite(end) ? Math.max(0, end - pass.start) : null;
     pass.end = next ? next.start : Infinity;
-    pass.tickets = allTickets.filter((ticket) => pass.refs.includes(ticket.reference) || (pass === home && idle.includes(ticket)));
+    pass.tickets = allTickets.filter((ticket) => pass.refs.includes(ticket.reference) || (pass === firstBuildPass && notStarted.includes(ticket)));
     pass.sentBack = pass.stage === 'check' && next?.stage === 'build' && next.rework !== null;
     pass.lastOfStage = !passes.slice(index + 1).some((later) => later.stage === pass.stage);
     pass.state = next ? 'done' : run.status === 'done' ? 'done' : run.status === 'blocked' ? 'blocked' : 'current';
   });
-  return passes;
+  return { passes, unstartedTickets: firstBuildPass ? [] : notStarted };
 }
 
 /** Where each report belongs on a timeline: in the pass whose time window holds its `at`; the rest in `other`. */
-function placeByTime(run, passes) {
-  const runReports = Array.isArray(run.run_reports) ? run.run_reports : [];
-  const ticketReports = Array.isArray(run.ticket_reports) ? run.ticket_reports : [];
-  const tickets = Array.isArray(run.tickets) ? run.tickets : [];
+function placeByTime(run, passes, unstartedTickets) {
+  const tickets = listOf(run.tickets);
   const placed = passes.map(() => ({ reports: [], byTicket: new Map() }));
+  const unstarted = new Map();
   const other = [];
   const windowOf = (report) => passes.findIndex((pass) => Number.isFinite(report.at) && report.at >= pass.start && report.at < pass.end);
-  for (const report of runReports) {
+  for (const report of listOf(run.run_reports)) {
     const at = windowOf(report);
     (at === -1 ? other : placed[at].reports).push(report);
   }
-  for (const report of ticketReports) {
+  for (const report of listOf(run.ticket_reports)) {
     const at = windowOf(report);
     const listed = tickets.find((ticket) => ticket.reference === report.ticket);
-    if (at === -1 || !listed) other.push(report);
+    if (!listed) other.push(report);
+    else if (unstartedTickets.includes(listed)) unstarted.set(listed.reference, [...(unstarted.get(listed.reference) ?? []), report]);
+    else if (at === -1) other.push(report);
     else if (passes[at].tickets.includes(listed)) placed[at].byTicket.set(listed.reference, [...(placed[at].byTicket.get(listed.reference) ?? []), report]);
     else placed[at].reports.push(report);
   }
-  return { placed, other };
+  return { placed, other, unstarted };
 }
 
 function TicketList({ run, tickets, byTicket, now }) {
@@ -572,10 +575,10 @@ function Pass({ run, pass, placed, now }) {
     <p class="pass-when">
       <${SheetTime} at=${pass.start} now=${now} />${pass.duration !== null ? html`${' · '}<span class="pass-duration">${durationWords(pass.duration)}</span>` : null}
     </p>
-    ${pass.activity ? html`<p class="pass-activity">${pass.activity}</p>` : null}
+    ${pass.activities.map((activity) => html`<p key=${activity} class="pass-activity">${activity}</p>`)}
     ${summary ? html`<p class="stop-summary">${summary}</p>` : null}
     <${SkillChips} reports=${placed.reports} />
-    <${ReportList} reports=${placed.reports} now=${now} />
+    <${ReportList} reports=${placed.reports} now=${now} showTicket=${true} />
     ${pass.tickets.length ? html`<${TicketList} run=${run} tickets=${pass.tickets} byTicket=${(ref) => placed.byTicket.get(ref) ?? []} now=${now} />` : null}
     ${pass.sentBack ? html`<p class="sent-back-note">sent back</p>` : null}
   </li>`;
@@ -586,7 +589,7 @@ function Station({ run, id, name, at, now }) {
   const state = stationState(run, at);
   const placed = placeReports(run);
   const reports = placed.byStage(id);
-  const tickets = id === 'build' && Array.isArray(run.tickets) ? run.tickets : [];
+  const tickets = id === 'build' ? listOf(run.tickets) : [];
   const progress = id === 'build' ? ticketProgress(run) : null;
   const rework = id === 'check' && Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   const summary = run.summaries?.[id];
@@ -606,32 +609,27 @@ function Station({ run, id, name, at, now }) {
     ${rework !== null ? html`<p class="rework"><span class="chip">Rework${' '}${reworkLabel(rework)}</span></p>` : null}
     <${SkillChips} reports=${reports} />
     <${ReportList} reports=${reports} now=${now} />
-    ${tickets.length
-      ? html`<ol class="ticket-list">
-          ${tickets.map((ticket) => {
-            const own = placed.byTicket(ticket.reference);
-            const current = ticket.status !== 'done' && run.current_ticket != null && run.current_ticket === ticket.reference;
-            return html`<li key=${ticket.reference} class=${ticket.status === 'done' ? 'ticket done' : 'ticket'}>
-              <p class="ticket-line">
-                <span class="ticket-status">${current ? TICKET_STATUS['in-progress'] : (TICKET_STATUS[ticket.status] ?? String(ticket.status))}</span>
-                <span class="ticket-name"><${TicketRef} value=${String(ticket.reference)} />${' '}${ticket.title}</span>
-              </p>
-              <${SkillChips} reports=${own} />
-              <${ReportList} reports=${own} now=${now} />
-            </li>`;
-          })}
-        </ol>`
-      : null}
+    ${tickets.length ? html`<${TicketList} run=${run} tickets=${tickets} byTicket=${placed.byTicket} now=${now} />` : null}
   </li>`;
 }
 
-/** Reports that belong to no station, no pass or no listed ticket, so they are never dropped silently. */
-function OtherReports({ stray, now }) {
-  if (!stray.length) return null;
+/** Reports that belong to no station, no pass or no listed ticket, and summaries of stages with no pass, so nothing is dropped silently. */
+function OtherReports({ reports, summaries, now }) {
+  if (!reports.length && !summaries.length) return null;
   return html`<section class="other-reports" aria-labelledby="other-reports-title">
     <h3 id="other-reports-title">Other reports</h3>
-    <${SkillChips} reports=${stray} />
-    <${ReportList} reports=${stray} now=${now} />
+    ${summaries.map(([name, text]) => html`<p key=${name} class="other-summary">${name}: ${text}</p>`)}
+    <${SkillChips} reports=${reports} />
+    <${ReportList} reports=${reports} now=${now} showTicket=${true} />
+  </section>`;
+}
+
+/** Tickets no pass started, when the timeline has no first Build pass to list them under. */
+function UnstartedTickets({ run, tickets, byTicket, now }) {
+  if (!tickets.length) return null;
+  return html`<section class="unstarted-tickets" aria-labelledby="unstarted-title">
+    <h3 id="unstarted-title">Tickets</h3>
+    <${TicketList} run=${run} tickets=${tickets} byTicket=${(ref) => byTicket.get(ref) ?? []} now=${now} />
   </section>`;
 }
 
@@ -677,9 +675,13 @@ function Detail({ run, now, onClose, onDelete }) {
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   const total = usageTotal(run);
   const listed = Array.isArray(run.tickets) && run.tickets.some((t) => t.reference === run.current_ticket);
-  const passes = timelinePasses(run);
-  const onTime = passes.length ? placeByTime(run, passes) : null;
-  const stray = onTime ? onTime.other : placeReports(run).other;
+  const { passes, unstartedTickets } = timelinePasses(run, now);
+  const placed = passes.length ? placeByTime(run, passes, unstartedTickets) : null;
+  const otherReports = placed ? placed.other : placeReports(run).other;
+  // A summary is kept per stage; one whose stage has no pass in the timeline (it may have been cut short) shows here.
+  const orphanSummaries = placed
+    ? GROUPS.filter(([id]) => run.summaries?.[id] && !passes.some((pass) => pass.stage === id)).map(([id, name]) => [name, run.summaries[id]])
+    : [];
   return html`<dialog
     ref=${dialog}
     class="detail"
@@ -716,11 +718,12 @@ function Detail({ run, now, onClose, onDelete }) {
         ${blocked && run.blocking_reason ? html`<p class="status-reason">${run.blocking_reason}</p>` : null}
       </div>
       <ol class="route" aria-label="Route">
-        ${onTime
-          ? passes.map((pass, index) => html`<${Pass} key=${index} run=${run} pass=${pass} placed=${onTime.placed[index]} now=${now} />`)
+        ${placed
+          ? passes.map((pass, index) => html`<${Pass} key=${index} run=${run} pass=${pass} placed=${placed.placed[index]} now=${now} />`)
           : GROUPS.map(([id, name], at) => html`<${Station} key=${id} run=${run} id=${id} name=${name} at=${at} now=${now} />`)}
       </ol>
-      <${OtherReports} stray=${stray} now=${now} />
+      ${placed ? html`<${UnstartedTickets} run=${run} tickets=${unstartedTickets} byTicket=${placed.unstarted} now=${now} />` : null}
+      <${OtherReports} reports=${otherReports} summaries=${orphanSummaries} now=${now} />
       ${run.usage
         ? html`<details class="usage" open=${active}>
             <summary>

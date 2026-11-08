@@ -272,8 +272,11 @@ body:has(.confirm[open]) { overflow: hidden; }
 .status-row.blocked a:focus-visible { outline-color: var(--color-on-amber); }
 .detail-ticket { margin: 0 0 var(--space-4); overflow-wrap: anywhere; color: var(--color-muted); font-size: var(--text-s); }
 .pr-reason { color: var(--color-muted); overflow-wrap: anywhere; }
-.status-row.blocked .pr-reason { color: var(--color-on-amber); }
+.status-row.blocked .pr-reason, .status-row.blocked .status-reason { color: var(--color-on-amber); }
 .other-reports { margin: var(--space-4) 0; }
+.unstarted-tickets { margin: var(--space-4) 0; }
+.unstarted-tickets h3 { margin: 0 0 var(--space-2); font-size: var(--text-s); font-weight: var(--weight-strong); color: var(--color-muted); }
+.other-summary { margin: 0 0 var(--space-2); font-size: var(--text-xs); line-height: var(--leading-xs); overflow-wrap: anywhere; }
 .other-reports h3 { margin: 0 0 var(--space-2); font-size: var(--text-s); font-weight: var(--weight-strong); color: var(--color-muted); }
 .status-reason { flex-basis: 100%; margin: 0; font-size: var(--text-s); line-height: var(--leading-s); overflow-wrap: anywhere; }
 .pr-word.merged { font-weight: var(--weight-strong); }

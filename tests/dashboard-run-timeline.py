@@ -69,8 +69,8 @@ TICKETS = {
     "timeline": [
         {"at": T["define"], "stage": "define"},
         {"at": T["build"], "stage": "build", "activity": "Implementing the tickets"},
-        {"at": T["build"] + 60000, "stage": "build", "ticket": "t1"},
-        {"at": T["build"] + 120000, "stage": "build", "ticket": "t2"},
+        {"at": T["build"] + 60000, "stage": "build", "ticket": "t1", "activity": "Implementing the tickets"},
+        {"at": T["build"] + 120000, "stage": "build", "ticket": "t2", "activity": "Writing the buy path"},
         {"at": T["check1"], "stage": "check"},
     ],
     "tickets": [
@@ -90,7 +90,19 @@ NO_TIMELINE = {
     "updated_at": T["end"], "run_reports": [{"kind": "activity", "text": "Index builder started", "stage": "build", "at": T["build"]}],
 }
 EMPTY_TIMELINE = {**NO_TIMELINE, "id": "run-empty", "timeline": []}
-RUNS = [SHIPPED, BLOCKED, ACTIVE, TICKETS, NO_TIMELINE, EMPTY_TIMELINE]
+# The timeline was cut short: no Define or Build pass, but their summaries are kept.
+TRUNCATED = {
+    **SHIPPED, "id": "run-truncated", "timeline": MARKS[-2:], "run_reports": [], "ticket_reports": [],
+    "summaries": {"define": "Design agreed.", "build": "Built with tests.", "finish": "Opened the pull request."},
+}
+# Still in Define: no Build pass exists, so the tickets are not started.
+DEFINING = {
+    "id": "run-defining", "title": "Plan the export", "project": "/work/shop", "stage": "define", "status": "running",
+    "updated_at": T["define"] + 60000, "timeline": MARKS[:1], "run_reports": [],
+    "tickets": [{"reference": "t1", "title": "Export to CSV", "status": "pending"}, {"reference": "t2", "title": "Export to PDF", "status": "pending"}],
+    "ticket_reports": [{"ticket": "t1", "kind": "activity", "text": "Sketched the CSV columns", "at": T["define"] + 30000}],
+}
+RUNS = [SHIPPED, BLOCKED, ACTIVE, TICKETS, NO_TIMELINE, EMPTY_TIMELINE, TRUNCATED, DEFINING]
 
 HELPERS = """
 const wait = (ok, what) => new Promise((resolve, reject) => {
@@ -121,6 +133,7 @@ const snap = async (id) => {
       time: li.querySelector('.pass-when time')?.getAttribute('datetime'),
       duration: text(li.querySelector('.pass-duration')),
       activity: text(li.querySelector('.pass-activity')),
+      activities: [...li.querySelectorAll(':scope > .pass-activity')].map(text),
       summary: text(li.querySelector('.stop-summary')),
       skills: [...li.querySelectorAll(':scope > .skills > li')].map(text),
       reports: [...li.querySelectorAll(':scope > .reports li')].map(text),
@@ -132,6 +145,9 @@ const snap = async (id) => {
       markHidden: li.querySelector('.mark').getAttribute('aria-hidden'),
     })),
     other: text(dialog.querySelector('.other-reports')),
+    unstarted: [...dialog.querySelectorAll('.unstarted-tickets > .ticket-list > li')].map(text),
+    unstartedHeading: text(dialog.querySelector('.unstarted-tickets h3')),
+    unstartedAfterRail: !!dialog.querySelector('.route + .unstarted-tickets'),
     routeIsList: dialog.querySelector('ol.route') !== null,
     statusRowAmber: amberCount(dialog.querySelector('.status-row')) + (getComputedStyle(dialog.querySelector('.status-row')).backgroundColor === 'rgb(242, 183, 5)' ? 1 : 0),
     amber: amberCount(dialog),
@@ -153,7 +169,7 @@ def drive(body, runs=RUNS, **options):
 class RunTimelineTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        ids = ["run-rework", "run-blocked", "run-active", "run-tickets", "run-plain", "run-empty"]
+        ids = ["run-rework", "run-blocked", "run-active", "run-tickets", "run-plain", "run-empty", "run-truncated", "run-defining"]
         body = "return {" + ", ".join(f"'{i}': await snap('{i}')" for i in ids) + "};"
         cls.snaps = drive(body)
         cls.rework = cls.snaps["run-rework"]["passes"]
@@ -185,9 +201,30 @@ class RunTimelineTest(unittest.TestCase):
     def test_durations_are_plain_words_until_the_next_pass_and_the_last_runs_to_the_end(self):
         self.assertEqual([p["duration"] for p in self.rework], DURATIONS)
         self.assertRegex(self.rework[1]["when"], r"^\d{2}:\d{2} · 13 min$")
-        # An active run's last pass runs to its last update: 5 min 20 s after the build began.
-        active = self.snaps["run-active"]["passes"]
-        self.assertEqual([p["duration"] for p in active], ["under 1 min", "5 min"])
+
+    def test_the_last_pass_of_an_active_run_runs_to_now_and_a_finished_one_to_its_end(self):
+        body = """
+const {timelinePasses} = await import('/assets/app.js');
+const run = {status: 'running', updated_at: 1000, timeline: [{at: 0, stage: 'define'}, {at: 600000, stage: 'build'}]};
+const at = (now, extra = {}) => timelinePasses({...run, ...extra}, now).passes.map((p) => p.duration);
+return [at(1800000), at(1800000, {status: 'done', finished_at: 900000}), at(1800000, {status: 'blocked'})];
+"""
+        active, done, blocked = drive(body)
+        self.assertEqual(active, [600000, 1200000])
+        self.assertEqual(done, [600000, 300000])
+        self.assertEqual(blocked, [600000, 1200000])
+
+    def test_the_active_pass_in_the_sheet_counts_to_the_current_time(self):
+        body = """
+const before = Date.now();
+const shot = await snap('run-active');
+const {durationWords} = await import('/assets/app.js');
+const start = %d;
+return {last: shot.passes[1].duration, wanted: [durationWords(before - start), durationWords(Date.now() - start)]};
+""" % T["build"]
+        result = drive(body)
+        self.assertIn(result["last"], result["wanted"])
+        self.assertNotEqual(result["last"], "5 min")
 
     def test_the_duration_function_uses_the_plain_word_formats(self):
         body = """
@@ -249,6 +286,34 @@ return [0, 59999, min, 12 * min + 59000, 59 * min, 60 * min, 65 * min, 125 * min
         self.assertEqual(passes[2]["tickets"], [])
         self.assertTrue(passes[2]["reports"][0].endswith("Late note on redeem"))
         self.assertNotIn("Late note", build["tickets"][0])
+        # It still says which ticket it is about.
+        self.assertIn("t1 Late note on redeem", passes[2]["reports"][0])
+
+    def test_a_merged_build_pass_shows_each_distinct_activity_in_order(self):
+        build = self.snaps["run-tickets"]["passes"][1]
+        self.assertEqual(build["activities"], ["Implementing the tickets", "Writing the buy path"])
+
+    def test_summaries_of_a_stage_without_a_pass_show_under_other_reports(self):
+        snapshot = self.snaps["run-truncated"]
+        self.assertEqual([p["label"] for p in snapshot["passes"]], ["Check", "Finish"])
+        self.assertIn("Define: Design agreed.", snapshot["other"])
+        self.assertIn("Build: Built with tests.", snapshot["other"])
+        self.assertNotIn("Check:", snapshot["other"])
+        self.assertEqual(snapshot["passes"][1]["summary"], "Opened the pull request.")
+        self.assertIsNone(snapshot["passes"][0]["summary"])
+
+    def test_tickets_without_a_first_build_pass_show_in_a_tickets_group_after_the_rail(self):
+        snapshot = self.snaps["run-defining"]
+        self.assertEqual([p["label"] for p in snapshot["passes"]], ["Define"])
+        self.assertEqual(snapshot["passes"][0]["tickets"], [])
+        self.assertEqual(snapshot["unstartedHeading"], "Tickets")
+        self.assertTrue(snapshot["unstartedAfterRail"])
+        self.assertEqual(len(snapshot["unstarted"]), 2)
+        self.assertTrue(snapshot["unstarted"][0].startswith("Pending") and "Export to CSV" in snapshot["unstarted"][0])
+        self.assertIn("Sketched the CSV columns", snapshot["unstarted"][0])
+        self.assertIsNone(snapshot["other"])
+        # With a Build pass the tickets stay in it and no group appears.
+        self.assertEqual(self.snaps["run-tickets"]["unstarted"], [])
 
     def test_pass_state_is_text_and_per_pass_tokens_are_gone(self):
         self.assertEqual({p["state"] for p in self.rework}, {", done"})
@@ -273,6 +338,21 @@ return [0, 59999, min, 12 * min + 59000, 59 * min, 60 * min, 65 * min, 125 * min
             self.assertEqual([p["state"] for p in snapshot["passes"]], [", done", ", current", ", not reached", ", not reached"])
             self.assertTrue(all(p["when"] is None for p in snapshot["passes"]))
             self.assertTrue(snapshot["passes"][1]["reports"][0].endswith("Index builder started"))
+
+    def test_the_blocked_reason_is_readable_on_amber_in_both_themes(self):
+        body = """
+const dialog = await openRun('run-blocked');
+const rgb = (value) => value.match(/[\\d.]+/g).slice(0, 3).map(Number);
+const lum = (c) => c.map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }).reduce((a, v, i) => a + v * [0.2126, 0.7152, 0.0722][i], 0);
+const row = dialog.querySelector('.status-row.blocked');
+const reason = getComputedStyle(dialog.querySelector('.status-reason'));
+const [x, y] = [lum(rgb(reason.color)), lum(rgb(getComputedStyle(row).backgroundColor))].sort((p, q) => q - p);
+return {reason: reason.color, onAmber: getComputedStyle(row).color, ratio: (x + 0.05) / (y + 0.05)};
+"""
+        for args in ([], ["--force-dark-mode", "--enable-features=WebContentsForceDark"]):
+            result = drive(body, extra_args=[*LANG, *args])
+            self.assertEqual(result["reason"], result["onAmber"])
+            self.assertGreaterEqual(result["ratio"], 4.5, result)
 
     def test_the_timeline_keeps_both_themes_readable_and_respects_reduced_motion(self):
         body = """
