@@ -525,25 +525,41 @@ function push(map, key, item) {
   map.set(key, [...(map.get(key) ?? []), item]);
 }
 
-/** Where each report belongs on a timeline: in the pass whose time window holds its `at`; the rest in `other`. */
+/**
+ * Where each report and event belongs on a timeline. A report with a stage goes in the last pass of that stage that
+ * started at or before its `at`, else the nearest pass of that stage; one without a stage (older data) goes in the
+ * pass whose time window holds its `at`. The rest are in `other`. An event goes in the pass whose window holds it.
+ */
 function placeByTime(run, passes, unstartedTickets) {
   const tickets = listOf(run.tickets);
-  const placed = passes.map(() => ({ reports: [], byTicket: new Map() }));
+  const placed = passes.map(() => ({ reports: [], byTicket: new Map(), events: [] }));
   const unstarted = new Map();
   const other = [];
-  const windowOf = (report) => passes.findIndex((pass) => Number.isFinite(report.at) && report.at >= pass.start && report.at < pass.end);
+  const windowOf = (item) => passes.findIndex((pass) => Number.isFinite(item.at) && item.at >= pass.start && item.at < pass.end);
+  const stageOf = (item) => {
+    const own = passes.map((pass, index) => (pass.stage === item.stage ? index : -1)).filter((index) => index !== -1);
+    const before = own.filter((index) => !(passes[index].start > item.at));
+    return before.length ? before[before.length - 1] : own.length ? own[0] : -1;
+  };
+  const staged = (report) => STATIONS.includes(report.stage);
+  const placeOf = (report) => (staged(report) ? stageOf(report) : windowOf(report));
   for (const report of listOf(run.run_reports)) {
-    const at = windowOf(report);
+    const at = placeOf(report);
     (at === -1 ? other : placed[at].reports).push(report);
   }
   for (const report of listOf(run.ticket_reports)) {
-    const at = windowOf(report);
+    const at = placeOf(report);
     const listed = tickets.find((ticket) => ticket.reference === report.ticket);
     if (!listed) other.push(report);
-    else if (unstartedTickets.includes(listed)) push(unstarted, listed.reference, report);
+    else if (unstartedTickets.includes(listed) && (!staged(report) || at === -1)) push(unstarted, listed.reference, report);
     else if (at === -1) other.push(report);
     else if (passes[at].tickets.includes(listed)) push(placed[at].byTicket, listed.reference, report);
     else placed[at].reports.push(report);
+  }
+  for (const event of listOf(run.events)) {
+    if (!event || !Number.isFinite(event.at)) continue;
+    const at = windowOf(event) !== -1 ? windowOf(event) : stageOf(event);
+    if (at !== -1) placed[at].events.push(event);
   }
   return { placed, other, unstarted };
 }
@@ -581,6 +597,9 @@ function Pass({ run, pass, placed, now }) {
       <${SheetTime} at=${pass.start} now=${now} />${pass.duration !== null ? html`${' · '}<span class="pass-duration">${durationWords(pass.duration)}</span>` : null}
     </p>
     ${pass.activities.map((activity) => html`<p key=${activity} class="pass-activity">${activity}</p>`)}
+    ${placed.events.map((event, index) => html`<p key=${index} class=${`pass-event ${event.kind === 'blocked' ? 'blocked' : 'resumed'}`}>
+      ${event.kind === 'blocked' ? (event.reason ? `Blocked: ${event.reason}` : 'Blocked') : 'Resumed'}${' · '}<${SheetTime} at=${event.at} now=${now} />
+    </p>`)}
     ${summary ? html`<p class="stop-summary">${summary}</p>` : null}
     <${SkillChips} reports=${placed.reports} />
     <${ReportList} reports=${placed.reports} now=${now} showTicket=${true} />

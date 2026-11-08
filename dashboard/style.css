@@ -301,6 +301,9 @@ body:has(.confirm[open]) { overflow: hidden; }
 /* A timeline pass: when it began and how long it ran, then the activity it started with. */
 .pass-when { margin: var(--space-1) 0 0; font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); font-variant-numeric: tabular-nums; }
 .pass-activity { margin: var(--space-2) 0 0; overflow-wrap: anywhere; }
+/* A moment the Run was blocked or resumed in this pass, in words with its time. */
+.pass-event { margin: var(--space-2) 0 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.pass-event.blocked { font-weight: 600; }
 /* A Build pass that follows a rework request: its mark carries a second ring. */
 .stop.rework-pass .mark { outline: var(--stroke-thick) solid var(--color-slate); outline-offset: var(--stroke-thick); }
 /* A Check pass that was sent back ends in a dashed connector, labelled in words. */

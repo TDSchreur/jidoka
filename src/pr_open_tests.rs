@@ -790,7 +790,9 @@ fn a_run_that_could_not_be_updated_is_told_how_to_record_the_pull_request() {
     assert!(text.contains("not updated"), "{text}");
     // The command to run is complete: the run, its stage and status, and the pull request.
     assert!(
-        text.contains(&format!("factory run update 100 finish done --pr {URL}")),
+        text.contains(&format!(
+            "factory run update 100 finish done --summary finish=<what shipped> --pr {URL}"
+        )),
         "{text}"
     );
     assert_eq!(serde_json::to_value(&opened).unwrap()["recorded"], false);

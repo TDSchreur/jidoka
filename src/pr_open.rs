@@ -901,12 +901,18 @@ pub(crate) fn render(opened: &Opened, run: &RunInfo) -> String {
         shown(&opened.commit.chars().take(7).collect::<String>())
     );
     if !opened.recorded {
+        let summary = if run.stage == "finish" && run.status == "done" {
+            " --summary finish=<what shipped>"
+        } else {
+            ""
+        };
         text.push_str(&format!(
-            "  The run was not updated (it is {}). Record the pull request with `factory run update {} {} {} --pr {}`.\n",
+            "  The run was not updated (it is {}). Record the pull request with `factory run update {} {} {}{} --pr {}`.\n",
             shown(&run.status),
             shown(&run.id),
             shown(&run.stage),
             shown(&run.status),
+            summary,
             shown(&opened.pull_request)
         ));
     }

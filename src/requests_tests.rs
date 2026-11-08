@@ -1249,7 +1249,7 @@ fn read_only_git_and_gh_forms_are_helpers_too() {
         "H=$(git -C ../wt rev-parse HEAD) && factory run update 1 build running",
         "B=$(git branch --show-current) && factory run update 1 build running",
         "S=$(git status --short | head -3) && factory run update 1 build running",
-        "factory run update 1 finish done --activity \"Opened $(gh pr view --json url -q .url)\"",
+        "factory run update 1 finish done --summary finish=Shipped --activity \"Opened $(gh pr view --json url -q .url)\"",
         "L=$(git log -1 --format=%s) && factory run update 1 build running",
     ] {
         assert_eq!(
