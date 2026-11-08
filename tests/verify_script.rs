@@ -71,6 +71,21 @@ fn verify_with(with_cargo: bool, fail_on: &str, tools: &[&str], python_fails: bo
     }
 }
 
+/// The `python3 tests/dashboard-*.py` steps the script should run: every such file in the repo, in byte order.
+fn dashboard_steps() -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.starts_with("dashboard-") && name.ends_with(".py"))
+        .collect();
+    names.sort();
+    assert!(!names.is_empty());
+    names
+        .into_iter()
+        .map(|name| format!("python3 tests/{name}"))
+        .collect()
+}
+
 #[test]
 fn runs_the_ci_checks_in_order_and_reports_success() {
     let run = verify(true, "none");
@@ -78,11 +93,13 @@ fn runs_the_ci_checks_in_order_and_reports_success() {
     assert_eq!(
         run.checks,
         [
-            "fmt --check",
-            "clippy --all-targets --locked -- -D warnings",
-            "test --locked",
-            "python3 tests/dashboard-help.py"
+            "fmt --check".to_owned(),
+            "clippy --all-targets --locked -- -D warnings".to_owned(),
+            "test --locked".to_owned(),
         ]
+        .into_iter()
+        .chain(dashboard_steps())
+        .collect::<Vec<_>>()
     );
     assert!(run.output.contains("All checks passed"), "{}", run.output);
 }
@@ -121,13 +138,10 @@ fn refuses_to_skip_a_missing_tool() {
 }
 
 #[test]
-fn a_failing_dashboard_help_test_fails_the_run() {
+fn a_failing_dashboard_test_fails_the_run() {
     let run = verify_with(true, "none", &["python3", "chromium"], true);
     assert!(!run.success, "{}", run.output);
-    assert_eq!(
-        run.checks.last().unwrap(),
-        "python3 tests/dashboard-help.py"
-    );
+    assert_eq!(run.checks.last().unwrap(), &dashboard_steps()[0]);
     assert!(!run.output.contains("All checks passed"));
 }
 

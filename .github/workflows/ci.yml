@@ -37,10 +37,14 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
-      # Uses the Chrome or Chromium preinstalled on ubuntu-latest; the test looks it up on PATH.
-      - name: Test the dashboard help in a browser
+      # Uses the Chrome or Chromium preinstalled on ubuntu-latest; the tests look it up on PATH.
+      # Runs every tests/dashboard-*.py in name order, as scripts/verify.sh does.
+      - name: Test the dashboard in a browser
         if: runner.os == 'Linux'
-        run: python3 tests/dashboard-help.py
+        run: |
+          for test in tests/dashboard-*.py; do
+            python3 "$test"
+          done
       - name: Build and inspect Windows release
         if: runner.os == 'Windows'
         shell: pwsh
