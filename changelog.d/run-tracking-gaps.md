@@ -6,4 +6,4 @@
 
 ## Added
 
-- Runs record when they were blocked and resumed (`events` in `factory run inspect` and the API), and the run details show a "Blocked: <reason>" or "Resumed" line in the pass that holds it. Events do not change the timeline or token usage.
+- Runs record when they were blocked and resumed (`events` in the API, listed under "Events" in `factory run inspect`), and the run details show a "Blocked: <reason>" or "Resumed" line in the pass that holds it. Events do not change the timeline or token usage.

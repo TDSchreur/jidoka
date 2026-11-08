@@ -134,7 +134,7 @@ impl Stage {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum RunStatus {
     Running,
@@ -842,7 +842,6 @@ struct Shared {
 #[derive(Debug)]
 pub(crate) struct UpdateOutcome {
     pub(crate) run: Run,
-    pub(crate) collect_usage: bool,
 }
 
 impl RunStore {
@@ -937,6 +936,7 @@ impl RunStore {
         let updated_at = updated_now()?;
         let mut next = runs[index].clone();
         let was_blocked = matches!(next.status, RunStatus::Blocked);
+        let was_finished = next.stage == Stage::Finish && next.status == RunStatus::Done;
         next.stage = update.stage;
         next.status = update.status;
         let started_with = match &update.activity {
@@ -1050,8 +1050,10 @@ impl RunStore {
                 }
             }
         }
-        if update.stage == Stage::Finish
-            && matches!(update.status, RunStatus::Done)
+        // Only moving into finish done needs the summary; a run already stored as finished (before this rule) keeps updating.
+        if !was_finished
+            && update.stage == Stage::Finish
+            && update.status == RunStatus::Done
             && next
                 .summaries
                 .get(&Stage::Finish)
@@ -1094,8 +1096,6 @@ impl RunStore {
             (RunStatus::Done, kept) => kept,
             _ => None,
         };
-        // Every update re-collects usage; collection replaces the totals, so it never double counts.
-        let collect_usage = true;
         let old = std::mem::replace(&mut runs[index], next);
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs[index] = old;
@@ -1103,7 +1103,6 @@ impl RunStore {
         }
         Ok(Some(UpdateOutcome {
             run: runs[index].clone(),
-            collect_usage,
         }))
     }
 
@@ -1229,7 +1228,35 @@ mod tests {
     use super::*;
     use crate::test_support::TestDir;
 
-    const SUM: [&str; 2] = ["--summary", "finish=Shipped"];
+    const FINISH_SUMMARY: [&str; 2] = ["--summary", "finish=Shipped"];
+
+    #[test]
+    fn a_legacy_finished_run_without_a_summary_accepts_further_finish_done_updates() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let run = new_run(&store, "task");
+        let mut stored = serde_json::to_value(store.list().unwrap()).unwrap();
+        stored[0]["stage"] = "finish".into();
+        stored[0]["status"] = "done".into();
+        stored[0]["finished_at"] = 1.into();
+        stored[0]["summaries"] = serde_json::json!({});
+        std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+        let store = RunStore::open(&path).unwrap();
+        let before = store.get(&run.id).unwrap().unwrap();
+        assert!(before.summaries.is_empty());
+
+        let updated = store
+            .update(
+                &run.id,
+                parse_update("finish", "done", &["--activity", "Synced the pull request"]).unwrap(),
+            )
+            .unwrap()
+            .unwrap()
+            .run;
+        assert_eq!(updated.status, RunStatus::Done);
+        assert_eq!(updated.activity.as_deref(), Some("Synced the pull request"));
+    }
 
     #[test]
     fn finish_done_needs_a_finish_summary() {
@@ -1244,10 +1271,7 @@ mod tests {
         assert!(error.to_string().contains("--summary finish="));
         let after = store.get(&run.id).unwrap().unwrap();
         assert_eq!(after.stage, before.stage);
-        assert_eq!(
-            format!("{:?}", after.status),
-            format!("{:?}", before.status)
-        );
+        assert_eq!(after.status, before.status);
         assert!(after.finished_at.is_none() && after.summaries.is_empty());
 
         // Other stages are not affected; a summary in the same update is enough.
@@ -1255,7 +1279,10 @@ mod tests {
             .update(&run.id, parse_update("check", "done", &[]).unwrap())
             .unwrap();
         let done = store
-            .update(&run.id, parse_update("finish", "done", &SUM).unwrap())
+            .update(
+                &run.id,
+                parse_update("finish", "done", &FINISH_SUMMARY).unwrap(),
+            )
             .unwrap()
             .unwrap()
             .run;
@@ -1268,7 +1295,7 @@ mod tests {
     }
 
     #[test]
-    fn collection_decision_follows_persisted_transition() {
+    fn failed_updates_leave_the_store_unchanged() {
         let dir = TestDir::new();
         let path = dir.0.path().join("runs.json");
         let store = RunStore::open(&path).unwrap();
@@ -1288,14 +1315,14 @@ mod tests {
                 .unwrap()
         };
         let session = ["--session", "11111111-aaaa"];
-        assert!(apply("define", "running", &["--activity", "working"]).collect_usage);
-        assert!(apply("build", "running", &[]).collect_usage);
-        assert!(apply("build", "running", &session).collect_usage);
-        assert!(apply("build", "running", &session).collect_usage);
-        assert!(apply("build", "done", &[]).collect_usage);
-        assert!(apply("build", "done", &[]).collect_usage);
-        assert!(apply("finish", "done", &SUM).collect_usage);
-        assert!(apply("finish", "done", &SUM).collect_usage);
+        apply("define", "running", &["--activity", "working"]);
+        apply("build", "running", &[]);
+        apply("build", "running", &session);
+        apply("build", "running", &session);
+        apply("build", "done", &[]);
+        apply("build", "done", &[]);
+        apply("finish", "done", &FINISH_SUMMARY);
+        apply("finish", "done", &FINISH_SUMMARY);
         assert!(store
             .update("999999", UpdateRun::new(Stage::Build, RunStatus::Running))
             .unwrap()
@@ -2484,7 +2511,10 @@ mod tests {
         let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
         let run = new_run(&store, "task");
         let done = store
-            .update(&run.id, parse_update("finish", "done", &SUM).unwrap())
+            .update(
+                &run.id,
+                parse_update("finish", "done", &FINISH_SUMMARY).unwrap(),
+            )
             .unwrap()
             .unwrap()
             .run;
@@ -2895,8 +2925,16 @@ mod tests {
 
     #[test]
     fn events_are_capped() {
-        let (_dir, store, id) = event_store();
-        for _ in 0..=MAX_EVENTS {
+        let (dir, store, id) = event_store();
+        // Seed the stored events one short of the cap instead of saving a thousand times.
+        let path = dir.0.path().join("runs.json");
+        let mut stored = serde_json::to_value(store.list().unwrap()).unwrap();
+        stored[0]["events"] = (0..MAX_EVENTS - 1)
+            .map(|at| serde_json::json!({"at": at, "kind": "blocked", "stage": "build"}))
+            .collect();
+        std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+        let store = RunStore::open(&path).unwrap();
+        for _ in 0..2 {
             for (status, args) in [
                 ("blocked", &["--blocking-reason", "x"][..]),
                 ("running", &[][..]),

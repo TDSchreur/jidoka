@@ -317,6 +317,19 @@ return [0, 59999, min, 12 * min + 59000, 59 * min, 60 * min, 65 * min, 125 * min
         # A run without events shows no event lines.
         self.assertEqual(self.snaps["run-rework"]["passes"][1]["events"], [])
 
+    def test_events_that_match_no_pass_show_under_other_reports(self):
+        runs = [
+            {**BLOCKED, "id": "run-events-define", "timeline": MARKS[:3], "events": [
+                {"at": T["define"] - 5000, "kind": "blocked", "stage": "finish", "reason": "Needs an answer."},
+                {"at": T["define"] - 4000, "kind": "resumed", "stage": "finish"},
+            ]},
+            {**EMPTY_TIMELINE, "id": "run-events-empty", "events": [{"at": T["build"], "kind": "blocked", "stage": "build", "reason": "No timeline."}]},
+        ]
+        snaps = drive("return {a: await snap('run-events-define'), b: await snap('run-events-empty')};", runs=runs)
+        self.assertIn("Blocked: Needs an answer.", snaps["a"]["other"])
+        self.assertIn("Resumed", snaps["a"]["other"])
+        self.assertIn("Blocked: No timeline.", snaps["b"]["other"])
+
     def test_reports_before_the_first_mark_and_for_unlisted_tickets_go_to_other_reports(self):
         other = self.snaps["run-rework"]["other"]
         self.assertIn("Other reports", other)

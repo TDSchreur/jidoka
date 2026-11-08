@@ -258,9 +258,7 @@ fn update_run(
             }
         })?
         .ok_or((HttpStatus::NotFound, "Not found".into()))?;
-    if updated.collect_usage {
-        collector.after_update(store, &updated.run.id);
-    }
+    collector.after_update(store, &updated.run.id);
     Ok(Json(updated.run))
 }
 
@@ -1061,6 +1059,11 @@ mod tests {
             HttpStatus::Ok
         );
         collector.wait_idle().await;
+        let usage = fetch(&api, &run.id).await.1.unwrap().usage;
+        assert_eq!(
+            usage.expect("a plain update collects").sessions,
+            ["session-one"]
+        );
 
         // Moving to Build collects, without delaying the answer, and records what it found.
         let store = api.rocket().state::<RunStore>().unwrap().clone();
