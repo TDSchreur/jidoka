@@ -62,17 +62,6 @@ Create a work item as in **Create a work item**: `<spec-type>` for a spec, `<tic
 
 Read it as in **Read a work item** above, including its comments.
 
-## Wayfinding operations
-
-Used by `/wayfinder`. The **map** is a single parent work item with **child** work items as tickets.
-
-- **Map**: a single `<spec-type>` work item tagged `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body in its description. Create it with `--fields "System.Tags=wayfinder:map"`.
-- **Child ticket**: a `<ticket-type>` work item made a child of the map (see **Make a work item a child of a parent**), tagged `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.
-- **Blocking**: see **Blocking** under Conventions.
-- **Frontier query**: read the map with `--expand relations` and take its children (relations with `rel` equal to `System.LinkTypes.Hierarchy-Forward`), in ascending work item id order, because Azure does not guarantee the order of relations. Keep the open ones without `System.AssignedTo`, drop any with an open predecessor (see **Count open blockers**); the lowest id wins.
-- **Claim**: `az boards work-item update --org <org-url> --detect false --id <id> --assigned-to "<sign-in name of the driving dev>" --state "<InProgress state>"`, the session's first write.
-- **Resolve**: post the answer with `--discussion`, then set the Completed state of the ticket's type, then append a context pointer (gist + link) to the map's Decisions-so-far by rewriting the map's description with `--description`.
-
 ## Unsupported or limited
 
 - **Comments**: editing or deleting a comment is not covered.

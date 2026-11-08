@@ -24,7 +24,7 @@ Define and Finish are also not routed when the run's mode is `factory-fast`, or 
 
 ## Per Stage
 
-- **Define**: the interview (factory-grilling) stays with you, because it is a conversation with the user. Unless the run is `factory-fast` or the change is small, writing the spec, writing the tickets and fact-finding lookups in the code or docs run in agents on the define choice.
+- **Define**: the interview (factory-grill-with-docs) stays with you, because it is a conversation with the user. Unless the run is `factory-fast` or the change is small, writing the spec, writing the tickets and fact-finding lookups in the code or docs run in agents on the define choice.
 - **Build**: each ticket runs in its own fresh agent on the build choice, one at a time and sequentially in the run's worktree, following the workflow's build skill; so do a Rework's fixes. You still run the verification the workflow requires, or confirm the agent ran it on exactly this code, and you update the run's tickets and Stage.
 - **Check**: tell `factory-code-review` the check choice, because its Standards and Spec sub-agents are the agents to route. Run `factory-security-review` on the check choice only when you start it as a separate agent the same way. Run inline in your own session, it uses your model: do not claim a switch for it.
 - **Finish**: unless the run is `factory-fast` or the change is small, an agent on the finish choice writes the pull request description and fixes CI failures. You run `factory pr open`, `factory pr wait` and `factory pr sync` yourself.

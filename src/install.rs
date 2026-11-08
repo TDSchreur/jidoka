@@ -917,7 +917,7 @@ mod tests {
             "only the entry of the agent named with `--agent`",
             "never another agent's",
             // Each Stage says what is handed to agents and what stays with the coordinator.
-            "the interview (factory-grilling) stays with you",
+            "the interview (factory-grill-with-docs) stays with you",
             "each ticket runs in its own fresh agent on the build choice",
             "tell `factory-code-review` the check choice",
             "You run `factory pr open`, `factory pr wait` and `factory pr sync` yourself",
