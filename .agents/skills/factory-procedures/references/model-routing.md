@@ -1,6 +1,6 @@
 # Model routing
 
-The workflows read this at the start of each Stage they have (factory-fast only at the start of Build, because it never routes Define and Finish), and again at the start of every Rework and every Check pass after it.
+The workflows read this at the start of each Stage they have, and again at the start of every Rework and every Check pass after it.
 
 A run can carry a model-routing selection: the model and effort each Stage's agents run on. The policy file can describe several agents, and the run records only the entry of the agent named with `--agent` when it started, never another agent's. The coordinating session, which is you, keeps its own model: you talk to the user, report to the dashboard and run the `factory` commands. A routed Stage hands its work to fresh agents started on that Stage's model and effort.
 

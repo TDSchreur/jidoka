@@ -460,7 +460,7 @@ mod tests {
         BUNDLED
             .iter()
             .find(|(bundled, _)| *bundled == path)
-            .map(|(_, content)| String::from_utf8_lossy(content).into_owned())
+            .map(|(_, content)| String::from_utf8_lossy(content).replace("\r\n", "\n"))
             .unwrap_or_else(|| panic!("{path} is not bundled"))
     }
 

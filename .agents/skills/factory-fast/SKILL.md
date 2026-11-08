@@ -17,7 +17,9 @@ For a clear, bounded request, use the request as the spec and state a short impl
 
 Use `factory-grill-with-docs` only when unresolved requirements or domain decisions materially affect implementation. Use `factory-to-spec` when the task needs a durable spec, and `factory-to-tickets` when multiple dependent pieces benefit from explicit tracking. Reuse existing specs and tickets rather than recreating them. Before reading or publishing specs or tickets in the tracker, follow Tracker setup in [factory-procedures](../factory-procedures/SKILL.md).
 
-When these artifacts are needed, store them in the tracker configured in `docs/agents/issue-tracker.md`. Follow Define rules in [factory-procedures](../factory-procedures/SKILL.md).
+When these artifacts are needed, store them in the tracker configured in `docs/agents/issue-tracker.md`.
+
+Follow Define rules in [factory-procedures](../factory-procedures/SKILL.md) for the whole Define stage.
 
 ## Build
 

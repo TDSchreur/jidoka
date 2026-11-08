@@ -19,7 +19,9 @@ Before anything else in Define, follow Tracker setup in [factory-procedures](../
 2. Use `factory-to-spec` to write a concise spec from the discussion.
 3. Use `factory-to-tickets` to break the spec into the smallest useful set of tickets, including dependencies when needed.
 
-Store the spec and tickets in the tracker configured in `docs/agents/issue-tracker.md`. Follow Define rules in [factory-procedures](../factory-procedures/SKILL.md).
+Store the spec and tickets in the tracker configured in `docs/agents/issue-tracker.md`.
+
+Follow Define rules in [factory-procedures](../factory-procedures/SKILL.md) for the whole Define stage.
 
 ## Build
 
