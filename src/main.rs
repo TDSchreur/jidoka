@@ -71,12 +71,12 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
         ["--version" | "-V"] => println!("factory {}", current_build()),
         ["install", options @ ..] => match install::parse_options(options) {
             Ok((Some(agent), dirs)) => install::install(agent, &dirs)?,
-            _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
+            Ok((None, _)) => return Err(format!("install needs --agent.\n{HELP}").into()),
+            Err(error) => return Err(format!("{error}\n{HELP}").into()),
         },
         ["update", options @ ..] => {
-            let Ok((agents, dirs)) = install::parse_options(options) else {
-                return Err(format!("Invalid arguments.\n{HELP}").into());
-            };
+            let (agents, dirs) =
+                install::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
             update::update(
                 env!("CARGO_PKG_VERSION"),
                 env!("FACTORY_BUILD_RELEASE") == "true",

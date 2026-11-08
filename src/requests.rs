@@ -154,16 +154,7 @@ pub(crate) fn analyze(
     let mut read = RequestRead::default();
     for root in &roots.claude {
         let one = read_requests(root, &ids, &recorded, from, deadline, limits);
-        read.sessions.extend(one.sessions);
-        for note in one.notes {
-            if !read.notes.contains(&note) {
-                read.notes.push(note);
-            }
-        }
-        read.root_found |= one.root_found;
-        read.timed_out |= one.timed_out;
-        read.truncated |= one.truncated;
-        if one.timed_out || one.truncated {
+        if read.absorb(one) {
             break;
         }
     }

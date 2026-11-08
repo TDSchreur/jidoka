@@ -99,6 +99,23 @@ pub(crate) struct RequestRead {
     pub(crate) truncated: bool,
 }
 
+impl RequestRead {
+    /// Adds what another root held. Notes already present are not repeated. Returns whether reading
+    /// should stop, because a time or size limit was hit.
+    pub(crate) fn absorb(&mut self, other: RequestRead) -> bool {
+        self.sessions.extend(other.sessions);
+        for note in other.notes {
+            if !self.notes.contains(&note) {
+                self.notes.push(note);
+            }
+        }
+        self.root_found |= other.root_found;
+        self.timed_out |= other.timed_out;
+        self.truncated |= other.truncated;
+        other.timed_out || other.truncated
+    }
+}
+
 /// What one response said so far. Claude Code writes a response once per content block, so the commands
 /// of a request are spread over several lines with the same message id.
 #[derive(Default)]

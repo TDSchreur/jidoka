@@ -30,9 +30,23 @@ To update, run `factory update`. It downloads the latest release for your platfo
 
 Claude Code skills go to `$CLAUDE_CONFIG_DIR/skills` when `CLAUDE_CONFIG_DIR` is set (for example `~/.claude-work`), otherwise `~/.claude/skills`. Codex skills likewise honor `CODEX_HOME`, and Copilot skills honor `COPILOT_HOME` (otherwise `~/.copilot/skills`).
 
-To serve more than one Claude Code config folder, such as a personal `~/.claude` and a work `~/.claude-work`, repeat `--config-dir <path>` on `factory install`, `factory update` and `factory doctor`: `factory install --agent claude --config-dir ~/.claude --config-dir ~/.claude-work`. The flag applies to the `claude` agent only and is an error when `--agent` leaves Claude out. The order of precedence is `--config-dir`, then `CLAUDE_CONFIG_DIR` (an empty value counts as unset), then `~/.claude`. A leading `~` expands to your home folder, a relative path is rejected before anything is written, and a folder named twice is used once. `factory update` reinstalls the skills into each folder given, and `factory doctor` reports each folder by path. Without the flag, behavior is unchanged.
+To serve more than one Claude Code config folder, such as a personal `~/.claude` and a work `~/.claude-work`, repeat `--config-dir <path>` on `factory install`, `factory update` and `factory doctor`:
 
-The installers and `scripts/update-local.sh` and `scripts/switch-factory.sh` read an optional `FACTORY_CLAUDE_CONFIG_DIRS` and pass each entry as `--config-dir`. Separate entries with `:` on Linux (`FACTORY_CLAUDE_CONFIG_DIRS=$HOME/.claude:$HOME/.claude-work`) and `;` in PowerShell. Empty entries are skipped. The dashboard and `factory run requests` also read it, and read Claude Code session logs from `<folder>/projects` of the resolved folder and of every listed folder, so one dashboard sees the sessions of all of them. Set it in the dashboard's environment too; there the separator is the one of your operating system. Project-level `.claude/` folders in a repository are not affected.
+```sh
+factory install --agent claude --config-dir ~/.claude --config-dir ~/.claude-work
+```
+
+The flag applies to the `claude` agent only, and is an error when `--agent` leaves Claude out. Claude's folder is chosen in this order:
+
+1. `--config-dir`, once or several times.
+2. `CLAUDE_CONFIG_DIR`, when it is not empty.
+3. `~/.claude`.
+
+A leading `~` means your home folder. A relative path is rejected before anything is written, and a folder named twice is used once. `factory update` reinstalls the skills into each folder given, and `factory doctor` reports each folder by path.
+
+The installers, `scripts/update-local.sh` and `scripts/switch-factory.sh` read an optional `FACTORY_CLAUDE_CONFIG_DIRS` and pass each entry as `--config-dir`. Separate entries with `:` on Linux and `;` in PowerShell. Empty entries are skipped.
+
+The dashboard and `factory run requests` read the same variable, with your system's path separator. They read Claude Code session logs from `projects` in the resolved folder and in every listed folder. Project-level `.claude/` folders are not affected.
 
 Stop the dashboard before upgrading when you can; `factory update` renames a running Windows executable aside, but the dashboard keeps running the old version until you restart it. The release workflow checks Windows runtime imports and starts the Windows executable on a Windows runner.
 

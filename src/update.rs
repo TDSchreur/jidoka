@@ -189,6 +189,16 @@ pub(crate) fn installed_agents(
         .collect()
 }
 
+/// The arguments of the `factory install` that update runs: the agents, and one `--config-dir` per folder.
+fn install_args(agents: &str, claude_dirs: &[PathBuf]) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec!["install".into(), "--agent".into(), agents.into()];
+    for dir in claude_dirs {
+        args.push("--config-dir".into());
+        args.push(dir.into());
+    }
+    args
+}
+
 /// Runs `factory update`: installs the latest release over this executable, then its skills.
 pub(crate) fn update(
     current: &str,
@@ -249,14 +259,13 @@ pub(crate) fn update(
         println!("No installed skills found. Run 'factory install --agent <codex|claude|copilot>' to install them.");
     } else {
         // The new binary carries the new skills, so it installs them.
-        let mut command = Command::new(&exe);
-        command.args(["install", "--agent", &agents]);
-        if !config_dirs.is_empty() {
-            for dir in &claude_dirs {
-                command.arg("--config-dir").arg(dir);
-            }
-        }
-        let installed = command
+        let forwarded = if config_dirs.is_empty() {
+            &[][..]
+        } else {
+            &claude_dirs[..]
+        };
+        let installed = Command::new(&exe)
+            .args(install_args(&agents, forwarded))
             .status()
             .map_err(|error| format!("Could not run the new factory: {error}"))?;
         if !installed.success() {
@@ -369,5 +378,26 @@ mod tests {
         let dirs = [work.display().to_string()];
         assert!(installed_agents(home.path(), &[], none).is_empty());
         assert_eq!(installed_agents(home.path(), &dirs, none), ["claude"]);
+    }
+
+    #[test]
+    fn the_child_install_gets_one_config_dir_per_folder() {
+        let dirs = [install::test_abs("a"), install::test_abs("b")];
+        let args = install_args("codex,claude", &dirs);
+        let expected: Vec<OsString> = [
+            "install".into(),
+            "--agent".into(),
+            "codex,claude".into(),
+            "--config-dir".into(),
+            dirs[0].clone().into_os_string(),
+            "--config-dir".into(),
+            dirs[1].clone().into_os_string(),
+        ]
+        .into();
+        assert_eq!(args, expected);
+        assert_eq!(
+            install_args("claude", &[]),
+            ["install", "--agent", "claude"]
+        );
     }
 }

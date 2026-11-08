@@ -1681,3 +1681,27 @@ fn javascript_comments_inside_a_call_do_not_hide_it_or_the_calls_after_it() {
         assert_eq!(codex_category_of(snippet), expected, "{snippet}");
     }
 }
+
+#[test]
+fn absorbing_a_root_merges_notes_once_ors_the_flags_and_says_when_to_stop() {
+    let note = |text: &str| text.to_string();
+    let mut all = RequestRead {
+        notes: vec![note("a")],
+        root_found: false,
+        ..RequestRead::default()
+    };
+    let first = RequestRead {
+        notes: vec![note("a"), note("b")],
+        root_found: true,
+        ..RequestRead::default()
+    };
+    assert!(!all.absorb(first));
+    assert_eq!(all.notes, ["a", "b"]);
+    assert!(all.root_found && !all.timed_out && !all.truncated);
+    let second = RequestRead {
+        truncated: true,
+        ..RequestRead::default()
+    };
+    assert!(all.absorb(second));
+    assert!(all.root_found && all.truncated);
+}
