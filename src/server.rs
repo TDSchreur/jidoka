@@ -838,33 +838,23 @@ mod tests {
         assert!(script.contains("showModal()"));
         assert!(script.contains("aria-labelledby=\"detail-title\""));
         assert!(script.contains("id=\"detail-title\""));
-        // Every field of the Run is listed; an empty one says so.
-        for label in [
-            "Project",
-            "Stage",
-            "Status",
-            "Activity",
-            "Mode",
-            "Branch",
-            "Worktree",
-            "Repository",
-            "Base commit",
-            "Spec",
-            "Pull request",
-            "Stage summaries",
-            "Rework",
-            "Updated",
-            "Run id",
+        // The sheet is a route card: a status row, the four stations, token usage and a footer with the ids.
+        for part in [
+            "<ol class=\"route\" aria-label=\"Route\">",
+            "<div class=${blocked ? 'status-row blocked' : 'status-row'}>",
+            "<details class=\"usage\"",
+            "<div class=\"detail-foot\">",
+            "<${CopyButton} value=${run.branch} what=\"branch\" />",
+            "<${CopyButton} value=${run.repository} what=\"repository\" />",
+            "<${CopyButton} value=${String(run.id)} what=\"run id\" />",
+            "Skills and activity are reported by the agent and may be incomplete.",
         ] {
-            assert!(
-                script.contains(&format!("<${{Field}} label=\"{label}\"")),
-                "missing field {label}"
-            );
+            assert!(script.contains(part), "missing {part}");
         }
-        assert!(script.contains("Not set"));
-        // Context a Run never recorded reads "Not recorded", not an empty or invented value.
-        assert!(script.contains("missing=\"Unknown\""));
-        assert!(script.contains("None recorded"));
+        // A field the Run never recorded is left out, not shown as unknown.
+        assert!(!script.contains("Unknown\""));
+        assert!(!script.contains("Not set"));
+        assert!(!script.contains("Worktree") && !script.contains("base_commit"));
     }
 
     #[rocket::async_test]
@@ -928,8 +918,7 @@ mod tests {
             !script.contains("<p class=\"project\"><${ProjectName} path=${projectOf(run)} /></p>")
         );
         assert!(script.contains("><${ProjectName} path=${project} />"));
-        assert!(script
-            .contains("<${Field} label=\"Project\"><${ProjectName} path=${projectOf(run)} /><//>"));
+        assert!(script.contains("<span><${ProjectName} path=${projectOf(run)} /></span>"));
     }
 
     #[rocket::async_test]
@@ -1352,9 +1341,9 @@ mod tests {
         // Cards: a ticket-progress chip and http(s)-only links to the pull request and spec.
         assert!(script.contains("Tickets${' '}${progress.done}/${progress.total}"));
         assert!(script.contains("url.protocol === 'http:' || url.protocol === 'https:'"));
-        assert!(script.contains("label=\"Pull request\""));
+        assert!(script.contains("named('Pull request')"));
         // Detail lists the tickets in order with their status, and the summaries per Stage.
-        assert!(script.contains("run.tickets.map("));
+        assert!(script.contains("tickets.map((ticket) =>"));
         assert!(script.contains("run.summaries?.[id]"));
     }
 
@@ -1506,7 +1495,7 @@ mod tests {
             script.contains("aria-label=\"Token usage by stage, model and ticket\" tabindex=\"0\"")
         );
         assert!(script.contains("n === undefined || n === null ? 'n/a'"));
-        assert!(script.contains("<${Field} label=\"Token usage\" missing=\"Not tracked\" wide>"));
+        assert!(script.contains("<details class=\"usage\" open=${active}>"));
         assert!(script.contains(
             "Fresh tokens are input excluding cache reads, plus cache writes and output."
         ));
@@ -1866,7 +1855,7 @@ mod tests {
             .split("@media (max-width: 30rem)")
             .nth(1)
             .expect("a very narrow layout");
-        assert!(narrow.contains(".fields { grid-template-columns: minmax(0, 1fr); }"));
+        assert!(narrow.contains(".reports li { grid-template-columns: minmax(0, 1fr);"));
     }
 
     #[rocket::async_test]
@@ -2222,13 +2211,11 @@ mod tests {
 
     #[rocket::async_test]
     async fn the_token_table_gets_the_full_width_of_the_detail() {
-        // The breakdown has ten columns: beside the field labels it overflowed and scrolled, cutting off the first.
+        // The breakdown has ten columns, so it sits in a disclosure that spans the sheet, open while the Run is active.
         let script = asset("/assets/app.js").await;
-        assert!(script.contains("<${Field} label=\"Token usage\" missing=\"Not tracked\" wide>"));
-        assert!(script
-            .contains("function Field({ label, children, missing = 'Not set', wide = false }) {"));
+        assert!(script.contains("<details class=\"usage\" open=${active}>"));
         let css = stylesheet().await;
-        assert!(css.contains(".fields .wide { grid-column: 1 / -1; }"));
+        assert!(css.contains(".usage { margin:"));
         // The table fills its row and its numbers line up.
         let table = css
             .lines()
@@ -2257,9 +2244,6 @@ mod tests {
         assert!(css.contains(
             ".usage-table td:nth-child(2), .usage-table td:nth-child(3) { white-space: normal; overflow-wrap: anywhere; }"
         ));
-        // One doc comment on Field, and the token usage label keeps the same gap as the others.
-        assert!(!script.contains("reads \"Not set\". */\n/**"));
-        assert!(!css.contains(".fields dd.wide"));
     }
 
     #[rocket::async_test]
@@ -2274,11 +2258,7 @@ mod tests {
             1,
             "the protocol check lives only in httpUrl"
         );
-        for component in [
-            "function TicketLink(",
-            "function RefLink(",
-            "function TicketRef(",
-        ] {
+        for component in ["function RefLink(", "function TicketRef("] {
             let body = script
                 .split(component)
                 .nth(1)
@@ -2427,17 +2407,16 @@ mod tests {
         assert!(label.contains("status.url !== run.pr"));
         assert!(label.contains("!PR_STATE[status.state]"));
         assert!(label.contains("<span class=${`pr-state ${status.state}`}>"));
-        // Beside the link on the line and in the Shipped log, and as a field in the detail.
+        // Beside the link on the line and in the Shipped log, and in words next to the link in the detail.
         assert!(script.contains("<${ContextLinks} run=${run} /><${PrStateLabel} run=${run} />"));
         assert!(script.contains("<${PrStateLabel} run=${run} /></td>"));
-        assert!(script.contains("<${Field} label=\"Pull request state\""));
         let detail = script
-            .split("function PrStateDetail(")
+            .split("function PrLink(")
             .nth(1)
             .and_then(|rest| rest.split("\n}\n").next())
-            .expect("a PrStateDetail component");
+            .expect("a PrLink component");
         assert!(detail.contains("status.reason"));
-        assert!(detail.contains("checked ${ago(now - status.checked_at)}"));
+        assert!(detail.contains("PR_STATE[status.state]"));
         let css = stylesheet().await;
         for state in ["open", "draft", "merged", "closed"] {
             assert!(css.contains(&format!(".pr-state.{state} {{")), "{state}");
@@ -2445,16 +2424,14 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn the_detail_shows_the_current_ticket_and_status_reason_only_while_set() {
-        // Both are cleared by the workflows when the ticket ends and when work resumes, so a shipped Run has neither.
+    async fn the_detail_shows_the_status_reason_only_while_blocked_and_the_activity_only_while_active(
+    ) {
+        // The workflows clear the reason when work resumes; a Run that is not blocked shows none, and a shipped Run no activity.
         let script = asset("/assets/app.js").await;
         assert!(script.contains(
-            "${run.current_ticket\n          ? html`<${Field} label=\"Current ticket\"><${TicketLink} value=${String(run.current_ticket)} /><//>`\n          : null}"
+            "${blocked && run.blocking_reason ? html`<p class=\"status-reason\">${run.blocking_reason}</p>` : null}"
         ));
-        assert!(script.contains(
-            "${run.blocking_reason ? html`<${Field} label=\"Status reason\">${run.blocking_reason}<//>` : null}"
-        ));
-        assert!(!script.contains("<${Field} label=\"Ticket\">"));
+        assert!(script.contains("${active && run.activity ?"));
     }
 
     #[rocket::async_test]
