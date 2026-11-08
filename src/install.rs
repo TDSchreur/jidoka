@@ -465,6 +465,39 @@ mod tests {
     }
 
     #[test]
+    fn bundled_skill_links_to_other_skills_resolve() {
+        let files: Vec<&str> = bundled_skill_files().collect();
+        for file in files.iter().filter(|file| file.ends_with(".md")) {
+            let text = bundled_text(file);
+            let dir = file.rsplit_once('/').map_or("", |(dir, _)| dir);
+            for part in text.split("](").skip(1) {
+                let Some(target) = part.split(')').next() else {
+                    continue;
+                };
+                let target = target.split('#').next().unwrap_or("");
+                if !target.starts_with("../") {
+                    continue;
+                }
+                let mut segments: Vec<&str> = dir.split('/').collect();
+                for segment in target.split('/') {
+                    match segment {
+                        ".." => {
+                            segments.pop();
+                        }
+                        "." | "" => {}
+                        other => segments.push(other),
+                    }
+                }
+                let resolved = segments.join("/");
+                assert!(
+                    files.contains(&resolved.as_str()),
+                    "{file} links to missing {target}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn selector_and_execution_workflows_are_bundled() {
         let selector = bundled_text("factory/SKILL.md");
         assert_eq!(selector.lines().nth(1), Some("name: factory"));
@@ -1318,28 +1351,7 @@ mod tests {
         fs::create_dir_all(root.join("factory")).unwrap();
         fs::write(root.join("factory/SKILL.md"), "old content").unwrap();
         fs::write(root.join("factory/stale.md"), "removed upstream").unwrap();
-        for legacy in [
-            "factory2",
-            "factory2-fast",
-            "github-actions-hardening",
-            "rust-best-practices",
-            "setup-matt-pocock-skills",
-            "grill-with-docs",
-            "grilling",
-            "domain-modeling",
-            "codebase-design",
-            "to-spec",
-            "to-tickets",
-            "implement-spec",
-            "implement-spec-fast",
-            "implement-spec-balanced",
-            "tdd",
-            "code-review",
-            "security-review",
-            "pr",
-            "setup-tds-factory",
-            "triage",
-        ] {
+        for legacy in LEGACY_SKILLS {
             fs::create_dir_all(root.join(legacy)).unwrap();
             fs::write(root.join(legacy).join("SKILL.md"), "legacy").unwrap();
         }
@@ -1350,37 +1362,20 @@ mod tests {
             .unwrap()
             .contains("name: factory"));
         assert!(!root.join("factory/stale.md").exists());
-        assert!(!root.join("factory2").exists());
-        assert!(!root.join("factory2-fast").exists());
-        assert!(!root.join("github-actions-hardening").exists());
-        assert!(!root.join("rust-best-practices").exists());
-        assert!(!root.join("setup-matt-pocock-skills").exists());
-        for old in [
-            "grill-with-docs",
-            "grilling",
-            "domain-modeling",
-            "codebase-design",
-            "to-spec",
-            "to-tickets",
-            "implement-spec",
-            "implement-spec-fast",
-            "implement-spec-balanced",
-            "tdd",
-            "code-review",
-            "security-review",
-            "pr",
-            "setup-tds-factory",
-            "triage",
-        ] {
+        for old in LEGACY_SKILLS {
             assert!(!root.join(old).exists(), "{old}");
         }
         let mut installed: Vec<_> = fs::read_dir(root)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with("factory-") || name == "factory")
+            .filter(|name| name != "my-skill")
             .collect();
         installed.sort();
-        assert_eq!(installed.len(), 20, "{installed:?}");
+        assert_eq!(installed, bundled_skill_names());
+        assert!(
+            installed.iter().all(|name| name.starts_with("factory")),
+            "{installed:?}"
+        );
         assert_eq!(
             fs::read_to_string(root.join("my-skill/SKILL.md")).unwrap(),
             "user skill"

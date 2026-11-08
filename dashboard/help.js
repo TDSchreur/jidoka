@@ -418,7 +418,7 @@ function Skills() {
       skills=${[
         [
           'factory-implement',
-          'Implements the spec and its tickets on the feature branch, each ticket test-first with `factory-tdd`, and runs the project’s verification after each ticket.',
+          'Implements the spec and its tickets on the feature branch, each ticket test-first with factory-tdd, and runs the project’s verification after each ticket.',
           'Full',
         ],
         [

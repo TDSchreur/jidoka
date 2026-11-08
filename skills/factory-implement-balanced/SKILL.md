@@ -10,7 +10,7 @@ Implement the provided spec on a single feature branch. A clear user request wit
 1. Read the request or spec, its acceptance criteria, and any tickets, identify dependencies, and inspect the relevant code and project instructions. Reuse context already gathered by the calling workflow.
 2. Create or use the task's feature branch. Work sequentially in the current checkout, taking tickets whose dependencies are satisfied or implementing the agreed plan directly when there are no tickets.
 3. Implement each ticket first, without invoking `factory-tdd` or running a red-green-refactor cycle.
-4. Then add or update behavior tests for the ticket's acceptance criteria. Apply the test-quality rules from `factory-tdd` (its "What a good test is" and "Anti-patterns" sections, plus [tests.md](../tdd/tests.md) and [mocking.md](../tdd/mocking.md) when needed):
+4. Then add or update behavior tests for the ticket's acceptance criteria. Apply the test-quality rules from `factory-tdd` (its "What a good test is" and "Anti-patterns" sections, plus [tests.md](../factory-tdd/tests.md) and [mocking.md](../factory-tdd/mocking.md) when needed):
    - test through public interfaces, preferring existing seams;
    - take expected values from an independent source such as the spec or a worked example, never by recomputing them the way the code does;
    - do not mock internal collaborators, test private functions, or verify through a side channel.

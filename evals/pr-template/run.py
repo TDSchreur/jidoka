@@ -44,7 +44,7 @@ def main():
     if not (skills / "factory-pr" / "SKILL.md").is_file():
         parser.error(f"missing factory-pr/SKILL.md in {skills}")
     fixture = json.loads((HERE / "fixture.json").read_text())
-    prompt = (f"Read {skills / 'pr' / 'SKILL.md'} and follow it to draft a pull request description. "
+    prompt = (f"Read {skills / 'factory-pr' / 'SKILL.md'} and follow it to draft a pull request description. "
               "Return only the finished description. Preserve the findings verbatim and every command and path.\n\n"
               + fixture["input"])
     try:
