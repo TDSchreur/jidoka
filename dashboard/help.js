@@ -180,7 +180,9 @@ function Stages({ reworkCap }) {
         A <strong>Rework</strong> is a return from Check to Build to fix findings, followed by another Check that covers
         only the fixes. A Run gets at most ${reworkCap} Reworks; its row shows the current one as${' '}
         <em>Rework 1/${reworkCap}</em>. Findings alone never block a Run: the agent fixes them within the
-        ${reworkCap} Reworks. When findings remain after the last Rework, or one cannot be resolved, the Run shows${' '}
+        ${reworkCap} Reworks. After the second Rework, findings that only change wording or documentation are fixed
+        without asking, and the Run shows <em>Needs you</em> only for findings that would change behaviour. When
+        findings remain after the last Rework, or one cannot be resolved, the Run shows${' '}
         <em>Needs you</em> and waits for you to choose: one more Rework, finish with the findings listed in the pull
         request, or stop.
       </p>

@@ -129,7 +129,7 @@ factory run update <id> build running --rework 1 --activity "Fixing Check findin
 factory run update <id> finish done --summary finish="<what shipped>" --clear-activity --clear-current-ticket
 ```
 
-Omitted fields keep their stored values, including when changing stage or status. Use `--clear-activity`, `--clear-current-ticket`, `--clear-blocking-reason`, and `--clear-rework` to remove them explicitly. Setting and clearing the same field in one command, or repeating a field option, is an error. Activity and blocking reason must be nonblank and at most 2,000 bytes; a current-ticket link must be an absolute HTTP(S) URL of at most 4,096 bytes. Empty strings are rejected; use a clear flag instead. `--rework` records which [Rework](GLOSSARY.md) the run is on, as a whole number from 1 to 99; the dashboard shows it as "Rework 1/2", or "Rework 3 (past the cap of 2)" when the user granted an extra Rework.
+Omitted fields keep their stored values, including when changing stage or status. Use `--clear-activity`, `--clear-current-ticket`, `--clear-blocking-reason`, and `--clear-rework` to remove them explicitly. Setting and clearing the same field in one command, or repeating a field option, is an error. Activity and blocking reason must be nonblank and at most 2,000 bytes; a current-ticket link must be an absolute HTTP(S) URL of at most 4,096 bytes. Empty strings are rejected; use a clear flag instead. `--rework` records which [Rework](GLOSSARY.md) the run is on, as a whole number from 1 to 99; the dashboard shows it as "Rework 1/3", or "Rework 4 (past the cap of 3)" when the user granted an extra Rework.
 
 The API uses `activity`, `current_ticket`, `blocking_reason`, and `rework` on `POST /api/runs/<id>` alongside the required `stage` and `status`. Omit a metadata field to preserve it, send a value (a string, or a number for `rework`) to replace it, or send JSON `null` to clear it. Unknown update fields are rejected. For example:
 
@@ -162,7 +162,7 @@ TDS Factory has three workflow modes that trade speed against rigor: `/factory-f
 
 For Codex, start a new chat in Worktree mode on the intended base branch and tell the factory to use that fresh worktree. The workflow verifies it is clean and matches the fetched remote base before creating the feature branch. Codex-managed worktrees may have their own lifecycle; retain the worktree while review follow-ups are needed. Depending on the sandbox, Git operations that write shared repository metadata, network access for fetch and GitHub, and dashboard access may still require permission. In other environments, configure the sibling worktree location as writable before starting the session if needed; that alone may not grant access to shared Git metadata.
 
-In `/factory-full` and `/factory-balanced`, the agent commits the finished implementation before Check, because `factory-code-review` only sees committed changes; it reviews everything since the run's base commit. Actionable Check findings send the run back to Build for a **Rework** with that mode's build approach; the fixes, including new files, are committed, and Check runs again over the commits since the previously reviewed one. A run gets at most two Reworks, and the dashboard shows the current one as "Rework 1/2". Findings alone never block a run, and the agent fixes them within the two Reworks. When findings remain after the second Rework, or one cannot be resolved, the run shows as blocked while the agent lists them and asks you whether to do one more Rework, finish with the findings listed in the pull request, or stop; the block clears when work resumes. `/factory-fast` has no Check and so no Rework.
+In `/factory-full` and `/factory-balanced`, the agent commits the finished implementation before Check, because `factory-code-review` only sees committed changes; it reviews everything since the run's base commit. Actionable Check findings send the run back to Build for a **Rework** with that mode's build approach; the fixes, including new files, are committed, and Check runs again over the commits since the previously reviewed one. A run gets at most three Reworks, and the dashboard shows the current one as "Rework 1/3". Findings alone never block a run, and the agent fixes them within the three Reworks. After the second Rework, findings that change only wording or documentation are fixed without asking you; the run shows as blocked only for findings that would change behaviour, while the agent lists them and asks whether to fix them in the third Rework too, finish with them listed in the pull request, or stop. When findings remain after the third Rework, or one cannot be resolved, the run shows as blocked while the agent lists them and asks you whether to do one more Rework, finish with the findings listed in the pull request, or stop; the block clears when work resumes. `/factory-fast` has no Check and so no Rework.
 
 ### Choosing a mode
 
@@ -207,7 +207,7 @@ flowchart TB
     define -->|/factory-fast| implfast
     impl --> review
     implbal --> review
-    check -.->|Rework: findings, at most 2| build
+    check -.->|Rework: findings, at most 3| build
     security --> pr
     review -->|/factory-balanced for other diffs| pr
     implfast -->|/factory-fast skips Check| pr

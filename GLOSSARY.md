@@ -14,7 +14,7 @@
 
 **Pull request state**: Whether a run's pull request is open, a draft, merged or closed. The dashboard server reads it from GitHub with `gh` or from Azure Repos with `az`, keeps it on the run and reads it again about once a minute until it is merged. When it cannot be read, it is unknown, with the reason; it is never guessed.
 
-**Rework**: A return from Check to Build to fix actionable findings, followed by another Check. `factory-full` and `factory-balanced` allow at most two per run; after that, the user decides whether to do another Rework, finish with the findings listed in the pull request, or stop. Findings alone never block a run; the run is `blocked` only while it waits for that decision.
+**Rework**: A return from Check to Build to fix actionable findings, followed by another Check. `factory-full` and `factory-balanced` allow at most three per run; after the second, findings that change only wording or documentation are fixed without asking and the user decides only on findings that change behaviour; after the third, the user decides whether to do another Rework, finish with the findings listed in the pull request, or stop. Findings alone never block a run; the run is `blocked` only while it waits for that decision.
 
 **Workflow mode**: The workflow skill that carries a run: `factory-full` (quality), `factory-balanced`, or `factory-fast` (speed). Modes differ in how much Define, Build, and Check do.
 

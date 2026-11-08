@@ -202,7 +202,7 @@ return {shipped: await snap('run-shipped'), active: await snap('run-active'), bl
         self.assertIn("shop", s["sub"])
         self.assertIn("balanced", s["sub"])
         self.assertIn("gift-card-checkout", s["sub"])
-        self.assertIn("Rework 1/2", s["statusRow"])
+        self.assertIn("Rework 1/3", s["statusRow"])
         self.assertNotIn("Rework", self.active["statusRow"])
 
     def test_worktree_and_base_commit_are_not_rendered(self):
@@ -305,7 +305,7 @@ return {shipped: await snap('run-shipped'), active: await snap('run-active'), bl
         self.assertNotIn("tickets done", self.stop(self.blocked, "Build")["full"])
 
     def test_rework_marker_is_on_check_only_when_rework_is_above_zero(self):
-        self.assertEqual(self.stop(self.shipped, "Check")["rework"], "Rework 1/2")
+        self.assertEqual(self.stop(self.shipped, "Check")["rework"], "Rework 1/3")
         for name in ("Define", "Build", "Finish"):
             self.assertIsNone(self.stop(self.shipped, name)["rework"])
         for stop in self.active["stops"] + self.blocked["stops"]:

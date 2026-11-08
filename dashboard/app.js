@@ -17,7 +17,7 @@ const STATUS_LABEL = { running: 'Running', blocked: 'Blocked', done: 'Shipped' }
 /** The status in sentence case; an unknown status shows as recorded. */
 const statusLabel = (status) => STATUS_LABEL[status] ?? String(status);
 const TICKET_STATUS = { pending: 'Pending', 'in-progress': 'In progress', done: 'Done' };
-const REWORK_CAP = 2;
+const REWORK_CAP = 3;
 const POLL_MS = 3000;
 const NOW_MS = 30000;
 const THEMES = [

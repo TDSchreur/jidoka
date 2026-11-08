@@ -30,7 +30,7 @@ MARKS = [
 ]
 LABELS = [
     "Define", "Build", "Check", "Build · Rework 1", "Check", "Build · Rework 2", "Check",
-    "Build · Rework 3 (past the cap of 2)", "Check", "Finish",
+    "Build · Rework 3", "Check", "Finish",
 ]
 # Hand-worked from the marks above: 54 s, 13 min 1 s, 1 min 12 s, 4 min 38 s, 34 s, 2 min 16 s, 1 min 30 s, 2 min 33 s, 58 s, 5 min 57 s.
 DURATIONS = ["under 1 min", "13 min", "1 min", "4 min", "under 1 min", "2 min", "1 min", "2 min", "under 1 min", "5 min"]
@@ -47,7 +47,7 @@ SHIPPED = {
         {"kind": "activity", "text": "Plan written", "stage": "build", "at": T["build"]},
         {"kind": "skill", "text": "factory-code-review", "stage": "check", "at": T["check1"] + 5000},
         {"kind": "activity", "text": "Screenshots reviewed", "stage": "check", "at": T["check1"] + 5000},
-        {"kind": "activity", "text": "Third rework approved", "stage": "finish", "at": T["check4"] + 1000},
+        {"kind": "activity", "text": "Third rework finished", "stage": "finish", "at": T["check4"] + 1000},
         {"kind": "activity", "text": "Pull request opened", "stage": "finish", "at": T["end"]},
         {"kind": "activity", "text": "Noted before the run began", "at": T["define"] - 60000},
     ],
@@ -188,8 +188,7 @@ class RunTimelineTest(unittest.TestCase):
         reworks = [p for p in self.rework if "Rework" in p["label"]]
         self.assertTrue(all("rework-pass" in p["cls"] for p in reworks))
         self.assertFalse(any("rework-pass" in p["cls"] for p in self.rework if "Rework" not in p["label"]))
-        self.assertEqual([p["label"] for p in reworks][:2], ["Build · Rework 1", "Build · Rework 2"])
-        self.assertIn("past the cap of 2", reworks[2]["label"])
+        self.assertEqual([p["label"] for p in reworks], ["Build · Rework 1", "Build · Rework 2", "Build · Rework 3"])
 
     def test_a_check_pass_followed_by_a_rework_says_it_was_sent_back(self):
         sent = [i for i, p in enumerate(self.rework) if p["sentBack"] == "sent back"]
@@ -260,7 +259,7 @@ return [0, 59999, min, 12 * min + 59000, 59 * min, 60 * min, 65 * min, 125 * min
         self.assertTrue(by_label[9]["reports"][-1].endswith("Pull request opened"))
         # Names Finish, so it goes in the Finish pass although it was filed in the fourth Check window.
         self.assertEqual(by_label[8]["reports"], [])
-        self.assertTrue(by_label[9]["reports"][0].endswith("Third rework approved"))
+        self.assertTrue(by_label[9]["reports"][0].endswith("Third rework finished"))
         placed = sum(len(p["reports"]) for p in self.rework)
         self.assertEqual(placed, 4)
 

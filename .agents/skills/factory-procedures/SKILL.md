@@ -77,9 +77,13 @@ Before Check, commit the completed implementation: make sure the full verificati
 
 ## Reworks
 
-When Check sends the run back to Build, report it as a Rework: `factory run update <id> build running --rework <n> --activity "Rework <n>: <findings being fixed>"`, numbering Reworks from 1 within the run and leaving the count set when Check runs again. A run gets at most two Reworks.
+When Check sends the run back to Build, report it as a Rework: `factory run update <id> build running --rework <n> --activity "Rework <n>: <findings being fixed>"`, numbering Reworks from 1 within the run and leaving the count set when Check runs again. A run gets at most three Reworks.
 
-Fix actionable findings yourself within the Rework allowance; findings alone never block a run. When findings remain after the second Rework, or a finding cannot be resolved, the run needs a decision from the user, so report it as blocked: `factory run update <id> check blocked --blocking-reason "Decision needed on remaining Check findings"`. List the remaining findings and ask the user whether to do one more Rework, finish with the findings listed in the pull request, or stop. Follow their choice, and when work resumes clear the reason with `factory run update <id> <build|finish> running --clear-blocking-reason`. If they stop the run, leave it blocked.
+Fix actionable findings yourself within the Rework allowance; findings alone never block a run. Reworks 1 and 2 fix the actionable findings.
+
+When findings remain after the second Rework, those that change only wording or documentation go into the third Rework without asking the user. If a remaining finding would change behaviour, the run needs a decision from the user, so report it as blocked: `factory run update <id> check blocked --blocking-reason "Decision needed on remaining Check findings"`. List those findings and ask the user whether to fix them in the third Rework too, finish with them listed in the pull request, or stop; the wording and documentation fixes still go into the third Rework unless they stop.
+
+When findings remain after the third Rework, or a finding cannot be resolved, the run also needs a decision, so report it as blocked the same way. List the remaining findings and ask the user whether to do one more Rework, finish with the findings listed in the pull request, or stop. Follow their choice, and when work resumes clear the reason with `factory run update <id> <build|finish> running --clear-blocking-reason`. If they stop the run, leave it blocked.
 
 ## Model routing
 
