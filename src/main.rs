@@ -1,6 +1,7 @@
 mod client;
 mod codex_requests;
 mod doctor;
+mod gitignore;
 mod inspect;
 mod install;
 mod pr_open;

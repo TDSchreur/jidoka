@@ -70,7 +70,7 @@ fn main() {
         "code-review",
         "security-review",
         "pr",
-        "setup-matt-pocock-skills",
+        "setup-tds-factory",
     ] {
         files(
             Path::new("skills"),

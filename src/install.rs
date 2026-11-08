@@ -9,11 +9,12 @@ include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
 /// Skill directories from earlier releases that are no longer bundled: the pre-rename
 /// `factory2` skills and development-only skills that were once installed.
-const LEGACY_SKILLS: [&str; 4] = [
+const LEGACY_SKILLS: [&str; 5] = [
     "factory2",
     "factory2-fast",
     "github-actions-hardening",
     "rust-best-practices",
+    "setup-matt-pocock-skills",
 ];
 
 /// Skills maintained in this project, installed without a third-party license.
@@ -883,7 +884,8 @@ mod tests {
                 continue;
             }
             let text = String::from_utf8_lossy(content);
-            let lowercase = text.to_lowercase();
+            // The setup skill is named after the factory; that name is not this repository's.
+            let lowercase = text.to_lowercase().replace("setup-tds-factory", "");
             for term in PROJECT_SPECIFIC {
                 if lowercase.contains(term) {
                     offenders.push(format!("{path}: {term}"));
@@ -906,7 +908,7 @@ mod tests {
 
     #[test]
     fn setup_links_exactly_the_bundled_issue_tracker_templates() {
-        let setup = bundled_text("setup-matt-pocock-skills/SKILL.md");
+        let setup = bundled_text("setup-tds-factory/SKILL.md");
         let mut linked: Vec<&str> = setup
             .split("](./")
             .skip(1)
@@ -917,7 +919,7 @@ mod tests {
         linked.sort_unstable();
         linked.dedup();
         let mut bundled: Vec<&str> = bundled_skill_files()
-            .filter_map(|path| path.strip_prefix("setup-matt-pocock-skills/"))
+            .filter_map(|path| path.strip_prefix("setup-tds-factory/"))
             .filter(|name| name.starts_with("issue-tracker-") && name.ends_with(".md"))
             .collect();
         bundled.sort_unstable();
@@ -927,7 +929,7 @@ mod tests {
 
     #[test]
     fn setup_stops_on_missing_azure_boards_details_without_a_partial_tracker_file() {
-        let setup = bundled_text("setup-matt-pocock-skills/SKILL.md");
+        let setup = bundled_text("setup-tds-factory/SKILL.md");
         let (_, azure) = setup
             .split_once("An Azure Boards tracker needs")
             .expect("setup has an Azure Boards part");
@@ -939,7 +941,7 @@ mod tests {
     fn azure_boards_template_removes_tags_with_a_replace_the_cli_cannot_send() {
         // Checked against Azure DevOps: `az boards work-item update --fields System.Tags=...` adds to
         // the tags, and `show --fields` fails with the expanded output, so neither can remove a role.
-        let template = bundled_text("setup-matt-pocock-skills/issue-tracker-azure-boards.md");
+        let template = bundled_text("setup-tds-factory/issue-tracker-azure-boards.md");
         let roles = template
             .split_once("- **Apply / remove triage roles**:")
             .and_then(|(_, rest)| rest.split_once("\n- **"))
@@ -954,7 +956,7 @@ mod tests {
 
     #[test]
     fn azure_boards_template_names_no_process_specific_types_or_states() {
-        let template = bundled_text("setup-matt-pocock-skills/issue-tracker-azure-boards.md");
+        let template = bundled_text("setup-tds-factory/issue-tracker-azure-boards.md");
         let found: Vec<String> = [
             "User Story",
             "Product Backlog Item",
@@ -1014,8 +1016,8 @@ mod tests {
     fn azure_boards_route_parameters_are_quoted_pairs() {
         const FLAG: &str = "--route-parameters ";
         for path in [
-            "setup-matt-pocock-skills/issue-tracker-azure-boards.md",
-            "setup-matt-pocock-skills/SKILL.md",
+            "setup-tds-factory/issue-tracker-azure-boards.md",
+            "setup-tds-factory/SKILL.md",
         ] {
             let text = bundled_text(path);
             assert!(text.contains(FLAG), "{path} has no {FLAG}");
@@ -1304,6 +1306,7 @@ mod tests {
             "factory2-fast",
             "github-actions-hardening",
             "rust-best-practices",
+            "setup-matt-pocock-skills",
         ] {
             fs::create_dir_all(root.join(legacy)).unwrap();
             fs::write(root.join(legacy).join("SKILL.md"), "legacy").unwrap();
@@ -1319,6 +1322,7 @@ mod tests {
         assert!(!root.join("factory2-fast").exists());
         assert!(!root.join("github-actions-hardening").exists());
         assert!(!root.join("rust-best-practices").exists());
+        assert!(!root.join("setup-matt-pocock-skills").exists());
         assert_eq!(
             fs::read_to_string(root.join("my-skill/SKILL.md")).unwrap(),
             "user skill"
@@ -1327,14 +1331,14 @@ mod tests {
             .join("security-review/references/language-patterns.md")
             .is_file());
         assert!(root.join("security-review/LICENSE").is_file());
-        assert!(root.join("setup-matt-pocock-skills/SKILL.md").is_file());
+        assert!(root.join("setup-tds-factory/SKILL.md").is_file());
         assert!(root
-            .join("setup-matt-pocock-skills/issue-tracker-github.md")
+            .join("setup-tds-factory/issue-tracker-github.md")
             .is_file());
         assert!(root
-            .join("setup-matt-pocock-skills/issue-tracker-azure-boards.md")
+            .join("setup-tds-factory/issue-tracker-azure-boards.md")
             .is_file());
-        assert!(root.join("setup-matt-pocock-skills/LICENSE").is_file());
+        assert!(root.join("setup-tds-factory/LICENSE").is_file());
         assert!(root.join("to-spec/SKILL.md").is_file());
         assert!(root.join("factory-full/SKILL.md").is_file());
         assert!(!root.join("factory-full/LICENSE").exists());

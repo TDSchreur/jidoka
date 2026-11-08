@@ -1,6 +1,6 @@
 //! `factory run begin`: creates a run and its workspace (a worktree on a new branch from the base) and records it.
 
-use crate::{inspect::shown, routing::ModelRouting};
+use crate::{gitignore::ensure_ignored, inspect::shown, routing::ModelRouting};
 use serde::Serialize;
 use std::{path::Path, process::Command};
 
@@ -317,13 +317,19 @@ pub(crate) fn begin(
                 args.extend(["--session", session]);
             }
             match api.update(&run, "define", "running", &args) {
-                Ok(()) => Ok(Begun {
-                    run,
-                    worktree: workspace.worktree,
-                    branch: workspace.branch,
-                    base: workspace.base,
-                    base_commit: workspace.base_commit,
-                }),
+                Ok(()) => {
+                    if let Err(error) = ensure_ignored(Path::new(&workspace.worktree), RUN_IGNORED)
+                    {
+                        eprintln!("Could not update the worktree's .gitignore: {error}");
+                    }
+                    Ok(Begun {
+                        run,
+                        worktree: workspace.worktree,
+                        branch: workspace.branch,
+                        base: workspace.base,
+                        base_commit: workspace.base_commit,
+                    })
+                }
                 Err(error) => Err(blocked(
                     api,
                     &run,
@@ -339,6 +345,9 @@ pub(crate) fn begin(
         Err(failure) => Err(blocked(api, &run, options, &failure.named, failure.reason)),
     }
 }
+
+/// What every run's worktree keeps out of git: the factory's own folder and the local tracker.
+const RUN_IGNORED: &[&str] = &[".factory/", ".scratch/"];
 
 /// Marks the run blocked with `reason` and returns the error that says so.
 fn blocked(

@@ -75,7 +75,7 @@ function Overview({ reworkCap }) {
       <ol>
         <li>Install the command and the skills for your agent. The README lists the steps for each system.</li>
         <li>
-          Once per repository, ask your agent to run <${Code}>/setup-matt-pocock-skills<//>. It records the issue
+          Once per repository, ask your agent to run <${Code}>/setup-tds-factory<//>. It records the issue
           tracker, the triage labels and where the domain docs live. <${Code}>/factory-full<//> needs it; the other
           workflows need it only when they read or publish specs or tickets in the tracker.
         </li>
@@ -214,7 +214,7 @@ function Stages({ reworkCap }) {
         and its row on the line comes first, marked amber. Typical reasons:
       </p>
       <ul>
-        <li>The issue tracker is not set up yet. Run <${Code}>/setup-matt-pocock-skills<//> and start again.</li>
+        <li>The issue tracker is not set up yet. Run <${Code}>/setup-tds-factory<//> and start again.</li>
         <li>Check findings remain after the last Rework and the agent needs your decision.</li>
         <li>A tool, a permission or a check the agent cannot fix by itself, such as a failing CI check caused by infrastructure.</li>
         <li>An answer or a decision only you can give.</li>
@@ -463,7 +463,7 @@ function Skills() {
       title="Everywhere"
       skills=${[
         [
-          'setup-matt-pocock-skills',
+          'setup-tds-factory',
           'Run once per repository, in your normal checkout. Records which issue tracker the repository uses, its triage labels and where the domain docs live, and adds a short section to the agent instructions. Later Runs pick the output up.',
           'before the first Run',
         ],

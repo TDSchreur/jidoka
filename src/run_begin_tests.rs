@@ -221,6 +221,72 @@ fn a_fresh_run_gets_a_worktree_from_the_fetched_base_and_records_it() {
     assert_eq!(created[0].2.as_deref(), project.repo.to_str());
 }
 
+fn gitignore_of(worktree: &str) -> Option<String> {
+    fs::read_to_string(Path::new(worktree).join(".gitignore")).ok()
+}
+
+#[test]
+fn begin_creates_a_gitignore_with_the_factory_and_scratch_folders() {
+    let project = Project::new();
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
+    assert_eq!(
+        gitignore_of(&begun.worktree).as_deref(),
+        Some(".factory/\n.scratch/\n")
+    );
+    // Only the new file differs from the base.
+    assert_eq!(
+        git(Path::new(&begun.worktree), &["status", "--porcelain"]),
+        "?? .gitignore"
+    );
+}
+
+#[test]
+fn begin_appends_to_a_tracked_gitignore_and_shows_only_that_change() {
+    let project = Project::new();
+    fs::write(project.repo.join(".gitignore"), "/target/").unwrap();
+    git(&project.repo, &["add", ".gitignore"]);
+    git(&project.repo, &["commit", "-q", "-m", "ignore"]);
+    git(&project.repo, &["push", "-q", "origin", "develop"]);
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
+    assert_eq!(
+        gitignore_of(&begun.worktree).as_deref(),
+        Some("/target/\n.factory/\n.scratch/\n")
+    );
+    assert_eq!(
+        git(Path::new(&begun.worktree), &["status", "--porcelain"]),
+        "M .gitignore"
+    );
+}
+
+#[test]
+fn a_blocked_begin_leaves_no_gitignore_and_the_retry_resumes() {
+    let project = Project::new();
+    let mut failing = options("Retry me");
+    failing.branch = Some("retry-me".into());
+    failing.base = Some("nope".into());
+    blocked(begin(
+        &project.repo,
+        &failing,
+        &FakeApi::default(),
+        None,
+        None,
+    ));
+    assert!(!project.worktrees.join("retry-me").exists());
+    assert!(!project.repo.join(".gitignore").exists());
+    let api = api_with_run("Retry me");
+    let begun = begin(
+        &project.repo,
+        &resuming("Retry me", "retry-me"),
+        &api,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(gitignore_of(&begun.worktree).is_some());
+}
+
 #[test]
 fn an_explicit_base_and_branch_are_used_as_given() {
     let project = Project::new();
