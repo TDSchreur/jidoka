@@ -4,8 +4,8 @@
 test passes, opens them in a headless browser with a throwaway profile, and returns what the page POSTed to /result.
 
 Every page gets the global `PAGE_WAIT_MS`, the one in-page wait budget for the tests' own waits. It is generous for a
-cold browser start and well inside the harness wait (`WAIT_SECONDS`): on a cold browser the first render and fetch are
-slow, and the old 10-15s in-page deadlines fired (#235). A browser that exits without posting a result fails at once
+cold browser start, which renders and fetches the first page slowly, and well inside the harness wait
+(`WAIT_SECONDS`). A browser that exits without posting a result fails at once
 with its exit code and stderr tail; one that keeps running without a result fails at the wait limit.
 
 Written for Linux and macOS, run on Linux in CI, and untested on Windows (set CHROMIUM elsewhere).
@@ -153,6 +153,9 @@ def wait_for_result(server, results, size, env, extra_args):
                         break
             log.seek(0)
             tail = "".join(log.readlines()[-40:])
-            raise RuntimeError(f"No result from the browser (after up to {WAIT_SECONDS}s, exit code {process.poll()}). Browser stderr:\n{tail}")
+            code = process.poll()
+            if code is not None:
+                raise RuntimeError(f"The browser exited without a result (exit code {code}). Browser stderr:\n{tail}")
+            raise RuntimeError(f"No result from the browser within {WAIT_SECONDS}s. Browser stderr:\n{tail}")
         finally:
             stop(process)
