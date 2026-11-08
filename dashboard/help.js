@@ -483,7 +483,9 @@ function Dashboard({ reworkCap }) {
         is not done, with a rail of the four Stations (Define, Build, Check and Finish) that shows where the Run is. A
         blocked Run is marked amber and its position says so, such as Check, blocked. Runs waiting for you come first,
         then the most recently updated. Finished Runs are listed below the line. The board refreshes by itself every few
-        seconds. The toolbar, the andon strip and the line stay at the top while you scroll the Shipped list; on a narrow
+        seconds. Open a Run to see its route: one entry for every pass through a stage, so a Run with Reworks lists each
+        Build and Check in order, with when it started, how long it ran and the activity it started with. A Check that
+        led to a Rework is marked sent back. The toolbar, the andon strip and the line stay at the top while you scroll the Shipped list; on a narrow
         screen the toolbar scrolls away and the strip and the line stay. They take at most 60% of the window: with many
         Runs, the line and the list of waiting Runs scroll on their own.
       </p>

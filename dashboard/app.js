@@ -440,6 +440,7 @@ function stageTokens(run, id) {
   return counts.length ? counts.reduce((a, b) => a + b, 0) : null;
 }
 
+const STATION_NAME = Object.fromEntries(GROUPS);
 const STATION_STATE = { done: 'done', current: 'current', blocked: 'current, blocked', ahead: 'not reached' };
 
 /** Where a station stands for a Run: done, current, blocked while it is the current one of a blocked Run, or ahead. */
@@ -462,6 +463,122 @@ function placeReports(run) {
     byTicket: (reference) => ticketReports.filter((r) => r.ticket === reference),
     other: [...runReports.filter((r) => !STATIONS.includes(r.stage)), ...ticketReports.filter((r) => !listed(r))],
   };
+}
+
+/** A duration in plain words: "under 1 min", "12 min", "1 h 5 min". */
+export function durationWords(ms) {
+  const minutes = Math.floor(ms / 60000);
+  if (!(minutes >= 1)) return 'under 1 min';
+  if (minutes < 60) return `${minutes} min`;
+  const rest = minutes % 60;
+  return rest ? `${Math.floor(minutes / 60)} h ${rest} min` : `${Math.floor(minutes / 60)} h`;
+}
+
+/**
+ * The passes through the stages that the run's timeline records, oldest first: consecutive Build marks that differ
+ * only by ticket form one pass that lists those tickets. Empty when the run has no usable marks.
+ */
+function timelinePasses(run) {
+  const marks = (Array.isArray(run.timeline) ? run.timeline : [])
+    .filter((mark) => mark && Number.isFinite(mark.at) && STATIONS.includes(mark.stage))
+    .sort((a, b) => a.at - b.at);
+  const allTickets = Array.isArray(run.tickets) ? run.tickets : [];
+  const passes = [];
+  for (const mark of marks) {
+    const rework = Number.isInteger(mark.rework) && mark.rework > 0 ? mark.rework : null;
+    const previous = passes[passes.length - 1];
+    if (previous && mark.stage === 'build' && previous.stage === 'build' && previous.rework === rework) {
+      previous.refs.push(mark.ticket);
+      continue;
+    }
+    passes.push({
+      stage: mark.stage,
+      rework,
+      start: mark.at,
+      activity: typeof mark.activity === 'string' && mark.activity ? mark.activity : null,
+      refs: [mark.ticket],
+    });
+  }
+  if (!passes.length) return passes;
+  const finished = Number.isFinite(run.finished_at) ? run.finished_at : timestamp(run);
+  const used = new Set(passes.flatMap((pass) => pass.refs).filter((ref) => ref != null));
+  // Tickets no Build pass has started yet are still pending work of the original Build pass.
+  const idle = allTickets.filter((ticket) => !used.has(ticket.reference));
+  const home = [...passes].reverse().find((pass) => pass.stage === 'build' && pass.rework === null);
+  passes.forEach((pass, index) => {
+    const next = passes[index + 1];
+    const end = next ? next.start : finished;
+    pass.duration = Number.isFinite(end) ? Math.max(0, end - pass.start) : null;
+    pass.end = next ? next.start : Infinity;
+    pass.tickets = allTickets.filter((ticket) => pass.refs.includes(ticket.reference) || (pass === home && idle.includes(ticket)));
+    pass.sentBack = pass.stage === 'check' && next?.stage === 'build' && next.rework !== null;
+    pass.lastOfStage = !passes.slice(index + 1).some((later) => later.stage === pass.stage);
+    pass.state = next ? 'done' : run.status === 'done' ? 'done' : run.status === 'blocked' ? 'blocked' : 'current';
+  });
+  return passes;
+}
+
+/** Where each report belongs on a timeline: in the pass whose time window holds its `at`; the rest in `other`. */
+function placeByTime(run, passes) {
+  const runReports = Array.isArray(run.run_reports) ? run.run_reports : [];
+  const ticketReports = Array.isArray(run.ticket_reports) ? run.ticket_reports : [];
+  const tickets = Array.isArray(run.tickets) ? run.tickets : [];
+  const placed = passes.map(() => ({ reports: [], byTicket: new Map() }));
+  const other = [];
+  const windowOf = (report) => passes.findIndex((pass) => Number.isFinite(report.at) && report.at >= pass.start && report.at < pass.end);
+  for (const report of runReports) {
+    const at = windowOf(report);
+    (at === -1 ? other : placed[at].reports).push(report);
+  }
+  for (const report of ticketReports) {
+    const at = windowOf(report);
+    const listed = tickets.find((ticket) => ticket.reference === report.ticket);
+    if (at === -1 || !listed) other.push(report);
+    else if (passes[at].tickets.includes(listed)) placed[at].byTicket.set(listed.reference, [...(placed[at].byTicket.get(listed.reference) ?? []), report]);
+    else placed[at].reports.push(report);
+  }
+  return { placed, other };
+}
+
+function TicketList({ run, tickets, byTicket, now }) {
+  return html`<ol class="ticket-list">
+    ${tickets.map((ticket) => {
+      const own = byTicket(ticket.reference);
+      const current = ticket.status !== 'done' && run.current_ticket != null && run.current_ticket === ticket.reference;
+      return html`<li key=${ticket.reference} class=${ticket.status === 'done' ? 'ticket done' : 'ticket'}>
+        <p class="ticket-line">
+          <span class="ticket-status">${current ? TICKET_STATUS['in-progress'] : (TICKET_STATUS[ticket.status] ?? String(ticket.status))}</span>
+          <span class="ticket-name"><${TicketRef} value=${String(ticket.reference)} />${' '}${ticket.title}</span>
+        </p>
+        <${SkillChips} reports=${own} />
+        <${ReportList} reports=${own} now=${now} />
+      </li>`;
+    })}
+  </ol>`;
+}
+
+/** One pass through a stage on the route: when it started and how long it ran, what it started with, then what was recorded in it. */
+function Pass({ run, pass, placed, now }) {
+  const label = pass.rework === null ? STATION_NAME[pass.stage] : `${STATION_NAME[pass.stage]} · Rework ${pass.rework <= REWORK_CAP ? pass.rework : `${pass.rework} (past the cap of ${REWORK_CAP})`}`;
+  const summary = pass.lastOfStage ? run.summaries?.[pass.stage] : null;
+  const progress = pass.tickets.length ? { done: pass.tickets.filter((t) => t.status === 'done').length, total: pass.tickets.length } : null;
+  const classes = ['stop', pass.state, pass.rework !== null ? 'rework-pass' : '', pass.sentBack ? 'sent-back' : ''].filter(Boolean).join(' ');
+  return html`<li class=${classes}>
+    <span class="mark" aria-hidden="true"></span>
+    <div class="stop-head">
+      <h3>${label}<span class="visually-hidden">${`, ${STATION_STATE[pass.state]}`}</span></h3>
+      ${progress ? html`<span class="stop-meta"><span class="ticket-count">${progress.done} of ${progress.total} tickets done</span></span>` : null}
+    </div>
+    <p class="pass-when">
+      <${SheetTime} at=${pass.start} now=${now} />${pass.duration !== null ? html`${' · '}<span class="pass-duration">${durationWords(pass.duration)}</span>` : null}
+    </p>
+    ${pass.activity ? html`<p class="pass-activity">${pass.activity}</p>` : null}
+    ${summary ? html`<p class="stop-summary">${summary}</p>` : null}
+    <${SkillChips} reports=${placed.reports} />
+    <${ReportList} reports=${placed.reports} now=${now} />
+    ${pass.tickets.length ? html`<${TicketList} run=${run} tickets=${pass.tickets} byTicket=${(ref) => placed.byTicket.get(ref) ?? []} now=${now} />` : null}
+    ${pass.sentBack ? html`<p class="sent-back-note">sent back</p>` : null}
+  </li>`;
 }
 
 /** One station of the route: its mark, name and tokens, then what the Run recorded there; a bare name when nothing. */
@@ -508,9 +625,8 @@ function Station({ run, id, name, at, now }) {
   </li>`;
 }
 
-/** Reports that belong to no station or no listed ticket, so they are never dropped silently. */
-function OtherReports({ run, now }) {
-  const stray = placeReports(run).other;
+/** Reports that belong to no station, no pass or no listed ticket, so they are never dropped silently. */
+function OtherReports({ stray, now }) {
   if (!stray.length) return null;
   return html`<section class="other-reports" aria-labelledby="other-reports-title">
     <h3 id="other-reports-title">Other reports</h3>
@@ -561,6 +677,9 @@ function Detail({ run, now, onClose, onDelete }) {
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   const total = usageTotal(run);
   const listed = Array.isArray(run.tickets) && run.tickets.some((t) => t.reference === run.current_ticket);
+  const passes = timelinePasses(run);
+  const onTime = passes.length ? placeByTime(run, passes) : null;
+  const stray = onTime ? onTime.other : placeReports(run).other;
   return html`<dialog
     ref=${dialog}
     class="detail"
@@ -597,9 +716,11 @@ function Detail({ run, now, onClose, onDelete }) {
         ${blocked && run.blocking_reason ? html`<p class="status-reason">${run.blocking_reason}</p>` : null}
       </div>
       <ol class="route" aria-label="Route">
-        ${GROUPS.map(([id, name], at) => html`<${Station} key=${id} run=${run} id=${id} name=${name} at=${at} now=${now} />`)}
+        ${onTime
+          ? passes.map((pass, index) => html`<${Pass} key=${index} run=${run} pass=${pass} placed=${onTime.placed[index]} now=${now} />`)
+          : GROUPS.map(([id, name], at) => html`<${Station} key=${id} run=${run} id=${id} name=${name} at=${at} now=${now} />`)}
       </ol>
-      <${OtherReports} run=${run} now=${now} />
+      <${OtherReports} stray=${stray} now=${now} />
       ${run.usage
         ? html`<details class="usage" open=${active}>
             <summary>
