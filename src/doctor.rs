@@ -6,7 +6,7 @@
 //! only when `--create-model-routing` asks for it.
 
 use crate::install::{bundled_skill_files, claude_config_dirs, skills_root};
-use crate::routing::{install_starter, policy_path_in, RoutingAgent, Starter};
+use crate::routing::{install_starter, policy_path_in, switched_off, RoutingAgent, Starter};
 use serde::Serialize;
 use std::{
     ffi::OsString,
@@ -676,11 +676,26 @@ fn create_model_routing(agents: &[RoutingAgent], machine: &Machine) -> Result<St
     )?;
     let shown = printable(&path.display().to_string());
     match install_starter(&path, agents) {
-        Ok(done @ (Starter::Created | Starter::Replaced)) => Ok(format!(
-            "{}. It is a starter policy for {} that routes every stage (define, build, check, finish) of each. Edit the models and efforts, or set \"enabled\": false to switch it off.",
-            done.summary(&shown).unwrap_or_default(),
-            agents.iter().map(|agent| agent.name()).collect::<Vec<_>>().join(" and ")
-        )),
+        Ok(done @ (Starter::Created | Starter::Replaced)) => {
+            let (all_off, off_agents) = switched_off(&path).unwrap_or_default();
+            let next = if all_off {
+                "The policy is switched off, so runs do not use it yet. Edit the models and efforts, and remove \"enabled\": false at the top (or set it to true) to switch it on."
+                    .to_string()
+            } else if off_agents.is_empty() {
+                "Edit the models and efforts, or set \"enabled\": false to switch it off."
+                    .to_string()
+            } else {
+                format!(
+                    "Edit the models and efforts, or set \"enabled\": false to switch it off. The entry for {} is switched off; remove its \"enabled\": false (or set it to true) to switch it on.",
+                    off_agents.join(" and ")
+                )
+            };
+            Ok(format!(
+                "{}. It is a starter policy for {} that routes every stage (define, build, check, finish) of each. {next}",
+                done.summary(&shown).unwrap_or_default(),
+                agents.iter().map(|agent| agent.name()).collect::<Vec<_>>().join(" and ")
+            ))
+        }
         // A link that points nowhere is "there" for creating but not for reading, so say which it is.
         Ok(Starter::Left) if fs::metadata(&path).is_err() => Ok(format!(
             "{shown} is a link that points nowhere, so no policy is read from it. It was left unchanged."
@@ -1370,6 +1385,29 @@ mod tests {
             "{message}"
         );
         assert!(!folder.join("missing.json").exists());
+    }
+
+    #[test]
+    fn doctor_says_how_to_switch_on_a_starter_that_carries_a_switch_off() {
+        let world = World::ready()
+            .claude_ready()
+            .with_policy(r#"{"enabled":false,"agent":"claude"}"#);
+        let message = world.create_model_routing(&[RoutingAgent::Claude]).unwrap();
+        assert!(message.contains("switched off"), "{message}");
+        assert!(message.contains("to switch it on"), "{message}");
+        assert!(!message.contains("to switch it off"), "{message}");
+
+        let world = World::ready()
+            .claude_ready()
+            .with_policy(r#"{"agents":{"codex":{"enabled":false,"roles":{}}}}"#);
+        let message = world
+            .create_model_routing(&[RoutingAgent::Claude, RoutingAgent::Codex])
+            .unwrap();
+        assert!(
+            message.contains("entry for codex is switched off")
+                && message.contains("to switch it on"),
+            "{message}"
+        );
     }
 
     #[test]

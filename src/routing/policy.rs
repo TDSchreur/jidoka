@@ -345,10 +345,15 @@ pub(crate) fn is_old_format(text: &str) -> bool {
     serde_json::from_str::<Value>(text).is_ok_and(|value| old_format(&value))
 }
 
+/// The top-level keys that mark the single-agent (earlier) format.
+const OLD_TOP_KEYS: [&str; 3] = ["agent", "roles", "tasks"];
+
+fn old_top_level(value: &Value) -> bool {
+    OLD_TOP_KEYS.iter().any(|key| value.get(key).is_some())
+}
+
 fn old_format(value: &Value) -> bool {
-    let top = ["agent", "roles", "tasks"]
-        .iter()
-        .any(|key| value.get(key).is_some());
+    let top = old_top_level(value);
     let entries = value
         .get("agents")
         .and_then(Value::as_object)
@@ -539,6 +544,18 @@ fn starter(agents: &[RoutingAgent], off: Off) -> String {
     text
 }
 
+/// What is switched off in the policy file at `path`: `None` when it cannot be read as JSON, otherwise
+/// whether the whole policy is off and the names of the agent entries that are off.
+pub(crate) fn switched_off(path: &Path) -> Option<(bool, Vec<&'static str>)> {
+    let value: Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    let is_off = |pointer: &str| value.pointer(pointer) == Some(&Value::Bool(false));
+    let agents = ["claude", "codex"]
+        .into_iter()
+        .filter(|name| is_off(&format!("/agents/{name}/enabled")))
+        .collect();
+    Some((is_off("/enabled"), agents))
+}
+
 /// What `install_starter` did.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Starter {
@@ -588,9 +605,7 @@ fn old_file_switches(path: &Path) -> Option<Off> {
     }
     let is_off = |pointer: &str| value.pointer(pointer) == Some(&Value::Bool(false));
     // The single-agent form has no agent entries; only its top-level switch applies.
-    let single = ["agent", "roles", "tasks"]
-        .iter()
-        .any(|key| value.get(key).is_some());
+    let single = old_top_level(&value);
     Some(Off {
         all: is_off("/enabled"),
         claude: !single && is_off("/agents/claude/enabled"),
