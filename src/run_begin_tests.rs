@@ -262,11 +262,18 @@ fn an_unreadable_gitignore_is_a_warning_not_a_failed_begin() {
     let api = FakeApi::default();
     let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
     assert!(begun.gitignore_added.is_empty());
-    let warning = begun.gitignore_warning.unwrap();
+    assert!(begun.gitignore_warning.is_some());
     // Reading a directory fails with EISDIR; the "os error" suffix is not localised.
-    // The EISDIR code (21) is the Unix errno; Windows reports a different code, so this is Unix-only.
+    // The EISDIR code (21) is the Unix errno; Windows reports a different code, so only Unix checks it.
     #[cfg(unix)]
-    assert!(warning.contains("(os error 21)"), "{warning}");
+    assert!(
+        begun
+            .gitignore_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("(os error 21)")),
+        "{:?}",
+        begun.gitignore_warning
+    );
 }
 
 // Creating symlinks on Windows needs a privilege that CI and users often lack, so this runs on Unix only.
