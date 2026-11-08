@@ -169,7 +169,7 @@ const MAX_REASON_CHARS: usize = 300;
 /// The longest branch name derived from a title.
 const MAX_NAME_CHARS: usize = 40;
 /// What every run's worktree keeps out of git: the factory's own folder and the local tracker.
-pub(crate) const RUN_IGNORED: &[&str] = &[".factory/", ".scratch/"];
+const RUN_IGNORED: &[&str] = &[".factory/", ".scratch/"];
 
 /// Adds the run folders to the worktree's `.gitignore`: the entries added and, when the file could not be
 /// updated, a warning (the run itself is fine).

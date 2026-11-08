@@ -59,7 +59,7 @@ pub(crate) fn ensure_ignored(worktree: &Path, entries: &[&str]) -> io::Result<Ve
 mod tests {
     use super::*;
 
-    use crate::run_begin::RUN_IGNORED as ENTRIES;
+    const ENTRIES: [&str; 2] = ["a/", "b/"];
 
     fn read(dir: &Path) -> String {
         fs::read_to_string(dir.join(".gitignore")).unwrap()
@@ -68,21 +68,17 @@ mod tests {
     #[test]
     fn only_the_missing_entry_is_added() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join(".gitignore"), "a\n.factory/\n").unwrap();
-        assert_eq!(ensure_ignored(dir.path(), ENTRIES).unwrap(), [".scratch/"]);
-        assert_eq!(read(dir.path()), "a\n.factory/\n.scratch/\n");
+        fs::write(dir.path().join(".gitignore"), "x\na/\n").unwrap();
+        assert_eq!(ensure_ignored(dir.path(), &ENTRIES).unwrap(), ["b/"]);
+        assert_eq!(read(dir.path()), "x\na/\nb/\n");
     }
 
     #[test]
     fn spelling_variants_count_as_present_and_leave_the_file_alone() {
-        for text in [
-            ".factory\n.scratch\n",
-            "/.factory\n/.scratch/\n",
-            "/.factory/\n  .scratch/  \n",
-        ] {
+        for text in ["a\nb\n", "/a\n/b/\n", "/a/\n  b/  \n"] {
             let dir = tempfile::tempdir().unwrap();
             fs::write(dir.path().join(".gitignore"), text).unwrap();
-            assert!(ensure_ignored(dir.path(), ENTRIES).unwrap().is_empty());
+            assert!(ensure_ignored(dir.path(), &ENTRIES).unwrap().is_empty());
             assert_eq!(read(dir.path()), text);
         }
     }
@@ -90,27 +86,25 @@ mod tests {
     #[test]
     fn a_comment_or_negation_does_not_count_and_a_missing_newline_is_added() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join(".gitignore"), "# .factory/\n!.scratch/\nx").unwrap();
-        ensure_ignored(dir.path(), ENTRIES).unwrap();
-        assert_eq!(
-            read(dir.path()),
-            "# .factory/\n!.scratch/\nx\n.factory/\n.scratch/\n"
-        );
+        fs::write(dir.path().join(".gitignore"), "# a/\n!b/\nx").unwrap();
+        ensure_ignored(dir.path(), &ENTRIES).unwrap();
+        assert_eq!(read(dir.path()), "# a/\n!b/\nx\na/\nb/\n");
     }
 
     #[test]
     fn a_crlf_file_gets_crlf_entries() {
         for (text, expected) in [
-            ("a\r\n", "a\r\n.factory/\r\n.scratch/\r\n"),
-            ("a\r\nb", "a\r\nb\r\n.factory/\r\n.scratch/\r\n"),
+            ("x\r\n", "x\r\na/\r\nb/\r\n"),
+            ("x\r\ny", "x\r\ny\r\na/\r\nb/\r\n"),
         ] {
             let dir = tempfile::tempdir().unwrap();
             fs::write(dir.path().join(".gitignore"), text).unwrap();
-            ensure_ignored(dir.path(), ENTRIES).unwrap();
+            ensure_ignored(dir.path(), &ENTRIES).unwrap();
             assert_eq!(read(dir.path()), expected);
         }
     }
 
+    // Creating symlinks on Windows needs a privilege that CI and users often lack, so this runs on Unix only.
     #[cfg(unix)]
     #[test]
     fn a_symlinked_gitignore_is_neither_read_nor_written() {
@@ -120,7 +114,7 @@ mod tests {
         let work = dir.path().join("work");
         fs::create_dir(&work).unwrap();
         std::os::unix::fs::symlink(&target, work.join(".gitignore")).unwrap();
-        let error = ensure_ignored(&work, ENTRIES).unwrap_err();
+        let error = ensure_ignored(&work, &ENTRIES).unwrap_err();
         assert!(error.to_string().contains("is a symlink"), "{error}");
         assert_eq!(fs::read_to_string(&target).unwrap(), "secret\n");
     }
@@ -128,8 +122,8 @@ mod tests {
     #[test]
     fn calling_it_twice_adds_nothing_the_second_time() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(ensure_ignored(dir.path(), ENTRIES).unwrap().len(), 2);
-        assert!(ensure_ignored(dir.path(), ENTRIES).unwrap().is_empty());
-        assert_eq!(read(dir.path()), ".factory/\n.scratch/\n");
+        assert_eq!(ensure_ignored(dir.path(), &ENTRIES).unwrap().len(), 2);
+        assert!(ensure_ignored(dir.path(), &ENTRIES).unwrap().is_empty());
+        assert_eq!(read(dir.path()), "a/\nb/\n");
     }
 }
