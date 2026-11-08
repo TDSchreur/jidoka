@@ -1,18 +1,9 @@
 #!/usr/bin/env python3
 """Browser behavior test; run with python3 tests/dashboard-help.py (requires Chromium or Chrome; set CHROMIUM to pick one)."""
-import http.server
-import json
-import os
-import pathlib
-import queue
-import shutil
-import subprocess
-import tempfile
-import threading
 import unittest
 
-ROOT = pathlib.Path(__file__).resolve().parents[1] / "dashboard"
-RESULTS = queue.Queue()
+from dashboard_browser import run_dashboard
+
 RUNS = [{"id": "1", "title": "A run", "project": "/work/alpha", "stage": "build", "status": "running", "updated_at": 300}]
 TABS = ["Overview", "Stages", "Workflows", "Skills", "Dashboard", "Commands", "Model routing"]
 # Drives the Help like a person with a keyboard and reports what it saw.
@@ -78,77 +69,9 @@ const state = () => {
 </script>
 """
 
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_POST(self):
-        if self.path != "/result":
-            self.send_error(404)
-            return
-        data = self.rfile.read(int(self.headers["Content-Length"]))
-        RESULTS.put(json.loads(data))
-        self.send_response(204)
-        self.end_headers()
-
-    def do_GET(self):
-        if self.path == "/api/runs":
-            data, kind = json.dumps(RUNS).encode(), "application/json"
-        elif self.path == "/":
-            data, kind = (ROOT / "index.html").read_bytes() + CHECK.encode(), "text/html"
-        elif self.path.startswith("/assets/"):
-            path = ROOT / self.path.removeprefix("/assets/")
-            if not path.is_file():
-                self.send_error(404)
-                return
-            data = path.read_bytes()
-            kind = "text/javascript" if path.suffix == ".js" else "text/css"
-        else:
-            self.send_error(404)
-            return
-        self.send_response(200)
-        self.send_header("Content-Type", kind)
-        self.end_headers()
-        self.wfile.write(data)
-
-    def log_message(self, *args):
-        pass
-
-def find_browser():
-    """The CHROMIUM environment variable, else the first of chromium, chromium-browser and google-chrome on PATH."""
-    found = os.environ.get("CHROMIUM") or next(filter(None, map(shutil.which, ["chromium", "chromium-browser", "google-chrome"])), None)
-    if not found:
-        raise RuntimeError("No Chromium found. Install chromium or google-chrome, or set CHROMIUM to its path.")
-    return found
-
-def run_browser(width, height):
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever)
-    thread.start()
-    try:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile, \
-                tempfile.TemporaryFile(mode="w+", errors="replace") as log:
-            process = subprocess.Popen(
-                [find_browser(), "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
-                 "--no-first-run", "--no-default-browser-check", "--disable-extensions",
-                 f"--window-size={width},{height}", "--user-data-dir=" + profile, f"http://127.0.0.1:{server.server_port}/"],
-                stdout=subprocess.DEVNULL, stderr=log,
-            )
-            try:
-                try:
-                    return RESULTS.get(timeout=120)
-                except queue.Empty:
-                    log.seek(0)
-                    tail = "".join(log.readlines()[-40:])
-                    raise RuntimeError(f"No result from the browser within 120s (exit code {process.poll()}). Browser stderr:\n{tail}") from None
-            finally:
-                process.terminate()
-                process.wait(timeout=10)
-    finally:
-        server.shutdown()
-        thread.join()
-        server.server_close()
-
 class HelpTest(unittest.TestCase):
     def check(self, width, height):
-        result = run_browser(width, height)
+        result = run_dashboard(RUNS, CHECK, (width, height))
         self.assertNotIn("error", result, result)
         return result
 
