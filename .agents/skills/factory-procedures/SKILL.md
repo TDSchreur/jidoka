@@ -85,6 +85,10 @@ When findings remain after the second Rework, those that change only wording or 
 
 When findings remain after the third Rework, or a finding cannot be resolved, the run also needs a decision, so report it as blocked the same way. List the remaining findings and ask the user whether to do one more Rework, finish with the findings listed in the pull request, or stop. Follow their choice, and when work resumes clear the reason with `factory run update <id> <build|finish> running --clear-blocking-reason`. If they stop the run, leave it blocked.
 
+## Changing agent skills
+
+In Build, routed or not, when a ticket changes what an agent skill (a `SKILL.md` or the files it references) makes the agent do, decide, output or promise, use a skill-creator skill if the agent has one, and verify the change with realistic prompts run by a fresh agent that has the changed skill. Follow the project's own skill-authoring guidance where it has any. Record a `Skill check:` line in the commit message: what was run and its outcome, and when no skill-creator skill is available, say so there. Changes to wording only (typos, phrasing, formatting, links) need no check; the line says `wording only`.
+
 ## Model routing
 
 How a run's model-routing selection applies to every Stage (Define, Build, Check and Finish) is in [references/model-routing.md](references/model-routing.md). All three workflows read it at the start of each Stage they have, and again at every Rework and Check pass after one.

@@ -20,7 +20,7 @@ Define and Finish are also not routed when the run's mode is `factory-fast`, or 
 - On Claude Code, the Agent tool's `model` accepts only the aliases `opus`, `sonnet`, `haiku` and `fable`, so pass the recorded model only if it is one of them. Set `effort` to the recorded effort, and start a fresh subagent, never a fork, because a fork ignores `model`.
 - On Codex, set the model and effort of the agent you start through the subagent settings Codex documents.
 - If the recorded model is not one the host takes, or the host refuses a setting, such as a Claude Code that rejects `effort`, start the agent with neither the model nor the effort, so an effort is never paired with a model it was not chosen for.
-- Give each agent what it needs to work on its own: the run's worktree, the spec or plan reference, its task and the skill to follow. It reports back to you, and you record its result on the run.
+- Give each agent what it needs to work on its own: the run's worktree, the spec or plan reference, its task and the skill to follow. For a ticket that changes an agent skill, also point it to "Changing agent skills" in the procedures. It reports back to you, and you record its result on the run.
 
 ## Per Stage
 

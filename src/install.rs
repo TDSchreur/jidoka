@@ -698,6 +698,17 @@ mod tests {
     }
 
     #[test]
+    fn bundled_skills_carry_the_skill_check() {
+        for path in [
+            "factory-procedures/SKILL.md",
+            "factory-code-review/SKILL.md",
+            "factory-pr/SKILL.md",
+        ] {
+            assert!(bundled_text(path).contains("Skill check"), "{path}");
+        }
+    }
+
+    #[test]
     fn workflows_read_the_user_only_skills_they_use() {
         let user_only: Vec<&str> = bundled_skill_names()
             .into_iter()
