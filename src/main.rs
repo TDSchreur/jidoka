@@ -26,7 +26,7 @@ use run::UPDATE_HELP;
 use server::{serve, ADDRESS, DEFAULT_PORT};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr sync <run-id> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run check <run-id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...] [--config-dir <path>]...\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr sync <run-id> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run check <run-id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -69,17 +69,19 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
     {
         [] | ["--help" | "-h"] => println!("{HELP}\n\n{UPDATE_HELP}"),
         ["--version" | "-V"] => println!("factory {}", current_build()),
-        ["install", "--agent", agent] => install::install(agent)?,
+        ["install", options @ ..] => match install::parse_options(options) {
+            Ok((Some(agent), dirs)) => install::install(agent, &dirs)?,
+            Ok((None, _)) => return Err(format!("install needs --agent.\n{HELP}").into()),
+            Err(error) => return Err(format!("{error}\n{HELP}").into()),
+        },
         ["update", options @ ..] => {
-            let agents = match options {
-                [] => None,
-                ["--agent", agents] => Some(*agents),
-                _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
-            };
+            let (agents, dirs) =
+                install::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
             update::update(
                 env!("CARGO_PKG_VERSION"),
                 env!("FACTORY_BUILD_RELEASE") == "true",
                 agents,
+                &dirs,
             )?
         }
         ["check"] => update::check(

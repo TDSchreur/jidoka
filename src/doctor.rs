@@ -5,7 +5,7 @@
 //! installs anything or needs the dashboard. The one thing it writes is a starter model-routing policy, and
 //! only when `--create-model-routing` asks for it.
 
-use crate::install::{bundled_skill_files, skills_root};
+use crate::install::{bundled_skill_files, claude_config_dirs, skills_root};
 use crate::routing::{create_starter, policy_path_in, RoutingAgent};
 use serde::Serialize;
 use std::{
@@ -159,6 +159,8 @@ pub(crate) struct Machine<'a> {
     pub(crate) home: PathBuf,
     pub(crate) path: OsString,
     pub(crate) var: &'a dyn Fn(&str) -> Option<OsString>,
+    /// The `--config-dir` values: they replace the Claude config directory.
+    pub(crate) config_dirs: Vec<String>,
     /// What an agent's program prints for `--version`, if it can be asked.
     pub(crate) version: &'a dyn Fn(&Path) -> Option<String>,
 }
@@ -178,6 +180,14 @@ pub(crate) fn diagnose(
             )
         })?],
     };
+    if !machine.config_dirs.is_empty() && agent.is_some_and(|name| name != "claude") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--config-dir applies to the claude agent; use --agent claude or leave --agent out",
+        ));
+    }
+    // Resolved before any check runs, so a relative path fails the whole command.
+    claude_config_dirs(&machine.config_dirs, &machine.home, machine.var)?;
     let git = git_checks(project);
     // Later checks read from the work tree root, so they work from a subfolder or a linked worktree.
     let root = git_output(project, &["rev-parse", "--show-toplevel"])
@@ -188,10 +198,8 @@ pub(crate) fn diagnose(
     let agents: Vec<AgentReport> = agent_ids
         .into_iter()
         .map(|id| {
-            let checks = vec![
-                executable_check(id, &machine.path),
-                skills_check(id, machine),
-            ];
+            let mut checks = vec![executable_check(id, &machine.path)];
+            checks.extend(skills_checks(id, machine));
             AgentReport {
                 id,
                 usable: checks.iter().all(Check::passed),
@@ -491,17 +499,28 @@ fn executable_check(agent: &'static str, path: &OsString) -> Check {
     }
 }
 
-fn skills_check(agent: &'static str, machine: &Machine) -> Check {
-    let root = match skills_root(agent, &machine.home, machine.var) {
-        Ok(root) => root,
-        Err(error) => {
-            return Check::fail(
-                "skills",
-                error.to_string(),
-                "Use codex, claude, or copilot.",
-            )
-        }
+/// One skills check per skills folder: each Claude config directory has its own.
+fn skills_checks(agent: &'static str, machine: &Machine) -> Vec<Check> {
+    let roots = if agent == "claude" {
+        claude_config_dirs(&machine.config_dirs, &machine.home, machine.var)
+            .map(|dirs| dirs.into_iter().map(|dir| dir.join("skills")).collect())
+    } else {
+        skills_root(agent, &machine.home, machine.var).map(|root| vec![root])
     };
+    match roots {
+        Ok(roots) => roots
+            .iter()
+            .map(|root| skills_check(agent, root, !machine.config_dirs.is_empty()))
+            .collect(),
+        Err(error) => vec![Check::fail(
+            "skills",
+            error.to_string(),
+            "Use codex, claude, or copilot.",
+        )],
+    }
+}
+
+fn skills_check(agent: &'static str, root: &Path, explicit_dir: bool) -> Check {
     // A skill counts as installed only when every file `install` writes for it is there, so an
     // install from an older release that lacks newer files is reported too.
     let mut absent: Vec<&str> = bundled_skill_files()
@@ -522,7 +541,15 @@ fn skills_check(agent: &'static str, machine: &Machine) -> Check {
                 root.display(),
                 absent.join(", ")
             ),
-            format!("Run `factory install --agent {agent}`."),
+            if explicit_dir && agent == "claude" {
+                let dir = root.parent().unwrap_or(root);
+                format!(
+                    "Run `factory install --agent claude --config-dir {}`.",
+                    dir.display()
+                )
+            } else {
+                format!("Run `factory install --agent {agent}`.")
+            },
         )
     }
 }
@@ -598,11 +625,13 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
         home: crate::install::home_dir()?,
         path: std::env::var_os("PATH").unwrap_or_default(),
         var: &|name| std::env::var_os(name),
+        config_dirs: args.config_dirs.iter().map(|dir| dir.to_string()).collect(),
         version: &agent_version,
     };
     let Args {
         agent,
         json,
+        config_dirs: _,
         create_model_routing: create,
     } = args;
     if let Some(create_for) = create {
@@ -628,6 +657,8 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
 pub(crate) struct Args<'a> {
     pub(crate) agent: Option<&'a str>,
     pub(crate) json: bool,
+    /// The `--config-dir` values, in the order given.
+    pub(crate) config_dirs: Vec<&'a str>,
     /// Write a starter model-routing policy first, when none exists, with an entry for each of these agents.
     pub(crate) create_model_routing: Option<Vec<RoutingAgent>>,
 }
@@ -660,14 +691,19 @@ fn create_model_routing(agents: &[RoutingAgent], machine: &Machine) -> Result<St
     }
 }
 
-/// Reads `[--agent <name>] [--json] [--create-model-routing]` in any order.
+/// Reads `[--agent <name>] [--config-dir <path>]... [--json] [--create-model-routing]` in any order.
 pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
     let (mut agent, mut json, mut create) = (None, false, false);
+    let mut config_dirs = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match *arg {
             "--json" => json = true,
             "--create-model-routing" => create = true,
+            "--config-dir" => match args.next() {
+                Some(dir) => config_dirs.push(*dir),
+                None => return Err("--config-dir needs a path.".into()),
+            },
             "--agent" => match args.next() {
                 Some(name) if AGENTS.contains(name) && agent.is_none() => agent = Some(*name),
                 Some(name) if AGENTS.contains(name) => {
@@ -697,6 +733,7 @@ pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
     Ok(Args {
         agent,
         json,
+        config_dirs,
         create_model_routing,
     })
 }
@@ -793,16 +830,21 @@ mod tests {
         }
 
         fn report(&self, agent: Option<&str>) -> Report {
+            self.report_in(agent, &[]).unwrap()
+        }
+
+        fn report_in(&self, agent: Option<&str>, config_dirs: &[&str]) -> io::Result<Report> {
             let machine = Machine {
                 home: self.home.path().to_path_buf(),
                 path: self.bin.path().into(),
                 var: &|name| self.vars.get(name).cloned(),
+                config_dirs: config_dirs.iter().map(|dir| dir.to_string()).collect(),
                 version: &|program| {
                     let name = program.file_stem()?.to_str()?;
                     self.versions.get(name).cloned()
                 },
             };
-            diagnose(self.project.path(), agent, &machine).unwrap()
+            diagnose(self.project.path(), agent, &machine)
         }
     }
 
@@ -937,6 +979,7 @@ mod tests {
             home: world.home.path().into(),
             path: world.bin.path().into(),
             var: &|_| None,
+            config_dirs: Vec::new(),
             version: &|_| None,
         };
         let report = diagnose(empty.path(), Some("claude"), &machine).unwrap();
@@ -1117,6 +1160,61 @@ mod tests {
     }
 
     #[test]
+    fn each_claude_config_dir_gets_its_own_skills_check() {
+        let world = World::ready();
+        program(world.bin.path(), "claude");
+        let home = world.home.path();
+        let (work, bare) = (home.join("work"), home.join("bare"));
+        install_skills(&work.join("skills"));
+        let dirs = [work.display().to_string(), bare.display().to_string()];
+        let dirs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+        let report = world.report_in(Some("claude"), &dirs).unwrap();
+        let claude = agent(&report, "claude");
+        let skills: Vec<&Check> = claude.checks.iter().filter(|c| c.id == "skills").collect();
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].status, Status::Pass);
+        assert!(skills[0].message.contains(&work.display().to_string()));
+        assert_eq!(skills[1].status, Status::Missing);
+        assert!(skills[1].message.contains(&bare.display().to_string()));
+        assert!(skills[1]
+            .fix
+            .as_deref()
+            .unwrap()
+            .contains(&format!("--config-dir {}", bare.display())));
+        assert!(!claude.usable && !report.ok);
+        // The default folder is not looked at once a directory is named.
+        assert!(!home.join(".claude").exists());
+        // Without the flag the report is unchanged: one check for the default folder.
+        let report = world.report(Some("claude"));
+        assert_eq!(
+            agent(&report, "claude")
+                .checks
+                .iter()
+                .filter(|c| c.id == "skills")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn config_dirs_must_be_absolute_and_need_the_claude_agent() {
+        let world = World::ready().with_agent("claude");
+        let relative = world.report_in(Some("claude"), &["rel"]).unwrap_err();
+        assert!(relative.to_string().contains("absolute"));
+        let x = crate::install::test_abs("x").display().to_string();
+        let codex = world.report_in(Some("codex"), &[&x]).unwrap_err();
+        assert!(codex.to_string().contains("claude"));
+        assert!(world.report_in(None, &[&x]).is_ok());
+        assert_eq!(
+            parse_args(&["--config-dir", "/a", "--json", "--config-dir", "~/b"])
+                .unwrap()
+                .config_dirs,
+            ["/a", "~/b"]
+        );
+        assert!(parse_args(&["--config-dir"]).is_err());
+    }
+
+    #[test]
     fn the_text_report_shows_status_and_fix_per_line() {
         let text = render(&World::ready().with_agent("claude").report(None));
         assert!(text.contains("pass     git:"));
@@ -1132,6 +1230,7 @@ mod tests {
             Ok(Args {
                 agent,
                 json,
+                config_dirs: Vec::new(),
                 create_model_routing,
             })
         };
@@ -1186,6 +1285,7 @@ mod tests {
                 home: self.home.path().to_path_buf(),
                 path: self.bin.path().into(),
                 var: &|name| self.vars.get(name).cloned(),
+                config_dirs: Vec::new(),
                 version: &|_| None,
             };
             create_model_routing(agents, &machine)

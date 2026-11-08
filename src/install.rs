@@ -27,9 +27,27 @@ const LOCAL_SKILLS: [&str; 7] = [
     "implement-spec-balanced",
 ];
 
+/// Reads `[--agent <list>] [--config-dir <path>]...` in any order. `--agent` can be given once.
+pub(crate) fn parse_options<'a>(
+    options: &[&'a str],
+) -> Result<(Option<&'a str>, Vec<String>), String> {
+    let (mut agent, mut dirs) = (None, Vec::new());
+    let mut options = options.iter();
+    while let Some(option) = options.next() {
+        match (*option, options.next()) {
+            ("--agent", Some(value)) if agent.is_none() => agent = Some(*value),
+            ("--config-dir", Some(value)) => dirs.push(value.to_string()),
+            (other, _) => return Err(format!("Invalid option {other:?}.")),
+        }
+    }
+    Ok((agent, dirs))
+}
+
 /// Installs the bundled skills for each agent in a comma-separated list such as `codex,claude`.
-pub fn install(agents: &str) -> io::Result<()> {
-    let roots = skills_roots(agents, &home_dir()?, |name| env::var_os(name))?;
+/// `config_dirs` are the `--config-dir` values: they replace the Claude config directory, so the
+/// skills go into each of them, and they need `claude` in the list.
+pub fn install(agents: &str, config_dirs: &[String]) -> io::Result<()> {
+    let roots = skills_roots(agents, config_dirs, &home_dir()?, |name| env::var_os(name))?;
     for root in roots {
         install_to(&root)?;
     }
@@ -67,6 +85,7 @@ pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> i
 /// Resolves the skills folder of every listed agent before anything is installed.
 fn skills_roots(
     agents: &str,
+    config_dirs: &[String],
     home: &Path,
     var: impl Fn(&str) -> Option<OsString>,
 ) -> io::Result<Vec<PathBuf>> {
@@ -76,10 +95,80 @@ fn skills_roots(
             names.push(name);
         }
     }
-    names
-        .into_iter()
-        .map(|name| skills_root(name, home, &var))
-        .collect()
+    if !config_dirs.is_empty() && !names.contains(&"claude") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--config-dir applies to the claude agent; add claude to --agent",
+        ));
+    }
+    let mut roots = Vec::new();
+    for name in names {
+        if name == "claude" {
+            roots.extend(
+                claude_config_dirs(config_dirs, home, &var)?
+                    .into_iter()
+                    .map(|dir| dir.join("skills")),
+            );
+        } else {
+            roots.push(skills_root(name, home, &var)?);
+        }
+    }
+    Ok(roots)
+}
+
+/// The Claude config directories to use. The source of truth for the precedence: the `--config-dir`
+/// values, else `CLAUDE_CONFIG_DIR` (empty counts as unset), else `~/.claude`. A leading `~` expands to
+/// `home`, a relative path is an error, and a directory named twice appears once.
+pub(crate) fn claude_config_dirs(
+    flags: &[String],
+    home: &Path,
+    var: impl Fn(&str) -> Option<OsString>,
+) -> io::Result<Vec<PathBuf>> {
+    if flags.is_empty() {
+        return Ok(vec![agent_home("claude", home, var)?]);
+    }
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for flag in flags {
+        let dir = expand_config_dir(flag, home)?;
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    Ok(dirs)
+}
+
+/// What can follow a leading `~`: `/`, and also `\` on Windows.
+#[cfg(windows)]
+const SEPARATORS: [char; 2] = ['/', '\\'];
+#[cfg(not(windows))]
+const SEPARATORS: [char; 1] = ['/'];
+
+/// An absolute path for tests on any system: `/name` on Unix, `C:\name` on Windows.
+#[cfg(test)]
+pub(crate) fn test_abs(name: &str) -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(format!("C:\\{}", name.replace('/', "\\")))
+    } else {
+        PathBuf::from(format!("/{name}"))
+    }
+}
+
+/// An absolute config directory from a user-given path, expanding a leading `~`.
+pub(crate) fn expand_config_dir(value: &str, home: &Path) -> io::Result<PathBuf> {
+    let expanded = match value.strip_prefix('~') {
+        Some("") => home.to_path_buf(),
+        Some(rest) if rest.starts_with(SEPARATORS) => {
+            home.join(rest.trim_start_matches(SEPARATORS))
+        }
+        _ => PathBuf::from(value),
+    };
+    if value.is_empty() || !expanded.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("--config-dir {value:?} must be an absolute path (or start with ~)"),
+        ));
+    }
+    Ok(expanded)
 }
 
 /// Resolves an agent's skills folder, honoring its config directory variable.
@@ -856,24 +945,101 @@ mod tests {
         let home = Path::new("/home/user");
         let unset = |_: &str| None;
         assert_eq!(
-            skills_roots("codex, claude,codex", home, unset).unwrap(),
+            skills_roots("codex, claude,codex", &[], home, unset).unwrap(),
             [home.join(".codex/skills"), home.join(".claude/skills")]
         );
         assert_eq!(
-            skills_roots("copilot", home, unset).unwrap(),
+            skills_roots("copilot", &[], home, unset).unwrap(),
             [home.join(".copilot/skills")]
         );
         for invalid in ["", "codex,", "codex,vscode", "all"] {
-            assert!(skills_roots(invalid, home, unset).is_err(), "{invalid:?}");
+            assert!(
+                skills_roots(invalid, &[], home, unset).is_err(),
+                "{invalid:?}"
+            );
         }
-        let error = skills_roots("codex,vscode", home, unset).unwrap_err();
+        let error = skills_roots("codex,vscode", &[], home, unset).unwrap_err();
         assert!(error.to_string().contains("vscode"));
     }
+    fn dirs(flags: &[&str], var: Option<&str>, home: &Path) -> io::Result<Vec<PathBuf>> {
+        let flags: Vec<String> = flags.iter().map(|flag| flag.to_string()).collect();
+        claude_config_dirs(&flags, home, |name| {
+            (name == "CLAUDE_CONFIG_DIR")
+                .then(|| var.map(OsString::from))
+                .flatten()
+        })
+    }
+
+    fn text(path: PathBuf) -> String {
+        path.display().to_string()
+    }
+
+    #[test]
+    fn config_dir_flags_win_over_the_variable_and_the_default() {
+        let home = test_abs("home/user");
+        let env = text(test_abs("env"));
+        assert_eq!(dirs(&[], None, &home).unwrap(), [home.join(".claude")]);
+        assert_eq!(dirs(&[], Some(""), &home).unwrap(), [home.join(".claude")]);
+        assert_eq!(dirs(&[], Some(&env), &home).unwrap(), [test_abs("env")]);
+        let (a, b) = (text(test_abs("a")), text(test_abs("b")));
+        assert_eq!(
+            dirs(&[&a, &b], Some(&env), &home).unwrap(),
+            [test_abs("a"), test_abs("b")]
+        );
+    }
+
+    #[test]
+    fn config_dirs_expand_the_tilde_and_drop_duplicates() {
+        let home = test_abs("home/user");
+        let same = text(home.join("x"));
+        assert_eq!(
+            dirs(&["~/x", "~", &same, "~/x/"], None, &home).unwrap(),
+            [home.join("x"), home.clone()]
+        );
+        // Only a leading `~` of its own is the home folder.
+        assert!(dirs(&["~other/x"], None, &home).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_backslash_follows_the_tilde_on_windows() {
+        let home = test_abs("home/user");
+        assert_eq!(
+            dirs(&["~\\x\\y"], None, &home).unwrap(),
+            [home.join("x").join("y")]
+        );
+    }
+
+    #[test]
+    fn relative_config_dirs_are_rejected() {
+        let home = test_abs("home/user");
+        let ok = text(test_abs("ok"));
+        for bad in ["rel", "./rel", "", "../x"] {
+            let error = dirs(&[&ok, bad], None, &home).unwrap_err();
+            assert!(error.to_string().contains("absolute"), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn config_dirs_need_the_claude_agent() {
+        let home = test_abs("home/user");
+        let flags = [text(test_abs("a")), text(test_abs("b"))];
+        assert!(skills_roots("codex", &flags, &home, |_: &str| None).is_err());
+        assert_eq!(
+            skills_roots("codex,claude", &flags, &home, |_: &str| None).unwrap(),
+            [
+                home.join(".codex/skills"),
+                test_abs("a").join("skills"),
+                test_abs("b").join("skills")
+            ]
+        );
+    }
+
     #[test]
     fn humanizer_is_installed_with_its_own_license_for_every_agent() {
         let home = tempfile::tempdir().unwrap();
         let unset = |_: &str| None;
-        let roots = skills_roots("codex,claude,copilot", home.path(), unset).unwrap();
+        let roots = skills_roots("codex,claude,copilot", &[], home.path(), unset).unwrap();
         assert_eq!(roots.len(), 3);
         let upstream = bundled_text("licenses/humanizer-LICENSE");
         for root in roots {
@@ -897,7 +1063,7 @@ mod tests {
     #[test]
     fn selector_replaces_full_and_all_entry_points_survive_reinstall_for_each_agent() {
         let home = tempfile::tempdir().unwrap();
-        let roots = skills_roots("codex,claude,copilot", home.path(), |_: &str| None).unwrap();
+        let roots = skills_roots("codex,claude,copilot", &[], home.path(), |_: &str| None).unwrap();
         for root in roots {
             fs::create_dir_all(root.join("factory")).unwrap();
             fs::write(

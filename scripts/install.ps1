@@ -1,5 +1,6 @@
 # Install the latest public TDS Factory release on Windows x86-64.
 # Choose the agents to install skills for with $env:FACTORY_AGENT (for example codex,claude)
+# and the Claude config folders with $env:FACTORY_CLAUDE_CONFIG_DIRS (separated by semicolons)
 # or answer the prompt.
 $ErrorActionPreference = 'Stop'
 
@@ -72,7 +73,11 @@ function Install-Factory {
         New-Item -ItemType Directory -Force -Path $bin | Out-Null
         $destination = Join-Path $bin 'factory.exe'
         Copy-Item -Force $download $destination
-        & $destination install --agent $agents
+        $installArgs = @('install', '--agent', $agents)
+        foreach ($dir in ([string]$env:FACTORY_CLAUDE_CONFIG_DIRS -split ';')) {
+            if ($dir) { $installArgs += '--config-dir', $dir }
+        }
+        & $destination @installArgs
         Assert-FactoryExitCode $LASTEXITCODE 'skill installation'
         $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
         if ($null -eq $userPath) { $userPath = '' }

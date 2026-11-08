@@ -1,6 +1,7 @@
 #!/bin/sh
 # Install the latest public TDS Factory release on Linux x86-64.
 # Choose the agents to install skills for with FACTORY_AGENT (for example codex,claude)
+# and the Claude config folders with FACTORY_CLAUDE_CONFIG_DIRS (colon-separated; default: one folder)
 # or answer the prompt.
 set -eu
 
@@ -50,6 +51,24 @@ Enter one or more numbers or names separated by commas, or "all": ' >/dev/tty
   done
 }
 
+# Installs the skills, passing each entry of FACTORY_CLAUDE_CONFIG_DIRS (separated by colons) as
+# --config-dir. The positional parameters serve as an array, so paths with spaces stay intact.
+install_skills() {
+  binary=$1
+  agents=$2
+  dirs=${FACTORY_CLAUDE_CONFIG_DIRS:-}
+  set -- install --agent "$agents"
+  old_ifs=$IFS
+  IFS=:
+  set -f
+  for dir in $dirs; do
+    if [ -n "$dir" ]; then set -- "$@" --config-dir "$dir"; fi
+  done
+  set +f
+  IFS=$old_ifs
+  "$binary" "$@"
+}
+
 main() {
   [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || { echo 'Only Linux x86-64 is supported by this installer.' >&2; exit 1; }
   command -v curl >/dev/null || { echo 'curl is required.' >&2; exit 1; }
@@ -68,7 +87,7 @@ main() {
   # Copy to a temporary file in the destination before replacing the executable.
   cp "$temp/factory" "$HOME/.local/bin/factory.new"
   mv -f "$HOME/.local/bin/factory.new" "$HOME/.local/bin/factory"
-  "$HOME/.local/bin/factory" install --agent "$agents"
+  install_skills "$HOME/.local/bin/factory" "$agents"
   echo 'Installed factory. Ensure ~/.local/bin is on PATH, then run factory dashboard.'
 }
 main "$@"

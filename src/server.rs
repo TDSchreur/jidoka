@@ -998,7 +998,7 @@ mod tests {
     /// A dashboard whose usage collection reads fixture logs under `home` instead of a user's own.
     async fn client_collecting(dir: &TestDir, home: &Path, enabled: bool) -> Client {
         let roots = crate::usage_logs::Roots {
-            claude: home.join("claude/projects"),
+            claude: vec![home.join("claude/projects")],
             codex: home.join("codex/sessions"),
             copilot: home.join("copilot/session-state"),
         };
@@ -1135,7 +1135,7 @@ mod tests {
         let dir = TestDir::new();
         let home = tempfile::tempdir().unwrap();
         let roots = crate::usage_logs::Roots {
-            claude: home.path().join("claude/projects"),
+            claude: vec![home.path().join("claude/projects")],
             codex: home.path().join("codex/sessions"),
             copilot: home.path().join("copilot/session-state"),
         };
@@ -1231,7 +1231,7 @@ mod tests {
         let settings = UsageSettings {
             enabled: true,
             roots: crate::usage_logs::Roots {
-                claude: home.path().join("claude/projects"),
+                claude: vec![home.path().join("claude/projects")],
                 codex: home.path().join("codex/sessions"),
                 copilot: home.path().join("copilot/session-state"),
             },

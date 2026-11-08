@@ -30,6 +30,24 @@ To update, run `factory update`. It downloads the latest release for your platfo
 
 Claude Code skills go to `$CLAUDE_CONFIG_DIR/skills` when `CLAUDE_CONFIG_DIR` is set (for example `~/.claude-work`), otherwise `~/.claude/skills`. Codex skills likewise honor `CODEX_HOME`, and Copilot skills honor `COPILOT_HOME` (otherwise `~/.copilot/skills`).
 
+To serve more than one Claude Code config folder, such as a personal `~/.claude` and a work `~/.claude-work`, repeat `--config-dir <path>` on `factory install`, `factory update` and `factory doctor`:
+
+```sh
+factory install --agent claude --config-dir ~/.claude --config-dir ~/.claude-work
+```
+
+The flag applies to the `claude` agent only, and is an error when `--agent` leaves Claude out. Claude's folder is chosen in this order:
+
+1. `--config-dir`, once or several times.
+2. `CLAUDE_CONFIG_DIR`, when it is not empty.
+3. `~/.claude`.
+
+A leading `~` means your home folder. A relative path is rejected before anything is written, and a folder named twice is used once. `factory update` reinstalls the skills into each folder given, and `factory doctor` reports each folder by path.
+
+The installers, `scripts/update-local.sh` and `scripts/switch-factory.sh` read an optional `FACTORY_CLAUDE_CONFIG_DIRS` and pass each entry as `--config-dir`. Separate entries with `:` on Linux and `;` in PowerShell. Empty entries are skipped.
+
+The dashboard and `factory run requests` read the same variable, with your system's path separator. They read Claude Code session logs from `projects` in the resolved folder and in every listed folder. Project-level `.claude/` folders are not affected.
+
 Stop the dashboard before upgrading when you can; `factory update` renames a running Windows executable aside, but the dashboard keeps running the old version until you restart it. The release workflow checks Windows runtime imports and starts the Windows executable on a Windows runner.
 
 To build from source instead, run:
@@ -404,7 +422,7 @@ Copilot CLI is not supported. It chooses a subagent's model from its own setting
 `factory doctor` reports whether the current repository and your machine are ready for the factory, without changing anything, installing anything or starting the dashboard, unless you ask it to create the model-routing policy file (see below). It checks:
 
 - the project: a Git repository, an `origin` remote, origin's default branch (`git remote set-head origin --auto` sets it when unknown), the setup output of `/setup-matt-pocock-skills` (`docs/agents/issue-tracker.md` and the `## Agent skills` section), which `/factory-full` always needs and the lighter workflows only when they read or publish specs or tickets, and the verification commands listed as bullets under `## Commands` in `AGENTS.md` or `CLAUDE.md`. It looks for each command's tool but never runs it.
-- each agent (Codex, Claude Code, Copilot): its command is on `PATH`, and every file of every skill `factory install` bundles is installed in the folder `factory install` would use (honoring `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `COPILOT_HOME`).
+- each agent (Codex, Claude Code, Copilot): its command is on `PATH`, and every file of every skill `factory install` bundles is installed in the folder `factory install` would use (honoring `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `COPILOT_HOME`). With `--config-dir`, Claude Code gets one `skills` check per folder, each naming its path.
 - the pull request host, in a "Provider" section after the agents. `host` says whether origin is on GitHub or Azure Repos, worked out the way `factory pr open` does it (including `factory.prProvider`). An unknown host, or an override that does not match origin, is a warning that says to open pull requests with the host's own tooling; without an origin the section is `skipped`. For GitHub, doctor looks for `gh` on `PATH` and runs `gh auth status`. For Azure Repos, it looks for `az`, runs `az extension show --name azure-devops`, and counts you as signed in when `AZURE_DEVOPS_EXT_PAT` is set or `az account show` succeeds. It only checks that the variable is set, never reads or prints the token, and discards what these commands print. A `not-verified` line says what it did not check: whether the token is valid, project permissions and branch policies. A missing tool or sign-in is a warning, so this section never changes whether the factory is ready.
 
 - the [model routing](#model-routing) policy, only when a `model-routing.json` exists and is switched on. A "Model routing" section follows the provider section. Doctor asks the agent for its `--version` there, using the program's absolute path from `PATH`; that is the only agent command it runs, and it calls no model.

@@ -4,7 +4,7 @@
 use super::*;
 use crate::run::{Run, Stage};
 use serde_json::json;
-use std::{fs, time::Duration};
+use std::{ffi::OsString, fs, path::PathBuf, time::Duration};
 use tempfile::TempDir;
 
 /// 2026-11-05T10:00:00Z.
@@ -148,7 +148,7 @@ impl World {
     fn roots(&self) -> Roots {
         let home = self.dir.path();
         Roots {
-            claude: home.join("claude/projects"),
+            claude: vec![home.join("claude/projects")],
             codex: home.join("codex/sessions"),
             copilot: home.join("copilot/session-state"),
         }
@@ -439,6 +439,79 @@ fn claude_usage_is_normalised_deduplicated_and_subagents_are_counted_once() {
         .unwrap();
     assert_eq!(sonnet.tokens.cache_read, Some(0));
     assert_eq!(usage.no_data, [Stage::Build, Stage::Check]);
+}
+
+#[test]
+fn sessions_are_read_from_every_claude_root() {
+    let world = World::new();
+    let target = full_run(RUN_A);
+    for (root, session, request, at) in
+        [("claude", "S1", "r1", 10), ("claude-work", "S2", "r2", 20)]
+    {
+        world.write(
+            &format!("{root}/projects/-work/{session}.jsonl"),
+            &[
+                mention(RUN_A),
+                claude_line(
+                    session,
+                    at,
+                    &format!("m-{session}"),
+                    request,
+                    "claude-opus-test",
+                    (1, 0, 0, 2),
+                    0,
+                    false,
+                ),
+            ],
+        );
+    }
+    let mut roots = world.roots();
+    roots
+        .claude
+        .push(world.dir.path().join("claude-work/projects"));
+    let usage = collect(
+        &target,
+        std::slice::from_ref(&target),
+        &roots,
+        T0 + 10_000_000,
+        Instant::now() + Duration::from_secs(30),
+    );
+    assert_eq!(usage.sessions, ["S1", "S2"]);
+}
+
+#[test]
+fn claude_roots_are_the_resolved_dir_plus_the_listed_ones_without_duplicates() {
+    use crate::install::test_abs;
+    let home = test_abs("home/user");
+    let env = test_abs("env");
+    let work = test_abs("work");
+    let list = std::env::join_paths([
+        work.clone(),
+        PathBuf::new(),
+        PathBuf::from("rel"),
+        PathBuf::from("~/other"),
+        work.clone(),
+        env.clone(),
+    ])
+    .unwrap();
+    let var = |name: &str| match name {
+        "CLAUDE_CONFIG_DIR" => Some(env.clone().into_os_string()),
+        "FACTORY_CLAUDE_CONFIG_DIRS" => Some(list.clone()),
+        _ => None,
+    };
+    let roots = Roots::from_home(&home, &var).unwrap();
+    assert_eq!(
+        roots.claude,
+        [
+            env.join("projects"),
+            work.join("projects"),
+            home.join("other/projects"),
+        ]
+    );
+    let roots = Roots::from_home(&home, &|_| None).unwrap();
+    assert_eq!(roots.claude, [home.join(".claude/projects")]);
+    let empty = |name: &str| (name == "FACTORY_CLAUDE_CONFIG_DIRS").then(OsString::new);
+    assert_eq!(Roots::from_home(&home, &empty).unwrap().claude.len(), 1);
 }
 
 #[test]
