@@ -128,7 +128,7 @@ Whenever you add to the branch, whether to resolve a conflict or to fix CI, make
 
 ### When CI fails
 
-When the outcome is `failed`, read the failure details it printed (fetch the full log only when the excerpt is not enough), fix the cause in a new commit on the same branch (never amend or force-push, as above), rerun the project's verification on the changed code, push, note it with a milestone update, and run `factory pr wait` again; repeat until CI is green. CI fixes are not Reworks.
+When the outcome is `failed`, read the failure details it printed (fetch the full log only when the excerpt is not enough), fix the cause in a new commit on the same branch (never amend or force-push, as above), run the project's full verification on the changed code before pushing, formatting included and not just the failing check, then push, note it with a milestone update, and run `factory pr wait` again; repeat until CI is green. CI fixes are not Reworks.
 
 - After `head-changed`, run it again.
 - For `cancelled` or `timeout`, look at the checks it lists; if the cause is not something you can fix, treat it as a failure you cannot fix.

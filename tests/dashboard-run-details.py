@@ -87,7 +87,7 @@ RUNS = [SHIPPED, ACTIVE, BLOCKED, STRAY, CURRENT, NO_CURRENT]
 HELPERS = """
 const wait = (ok, what) => new Promise((resolve, reject) => {
   const started = Date.now();
-  const t = setInterval(() => { const v = ok(); if (v) { clearInterval(t); resolve(v); } else if (Date.now() - started > 15000) { clearInterval(t); reject(new Error('timed out waiting for ' + what)); } }, 20);
+  const t = setInterval(() => { const v = ok(); if (v) { clearInterval(t); resolve(v); } else if (Date.now() - started > PAGE_WAIT_MS) { clearInterval(t); reject(new Error('timed out waiting for ' + what)); } }, 20);
 });
 const text = (el) => (el ? el.textContent.replace(/\\s+/g, ' ').trim() : null);
 const openRun = async (id) => {

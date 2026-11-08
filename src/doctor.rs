@@ -1,7 +1,7 @@
 //! `factory doctor`: a report on whether this project and this machine are ready for the factory.
 //! It only reads files, looks on `PATH` and asks `git` read-only questions, asks the pull request host's tool
-//! whether it is signed in (`gh auth status`, `az extension show`, `az account show`), and, when a
-//! model-routing policy exists, asks an agent for its `--version`. It never runs the project's own commands, calls a model,
+//! whether it is signed in (`gh auth status`, `az extension show`, `az account show`), asks `rustup target list --installed`
+//! in a Rust project on a non-Windows host (read-only), and, when a model-routing policy exists, asks an agent for its `--version`. It never runs the project's own commands, calls a model,
 //! installs anything or needs the dashboard. The one thing it writes is a starter model-routing policy, and
 //! only when `--create-model-routing` asks for it.
 
@@ -163,6 +163,8 @@ pub(crate) struct Machine<'a> {
     pub(crate) config_dirs: Vec<String>,
     /// What an agent's program prints for `--version`, if it can be asked.
     pub(crate) version: &'a dyn Fn(&Path) -> Option<String>,
+    /// What `rustup target list --installed` prints, if rustup can be asked.
+    pub(crate) rustup_targets: &'a dyn Fn(&OsString, &Path) -> Option<String>,
 }
 
 /// Checks the project at `project` and the listed agents (all of them when `agent` is `None`).
@@ -195,6 +197,8 @@ pub(crate) fn diagnose(
     let mut project_checks = git;
     project_checks.push(setup_docs_check(&root));
     project_checks.push(verification_check(&root, &machine.path));
+    // A warning never blocks, so this check stays out of `shared_ok`.
+    let windows_lint = windows_lint_check(&root, machine);
     let agents: Vec<AgentReport> = agent_ids
         .into_iter()
         .map(|id| {
@@ -208,6 +212,7 @@ pub(crate) fn diagnose(
         })
         .collect();
     let shared_ok = project_checks.iter().all(Check::passed);
+    project_checks.extend(windows_lint);
     let agents_ok = match agent {
         Some(_) => agents.iter().all(|a| a.usable),
         None => agents.iter().any(|a| a.usable),
@@ -383,6 +388,28 @@ fn documented_commands(text: &str) -> Option<Vec<String>> {
         }
     }
     Some(commands)
+}
+
+/// For a Rust project on a non-Windows host: whether a Windows target is installed, so verification can lint Windows-only code.
+fn windows_lint_check(root: &Path, machine: &Machine) -> Option<Check> {
+    if cfg!(windows) || !root.join("Cargo.toml").is_file() {
+        return None;
+    }
+    let Some(targets) = (machine.rustup_targets)(&machine.path, &machine.home) else {
+        return Some(Check::skipped(
+            "windows-lint",
+            "rustup is not available, so Windows targets were not checked",
+        ));
+    };
+    Some(if targets.lines().any(|t| t.contains("-pc-windows-")) {
+        Check::pass("windows-lint", "a Windows target is installed")
+    } else {
+        Check::warning(
+            "windows-lint",
+            "no Windows target is installed, so Windows-only code is not linted locally",
+            "Run `rustup target add x86_64-pc-windows-gnu` so the project's verification can lint Windows-only code.",
+        )
+    })
 }
 
 fn verification_check(root: &Path, path: &OsString) -> Check {
@@ -619,6 +646,25 @@ fn agent_version(program: &Path) -> Option<String> {
     })
 }
 
+/// Asks rustup which targets are installed, looking for it on `path`. Read-only.
+/// It runs outside the project, in `home`, with auto-install off, so a `rust-toolchain.toml` cannot make it download.
+fn rustup_targets(path: &OsString, home: &Path) -> Option<String> {
+    let program = find_program("rustup", path)?;
+    if !program.is_absolute() {
+        return None;
+    }
+    let output = Command::new(program)
+        .args(["target", "list", "--installed"])
+        .current_dir(home)
+        .env("RUSTUP_AUTO_INSTALL", "0")
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// Runs the checks for the current folder and prints the report. Returns whether the factory is ready.
 pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
     let machine = Machine {
@@ -627,6 +673,7 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
         var: &|name| std::env::var_os(name),
         config_dirs: args.config_dirs.iter().map(|dir| dir.to_string()).collect(),
         version: &agent_version,
+        rustup_targets: &rustup_targets,
     };
     let Args {
         agent,
@@ -759,6 +806,8 @@ mod tests {
         vars: HashMap<String, OsString>,
         /// What each agent's program prints for `--version`.
         versions: HashMap<String, String>,
+        /// What `rustup target list --installed` prints; `None` when rustup is not available.
+        rustup_targets: Option<String>,
     }
 
     fn git(dir: &Path, args: &[&str]) {
@@ -804,6 +853,7 @@ mod tests {
                 bin: tempfile::tempdir().unwrap(),
                 vars: HashMap::new(),
                 versions: HashMap::new(),
+                rustup_targets: None,
             };
             let dir = world.project.path();
             git(dir, &["init", "-q"]);
@@ -849,6 +899,7 @@ mod tests {
                     let name = program.file_stem()?.to_str()?;
                     self.versions.get(name).cloned()
                 },
+                rustup_targets: &|_, _| self.rustup_targets.clone(),
             };
             diagnose(self.project.path(), agent, &machine)
         }
@@ -864,6 +915,54 @@ mod tests {
 
     fn agent<'a>(report: &'a Report, id: &str) -> &'a AgentReport {
         report.agents.iter().find(|a| a.id == id).unwrap()
+    }
+
+    #[test]
+    fn windows_lint_is_a_non_blocking_warning_without_a_windows_target() {
+        if cfg!(windows) {
+            return;
+        }
+        let mut world = World::ready().with_agent("claude");
+        fs::write(world.project.path().join("Cargo.toml"), "").unwrap();
+        world.rustup_targets = Some("x86_64-unknown-linux-gnu\n".into());
+        let report = world.report(None);
+        let check = project_check(&report, "windows-lint");
+        assert_eq!(check.status, Status::Warning);
+        assert!(check
+            .fix
+            .as_deref()
+            .unwrap()
+            .contains("rustup target add x86_64-pc-windows-gnu"));
+        assert!(report.ok, "{}", render(&report));
+    }
+
+    #[test]
+    fn windows_lint_passes_with_a_windows_target_and_skips_without_rustup() {
+        if cfg!(windows) {
+            return;
+        }
+        let mut world = World::ready().with_agent("claude");
+        fs::write(world.project.path().join("Cargo.toml"), "").unwrap();
+        world.rustup_targets = Some("x86_64-pc-windows-gnu\nx86_64-unknown-linux-gnu\n".into());
+        assert!(project_check(&world.report(None), "windows-lint").passed());
+        world.rustup_targets = None;
+        let report = world.report(None);
+        assert_eq!(
+            project_check(&report, "windows-lint").status,
+            Status::Skipped
+        );
+        assert!(report.ok);
+    }
+
+    #[test]
+    fn windows_lint_is_left_out_of_a_project_without_cargo_toml() {
+        let mut world = World::ready().with_agent("claude");
+        world.rustup_targets = Some(String::new());
+        let report = world.report(None);
+        assert!(report
+            .project
+            .iter()
+            .all(|check| check.id != "windows-lint"));
     }
 
     #[test]
@@ -987,6 +1086,7 @@ mod tests {
             var: &|_| None,
             config_dirs: Vec::new(),
             version: &|_| None,
+            rustup_targets: &|_, _| None,
         };
         let report = diagnose(empty.path(), Some("claude"), &machine).unwrap();
         assert!(!report.ok);
@@ -1289,6 +1389,7 @@ mod tests {
                 var: &|name| self.vars.get(name).cloned(),
                 config_dirs: Vec::new(),
                 version: &|_| None,
+                rustup_targets: &|_, _| None,
             };
             create_model_routing(agents, &machine)
         }

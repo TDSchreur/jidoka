@@ -3,6 +3,11 @@
 `run_dashboard` serves the real dashboard files from 127.0.0.1 on a free port with the runs and the check script a
 test passes, opens them in a headless browser with a throwaway profile, and returns what the page POSTed to /result.
 
+Every page gets the global `PAGE_WAIT_MS`, the one in-page wait budget for the tests' own waits. It is generous for a
+cold browser start, which renders and fetches the first page slowly, and well inside the harness wait
+(`WAIT_SECONDS`). A browser that exits without posting a result fails at once
+with its exit code and stderr tail; one that keeps running without a result fails at the wait limit.
+
 Written for Linux and macOS, run on Linux in CI, and untested on Windows (set CHROMIUM elsewhere).
 """
 import http.server
@@ -15,10 +20,13 @@ import signal
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parents[1] / "dashboard"
 WAIT_SECONDS = 120
+PAGE_WAIT_MS = 60000
+POLL_SECONDS = 0.5
 
 
 def find_browser():
@@ -105,31 +113,49 @@ def stop(process):
 def run_dashboard(runs, check, size=(1100, 700), handler=Handler, env=None, extra_args=()):
     """Opens the dashboard with `runs` and the `check` script in a headless browser; returns the page's /result."""
     results = queue.Queue()
+    check = f"<script>window.PAGE_WAIT_MS = {PAGE_WAIT_MS};</script>" + check
     handler = type("TestHandler", (handler,), {"runs": runs, "check": check, "results": results})
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
     try:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile, \
-                tempfile.TemporaryFile(mode="w+", errors="replace") as log:
-            # On POSIX the browser gets its own session, so `stop` can end its helper processes with it.
-            process = subprocess.Popen(
-                [find_browser(), "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
-                 "--no-first-run", "--no-default-browser-check", "--disable-extensions",
-                 f"--window-size={size[0]},{size[1]}", *extra_args, "--user-data-dir=" + profile,
-                 f"http://127.0.0.1:{server.server_port}/"],
-                stdout=subprocess.DEVNULL, stderr=log, env=env, start_new_session=os.name != "nt",
-            )
-            try:
-                try:
-                    return results.get(timeout=WAIT_SECONDS)
-                except queue.Empty:
-                    log.seek(0)
-                    tail = "".join(log.readlines()[-40:])
-                    raise RuntimeError(f"No result from the browser within {WAIT_SECONDS}s (exit code {process.poll()}). Browser stderr:\n{tail}") from None
-            finally:
-                stop(process)
+        return wait_for_result(server, results, size, env, extra_args)
     finally:
         server.shutdown()
         thread.join()
         server.server_close()
+
+
+def wait_for_result(server, results, size, env, extra_args):
+    """One browser run with a fresh profile: the page's result, or a RuntimeError with the exit code and stderr tail."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile, \
+            tempfile.TemporaryFile(mode="w+", errors="replace") as log:
+        # On POSIX the browser gets its own session, so `stop` can end its helper processes with it.
+        process = subprocess.Popen(
+            [find_browser(), "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+             "--no-first-run", "--no-default-browser-check", "--disable-extensions",
+             f"--window-size={size[0]},{size[1]}", *extra_args, "--user-data-dir=" + profile,
+             f"http://127.0.0.1:{server.server_port}/"],
+            stdout=subprocess.DEVNULL, stderr=log, env=env, start_new_session=os.name != "nt",
+        )
+        try:
+            deadline = time.monotonic() + WAIT_SECONDS
+            while time.monotonic() < deadline:
+                try:
+                    return results.get(timeout=POLL_SECONDS)
+                except queue.Empty:
+                    pass
+                if process.poll() is not None:
+                    # A result posted just before the exit still counts.
+                    try:
+                        return results.get(timeout=1)
+                    except queue.Empty:
+                        break
+            log.seek(0)
+            tail = "".join(log.readlines()[-40:])
+            code = process.poll()
+            if code is not None:
+                raise RuntimeError(f"The browser exited without a result (exit code {code}). Browser stderr:\n{tail}")
+            raise RuntimeError(f"No result from the browser within {WAIT_SECONDS}s. Browser stderr:\n{tail}")
+        finally:
+            stop(process)

@@ -12,7 +12,7 @@ CHECK = """
 // Gives up after ten seconds and says which step was waiting, so a hang is not just a timeout.
 const wait = (ok, what = ok.toString().slice(0, 80)) => new Promise((resolve, reject) => {
   const started = Date.now();
-  const t = setInterval(() => { const v = ok(); if (v) { clearInterval(t); resolve(v); } else if (Date.now() - started > 10000) { clearInterval(t); reject(new Error('timed out waiting for ' + what)); } }, 20);
+  const t = setInterval(() => { const v = ok(); if (v) { clearInterval(t); resolve(v); } else if (Date.now() - started > PAGE_WAIT_MS) { clearInterval(t); reject(new Error('timed out waiting for ' + what)); } }, 20);
 });
 const key = (el, k) => el.dispatchEvent(new KeyboardEvent('keydown', {key: k, bubbles: true, cancelable: true}));
 const state = () => {

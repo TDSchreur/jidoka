@@ -1,6 +1,7 @@
 #!/bin/sh
 # Run the checks CI runs, in the same order, and stop at the first failure.
-# Keep in sync with the `check` job in .github/workflows/ci.yml.
+# Keep in sync with the `check` job in .github/workflows/ci.yml. CI lints on Linux only; the Windows clippy step below
+# is an extra local check that runs when the Windows target is installed.
 set -eu
 
 missing() {
@@ -15,6 +16,17 @@ browser() {
     command -v "$name" 2>/dev/null && return 0
   done
   return 1
+}
+
+# Prints the Windows target to lint: x86_64-pc-windows-gnu when installed, else the first installed *-pc-windows-* target.
+installed_windows_target() {
+  command -v rustup >/dev/null 2>&1 || return 1
+  targets=$(rustup target list --installed 2>/dev/null) || return 1
+  if printf '%s\n' "$targets" | grep -qx 'x86_64-pc-windows-gnu'; then
+    printf '%s\n' x86_64-pc-windows-gnu
+  else
+    printf '%s\n' "$targets" | grep -m1 -e '-pc-windows-'
+  fi
 }
 
 step() {
@@ -34,6 +46,11 @@ main() {
   browser >/dev/null || { printf 'Chromium is not available. Install chromium or google-chrome (or set CHROMIUM to its path) to run the dashboard browser tests.\n' >&2; exit 1; }
   step cargo fmt --check
   step cargo clippy --all-targets --locked -- -D warnings
+  if windows_target=$(installed_windows_target); then
+    step cargo clippy --all-targets --locked --target "$windows_target" -- -D warnings
+  else
+    printf '\n==> Skipped Windows clippy: no Windows target is installed. Add one with: rustup target add x86_64-pc-windows-gnu\n'
+  fi
   step cargo test --locked
   for test in tests/dashboard-*.py; do
     step python3 "$test"
