@@ -717,7 +717,7 @@ function Station({ run, id, name, at, now }) {
         ? html`<span class="stop-meta">
             ${progress ? html`<span class="ticket-count">${progress.done} of ${progress.total} tickets done</span>` : null}
             ${tokens !== null ? html`<span class="stop-tokens">${compactTokens(tokens)}<span class="visually-hidden">${' fresh tokens'}</span></span>` : null}
-            ${stageCost ? html`<span class="stop-cost"><span class="visually-hidden">Estimated cost </span>${costText(stageCost)}</span>` : null}
+            ${stageCost ? html`<span class="stop-cost"><span class="visually-hidden">Estimated cost </span>${costText(stageCost, true)}</span>` : null}
           </span>`
         : null}
     </div>

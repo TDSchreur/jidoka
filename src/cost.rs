@@ -256,6 +256,7 @@ mod tests {
         let stages = by_stage(&u.rows, TABLE);
         assert_eq!(format(&stages["build"]), "$2.00");
         assert_eq!(format(&stages["check"]), "unknown");
+        assert_eq!(stages["check"].unpriced_models, ["m-new"]);
     }
 
     #[test]

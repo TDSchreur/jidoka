@@ -46,7 +46,7 @@ SHIPPED = {
         row("build", "sonnet", 3000, ticket=T1, cost_usd=0.05), row("check", "gpt-x", 4000, cost_usd=None),
     ], "cost": {
         "usd": 0.8, "partial": True, "unpriced_models": ["gpt-x"],
-        "by_stage": {"define": {"usd": 0.5, "partial": False}, "build": {"usd": 0.3, "partial": False}, "check": {"usd": None, "partial": False}},
+        "by_stage": {"define": {"usd": 0.5, "partial": False}, "build": {"usd": 0.3, "partial": False}, "check": {"usd": 0.02, "partial": True, "unpriced_models": ["gpt-x"]}},
         "by_model": {"opus": {"usd": 0.5, "partial": False}, "sonnet": {"usd": 0.3, "partial": False}, "gpt-x": {"usd": None, "partial": False}},
     }},
 }
@@ -247,7 +247,7 @@ return {shipped: await snap('run-shipped'), active: await snap('run-active'), bl
             self.shipped["modelRows"],
             [["gpt-x", "4,000", "5,000", "unknown"], ["opus", "1,500", "5,000", "$0.50"], ["sonnet", "23,000", "10,000", "$0.30"]],
         )
-        self.assertEqual(self.shipped["stopCosts"], ["Estimated cost $0.50", "Estimated cost $0.30", "Estimated cost unknown", None])
+        self.assertEqual(self.shipped["stopCosts"], ["Estimated cost $0.50", "Estimated cost $0.30", "Estimated cost >= $0.02 (partial), 1 unpriced: gpt-x", None])
         # A Run whose usage carries no cost shows no cost summary.
         self.assertNotIn("Est. cost", self.active["usageSummary"])
 
