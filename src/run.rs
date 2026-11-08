@@ -894,7 +894,7 @@ impl RunStore {
         };
         let mut run = run;
         let created = run.updated_at.unwrap_or(0);
-        mark(&mut run, created);
+        mark(&mut run, created, None);
         runs.push(run.clone());
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs.pop();
@@ -915,6 +915,10 @@ impl RunStore {
         let mut next = runs[index].clone();
         next.stage = update.stage;
         next.status = update.status;
+        let started_with = match &update.activity {
+            FieldUpdate::Set(text) => Some(text.clone()),
+            _ => None,
+        };
         update.activity.apply(&mut next.activity);
         update.current_ticket.apply(&mut next.current_ticket);
         update.blocking_reason.apply(&mut next.blocking_reason);
@@ -1032,7 +1036,7 @@ impl RunStore {
         }
         next.updated_at = Some(updated_at);
         // Where the work is now, for attributing token usage; and when it ended.
-        mark(&mut next, updated_at);
+        mark(&mut next, updated_at, started_with);
         next.finished_at = match (next.status, next.finished_at) {
             (RunStatus::Done, None) => Some(updated_at),
             (RunStatus::Done, kept) => kept,
@@ -1114,8 +1118,9 @@ impl FieldUpdate {
     }
 }
 
-/// Appends a mark when the stage, rework or ticket in progress differs from the last one.
-fn mark(run: &mut Run, at: u64) {
+/// Appends a mark when the stage, rework or ticket in progress differs from the last one. The mark keeps
+/// the activity given with the update that created it.
+fn mark(run: &mut Run, at: u64, activity: Option<String>) {
     let stage = run.stage;
     let building = matches!(stage, Stage::Build);
     let current = Mark {
@@ -1130,6 +1135,7 @@ fn mark(run: &mut Run, at: u64) {
         } else {
             None
         },
+        activity,
     };
     let changed = run.timeline.last().is_none_or(|last| {
         (last.stage, last.rework, &last.ticket) != (current.stage, current.rework, &current.ticket)
@@ -2323,6 +2329,62 @@ mod tests {
             .timeline
             .windows(2)
             .all(|pair| pair[0].at <= pair[1].at));
+    }
+
+    #[test]
+    fn a_mark_records_the_activity_of_the_update_that_created_it() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let run = new_run(&store, "task");
+        let after = |options: &[&str], stage: &str| {
+            store
+                .update(&run.id, parse_update(stage, "running", options).unwrap())
+                .unwrap()
+                .unwrap()
+                .run
+        };
+        assert_eq!(run.timeline[0].activity, None);
+        let building = after(&["--activity", "Writing the code"], "build");
+        assert_eq!(
+            building.timeline[1].activity.as_deref(),
+            Some("Writing the code")
+        );
+        // An update that adds no mark leaves the pass's activity alone.
+        let same = after(&["--activity", "Still going"], "build");
+        assert_eq!(same.timeline.len(), 2);
+        assert_eq!(
+            same.timeline[1].activity.as_deref(),
+            Some("Writing the code")
+        );
+        // A mark made by an update without an activity does not borrow the previous one.
+        let checking = after(&[], "check");
+        assert_eq!(checking.timeline[2].activity, None);
+
+        // The activity survives a reload from disk, and shows in the serialised run.
+        let reloaded = RunStore::open(&path)
+            .unwrap()
+            .get(&run.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reloaded.timeline[1].activity.as_deref(),
+            Some("Writing the code")
+        );
+        let json = serde_json::to_value(&reloaded).unwrap();
+        assert_eq!(json["timeline"][1]["activity"], "Writing the code");
+        assert!(json["timeline"][2].get("activity").is_none());
+    }
+
+    #[test]
+    fn marks_without_an_activity_load_from_old_json() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        fs::write(&path, r#"[{"id":"7","title":"old","project":"/p","stage":"build","status":"running","branch":"b","timeline":[{"at":5,"stage":"define"},{"at":9,"stage":"build","ticket":"t1"}]}]"#).unwrap();
+        let run = RunStore::open(&path).unwrap().get("7").unwrap().unwrap();
+        assert_eq!(run.timeline.len(), 2);
+        assert!(run.timeline.iter().all(|mark| mark.activity.is_none()));
+        assert_eq!(run.timeline[1].ticket.as_deref(), Some("t1"));
     }
 
     #[test]
