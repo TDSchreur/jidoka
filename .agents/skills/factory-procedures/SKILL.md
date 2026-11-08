@@ -1,6 +1,6 @@
 ---
 name: factory-procedures
-description: "Shared operating procedures for the factory-full, factory-balanced and factory-fast workflows: run reporting, continuing a run, workspace, tracker setup, model routing, writing, and pull request and CI. Read by those workflows; do not run it on its own."
+description: "Shared operating procedures for the factory-full, factory-balanced and factory-fast workflows: run reporting, continuing a run, workspace, tracker setup, model routing, and pull request and CI. Read by those workflows; do not run it on its own."
 disable-model-invocation: true
 ---
 
@@ -84,16 +84,6 @@ Fix actionable findings yourself within the Rework allowance; findings alone nev
 ## Model routing
 
 How a run's model-routing selection applies to the agents that Check starts is in [references/model-routing.md](references/model-routing.md). The workflows with a Check stage read it at the start of every Check pass; nothing else uses it.
-
-## Writing
-
-Use the `humanizer` skill for human-facing prose you write or edit in a run: specs, tickets, plans, documentation, changelog entries, review summaries, commit messages, and pull request descriptions. Apply it to new or changed text only; leave unrelated prose alone.
-
-Load `humanizer` right before you write the first of these texts in a run, or before you start the `pr` skill if that comes first. A plan you state in the conversation counts as a plan. Keep using it for every later text. Load it again before the next text when a session continues a run, or when Humanizer's instructions are no longer in your context, for example after the context was compacted. Loading it later changes only when the skill is read: every text listed above still gets the Humanizer pass.
-
-- Use Humanizer's embedded mode for text you compose (a spec, ticket, summary or description) and its file mode for edits to an existing document. Put only the finished text in the result: no intermediate drafts, no critique of the draft.
-- Stay inside the task's scope and output format. Keep required headings and sections, evidence and its labels, findings, qualifications, notices, domain terms, numbers, and technical content (code, commands, paths, metadata, data, link targets) exactly as the task needs them. Humanizer's formatting advice never overrides these, and it never adds a detail the source does not have.
-- Follow the project's own writing conventions where they differ from Humanizer's style advice.
 
 ## Pull request and CI
 

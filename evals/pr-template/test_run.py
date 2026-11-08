@@ -32,7 +32,7 @@ class EvalTest(unittest.TestCase):
     def run_eval(self, answer, status=0):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for skill in ("pr", "humanizer"):
+            for skill in ("pr",):
                 (root / "skills" / skill).mkdir(parents=True)
                 (root / "skills" / skill / "SKILL.md").write_text("fixture")
             executable = root / "claude"

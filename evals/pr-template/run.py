@@ -38,15 +38,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("skills_dir", nargs="?", type=Path,
                         default=Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "skills",
-                        help="directory containing pr/ and humanizer/ (default: installed Claude skills)")
+                        help="directory containing pr/ (default: installed Claude skills)")
     args = parser.parse_args()
     skills = args.skills_dir.expanduser().resolve()
-    for name in ("pr", "humanizer"):
-        if not (skills / name / "SKILL.md").is_file():
-            parser.error(f"missing {name}/SKILL.md in {skills}")
+    if not (skills / "pr" / "SKILL.md").is_file():
+        parser.error(f"missing pr/SKILL.md in {skills}")
     fixture = json.loads((HERE / "fixture.json").read_text())
     prompt = (f"Read {skills / 'pr' / 'SKILL.md'} and follow it to draft a pull request description. "
-              f"Read {skills / 'humanizer' / 'SKILL.md'} as instructed. "
               "Return only the finished description. Preserve the findings verbatim and every command and path.\n\n"
               + fixture["input"])
     try:

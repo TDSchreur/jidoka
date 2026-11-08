@@ -450,7 +450,6 @@ mod tests {
                 "Continuing a run",
                 "Workspace",
                 "Tracker setup",
-                "Writing",
                 "Pull request and CI",
             ] {
                 assert!(
@@ -567,48 +566,22 @@ mod tests {
     }
 
     #[test]
-    fn writing_is_routed_through_the_bundled_humanizer() {
-        // The writing procedure and `pr` name the skill; it ships in the bundle they are read from.
-        for path in ["factory-procedures/SKILL.md", "pr/SKILL.md"] {
-            assert!(bundled_text(path).contains("`humanizer`"), "{path}");
+    fn no_bundled_skill_but_humanizer_mentions_humanizer() {
+        for (path, content) in BUNDLED {
+            if path.starts_with("humanizer/") || path.starts_with("licenses/") {
+                continue;
+            }
+            let text = String::from_utf8_lossy(content).to_lowercase();
+            assert!(!text.contains("humanizer"), "{path} mentions humanizer");
         }
-        assert!(bundled_text("humanizer/SKILL.md").contains("**Embedded mode.**"));
-        assert!(bundled_text("humanizer/SKILL.md").contains("**File mode.**"));
-        // Every workflow reads that procedure, which covers both modes and what must survive editing.
-        let writing = bundled_text("factory-procedures/SKILL.md")
-            .split_once("## Writing")
-            .expect("the shared procedures have no Writing section")
-            .1
-            .split("\n## ")
-            .next()
-            .unwrap()
-            .to_lowercase();
-        for needle in [
-            "embedded mode",
-            "file mode",
-            "evidence",
-            "qualifications",
-            "findings",
-            "right before you write the first",
-            "still gets the humanizer pass",
-        ] {
-            assert!(
-                writing.contains(needle),
-                "the writing procedure lacks {needle}"
-            );
-        }
+        let procedures = bundled_text("factory-procedures/SKILL.md");
+        assert!(!procedures.contains("## Writing"));
         for skill in WORKFLOW_SKILLS {
-            let text = bundled_text(&format!("{skill}/SKILL.md"));
             assert!(
-                text.contains("Writing in [factory-procedures]"),
-                "{skill} does not point to the writing procedure"
+                !bundled_text(&format!("{skill}/SKILL.md")).contains("## Writing"),
+                "{skill} still has a Writing section"
             );
         }
-        // In this checkout the same names resolve as skills/<name>/ directories.
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        assert!(root.join("skills/humanizer/SKILL.md").is_file());
-        let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
-        assert!(agents.contains("(skills/humanizer/SKILL.md)"));
     }
 
     #[test]

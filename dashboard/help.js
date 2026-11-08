@@ -326,7 +326,6 @@ function Workflows({ reworkCap }) {
           The project’s own verification, taken from its agent instructions, contributing docs or build files. A
           missing tool or a failing check blocks the Run; it is never skipped.
         </li>
-        <li>Prose for people (specs, tickets, summaries, commit messages, pull request text) goes through <${Code}>humanizer<//>.</li>
         <li>A pull request against the base branch, and a CI watch until it is green.</li>
       </ul>
     <//>

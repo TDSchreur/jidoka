@@ -15,10 +15,6 @@ Day-to-day pull requests target `develop`. Release pull requests merge `develop`
 - Consult the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) when designing public APIs.
 - Follow existing conventions and keep changes proportional to the task. TDD is not required.
 
-## Writing
-
-Use the [Humanizer skill](skills/humanizer/SKILL.md) for new or edited prose that people will read: pull request descriptions, documentation, issues, specs, tickets, changelog entries, and substantial explanations, whether or not you are in a factory run. Apply it as an editing pass on the text you write or change, not to unrelated existing prose. Keep the meaning, evidence, required structure, and code, commands, paths and link targets unchanged.
-
 ## Shipped skills are project-agnostic
 
 The skills that `factory install` bundles (listed in `build.rs`) are used by anyone, on any kind of project. They must not name this repository's scripts, branches, tools or conventions, such as `scripts/verify.sh` or `develop`. Put those in `AGENTS.md`, the README or `.github/instructions/`, and word the skill generically, for example "the project's verification" or "the base branch chosen in Workspace". A test in `src/install.rs` fails when a bundled skill names this repository; search the skills you changed for this repository's names before opening a pull request.
