@@ -301,7 +301,7 @@ body:has(.confirm[open]) { overflow: hidden; }
 /* A Build pass that follows a rework request: its mark carries a second ring. */
 .stop.rework-pass .mark { outline: var(--stroke-thick) solid var(--color-slate); outline-offset: var(--stroke-thick); }
 /* A Check pass that was sent back ends in a dashed connector, labelled in words. */
-.stop.sent-back::before { background: repeating-linear-gradient(to bottom, var(--color-blue) 0 var(--space-3), transparent var(--space-3) var(--space-5)); }
+.stop.sent-back::before { background: repeating-linear-gradient(to bottom, var(--color-blue) 0 var(--space-3), var(--color-panel) var(--space-3) var(--space-5)); }
 .sent-back-note { margin: var(--space-4) 0 0; font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-slate); font-weight: var(--weight-strong); }
 .skills { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin: var(--space-3) 0 0; padding: 0; list-style: none; }
 .skill { padding: 0 var(--space-3); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-s); font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); }
