@@ -15,6 +15,12 @@ fn ignored_name(line: &str) -> Option<&str> {
 /// count alike), creating the file when it is absent. Returns the entries it added; nothing is committed.
 pub(crate) fn ensure_ignored(worktree: &Path, entries: &[&str]) -> io::Result<Vec<String>> {
     let path = worktree.join(".gitignore");
+    // A committed symlink must not redirect the write to a file outside the worktree.
+    if fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(io::Error::other(
+            ".gitignore is a symlink, so it was left alone",
+        ));
+    }
     let mut content = match fs::read_to_string(&path) {
         Ok(content) => content,
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
@@ -33,12 +39,17 @@ pub(crate) fn ensure_ignored(worktree: &Path, entries: &[&str]) -> io::Result<Ve
     if missing.is_empty() {
         return Ok(missing);
     }
+    let newline = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     if !content.is_empty() && !content.ends_with('\n') {
-        content.push('\n');
+        content.push_str(newline);
     }
     for entry in &missing {
         content.push_str(entry);
-        content.push('\n');
+        content.push_str(newline);
     }
     fs::write(&path, content)?;
     Ok(missing)
@@ -85,6 +96,32 @@ mod tests {
             read(dir.path()),
             "# .factory/\n!.scratch/\nx\n.factory/\n.scratch/\n"
         );
+    }
+
+    #[test]
+    fn a_crlf_file_gets_crlf_entries() {
+        for (text, expected) in [
+            ("a\r\n", "a\r\n.factory/\r\n.scratch/\r\n"),
+            ("a\r\nb", "a\r\nb\r\n.factory/\r\n.scratch/\r\n"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(dir.path().join(".gitignore"), text).unwrap();
+            ensure_ignored(dir.path(), ENTRIES).unwrap();
+            assert_eq!(read(dir.path()), expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_gitignore_is_neither_read_nor_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        fs::write(&target, "secret\n").unwrap();
+        let work = dir.path().join("work");
+        fs::create_dir(&work).unwrap();
+        std::os::unix::fs::symlink(&target, work.join(".gitignore")).unwrap();
+        assert!(ensure_ignored(&work, ENTRIES).is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "secret\n");
     }
 
     #[test]

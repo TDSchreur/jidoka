@@ -143,6 +143,10 @@ pub(crate) struct Begun {
     pub(crate) branch: String,
     pub(crate) base: String,
     pub(crate) base_commit: String,
+    /// The `.gitignore` entries `begin` added; the agent commits the file with its first commit.
+    pub(crate) gitignore_added: Vec<String>,
+    /// Why `.gitignore` could not be updated; the run itself is fine.
+    pub(crate) gitignore_warning: Option<String>,
 }
 
 /// Why no workspace was made.
@@ -164,6 +168,8 @@ pub(crate) enum BeginError {
 const MAX_REASON_CHARS: usize = 300;
 /// The longest branch name derived from a title.
 const MAX_NAME_CHARS: usize = 40;
+/// What every run's worktree keeps out of git: the factory's own folder and the local tracker.
+const RUN_IGNORED: &[&str] = &[".factory/", ".scratch/"];
 
 /// Runs git in `dir`. The error is what git printed, or why it could not be started.
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -318,16 +324,24 @@ pub(crate) fn begin(
             }
             match api.update(&run, "define", "running", &args) {
                 Ok(()) => {
-                    if let Err(error) = ensure_ignored(Path::new(&workspace.worktree), RUN_IGNORED)
-                    {
-                        eprintln!("Could not update the worktree's .gitignore: {error}");
-                    }
+                    let (gitignore_added, gitignore_warning) =
+                        match ensure_ignored(Path::new(&workspace.worktree), RUN_IGNORED) {
+                            Ok(added) => (added, None),
+                            Err(error) => (
+                                Vec::new(),
+                                Some(format!(
+                                    "Could not update the worktree's .gitignore: {error}"
+                                )),
+                            ),
+                        };
                     Ok(Begun {
                         run,
                         worktree: workspace.worktree,
                         branch: workspace.branch,
                         base: workspace.base,
                         base_commit: workspace.base_commit,
+                        gitignore_added,
+                        gitignore_warning,
                     })
                 }
                 Err(error) => Err(blocked(
@@ -345,9 +359,6 @@ pub(crate) fn begin(
         Err(failure) => Err(blocked(api, &run, options, &failure.named, failure.reason)),
     }
 }
-
-/// What every run's worktree keeps out of git: the factory's own folder and the local tracker.
-const RUN_IGNORED: &[&str] = &[".factory/", ".scratch/"];
 
 /// Marks the run blocked with `reason` and returns the error that says so.
 fn blocked(
@@ -689,14 +700,24 @@ fn workspace(
 
 /// The run and where its workspace is, as text; the run first.
 pub(crate) fn render(begun: &Begun) -> String {
-    format!(
+    let mut text = format!(
         "Run: {}\nWorktree: {}\nBranch: {}\nBase: {}\nBase commit: {}\n",
         shown(&begun.run),
         shown(&begun.worktree),
         shown(&begun.branch),
         shown(&begun.base),
         shown(&begun.base_commit)
-    )
+    );
+    if !begun.gitignore_added.is_empty() {
+        text.push_str(&format!(
+            "Added to .gitignore (commit it with the first commit): {}\n",
+            begun.gitignore_added.join(", ")
+        ));
+    }
+    if let Some(warning) = &begun.gitignore_warning {
+        text.push_str(&format!("Warning: {}\n", shown(warning)));
+    }
+    text
 }
 
 #[cfg(test)]

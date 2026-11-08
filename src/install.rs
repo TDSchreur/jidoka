@@ -884,8 +884,12 @@ mod tests {
                 continue;
             }
             let text = String::from_utf8_lossy(content);
-            // The setup skill is named after the factory; that name is not this repository's.
-            let lowercase = text.to_lowercase().replace("setup-tds-factory", "");
+            // The setup skill is named after the factory; that name is not this repository's. Only
+            // the command form other skills use and the skill's own folder and `name:` line may say so.
+            let mut lowercase = text.to_lowercase().replace("/setup-tds-factory", "");
+            if skill == "setup-tds-factory" {
+                lowercase = lowercase.replace("name: setup-tds-factory", "");
+            }
             for term in PROJECT_SPECIFIC {
                 if lowercase.contains(term) {
                     offenders.push(format!("{path}: {term}"));

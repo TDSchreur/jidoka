@@ -242,6 +242,30 @@ fn begin_creates_a_gitignore_with_the_factory_and_scratch_folders() {
 }
 
 #[test]
+fn begin_reports_the_added_ignore_entries() {
+    let project = Project::new();
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
+    assert_eq!(begun.gitignore_added, [".factory/", ".scratch/"]);
+    assert_eq!(begun.gitignore_warning, None);
+    assert!(render(&begun).contains("Added to .gitignore"));
+}
+
+#[test]
+fn an_unreadable_gitignore_is_a_warning_not_a_failed_begin() {
+    let project = Project::new();
+    fs::create_dir(project.repo.join(".gitignore")).unwrap();
+    fs::write(project.repo.join(".gitignore/keep"), "x").unwrap();
+    git(&project.repo, &["add", ".gitignore/keep"]);
+    git(&project.repo, &["commit", "-q", "-m", "dir"]);
+    git(&project.repo, &["push", "-q", "origin", "develop"]);
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
+    assert!(begun.gitignore_added.is_empty());
+    assert!(begun.gitignore_warning.unwrap().contains(".gitignore"));
+}
+
+#[test]
 fn begin_appends_to_a_tracked_gitignore_and_shows_only_that_change() {
     let project = Project::new();
     fs::write(project.repo.join(".gitignore"), "/target/").unwrap();
@@ -493,6 +517,8 @@ fn the_output_has_the_run_first_and_the_same_fields_in_json() {
         branch: "x".into(),
         base: "develop".into(),
         base_commit: "abc123".into(),
+        gitignore_added: vec![".factory/".into()],
+        gitignore_warning: None,
     };
     let text = render(&begun);
     assert!(text.starts_with("Run: 100\n"), "{text}");
@@ -502,6 +528,7 @@ fn the_output_has_the_run_first_and_the_same_fields_in_json() {
     let json = serde_json::to_value(&begun).unwrap();
     assert_eq!(json["run"], "100");
     assert_eq!(json["base_commit"], "abc123");
+    assert_eq!(json["gitignore_added"][0], ".factory/");
 }
 
 #[test]
@@ -954,6 +981,8 @@ fn the_text_output_is_printable_whatever_the_folder_is_called() {
         branch: "b".into(),
         base: "develop".into(),
         base_commit: "abc".into(),
+        gitignore_added: Vec::new(),
+        gitignore_warning: Some("bad \u{1b}[2J".into()),
     };
     assert!(!render(&begun).chars().any(|c| c.is_control() && c != '\n'));
 }
