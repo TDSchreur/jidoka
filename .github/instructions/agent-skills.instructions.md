@@ -1,6 +1,6 @@
 ---
 description: 'Guidance for authoring project-maintained agent skills'
-applyTo: 'skills/**/SKILL.md,.agents/skills/**/SKILL.md'
+applyTo: 'skills/**,.agents/skills/**'
 ---
 
 # Skill authoring

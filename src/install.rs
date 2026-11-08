@@ -699,12 +699,25 @@ mod tests {
 
     #[test]
     fn bundled_skills_carry_the_skill_check() {
-        for path in [
-            "factory-procedures/SKILL.md",
-            "factory-code-review/SKILL.md",
-            "factory-pr/SKILL.md",
+        for (path, wording) in [
+            (
+                "factory-procedures/SKILL.md",
+                &["Skill check:", "wording only"][..],
+            ),
+            (
+                "factory-code-review/SKILL.md",
+                &["Skill check:", "no commit carries a `Skill check:`"][..],
+            ),
+            ("factory-pr/SKILL.md", &["**Skill check:**"][..]),
+            (
+                "factory-procedures/references/model-routing.md",
+                &["Changing agent skills"][..],
+            ),
         ] {
-            assert!(bundled_text(path).contains("Skill check"), "{path}");
+            let text = bundled_text(path);
+            for phrase in wording {
+                assert!(text.contains(phrase), "{path}: {phrase}");
+            }
         }
     }
 
