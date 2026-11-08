@@ -330,9 +330,9 @@ fn printed_commands_quote_a_path_with_a_space() {
         "{}",
         io.said
     );
-    assert_eq!(quote("it's"), r"'it'\''s'");
-    assert_eq!(quote(""), "''");
-    assert_eq!(quote("--locked"), "--locked");
+    assert_eq!(quote("it's", false), r"'it'\''s'");
+    assert_eq!(quote("", false), "''");
+    assert_eq!(quote("--locked", false), "--locked");
 }
 
 #[test]
@@ -370,4 +370,28 @@ fn on_windows_the_commands_are_printed_and_never_run() {
         assert!(io.said.contains("after this command exits"), "{}", io.said);
         assert!(io.said.contains("cargo install"));
     }
+}
+
+#[test]
+fn on_windows_printed_commands_use_double_quotes() {
+    let fx = Fixture::named(true, "my repo");
+    fx.windows.set(true);
+    let path = fx.repo.display().to_string();
+    let mut io = Recorder::default();
+    fx.offer(Some(&fx.head), &["claude"], false, false, &mut io)
+        .unwrap();
+    assert!(
+        io.said.contains(&format!("--path \"{path}\" --locked")),
+        "{}",
+        io.said
+    );
+    let mut io = Recorder::default();
+    fx.offer(Some(&fx.other), &["claude"], false, false, &mut io)
+        .unwrap();
+    assert!(
+        io.said.contains(&format!("git -C \"{path}\" pull")),
+        "{}",
+        io.said
+    );
+    assert!(!io.said.contains('\''), "{}", io.said);
 }

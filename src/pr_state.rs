@@ -106,62 +106,69 @@ pub(crate) struct Head {
 /// The head of the pull request at `url`, read in one call: GitHub's `headRefOid` and `headRefName`, or
 /// Azure's last source commit and `sourceRefName`.
 pub(crate) fn head(tool: &dyn Gh, url: &str) -> Result<Head, ToolProblem> {
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
-        return Err(ToolProblem(format!(
-            "The pull request is not an http(s) URL: {url}"
-        )));
-    }
-    let (commit, branch) = if is_azure_pr_url(url) {
-        azure_pr_head(tool, url)?
-    } else {
-        let Some(pull_request) = github_pull_request(url) else {
-            return Err(ToolProblem(
-                "Only GitHub and Azure Repos pull requests have a commit.".into(),
-            ));
-        };
-        let data = view_json(tool, &pull_request, "headRefOid,headRefName")?;
-        let text = |field: &str| data[field].as_str().unwrap_or("").to_string();
-        (text("headRefOid"), text("headRefName"))
-    };
+    let (commit, branch) = resolve(
+        tool,
+        url,
+        |tool, url| {
+            let (commit, branch) = azure_pr_head(tool, url)?;
+            Ok((commit, Some(branch)))
+        },
+        |data| {
+            let text = |field: &str| data[field].as_str().unwrap_or("").to_string();
+            (text("headRefOid"), Some(text("headRefName")))
+        },
+        "headRefOid,headRefName",
+    )?;
     Ok(Head {
         commit: valid_commit(commit)?,
-        branch,
+        branch: branch.unwrap_or_default(),
     })
 }
 
 /// The commit a merged pull request created: GitHub's `mergeCommit`, or Azure's `lastMergeCommit`.
 pub(crate) fn merge_commit(tool: &dyn Gh, url: &str) -> Result<String, ToolProblem> {
-    commit(tool, url, "mergeCommit", azure_pr_merge_commit)
+    let (commit, _) = resolve(
+        tool,
+        url,
+        |tool, url| Ok((azure_pr_merge_commit(tool, url)?, None)),
+        |data| {
+            // `mergeCommit` is an object with an `oid`.
+            let commit = data["mergeCommit"]
+                .as_str()
+                .or_else(|| data["mergeCommit"]["oid"].as_str())
+                .unwrap_or("");
+            (commit.to_string(), None)
+        },
+        "mergeCommit",
+    )?;
+    valid_commit(commit)
 }
 
-fn commit(
+type Fields = (String, Option<String>);
+
+/// The shared lookup of a pull request's commit (and branch): checks the URL, asks Azure with `azure`, or
+/// GitHub for `fields` and picks them out with `github`.
+fn resolve(
     tool: &dyn Gh,
     url: &str,
-    field: &str,
-    azure: fn(&dyn Gh, &str) -> Result<String, ToolProblem>,
-) -> Result<String, ToolProblem> {
+    azure: fn(&dyn Gh, &str) -> Result<Fields, ToolProblem>,
+    github: fn(&serde_json::Value) -> Fields,
+    fields: &str,
+) -> Result<Fields, ToolProblem> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err(ToolProblem(format!(
             "The pull request is not an http(s) URL: {url}"
         )));
     }
-    let commit = if is_azure_pr_url(url) {
-        azure(tool, url)?
-    } else {
-        let Some(pull_request) = github_pull_request(url) else {
-            return Err(ToolProblem(
-                "Only GitHub and Azure Repos pull requests have a commit.".into(),
-            ));
-        };
-        let data = view_json(tool, &pull_request, field)?;
-        // `mergeCommit` is an object with an `oid`; `headRefOid` is the string itself.
-        data[field]
-            .as_str()
-            .or_else(|| data[field]["oid"].as_str())
-            .unwrap_or("")
-            .to_string()
+    if is_azure_pr_url(url) {
+        return azure(tool, url);
+    }
+    let Some(pull_request) = github_pull_request(url) else {
+        return Err(ToolProblem(
+            "Only GitHub and Azure Repos pull requests have a commit.".into(),
+        ));
     };
-    valid_commit(commit)
+    Ok(github(&view_json(tool, &pull_request, fields)?))
 }
 
 fn valid_commit(commit: String) -> Result<String, ToolProblem> {

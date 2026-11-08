@@ -346,3 +346,76 @@ fn a_fully_clean_rerun_reports_already_clean() {
     let none = fx.cleanup(&cleared, &fx.gh()).unwrap();
     assert!(!none.needs_update());
 }
+
+fn listed(fx: &Fixture) -> String {
+    run_git(&fx.repo, &["worktree", "list", "--porcelain"])
+}
+
+#[test]
+fn a_stale_worktree_leaves_other_stale_registrations_alone() {
+    let fx = Fixture::new();
+    let other = fx.root.join("other-wt");
+    run_git(
+        &fx.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "unrelated",
+            other.to_str().unwrap(),
+        ],
+    );
+    fs::remove_dir_all(&other).unwrap();
+    fs::remove_dir_all(&fx.wt).unwrap();
+    fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
+    let list = listed(&fx);
+    assert!(list.contains("other-wt"), "{list}");
+    assert!(!list.contains("/wt\n"), "{list}");
+}
+
+#[test]
+fn a_locked_stale_worktree_is_not_reported_removed() {
+    let fx = Fixture::new();
+    run_git(&fx.repo, &["worktree", "lock", fx.wt.to_str().unwrap()]);
+    fs::remove_dir_all(&fx.wt).unwrap();
+    let result = fx.cleanup(&fx.recorded(), &fx.gh());
+    assert!(result.is_err(), "{result:?}");
+    assert!(fx.branch_exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_stale_worktree_behind_a_symlinked_parent_is_matched() {
+    let fx = Fixture::new();
+    let link = fx.root.join("link");
+    std::os::unix::fs::symlink(&fx.root, &link).unwrap();
+    let mut run = fx.recorded();
+    run.worktree = Some(link.join("wt").display().to_string());
+    fs::remove_dir_all(&fx.wt).unwrap();
+    let cleaned = fx.cleanup(&run, &fx.gh()).unwrap();
+    assert_eq!(cleaned.worktree, Step::Removed);
+    assert!(!listed(&fx).contains("/wt\n"));
+}
+
+#[test]
+fn a_branch_checked_out_in_the_main_checkout_is_kept() {
+    let fx = Fixture::new();
+    run_git(&fx.repo, &["worktree", "remove", fx.wt.to_str().unwrap()]);
+    run_git(&fx.repo, &["checkout", "-q", "feature"]);
+    let mut run = fx.recorded();
+    run.worktree = None;
+    let message = refusal(fx.cleanup(&run, &fx.gh()));
+    assert!(message.contains("checked out"), "{message}");
+    assert!(fx.branch_exists());
+}
+
+#[test]
+fn a_worktree_without_a_recorded_branch_refuses() {
+    let fx = Fixture::new();
+    let mut run = fx.recorded();
+    run.branch = None;
+    let message = refusal(fx.cleanup(&run, &fx.gh()));
+    assert!(message.contains("no branch"), "{message}");
+    fx.assert_untouched();
+}

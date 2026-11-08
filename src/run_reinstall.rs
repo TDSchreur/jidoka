@@ -32,22 +32,25 @@ impl Command {
     }
 
     /// The command as a shell line that can be pasted, and is safe to print on a terminal.
-    pub(crate) fn display(&self) -> String {
+    pub(crate) fn display(&self, windows: bool) -> String {
         let args = self.args.iter().map(|a| a.to_string_lossy());
         let line = std::iter::once(self.program.as_str().into())
             .chain(args)
-            .map(|word| quote(&word))
+            .map(|word| quote(&word, windows))
             .collect::<Vec<_>>()
             .join(" ");
         shown(&line)
     }
 }
 
-/// `word` as one shell word: left alone when it is plain, otherwise in POSIX single quotes.
-pub(crate) fn quote(word: &str) -> String {
+/// `word` as one shell word: left alone when it is plain, otherwise in POSIX single quotes, or in double
+/// quotes on Windows (which cmd and PowerShell both understand).
+pub(crate) fn quote(word: &str, windows: bool) -> String {
     let plain = |c: char| c.is_ascii_alphanumeric() || "_-./:=,@%+".contains(c);
     if !word.is_empty() && word.chars().all(plain) {
         word.to_string()
+    } else if windows {
+        format!("\"{}\"", word.replace('"', "\\\""))
     } else {
         format!("'{}'", word.replace('\'', r"'\''"))
     }
@@ -78,7 +81,7 @@ impl Io for RealIo {
     }
 
     fn run(&mut self, command: &Command) -> Result<(), String> {
-        println!("$ {}", command.display());
+        println!("$ {}", command.display(false));
         let status = std::process::Command::new(&command.program)
             .args(&command.args)
             .current_dir(&command.dir)
@@ -153,10 +156,10 @@ fn commands(input: &Inputs) -> [Command; 2] {
     ]
 }
 
-fn listed(commands: &[Command]) -> String {
+fn listed(commands: &[Command], windows: bool) -> String {
     commands
         .iter()
-        .map(|c| format!("  {}\n", c.display()))
+        .map(|c| format!("  {}\n", c.display(windows)))
         .collect()
 }
 
@@ -194,16 +197,16 @@ pub(crate) fn offer(
             shown(&input.repository.display().to_string()),
             shown(&format!(
                 "git -C {} pull",
-                quote(&input.repository.to_string_lossy())
+                quote(&input.repository.to_string_lossy(), input.windows)
             )),
-            listed(&commands)
+            listed(&commands, input.windows)
         ));
         return Ok(());
     }
     if input.windows {
         io.say(&format!(
             "The running factory.exe is locked on Windows, so run these after this command exits:\n{}",
-            listed(&commands)
+            listed(&commands, input.windows)
         ));
         return Ok(());
     }
@@ -212,13 +215,13 @@ pub(crate) fn offer(
         if !input.tty {
             io.say(&format!(
                 "This run changed the factory itself. To reinstall it for {agents}, run:\n{}",
-                listed(&commands)
+                listed(&commands, input.windows)
             ));
             return Ok(());
         }
         io.say(&format!(
             "This run changed the factory itself. Reinstalling runs:\n{}",
-            listed(&commands)
+            listed(&commands, input.windows)
         ));
         let from = shown(&input.repository.display().to_string());
         if !io.confirm(&format!(
@@ -231,7 +234,7 @@ pub(crate) fn offer(
         io.run(command).map_err(|error| {
             ToolProblem(format!(
                 "`{}` failed: {}. The cleanup itself succeeded.",
-                command.display(),
+                command.display(input.windows),
                 shown(&error)
             ))
         })?;

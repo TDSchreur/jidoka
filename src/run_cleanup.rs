@@ -9,7 +9,7 @@ use crate::{
     run_begin::{first_line, valid_branch_name},
     run_check::canonical_dir,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// What the Run records about its workspace.
 #[derive(Clone, Debug, Default)]
@@ -77,6 +77,11 @@ pub(crate) fn cleanup(
             state.label()
         ));
     }
+    if run.worktree.is_some() && run.branch.is_none() {
+        return refuse(
+            "The run records a worktree but no branch, so nothing ties that worktree to the pull request. Nothing was removed.",
+        );
+    }
     let Some(repository) = run.repository.as_deref() else {
         return refuse("The run records no repository. Nothing was removed.");
     };
@@ -100,26 +105,18 @@ pub(crate) fn cleanup(
         }
     };
 
-    // Is the worktree still registered with the repository?
+    // Is the worktree still registered with the repository? `listed` is the path as git printed it.
     let worktree = match run.worktree.as_deref() {
         None => None,
         Some(path) => {
-            let list = git
-                .git(repository, &["worktree", "list", "--porcelain"])
-                .map_err(|e| git_problem("worktree list", &e))?;
-            // A directory deleted by hand cannot be resolved, but git still lists it (as prunable).
-            let wanted = canonical_dir(Path::new(path));
-            let listed = list
-                .lines()
-                .filter_map(|line| line.strip_prefix("worktree "))
-                .any(|listed| match &wanted {
-                    Some(wanted) => canonical_dir(Path::new(listed)).as_ref() == Some(wanted),
-                    None => Path::new(listed) == Path::new(path),
-                });
-            listed.then_some((path, wanted))
+            let wanted = resolved(Path::new(path));
+            registered(git, repository)?
+                .into_iter()
+                .find(|listed| resolved(Path::new(listed)) == wanted)
+                .map(|listed| (path, listed, canonical_dir(Path::new(path))))
         }
     };
-    if let Some((path, Some(real))) = &worktree {
+    if let Some((path, _, Some(real))) = &worktree {
         if canonical_dir(cwd).is_some_and(|here| here.starts_with(real)) {
             return refuse(format!(
                 "You are inside the worktree {}. Run the command from the main checkout. Nothing was removed.",
@@ -188,16 +185,24 @@ pub(crate) fn cleanup(
             Step::NotRecorded
         },
     };
-    if let Some((path, real)) = worktree {
-        // A registration whose directory is gone is dropped; git would otherwise still hold the branch.
-        let removal: &[&str] = if real.is_some() {
-            &["worktree", "remove", "--", path]
-        } else {
-            &["worktree", "prune"]
-        };
-        git.git(repository, removal)
+    if let Some((_, listed, _)) = worktree {
+        git.git(repository, &["worktree", "remove", "--", &listed])
             .map_err(|e| git_problem("worktree remove", &e))?;
+        if registered(git, repository)?.contains(&listed) {
+            return refuse(format!(
+                "Git still lists the worktree {} after removing it (is it locked?). The branch was kept.",
+                shown(&listed)
+            ));
+        }
         cleaned.worktree = Step::Removed;
+    }
+    if let Some(branch) = run.branch.as_deref().filter(|_| checked.is_some()) {
+        if checked_out(git, repository, branch)? {
+            return refuse(format!(
+                "The branch {} is still checked out in a worktree. The branch was kept.",
+                shown(branch)
+            ));
+        }
     }
     if let (Some(oid), Some(branch)) = (checked, run.branch.as_deref()) {
         // Deleting only at the checked commit keeps a branch that moved since the check.
@@ -207,6 +212,46 @@ pub(crate) fn cleanup(
         cleaned.branch = Step::Removed;
     }
     Ok(cleaned)
+}
+
+/// The worktree paths git lists, exactly as it prints them.
+fn registered(git: &dyn Git, repository: &Path) -> Result<Vec<String>, ToolProblem> {
+    let list = git
+        .git(repository, &["worktree", "list", "--porcelain"])
+        .map_err(|e| git_problem("worktree list", &e))?;
+    Ok(list
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(str::to_string)
+        .collect())
+}
+
+/// Whether any worktree, the main checkout included, has `branch` checked out.
+fn checked_out(git: &dyn Git, repository: &Path, branch: &str) -> Result<bool, ToolProblem> {
+    let list = git
+        .git(repository, &["worktree", "list", "--porcelain"])
+        .map_err(|e| git_problem("worktree list", &e))?;
+    let wanted = format!("branch refs/heads/{branch}");
+    Ok(list.lines().any(|line| line == wanted))
+}
+
+/// `path` with its nearest existing ancestor canonicalised and the missing components appended, so a path
+/// that no longer exists still compares equal to its listed form behind a symlinked parent.
+fn resolved(path: &Path) -> PathBuf {
+    let mut missing = Vec::new();
+    let mut here = path;
+    loop {
+        if let Some(real) = canonical_dir(here) {
+            return missing.iter().rev().fold(real, |acc, part| acc.join(part));
+        }
+        match (here.parent(), here.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name);
+                here = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
 }
 
 pub(crate) fn render(run: &Recorded, cleaned: Cleaned) -> String {
