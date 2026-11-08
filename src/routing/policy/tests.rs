@@ -470,7 +470,7 @@ fn a_starter_for_one_agent_has_only_that_entry() {
 #[test]
 fn a_starter_is_created_with_its_folder_and_never_replaces_anything() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tds-factory/model-routing.json");
+    let path = dir.path().join("tds-factory").join("model-routing.json");
     assert!(create_starter(&path, &[RoutingAgent::Claude]).unwrap());
     assert!(fs::read_to_string(&path).unwrap().contains("\"agents\""));
     // A second call, even for another agent, leaves the file alone.

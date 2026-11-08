@@ -22,7 +22,7 @@ fn install_creates_the_two_agent_policy_and_preserves_existing_content() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let path = config.join("tds-factory/model-routing.json");
+    let path = config.join("tds-factory").join("model-routing.json");
     let value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(value["enabled"], true);
     for (agent, expected) in [
@@ -66,7 +66,7 @@ const CURRENT: &str = r#"{"agents":{"codex":{"stages":{"build":{"model":"gpt-6.1
 fn install_over(existing: &str) -> (String, String, std::path::PathBuf) {
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config");
-    let path = config.join("tds-factory/model-routing.json");
+    let path = config.join("tds-factory").join("model-routing.json");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, existing).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_factory"))

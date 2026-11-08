@@ -1610,7 +1610,7 @@ mod tests {
         fn with_policy(mut self, policy: &str) -> Self {
             let config = self.home.path().join("config");
             fs::create_dir_all(config.join("tds-factory")).unwrap();
-            fs::write(config.join("tds-factory/model-routing.json"), policy).unwrap();
+            fs::write(config.join("tds-factory").join("model-routing.json"), policy).unwrap();
             for name in ["XDG_CONFIG_HOME", "APPDATA"] {
                 self.vars.insert(name.into(), config.clone().into());
             }
