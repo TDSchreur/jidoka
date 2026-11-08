@@ -375,13 +375,75 @@ fn a_stale_worktree_leaves_other_stale_registrations_alone() {
 }
 
 #[test]
-fn a_locked_stale_worktree_is_not_reported_removed() {
+fn a_locked_stale_worktree_refuses_and_removes_nothing() {
     let fx = Fixture::new();
     run_git(&fx.repo, &["worktree", "lock", fx.wt.to_str().unwrap()]);
     fs::remove_dir_all(&fx.wt).unwrap();
-    let result = fx.cleanup(&fx.recorded(), &fx.gh());
-    assert!(result.is_err(), "{result:?}");
+    let message = refusal(fx.cleanup(&fx.recorded(), &fx.gh()));
+    assert!(message.contains("locked"), "{message}");
+    assert!(message.contains("Nothing was removed"), "{message}");
     assert!(fx.branch_exists());
+    assert!(listed(&fx).contains("/wt\n"), "{}", listed(&fx));
+}
+
+#[test]
+fn a_locked_worktree_refuses_and_removes_nothing() {
+    let fx = Fixture::new();
+    run_git(&fx.repo, &["worktree", "lock", fx.wt.to_str().unwrap()]);
+    let message = refusal(fx.cleanup(&fx.recorded(), &fx.gh()));
+    assert!(message.contains("locked"), "{message}");
+    assert!(message.contains("Nothing was removed"), "{message}");
+    fx.assert_untouched();
+}
+
+#[test]
+fn a_branch_also_checked_out_in_the_main_checkout_refuses_before_removing() {
+    let fx = Fixture::new();
+    // The main checkout switches to the same branch the worktree has.
+    run_git(
+        &fx.repo,
+        &["checkout", "-q", "--ignore-other-worktrees", "feature"],
+    );
+    let message = refusal(fx.cleanup(&fx.recorded(), &fx.gh()));
+    assert!(message.contains("checked out"), "{message}");
+    assert!(message.contains("Nothing was removed"), "{message}");
+    fx.assert_untouched();
+}
+
+#[test]
+fn a_directory_git_does_not_list_is_left_alone_and_said_so() {
+    let fx = Fixture::new();
+    run_git(&fx.repo, &["worktree", "remove", fx.wt.to_str().unwrap()]);
+    fs::create_dir(&fx.wt).unwrap();
+    let cleaned = fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
+    assert_eq!(cleaned.worktree, Step::LeftAlone);
+    assert!(fx.wt.exists());
+    let text = render(&fx.recorded(), cleaned);
+    assert!(text.contains("left alone"), "{text}");
+    assert!(
+        !text.contains("already gone\n") || !text.contains("Worktree"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_relative_worktree_or_repository_path_refuses() {
+    let fx = Fixture::new();
+    let mut run = fx.recorded();
+    run.worktree = Some("wt".into());
+    let message = refusal(fx.cleanup(&run, &fx.gh()));
+    assert!(
+        message.contains("relative") && message.contains("Nothing was removed"),
+        "{message}"
+    );
+    let mut run = fx.recorded();
+    run.repository = Some("repo".into());
+    let message = refusal(fx.cleanup(&run, &fx.gh()));
+    assert!(
+        message.contains("relative") && message.contains("Nothing was removed"),
+        "{message}"
+    );
+    fx.assert_untouched();
 }
 
 #[cfg(unix)]

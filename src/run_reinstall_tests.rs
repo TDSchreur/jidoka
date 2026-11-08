@@ -395,3 +395,35 @@ fn on_windows_printed_commands_use_double_quotes() {
     );
     assert!(!io.said.contains('\''), "{}", io.said);
 }
+
+/// No line that could be run holds `unsafe_text`: a line that starts with a program name must not carry it.
+fn runnable_lines_with<'a>(said: &'a str, unsafe_text: &str) -> Vec<&'a str> {
+    said.lines()
+        .filter(|l| {
+            l.trim_start().starts_with("cargo ")
+                || l.trim_start().starts_with("factory ")
+                || l.trim_start().starts_with("git ")
+        })
+        .filter(|l| l.contains(unsafe_text))
+        .collect()
+}
+
+#[test]
+fn on_windows_a_path_the_shell_would_expand_gets_no_pasteable_command() {
+    for (name, text) in [("a$(calc)b", "$(calc)"), ("%PATH%x", "%PATH%")] {
+        let fx = Fixture::named(true, name);
+        fx.windows.set(true);
+        for merge in [&fx.head, &fx.other] {
+            let mut io = Recorder::default();
+            fx.offer(Some(merge), &["claude"], false, false, &mut io)
+                .unwrap();
+            assert!(
+                runnable_lines_with(&io.said, text).is_empty(),
+                "{}",
+                io.said
+            );
+            assert!(io.said.contains("by hand"), "{}", io.said);
+        }
+    }
+    assert_eq!(quote("50%", true), "\"50%\"");
+}

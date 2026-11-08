@@ -359,3 +359,13 @@ fn the_head_of_a_pull_request_is_its_commit_and_branch() {
         ("abcd1234", "feature/x")
     );
 }
+
+#[test]
+fn a_head_without_a_branch_is_an_error() {
+    let gh = ScriptedGh::new(vec![Ok(GhOutput {
+        code: Some(0),
+        stdout: r#"{"headRefOid":"abcd1234"}"#.into(),
+        stderr: String::new(),
+    })]);
+    assert!(super::head(&gh, "https://github.com/o/r/pull/7").is_err());
+}

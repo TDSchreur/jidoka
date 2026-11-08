@@ -103,72 +103,65 @@ pub(crate) struct Head {
     pub(crate) branch: String,
 }
 
-/// The head of the pull request at `url`, read in one call: GitHub's `headRefOid` and `headRefName`, or
-/// Azure's last source commit and `sourceRefName`.
-pub(crate) fn head(tool: &dyn Gh, url: &str) -> Result<Head, ToolProblem> {
-    let (commit, branch) = resolve(
-        tool,
-        url,
-        |tool, url| {
-            let (commit, branch) = azure_pr_head(tool, url)?;
-            Ok((commit, Some(branch)))
-        },
-        |data| {
-            let text = |field: &str| data[field].as_str().unwrap_or("").to_string();
-            (text("headRefOid"), Some(text("headRefName")))
-        },
-        "headRefOid,headRefName",
-    )?;
-    Ok(Head {
-        commit: valid_commit(commit)?,
-        branch: branch.unwrap_or_default(),
-    })
+/// Where a pull request's commits are read from.
+enum Host {
+    Azure,
+    /// GitHub, with the pull request as `<repository>/pull/<number>`.
+    GitHub(String),
 }
 
-/// The commit a merged pull request created: GitHub's `mergeCommit`, or Azure's `lastMergeCommit`.
-pub(crate) fn merge_commit(tool: &dyn Gh, url: &str) -> Result<String, ToolProblem> {
-    let (commit, _) = resolve(
-        tool,
-        url,
-        |tool, url| Ok((azure_pr_merge_commit(tool, url)?, None)),
-        |data| {
-            // `mergeCommit` is an object with an `oid`.
-            let commit = data["mergeCommit"]
-                .as_str()
-                .or_else(|| data["mergeCommit"]["oid"].as_str())
-                .unwrap_or("");
-            (commit.to_string(), None)
-        },
-        "mergeCommit",
-    )?;
-    valid_commit(commit)
-}
-
-type Fields = (String, Option<String>);
-
-/// The shared lookup of a pull request's commit (and branch): checks the URL, asks Azure with `azure`, or
-/// GitHub for `fields` and picks them out with `github`.
-fn resolve(
-    tool: &dyn Gh,
-    url: &str,
-    azure: fn(&dyn Gh, &str) -> Result<Fields, ToolProblem>,
-    github: fn(&serde_json::Value) -> Fields,
-    fields: &str,
-) -> Result<Fields, ToolProblem> {
+/// Checks that `url` is an http(s) pull request of a host with commits and says which host.
+fn host(url: &str) -> Result<Host, ToolProblem> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err(ToolProblem(format!(
             "The pull request is not an http(s) URL: {url}"
         )));
     }
     if is_azure_pr_url(url) {
-        return azure(tool, url);
+        return Ok(Host::Azure);
     }
-    let Some(pull_request) = github_pull_request(url) else {
-        return Err(ToolProblem(
-            "Only GitHub and Azure Repos pull requests have a commit.".into(),
-        ));
+    github_pull_request(url).map(Host::GitHub).ok_or_else(|| {
+        ToolProblem("Only GitHub and Azure Repos pull requests have a commit.".into())
+    })
+}
+
+/// The head of the pull request at `url`, read in one call: GitHub's `headRefOid` and `headRefName`, or
+/// Azure's last source commit and `sourceRefName`.
+pub(crate) fn head(tool: &dyn Gh, url: &str) -> Result<Head, ToolProblem> {
+    let (commit, branch) = match host(url)? {
+        Host::Azure => azure_pr_head(tool, url)?,
+        Host::GitHub(pull_request) => {
+            let data = view_json(tool, &pull_request, "headRefOid,headRefName")?;
+            let text = |field: &str| data[field].as_str().unwrap_or("").to_string();
+            (text("headRefOid"), text("headRefName"))
+        }
     };
-    Ok(github(&view_json(tool, &pull_request, fields)?))
+    if branch.is_empty() {
+        return Err(ToolProblem(
+            "The host did not report the branch the pull request comes from.".into(),
+        ));
+    }
+    Ok(Head {
+        commit: valid_commit(commit)?,
+        branch,
+    })
+}
+
+/// The commit a merged pull request created: GitHub's `mergeCommit`, or Azure's `lastMergeCommit`.
+pub(crate) fn merge_commit(tool: &dyn Gh, url: &str) -> Result<String, ToolProblem> {
+    let commit = match host(url)? {
+        Host::Azure => azure_pr_merge_commit(tool, url)?,
+        Host::GitHub(pull_request) => {
+            let data = view_json(tool, &pull_request, "mergeCommit")?;
+            // `mergeCommit` is an object with an `oid`.
+            data["mergeCommit"]
+                .as_str()
+                .or_else(|| data["mergeCommit"]["oid"].as_str())
+                .unwrap_or("")
+                .to_string()
+        }
+    };
+    valid_commit(commit)
 }
 
 fn valid_commit(commit: String) -> Result<String, ToolProblem> {

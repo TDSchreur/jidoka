@@ -31,6 +31,15 @@ impl Command {
         }
     }
 
+    /// Whether this command cannot be printed as a paste-ready line on Windows.
+    fn unsafe_on_windows(&self) -> bool {
+        windows_unsafe(&self.program)
+            || self
+                .args
+                .iter()
+                .any(|a| windows_unsafe(&a.to_string_lossy()))
+    }
+
     /// The command as a shell line that can be pasted, and is safe to print on a terminal.
     pub(crate) fn display(&self, windows: bool) -> String {
         let args = self.args.iter().map(|a| a.to_string_lossy());
@@ -43,10 +52,21 @@ impl Command {
     }
 }
 
+/// Characters that PowerShell or cmd still interpret inside double quotes (expansion, escapes, separators),
+/// so no quoting makes a word holding one safe to paste on Windows.
+const WINDOWS_UNSAFE: &str = "$`%\"^&()!';<>|\n\r";
+
+/// Whether `word` cannot be quoted safely for both PowerShell and cmd.
+fn windows_unsafe(word: &str) -> bool {
+    word.chars().any(|c| WINDOWS_UNSAFE.contains(c))
+}
+
 /// `word` as one shell word: left alone when it is plain, otherwise in POSIX single quotes, or in double
-/// quotes on Windows (which cmd and PowerShell both understand).
+/// quotes on Windows. Double quotes only keep spaces together there: PowerShell still expands `$` and the
+/// backtick and cmd `%`, and `\"` means nothing to cmd, so a Windows word with such characters must not be
+/// pasted at all (see `windows_unsafe`).
 pub(crate) fn quote(word: &str, windows: bool) -> String {
-    let plain = |c: char| c.is_ascii_alphanumeric() || "_-./:=,@%+".contains(c);
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_-./:=,@+".contains(c);
     if !word.is_empty() && word.chars().all(plain) {
         word.to_string()
     } else if windows {
@@ -159,8 +179,23 @@ fn commands(input: &Inputs) -> [Command; 2] {
 fn listed(commands: &[Command], windows: bool) -> String {
     commands
         .iter()
-        .map(|c| format!("  {}\n", c.display(windows)))
+        .map(|c| {
+            if windows && c.unsafe_on_windows() {
+                by_hand(&c.dir)
+            } else {
+                format!("  {}\n", c.display(windows))
+            }
+        })
         .collect()
+}
+
+/// A line that sends the user to type the command themselves, because the path has characters a Windows shell
+/// would interpret. The path is shown escaped for reading and is not part of a command.
+fn by_hand(repository: &Path) -> String {
+    format!(
+        "  Run cargo install and factory install by hand for this repository (its path has characters a Windows shell would interpret, so no paste-ready command is printed). Path, not a command: {}\n",
+        shown(&repository.display().to_string())
+    )
 }
 
 /// Offers (or, with `reinstall`, performs) the reinstall. Nothing happens unless the repository is the factory
@@ -195,10 +230,14 @@ pub(crate) fn offer(
         io.say(&format!(
             "The merged change is not in the checkout of {} yet, or its merge commit could not be read. Pull the base branch there first, then reinstall the factory:\n  {}\n{}",
             shown(&input.repository.display().to_string()),
-            shown(&format!(
-                "git -C {} pull",
-                quote(&input.repository.to_string_lossy(), input.windows)
-            )),
+            if input.windows && windows_unsafe(&input.repository.to_string_lossy()) {
+                "Pull the base branch there by hand (see the path above).".to_string()
+            } else {
+                shown(&format!(
+                    "git -C {} pull",
+                    quote(&input.repository.to_string_lossy(), input.windows)
+                ))
+            },
             listed(&commands, input.windows)
         ));
         return Ok(());

@@ -26,6 +26,8 @@ pub(crate) enum Step {
     Removed,
     /// Nothing was left to remove.
     AlreadyGone,
+    /// The path exists but git does not list it as a worktree, so it was not touched.
+    LeftAlone,
     /// The Run no longer records it.
     NotRecorded,
 }
@@ -86,6 +88,16 @@ pub(crate) fn cleanup(
         return refuse("The run records no repository. Nothing was removed.");
     };
     let repository = Path::new(repository);
+    if repository.is_relative()
+        || run
+            .worktree
+            .as_deref()
+            .is_some_and(|w| Path::new(w).is_relative())
+    {
+        return refuse(
+            "The recorded repository or worktree path is relative, so it cannot be told apart from the current directory. Nothing was removed.",
+        );
+    }
     // The pull request must come from the branch the run recorded, or its merge says nothing about that branch.
     let head = match run.branch.as_deref() {
         None => None,
@@ -106,17 +118,50 @@ pub(crate) fn cleanup(
     };
 
     // Is the worktree still registered with the repository? `listed` is the path as git printed it.
-    let worktree = match run.worktree.as_deref() {
+    let entries = worktrees(git, repository)?;
+    let own = match run.worktree.as_deref() {
         None => None,
         Some(path) => {
             let wanted = resolved(Path::new(path));
-            registered(git, repository)?
-                .into_iter()
-                .find(|listed| resolved(Path::new(listed)) == wanted)
-                .map(|listed| (path, listed, canonical_dir(Path::new(path))))
+            entries
+                .iter()
+                .find(|entry| resolved(Path::new(&entry.path)) == wanted)
         }
     };
-    if let Some((path, _, Some(real))) = &worktree {
+    if let Some(entry) = own.filter(|entry| entry.locked) {
+        return refuse(format!(
+            "The worktree {} is locked. Unlock it yourself first. Nothing was removed.",
+            shown(&entry.path)
+        ));
+    }
+    if let Some(branch) = run.branch.as_deref() {
+        let wanted = Some(branch);
+        if entries
+            .iter()
+            .filter(|entry| Some(*entry) != own)
+            .any(|entry| entry.branch.as_deref() == wanted)
+        {
+            return refuse(format!(
+                "The branch {} is checked out in another worktree (the main checkout included). Nothing was removed.",
+                shown(branch)
+            ));
+        }
+    }
+    let worktree = run
+        .worktree
+        .as_deref()
+        .zip(own)
+        .map(|(path, entry)| Target {
+            path,
+            listed: entry.path.clone(),
+            real: canonical_dir(Path::new(path)),
+        });
+    if let Some(Target {
+        path,
+        real: Some(real),
+        ..
+    }) = &worktree
+    {
         if canonical_dir(cwd).is_some_and(|here| here.starts_with(real)) {
             return refuse(format!(
                 "You are inside the worktree {}. Run the command from the main checkout. Nothing was removed.",
@@ -174,10 +219,11 @@ pub(crate) fn cleanup(
     }
 
     let mut cleaned = Cleaned {
-        worktree: if run.worktree.is_some() {
-            Step::AlreadyGone
-        } else {
-            Step::NotRecorded
+        worktree: match run.worktree.as_deref() {
+            None => Step::NotRecorded,
+            // A directory git does not list is not ours to remove.
+            Some(path) if worktree.is_none() && Path::new(path).exists() => Step::LeftAlone,
+            Some(_) => Step::AlreadyGone,
         },
         branch: if run.branch.is_some() {
             Step::AlreadyGone
@@ -185,10 +231,13 @@ pub(crate) fn cleanup(
             Step::NotRecorded
         },
     };
-    if let Some((_, listed, _)) = worktree {
+    if let Some(Target { listed, .. }) = worktree {
         git.git(repository, &["worktree", "remove", "--", &listed])
             .map_err(|e| git_problem("worktree remove", &e))?;
-        if registered(git, repository)?.contains(&listed) {
+        if worktrees(git, repository)?
+            .iter()
+            .any(|entry| entry.path == listed)
+        {
             return refuse(format!(
                 "Git still lists the worktree {} after removing it (is it locked?). The branch was kept.",
                 shown(&listed)
@@ -197,7 +246,10 @@ pub(crate) fn cleanup(
         cleaned.worktree = Step::Removed;
     }
     if let Some(branch) = run.branch.as_deref().filter(|_| checked.is_some()) {
-        if checked_out(git, repository, branch)? {
+        if worktrees(git, repository)?
+            .iter()
+            .any(|entry| entry.branch.as_deref() == Some(branch))
+        {
             return refuse(format!(
                 "The branch {} is still checked out in a worktree. The branch was kept.",
                 shown(branch)
@@ -214,25 +266,48 @@ pub(crate) fn cleanup(
     Ok(cleaned)
 }
 
-/// The worktree paths git lists, exactly as it prints them.
-fn registered(git: &dyn Git, repository: &Path) -> Result<Vec<String>, ToolProblem> {
-    let list = git
-        .git(repository, &["worktree", "list", "--porcelain"])
-        .map_err(|e| git_problem("worktree list", &e))?;
-    Ok(list
-        .lines()
-        .filter_map(|line| line.strip_prefix("worktree "))
-        .map(str::to_string)
-        .collect())
+/// A worktree as `git worktree list --porcelain` prints it.
+#[derive(Debug, PartialEq, Eq)]
+struct Entry {
+    /// The path exactly as git prints it.
+    path: String,
+    /// The branch checked out there, if any.
+    branch: Option<String>,
+    locked: bool,
 }
 
-/// Whether any worktree, the main checkout included, has `branch` checked out.
-fn checked_out(git: &dyn Git, repository: &Path, branch: &str) -> Result<bool, ToolProblem> {
+/// The run's worktree as git lists it.
+struct Target<'a> {
+    /// The path the run recorded.
+    path: &'a str,
+    /// The path as git printed it.
+    listed: String,
+    /// The path on disk, when it exists.
+    real: Option<PathBuf>,
+}
+
+/// Every worktree git lists, the main checkout included.
+fn worktrees(git: &dyn Git, repository: &Path) -> Result<Vec<Entry>, ToolProblem> {
     let list = git
         .git(repository, &["worktree", "list", "--porcelain"])
         .map_err(|e| git_problem("worktree list", &e))?;
-    let wanted = format!("branch refs/heads/{branch}");
-    Ok(list.lines().any(|line| line == wanted))
+    let mut entries: Vec<Entry> = Vec::new();
+    for line in list.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            entries.push(Entry {
+                path: path.to_string(),
+                branch: None,
+                locked: false,
+            });
+        } else if let Some(entry) = entries.last_mut() {
+            if let Some(branch) = line.strip_prefix("branch refs/heads/") {
+                entry.branch = Some(branch.to_string());
+            } else if line == "locked" || line.starts_with("locked ") {
+                entry.locked = true;
+            }
+        }
+    }
+    Ok(entries)
 }
 
 /// `path` with its nearest existing ancestor canonicalised and the missing components appended, so a path
@@ -265,6 +340,9 @@ pub(crate) fn render(run: &Recorded, cleaned: Cleaned) -> String {
     match cleaned.worktree {
         Step::Removed => text.push_str(&format!("Removed worktree {worktree}\n")),
         Step::AlreadyGone => text.push_str(&format!("Worktree {worktree} was already gone\n")),
+        Step::LeftAlone => text.push_str(&format!(
+            "Worktree {worktree} exists but git does not list it as a worktree, so it was left alone (not removed)\n"
+        )),
         Step::NotRecorded => {}
     }
     match cleaned.branch {
@@ -272,7 +350,7 @@ pub(crate) fn render(run: &Recorded, cleaned: Cleaned) -> String {
             "Deleted local branch {branch} (the remote branch is untouched)\n"
         )),
         Step::AlreadyGone => text.push_str(&format!("Local branch {branch} was already gone\n")),
-        Step::NotRecorded => {}
+        Step::LeftAlone | Step::NotRecorded => {}
     }
     text
 }
