@@ -457,7 +457,7 @@ The [Rust skill](skills/rust/SKILL.md) and [project instructions](AGENTS.md) gui
 
 Day-to-day work targets `develop`; releases merge `develop` into `master`. See [the release guide](docs/releasing.md) for the release and branch-protection setup.
 
-Run `scripts/verify.sh` before finishing a change and opening a pull request. It runs the same checks as CI, in the same order, and stops at the first failure; it needs `cargo`, `rustfmt` and `clippy` (`rustup component add rustfmt clippy`), plus `python3` and Chromium or Google Chrome for the dashboard browser tests (set `CHROMIUM` to the browser path if it is not on `PATH` as `chromium`, `chromium-browser` or `google-chrome`). When the `x86_64-pc-windows-gnu` target is installed, it also runs clippy for it after the Linux clippy step (a local extra: CI lints on Linux only); without the target it prints how to add it (`rustup target add x86_64-pc-windows-gnu`) and continues. The individual commands are:
+Run `scripts/verify.sh` before finishing a change and opening a pull request. It runs the same checks as CI, in the same order, and stops at the first failure; it needs `cargo`, `rustfmt` and `clippy` (`rustup component add rustfmt clippy`), plus `python3` and Chromium or Google Chrome for the dashboard browser tests (set `CHROMIUM` to the browser path if it is not on `PATH` as `chromium`, `chromium-browser` or `google-chrome`). When a Windows target is installed (`x86_64-pc-windows-gnu` preferred), it also runs clippy for it after the Linux clippy step (a local extra: CI lints on Linux only); without one it prints how to add it (`rustup target add x86_64-pc-windows-gnu`) and continues. The individual commands are:
 
 ```sh
 cargo fmt --check

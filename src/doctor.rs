@@ -164,7 +164,7 @@ pub(crate) struct Machine<'a> {
     /// What an agent's program prints for `--version`, if it can be asked.
     pub(crate) version: &'a dyn Fn(&Path) -> Option<String>,
     /// What `rustup target list --installed` prints, if rustup can be asked.
-    pub(crate) rustup_targets: &'a dyn Fn(&OsString) -> Option<String>,
+    pub(crate) rustup_targets: &'a dyn Fn(&OsString, &Path) -> Option<String>,
 }
 
 /// Checks the project at `project` and the listed agents (all of them when `agent` is `None`).
@@ -395,7 +395,7 @@ fn windows_lint_check(root: &Path, machine: &Machine) -> Option<Check> {
     if cfg!(windows) || !root.join("Cargo.toml").is_file() {
         return None;
     }
-    let Some(targets) = (machine.rustup_targets)(&machine.path) else {
+    let Some(targets) = (machine.rustup_targets)(&machine.path, &machine.home) else {
         return Some(Check::skipped(
             "windows-lint",
             "rustup is not available, so Windows targets were not checked",
@@ -647,13 +647,16 @@ fn agent_version(program: &Path) -> Option<String> {
 }
 
 /// Asks rustup which targets are installed, looking for it on `path`. Read-only.
-fn rustup_targets(path: &OsString) -> Option<String> {
+/// It runs outside the project, in `home`, with auto-install off, so a `rust-toolchain.toml` cannot make it download.
+fn rustup_targets(path: &OsString, home: &Path) -> Option<String> {
     let program = find_program("rustup", path)?;
     if !program.is_absolute() {
         return None;
     }
     let output = Command::new(program)
         .args(["target", "list", "--installed"])
+        .current_dir(home)
+        .env("RUSTUP_AUTO_INSTALL", "0")
         .output()
         .ok()?;
     output
@@ -896,7 +899,7 @@ mod tests {
                     let name = program.file_stem()?.to_str()?;
                     self.versions.get(name).cloned()
                 },
-                rustup_targets: &|_| self.rustup_targets.clone(),
+                rustup_targets: &|_, _| self.rustup_targets.clone(),
             };
             diagnose(self.project.path(), agent, &machine)
         }
@@ -916,14 +919,14 @@ mod tests {
 
     #[test]
     fn windows_lint_is_a_non_blocking_warning_without_a_windows_target() {
+        if cfg!(windows) {
+            return;
+        }
         let mut world = World::ready().with_agent("claude");
         fs::write(world.project.path().join("Cargo.toml"), "").unwrap();
         world.rustup_targets = Some("x86_64-unknown-linux-gnu\n".into());
         let report = world.report(None);
         let check = project_check(&report, "windows-lint");
-        if cfg!(windows) {
-            return;
-        }
         assert_eq!(check.status, Status::Warning);
         assert!(check
             .fix
@@ -1083,7 +1086,7 @@ mod tests {
             var: &|_| None,
             config_dirs: Vec::new(),
             version: &|_| None,
-            rustup_targets: &|_| None,
+            rustup_targets: &|_, _| None,
         };
         let report = diagnose(empty.path(), Some("claude"), &machine).unwrap();
         assert!(!report.ok);
@@ -1386,7 +1389,7 @@ mod tests {
                 var: &|name| self.vars.get(name).cloned(),
                 config_dirs: Vec::new(),
                 version: &|_| None,
-                rustup_targets: &|_| None,
+                rustup_targets: &|_, _| None,
             };
             create_model_routing(agents, &machine)
         }

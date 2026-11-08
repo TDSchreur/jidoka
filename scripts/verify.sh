@@ -18,19 +18,15 @@ browser() {
   return 1
 }
 
-WINDOWS_TARGET=x86_64-pc-windows-gnu
-
-windows_target_installed() {
+# Prints the Windows target to lint: x86_64-pc-windows-gnu when installed, else the first installed *-pc-windows-* target.
+windows_target() {
   command -v rustup >/dev/null 2>&1 || return 1
   targets=$(rustup target list --installed 2>/dev/null) || return 1
-  case "
-$targets
-" in
-    *"
-$WINDOWS_TARGET
-"*) return 0 ;;
-    *) return 1 ;;
-  esac
+  if printf '%s\n' "$targets" | grep -qx 'x86_64-pc-windows-gnu'; then
+    printf '%s\n' x86_64-pc-windows-gnu
+  else
+    printf '%s\n' "$targets" | grep -m1 -e '-pc-windows-'
+  fi
 }
 
 step() {
@@ -50,10 +46,10 @@ main() {
   browser >/dev/null || { printf 'Chromium is not available. Install chromium or google-chrome (or set CHROMIUM to its path) to run the dashboard browser tests.\n' >&2; exit 1; }
   step cargo fmt --check
   step cargo clippy --all-targets --locked -- -D warnings
-  if windows_target_installed; then
-    step cargo clippy --all-targets --locked --target "$WINDOWS_TARGET" -- -D warnings
+  if windows_target=$(windows_target); then
+    step cargo clippy --all-targets --locked --target "$windows_target" -- -D warnings
   else
-    printf '\n==> Skipped Windows clippy: target %s is not installed. Add it with: rustup target add %s\n' "$WINDOWS_TARGET" "$WINDOWS_TARGET"
+    printf '\n==> Skipped Windows clippy: no Windows target is installed. Add one with: rustup target add x86_64-pc-windows-gnu\n'
   fi
   step cargo test --locked
   for test in tests/dashboard-*.py; do

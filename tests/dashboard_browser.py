@@ -4,9 +4,9 @@
 test passes, opens them in a headless browser with a throwaway profile, and returns what the page POSTed to /result.
 
 Every page gets the global `PAGE_WAIT_MS`, the one in-page wait budget for the tests' own waits. It is generous for a
-cold browser start and well inside the harness wait (`WAIT_SECONDS`). When the browser exits before the page posts a
-result, `run_dashboard` retries once with a fresh profile; a browser that keeps running without a result fails at the
-wait limit.
+cold browser start and well inside the harness wait (`WAIT_SECONDS`): on a cold browser the first render and fetch are
+slow, and the old 10-15s in-page deadlines fired (#235). A browser that exits without posting a result fails at once
+with its exit code and stderr tail; one that keeps running without a result fails at the wait limit.
 
 Written for Linux and macOS, run on Linux in CI, and untested on Windows (set CHROMIUM elsewhere).
 """
@@ -26,7 +26,6 @@ import urllib.parse
 ROOT = pathlib.Path(__file__).resolve().parents[1] / "dashboard"
 WAIT_SECONDS = 120
 PAGE_WAIT_MS = 60000
-RETRIES = 1
 POLL_SECONDS = 0.5
 
 
@@ -120,18 +119,15 @@ def run_dashboard(runs, check, size=(1100, 700), handler=Handler, env=None, extr
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
     try:
-        for attempt in range(RETRIES + 1):
-            outcome = attempt_once(server, results, size, env, extra_args, last=attempt == RETRIES)
-            if outcome is not None:
-                return outcome
+        return wait_for_result(server, results, size, env, extra_args)
     finally:
         server.shutdown()
         thread.join()
         server.server_close()
 
 
-def attempt_once(server, results, size, env, extra_args, last):
-    """One browser run with a fresh profile: the page's result, or None when the browser exited without one and `last` is false."""
+def wait_for_result(server, results, size, env, extra_args):
+    """One browser run with a fresh profile: the page's result, or a RuntimeError with the exit code and stderr tail."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile, \
             tempfile.TemporaryFile(mode="w+", errors="replace") as log:
         # On POSIX the browser gets its own session, so `stop` can end its helper processes with it.
@@ -155,10 +151,8 @@ def attempt_once(server, results, size, env, extra_args, last):
                         return results.get(timeout=1)
                     except queue.Empty:
                         break
-            if process.poll() is not None and not last:
-                return None
             log.seek(0)
             tail = "".join(log.readlines()[-40:])
-            raise RuntimeError(f"No result from the browser within {WAIT_SECONDS}s (exit code {process.poll()}). Browser stderr:\n{tail}")
+            raise RuntimeError(f"No result from the browser (after up to {WAIT_SECONDS}s, exit code {process.poll()}). Browser stderr:\n{tail}")
         finally:
             stop(process)

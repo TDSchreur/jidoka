@@ -62,6 +62,11 @@ fn verify_full(
         let path = bin.path().join("rustup");
         fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{targets}'\n")).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let grep = ["/usr/bin/grep", "/bin/grep"]
+            .into_iter()
+            .find(|candidate| Path::new(candidate).exists())
+            .unwrap();
+        std::os::unix::fs::symlink(grep, bin.path().join("grep")).unwrap();
     }
     for tool in tools {
         fake_tool(bin.path(), &log, tool, *tool == "python3" && python_fails);
@@ -144,6 +149,31 @@ fn lints_windows_code_when_the_target_is_installed() {
         .into_iter()
         .chain(dashboard_steps())
         .collect::<Vec<_>>()
+    );
+    assert!(
+        !run.output.contains("Skipped Windows clippy"),
+        "{}",
+        run.output
+    );
+}
+
+#[test]
+fn lints_the_first_installed_windows_target_when_gnu_is_not_installed() {
+    let run = verify_full(
+        true,
+        "none",
+        &["python3", "chromium"],
+        false,
+        Some("x86_64-pc-windows-msvc\nx86_64-unknown-linux-gnu"),
+    );
+    assert!(run.success, "{}", run.output);
+    assert!(
+        run.checks.contains(
+            &"clippy --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings"
+                .to_owned()
+        ),
+        "{:?}",
+        run.checks
     );
     assert!(
         !run.output.contains("Skipped Windows clippy"),
