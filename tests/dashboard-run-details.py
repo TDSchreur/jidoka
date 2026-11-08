@@ -43,10 +43,11 @@ SHIPPED = {
     # Costs come from the server; gpt-x has no price, so its cost is null.
     "usage": {"status": "tracked", "rows": [
         row("define", "opus", 1500, cost_usd=0.5), row("build", "sonnet", 20000, cost_usd=0.25),
-        row("build", "sonnet", 3000, ticket=T1, cost_usd=0.05), row("check", "gpt-x", 4000, cost_usd=None),
+        row("build", "sonnet", 3000, ticket=T1, cost_usd=0.05), row("build", "gpt-x", 1000, cost_usd=None),
+        row("check", "gpt-x", 4000, cost_usd=None),
     ], "cost": {
         "usd": 0.8, "partial": True, "unpriced_models": ["gpt-x"],
-        "by_stage": {"define": {"usd": 0.5, "partial": False}, "build": {"usd": 0.3, "partial": False}, "check": {"usd": 0.02, "partial": True, "unpriced_models": ["gpt-x"]}},
+        "by_stage": {"define": {"usd": 0.5, "partial": False}, "build": {"usd": 0.3, "partial": True, "unpriced_models": ["gpt-x"]}, "check": {"usd": None, "partial": False, "unpriced_models": ["gpt-x"]}},
         "by_model": {"opus": {"usd": 0.5, "partial": False}, "sonnet": {"usd": 0.3, "partial": False}, "gpt-x": {"usd": None, "partial": False}},
     }},
 }
@@ -230,24 +231,24 @@ return {shipped: await snap('run-shipped'), active: await snap('run-active'), bl
         self.assertTrue(self.active["usageOpen"])
         self.assertFalse(self.shipped["usageOpen"])
         self.assertTrue(self.shipped["usageTable"])
-        # 1,500 + 20,000 + 3,000 + 4,000 fresh tokens, summed by hand.
-        self.assertIn("28,500 fresh", self.shipped["usageSummary"])
+        # 1,500 + 20,000 + 3,000 + 1,000 + 4,000 fresh tokens, summed by hand.
+        self.assertIn("29,500 fresh", self.shipped["usageSummary"])
         self.assertIn("3,000 fresh", self.active["usageSummary"])
         self.assertNotIn("Token usage", self.blocked["text"])
 
     def test_estimated_cost_is_shown_per_row_model_stage_and_run_with_unknown_as_text(self):
-        # Costs as the server computed them: define $0.50, build $0.25 + $0.05, check unpriced.
-        self.assertEqual(self.shipped["rowCosts"], ["$0.50", "$0.25", "$0.05", "unknown"])
+        # Costs as the server computed them: define $0.50, build $0.25 + $0.05 + one unpriced row, check unpriced.
+        self.assertEqual(self.shipped["rowCosts"], ["$0.50", "$0.25", "$0.05", "unknown", "unknown"])
         self.assertEqual(self.shipped["totalCost"], ">= $0.80 (partial), 1 unpriced: gpt-x")
         self.assertIn("Est. cost >= $0.80 (partial), 1 unpriced: gpt-x", self.shipped["usageSummary"])
-        self.assertIn("28,500 fresh", self.shipped["usageSummary"])
+        self.assertIn("29,500 fresh", self.shipped["usageSummary"])
         self.assertEqual(self.shipped["modelHeader"], ["Model", "Fresh", "Cache read", "Est. cost"])
         # Cache read per model is summed by hand: 5,000 per row.
         self.assertEqual(
             self.shipped["modelRows"],
-            [["gpt-x", "4,000", "5,000", "unknown"], ["opus", "1,500", "5,000", "$0.50"], ["sonnet", "23,000", "10,000", "$0.30"]],
+            [["gpt-x", "5,000", "10,000", "unknown"], ["opus", "1,500", "5,000", "$0.50"], ["sonnet", "23,000", "10,000", "$0.30"]],
         )
-        self.assertEqual(self.shipped["stopCosts"], ["Estimated cost $0.50", "Estimated cost $0.30", "Estimated cost >= $0.02 (partial), 1 unpriced: gpt-x", None])
+        self.assertEqual(self.shipped["stopCosts"], ["Estimated cost $0.50", "Estimated cost >= $0.30 (partial), 1 unpriced: gpt-x", "Estimated cost unknown, 1 unpriced: gpt-x", None])
         # A Run whose usage carries no cost shows no cost summary.
         self.assertNotIn("Est. cost", self.active["usageSummary"])
 
@@ -313,7 +314,7 @@ return {shipped: await snap('run-shipped'), active: await snap('run-active'), bl
     def test_stations_show_their_fresh_tokens_and_a_bare_name_without_data(self):
         shipped = {s["name"]: s for s in self.shipped["stops"]}
         self.assertEqual(shipped["Define"]["tokens"], "1.5k fresh tokens")
-        self.assertEqual(shipped["Build"]["tokens"], "23.0k fresh tokens")
+        self.assertEqual(shipped["Build"]["tokens"], "24.0k fresh tokens")
         self.assertEqual(shipped["Check"]["tokens"], "4.0k fresh tokens")
         self.assertIsNone(shipped["Finish"]["tokens"])
         self.assertEqual(shipped["Finish"]["full"], "Finish, done")
