@@ -539,11 +539,7 @@ function Dashboard({ reworkCap }) {
     <//>
     <${Topic} title="The Run detail">
       <p>
-        A panel on the right with everything the Run has recorded. <${Code}>factory run inspect<//> prints most of the same fields, and a new session reads it to continue the Run. The detail shows:
-        its project, Stage, status, the current ticket while one is in progress and the status reason while the Run is
-        blocked, the workflow mode, branch, worktree, repository and
-        base commit, links to the spec and the pull request, every ticket with its progress, a summary per Stage, the
-        token usage, the Rework and the Run id. A field the agent never recorded says so. It is never guessed.
+        A panel on the right that follows the Run along its four stations. <${Code}>factory run inspect<//> prints the full record, including the worktree and base commit, and a new session reads it to continue the Run. The header shows the title, project, workflow mode and branch, then one status row: the status, the pull request and its state, the spec, the Rework count when there is any, and when the Run was last updated. A blocked Run turns that row amber and shows the full status reason. Below it, Define, Build, Check and Finish each show their summary, the skills used, the activity the agent reported and the fresh tokens spent there. Build also lists the tickets with their own reports, and Check shows the Rework. A station with nothing recorded shows only its name. Token usage is a section with the full table, open while the Run is active. The footer has the repository and Run id with copy buttons, and <em>Delete run…</em>. Fields the agent never recorded are left out, never guessed.
       </p>
     <//>
     <${Topic} title="Token usage">

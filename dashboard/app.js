@@ -287,15 +287,6 @@ function PrStateLabel({ run }) {
   return html`<span class=${`pr-state ${status.state}`}>${PR_STATE[status.state]}</span>`;
 }
 
-/** The pull request state for the detail: the state and when it was read, or why it is not known. */
-function PrStateDetail({ run, now }) {
-  const status = run.pr_status;
-  if (!run.pr) return null;
-  if (!status || status.url !== run.pr) return html`<span class="not-set">Not read yet</span>`;
-  if (status.state === 'unknown') return html`Unknown: ${status.reason ?? 'no reason given'}`;
-  return html`<${PrStateLabel} run=${run} />${' '}<span class="updated">checked ${ago(now - status.checked_at)}</span>`;
-}
-
 function ContextLinks({ run }) {
   const named = (label) => html`${label}<span class="visually-hidden">${` of ${run.title}`}</span>`;
   const pr = run.pr ? html`<${RefLink} value=${run.pr} label=${named('Pull request')} />` : null;
@@ -366,17 +357,159 @@ function LineRow({ run, now, onOpen }) {
 }
 
 /**
- * One labelled value of the Run detail; an empty value reads "Not set". `wide` puts the label above the value and
- * gives the value the whole width, for the token table.
+ * A time in the Run sheet: "09:22" for today, "Yesterday 16:40", otherwise weekday, day, month and time, such as
+ * "Fri 6 Nov 14:02". Day and month names follow the browser's locale; `now` is passed in so the result is repeatable.
  */
-function Field({ label, children, missing = 'Not set', wide = false }) {
-  const empty = children === null || children === undefined || children === '';
-  const classes = [wide ? 'wide' : null, empty ? 'not-set' : null].filter(Boolean).join(' ') || null;
-  return html`<dt class=${wide ? 'wide' : null}>${label}</dt>
-    <dd class=${classes}>${empty ? missing : children}</dd>`;
+export function sheetTime(ms, now = Date.now()) {
+  const date = new Date(ms);
+  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  const startOfDay = (value) => new Date(value).setHours(0, 0, 0, 0);
+  const days = Math.round((startOfDay(now) - startOfDay(ms)) / 86400000);
+  if (days === 0) return time;
+  if (days === 1) return `Yesterday ${time}`;
+  const day = date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '');
+  return `${day} ${time}`;
 }
 
-/** Every field of a Run in a native modal dialog on the right. The browser handles focus containment and Escape. */
+/** A time as the sheet shows it, with the exact moment for machines. */
+function SheetTime({ at, now }) {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return null;
+  return html`<time datetime=${date.toISOString()}>${sheetTime(at, now)}</time>`;
+}
+
+/** A small text button that copies `value`, then says so for a moment, and for screen readers in a live region. */
+function CopyButton({ value, what }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return undefined;
+    const timer = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  const copy = async () => {
+    let done = false;
+    try {
+      await navigator.clipboard.writeText(value);
+      done = true;
+    } catch {
+      /* no clipboard permission: fall back to selecting a throwaway field */
+    }
+    if (!done) {
+      const field = document.createElement('textarea');
+      field.value = value;
+      field.setAttribute('readonly', '');
+      field.style.position = 'fixed';
+      field.style.opacity = '0';
+      document.body.append(field);
+      field.select();
+      try {
+        done = document.execCommand('copy');
+      } catch {
+        done = false;
+      }
+      field.remove();
+    }
+    if (done) setCopied(true);
+  };
+  return html`<span class="copy"
+    ><button type="button" class="text-button" onClick=${copy}>
+      ${copied ? 'Copied' : 'Copy'}<span class="visually-hidden">${` ${what}`}</span>
+    </button>
+    <span class="visually-hidden" role="status">${copied ? `Copied ${what}` : ''}</span></span
+  >`;
+}
+
+/** The skills a stage used: quiet word chips, one per distinct skill. */
+function SkillChips({ reports }) {
+  const skills = [...new Set(reports.filter((r) => r.kind === 'skill').map((r) => r.text))];
+  return skills.length
+    ? html`<ul class="skills" aria-label="Skills used">${skills.map((skill) => html`<li key=${skill} class="skill">${skill}</li>`)}</ul>`
+    : null;
+}
+
+/** Activity reports as a list of when and what. */
+function ReportList({ reports, now }) {
+  const activity = reports.filter((r) => r.kind !== 'skill');
+  return activity.length
+    ? html`<ul class="reports">
+        ${activity.map(
+          (report, index) => html`<li key=${index}><${SheetTime} at=${report.at} now=${now} /><span>${report.text}</span></li>`,
+        )}
+      </ul>`
+    : null;
+}
+
+/** Fresh tokens spent in one stage, or null when the usage has no row for it. */
+function stageTokens(run, id) {
+  const rows = Array.isArray(run.usage?.rows) ? run.usage.rows.filter((row) => row.stage === id) : [];
+  const counts = rows.map(freshTokens).filter((n) => n !== null);
+  return counts.length ? counts.reduce((a, b) => a + b, 0) : null;
+}
+
+const STATION_STATE = { done: 'done', current: 'current', blocked: 'current, blocked', ahead: 'not reached' };
+
+/** Where a station stands for a Run: done, current, blocked while it is the current one of a blocked Run, or ahead. */
+function stationState(run, at) {
+  if (run.status === 'done') return 'done';
+  const current = STATIONS.indexOf(run.stage);
+  if (at < current) return 'done';
+  if (at === current) return run.status === 'blocked' ? 'blocked' : 'current';
+  return 'ahead';
+}
+
+/** One station of the route: its mark, name and tokens, then what the Run recorded there; a bare name when nothing. */
+function Station({ run, id, name, at, now }) {
+  const state = stationState(run, at);
+  const reports = (Array.isArray(run.run_reports) ? run.run_reports : []).filter((r) => r.stage === id);
+  const tickets = id === 'build' && Array.isArray(run.tickets) ? run.tickets : [];
+  const ticketReports = Array.isArray(run.ticket_reports) ? run.ticket_reports : [];
+  const rework = id === 'check' && Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
+  const summary = run.summaries?.[id];
+  const tokens = stageTokens(run, id);
+  return html`<li class=${`stop ${state}`}>
+    <span class="mark" aria-hidden="true"></span>
+    <div class="stop-head">
+      <h3>${name}<span class="visually-hidden">${`, ${STATION_STATE[state]}`}</span></h3>
+      ${tokens !== null
+        ? html`<span class="stop-tokens">${compactTokens(tokens)}<span class="visually-hidden">${' fresh tokens'}</span></span>`
+        : null}
+    </div>
+    ${summary ? html`<p class="stop-summary">${summary}</p>` : null}
+    ${rework !== null ? html`<p class="rework"><span class="chip">Rework${' '}${reworkLabel(rework)}</span></p>` : null}
+    <${SkillChips} reports=${reports} />
+    <${ReportList} reports=${reports} now=${now} />
+    ${tickets.length
+      ? html`<ol class="ticket-list">
+          ${tickets.map((ticket) => {
+            const own = ticketReports.filter((report) => report.ticket === ticket.reference);
+            return html`<li key=${ticket.reference} class=${ticket.status === 'done' ? 'ticket done' : 'ticket'}>
+              <p class="ticket-line">
+                <span class="ticket-status">${TICKET_STATUS[ticket.status] ?? String(ticket.status)}</span>
+                <span class="ticket-name"><${TicketRef} value=${String(ticket.reference)} />${' '}${ticket.title}</span>
+              </p>
+              <${SkillChips} reports=${own} />
+              <${ReportList} reports=${own} now=${now} />
+            </li>`;
+          })}
+        </ol>`
+      : null}
+  </li>`;
+}
+
+/** The pull request as a link with its state in words, once the server has read that pull request. */
+function PrLink({ run }) {
+  if (!run.pr) return null;
+  const url = httpUrl(run.pr);
+  const status = run.pr_status;
+  const known = status && status.url === run.pr;
+  const state = known ? (PR_STATE[status.state] ? PR_STATE[status.state].toLowerCase() : 'state unknown') : null;
+  return html`<span class="status-item">
+    ${url ? html`<a href=${url.href} target="_blank" rel="noopener noreferrer">PR ${shortRef(url)}</a>` : `PR ${run.pr}`}
+    ${state ? html`${' '}<span class=${`pr-word ${known && status.state}`} title=${status.state === 'unknown' ? status.reason : null}>${state}</span>` : null}
+  </span>`;
+}
+
+/** The Run's route card in a native modal dialog on the right. The browser handles focus containment and Escape. */
 function Detail({ run, now, onClose, onDelete }) {
   const dialog = useRef(null);
   // The listener below is added once; it calls whatever `onClose` is current.
@@ -398,10 +531,11 @@ function Detail({ run, now, onClose, onDelete }) {
     closing.current();
   };
   const ts = timestamp(run);
-  const progress = ticketProgress(run);
-  const summaries = GROUPS.filter(([id]) => run.summaries?.[id]);
-  const stage = GROUPS.find(([id]) => id === run.stage);
+  const active = run.status !== 'done';
+  const blocked = run.status === 'blocked';
+  const spec = run.spec ? httpUrl(run.spec) : null;
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
+  const total = usageTotal(run);
   return html`<dialog
     ref=${dialog}
     class="detail"
@@ -417,89 +551,50 @@ function Detail({ run, now, onClose, onDelete }) {
   >
     <div class="detail-body">
       <div class="detail-bar">
-        <button type="button" class="text-button detail-delete" onClick=${() => onDelete(run)}>
-          Delete run<span class="visually-hidden">${` ${run.title}`}</span>
-        </button>
         <button type="button" class="toggle detail-close" onClick=${dismiss}>
           <span class="detail-close-wide">Close</span><span class="detail-close-compact">Back</span>
         </button>
       </div>
       <h2 id="detail-title">${run.title}</h2>
-      <dl class="fields">
-        <${Field} label="Project"><${ProjectName} path=${projectOf(run)} /><//>
-        <${Field} label="Stage">${stage ? stage[1] : String(run.stage)}<//>
-        <${Field} label="Status">
-          <span class=${STATUSES.includes(run.status) ? `badge ${run.status}` : 'badge'}
-            >${statusLabel(run.status)}</span
-          >
-        <//>
-        <${Field} label="Activity">${run.activity}<//>
-        ${run.current_ticket
-          ? html`<${Field} label="Current ticket"><${TicketLink} value=${String(run.current_ticket)} /><//>`
-          : null}
-        ${run.blocking_reason ? html`<${Field} label="Status reason">${run.blocking_reason}<//>` : null}
-        <${Field} label="Mode" missing="Unknown">${run.mode}<//>
-        <${Field} label="Branch" missing="Unknown">${run.branch}<//>
-        <${Field} label="Worktree" missing="Unknown">${run.worktree}<//>
-        <${Field} label="Repository" missing="Unknown">${run.repository}<//>
-        <${Field} label="Base commit" missing="Unknown">${run.base_commit}<//>
-        <${Field} label="Spec" missing="Unknown">
-          ${run.spec ? html`<${TicketLink} value=${String(run.spec)} />` : null}
-        <//>
-        <${Field} label="Pull request" missing="Unknown">
-          ${run.pr ? html`<${TicketLink} value=${String(run.pr)} />` : null}
-        <//>
-        <${Field} label="Pull request state" missing="No pull request">
-          ${run.pr ? html`<${PrStateDetail} run=${run} now=${now} />` : null}
-        <//>
-        <${Field} label=${progress ? `Tickets (${progress.done} of ${progress.total} done)` : 'Tickets'} missing="None recorded">
-          ${progress
-            ? html`<ol class="ticket-list">
-                ${run.tickets.map(
-                  (ticket) => html`<li key=${ticket.reference}>
-                    <span class="ticket-status">${TICKET_STATUS[ticket.status] ?? String(ticket.status)}</span>${' '}
-                    <${TicketLink} value=${String(ticket.reference)} />${' '}${ticket.title}
-                    <p>Agent-reported; entries may be incomplete.</p>
-                    ${Array.isArray(run.ticket_reports) && run.ticket_reports.some((report) => report.ticket === ticket.reference)
-                      ? html`<ul>${run.ticket_reports.filter((report) => report.ticket === ticket.reference).map((report) => html`<li>
-                          <strong>${report.kind === 'skill' ? 'Skill' : 'Activity'}:</strong>${' '}${report.text}${' '}
-                          (${report.stage}, <time datetime=${new Date(report.at).toISOString()}>${new Date(report.at).toLocaleString()}</time>)
-                        </li>`)}</ul>`
-                      : html`<p>No reports recorded.</p>`}
-                  </li>`,
-                )}
-              </ol>`
+      <p class="detail-sub">
+        <span><${ProjectName} path=${projectOf(run)} /></span>
+        ${run.mode ? html`<span>${run.mode}</span>` : null}
+        ${run.branch ? html`<span class="branch"><code>${run.branch}</code><${CopyButton} value=${run.branch} what="branch" /></span>` : null}
+      </p>
+      ${active && run.activity ? html`<p class="detail-activity">${run.activity}</p>` : null}
+      <div class=${blocked ? 'status-row blocked' : 'status-row'}>
+        <span class=${STATUSES.includes(run.status) ? `badge ${run.status}` : 'badge'}>${statusLabel(run.status)}</span>
+        <${PrLink} run=${run} />
+        ${spec ? html`<span class="status-item"><a href=${spec.href} target="_blank" rel="noopener noreferrer">Spec ${shortRef(spec)}</a></span>` : null}
+        ${rework !== null ? html`<span class="status-item">Rework${' '}${reworkLabel(rework)}</span>` : null}
+        ${ts !== null ? html`<span class="status-item status-updated">Updated${' '}<${SheetTime} at=${ts} now=${now} /></span>` : null}
+        ${blocked && run.blocking_reason ? html`<p class="status-reason">${run.blocking_reason}</p>` : null}
+      </div>
+      <ol class="route" aria-label="Route">
+        ${GROUPS.map(([id, name], at) => html`<${Station} key=${id} run=${run} id=${id} name=${name} at=${at} now=${now} />`)}
+      </ol>
+      ${run.usage
+        ? html`<details class="usage" open=${active}>
+            <summary>
+              Token usage${total !== null ? html`<span class="usage-total">${tokenCount(total)}${' fresh'}</span>` : null}
+            </summary>
+            <${UsageDetail} usage=${run.usage} />
+          </details>`
+        : null}
+      <div class="detail-foot">
+        <dl class="ids">
+          ${run.repository
+            ? html`<div><dt>Repository</dt><dd><code>${run.repository}</code><${CopyButton} value=${run.repository} what="repository" /></dd></div>`
             : null}
-        <//>
-        <${Field} label="Run reports" wide>
-          <p>Agent-reported; entries may be incomplete.</p>
-          ${Array.isArray(run.run_reports) && run.run_reports.length
-            ? html`<ul>${run.run_reports.map((report) => html`<li>
-                <strong>${report.kind === 'skill' ? 'Skill' : 'Activity'}:</strong>${' '}${report.text}${' '}
-                (${report.stage}, <time datetime=${new Date(report.at).toISOString()}>${new Date(report.at).toLocaleString()}</time>)
-              </li>`)}</ul>`
-            : html`<p>No reports recorded.</p>`}
-        <//>
-        <${Field} label="Token usage" missing="Not tracked" wide>
-          ${run.usage ? html`<${UsageDetail} usage=${run.usage} />` : null}
-        <//>
-        <${Field} label="Stage summaries" missing="None recorded">
-          ${summaries.length
-            ? html`<ul class="summaries">
-                ${summaries.map(([id, name]) => html`<li key=${id}><strong>${name}:</strong>${' '}${run.summaries[id]}</li>`)}
-              </ul>`
-            : null}
-        <//>
-        <${Field} label="Rework">${rework !== null ? reworkLabel(rework) : null}<//>
-        <${Field} label="Updated">
-          ${ts !== null
-            ? html`<time datetime=${new Date(ts).toISOString()}>${ago(now - ts)}</time>${' '}(${localDateTime(
-                new Date(ts),
-              )})`
-            : null}
-        <//>
-        <${Field} label="Run id"><code>${run.id}</code><//>
-      </dl>
+          <div><dt>Run id</dt><dd><code>${run.id}</code><${CopyButton} value=${String(run.id)} what="run id" /></dd></div>
+        </dl>
+        <div class="foot-line">
+          <p class="note">Skills and activity are reported by the agent and may be incomplete.</p>
+          <button type="button" class="text-button detail-delete" onClick=${() => onDelete(run)}>
+            Delete run…<span class="visually-hidden">${` ${run.title}`}</span>
+          </button>
+        </div>
+      </div>
     </div>
   </dialog>`;
 }

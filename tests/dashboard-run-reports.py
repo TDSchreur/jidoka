@@ -16,8 +16,9 @@ const check = setInterval(() => {
   const detail = document.querySelector('.detail-body');
   if (!detail || !detail.textContent.includes('factory-fast')) return;
   clearInterval(check);
-  const updatedLabel = [...detail.querySelectorAll('dt')].find((label) => label.textContent.trim() === 'Updated');
-  fetch('/result', {method:'POST', body:JSON.stringify({text:detail.textContent, time:detail.querySelector('time[datetime="2023-11-14T22:13:20.000Z"]')?.getAttribute('datetime'), updated:updatedLabel?.nextElementSibling?.textContent.trim()})});
+  const build = [...detail.querySelectorAll('.route > li')].find((li) => li.querySelector('h3').firstChild.textContent === 'Build');
+  const updated = detail.querySelector('.status-updated');
+  fetch('/result', {method:'POST', body:JSON.stringify({text:detail.textContent, skills:[...build.querySelectorAll('.skills li')].map((li) => li.textContent.trim()), updatedAt:updated?.querySelector('time')?.getAttribute('datetime'), updated:updated?.textContent.replace(/\s+/g, ' ').trim()})});
 }, 10);
 </script>
 """
@@ -25,10 +26,10 @@ const check = setInterval(() => {
 class RunReportsTest(unittest.TestCase):
     def test_reports_show_without_tickets(self):
         result = run_dashboard(RUNS, CHECK, env={**os.environ, "TZ": "Europe/Amsterdam"}, extra_args=["--lang=en-US"])
-        self.assertIn("Skill: factory-fast", result["text"])
+        self.assertEqual(result["skills"], ["factory-fast"])
         self.assertIn("may be incomplete", result["text"])
-        self.assertEqual(result["time"], "2023-11-14T22:13:20.000Z")
-        self.assertIn("07/11/2026, 21:03:26", result["updated"])
+        self.assertEqual(result["updatedAt"], "2026-11-07T20:03:26.000Z")
+        self.assertRegex(result["updated"], r"^Updated (Yesterday|Sat 7 Nov) 21:03$")
 
 if __name__ == "__main__":
     unittest.main()
