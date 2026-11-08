@@ -1,61 +1,47 @@
 #!/usr/bin/env python3
 """Exercise project deletion in Chromium."""
-import http.server
-import importlib.util
-import json
-import pathlib
-import subprocess
-import tempfile
-import threading
 import unittest
 
-spec = importlib.util.spec_from_file_location('rows', pathlib.Path(__file__).with_name('dashboard-project-rows.py'))
-rows = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(rows)
+from dashboard_browser import Handler, run_dashboard
 
-rows.CHECK = '''<script>
+RUNS = [
+    {'id': '1', 'title': 'Z running', 'project': '/work/zeta', 'stage': 'build', 'status': 'running', 'updated_at': 200},
+    {'id': '2', 'title': 'A running', 'project': '/work/alpha', 'stage': 'build', 'status': 'running', 'updated_at': 300},
+    {'id': '3', 'title': 'Z waiting', 'project': '/work/zeta', 'stage': 'build', 'status': 'blocked', 'updated_at': 100},
+    {'id': '4', 'title': 'A define', 'project': '/work/alpha', 'stage': 'define', 'status': 'running', 'updated_at': 400},
+]
+CHECK = '''<script>
 let phase = 0;
 const check = setInterval(() => {
-  const projects = [...document.querySelectorAll('.project-row')];
+  const menu = document.querySelector('.projects-menu');
   const dialog = document.querySelector('dialog.confirm');
-  if (phase === 0 && projects.length === 2) {
-    projects[1].querySelector('.delete-project').click(); phase = 1;
+  const names = [...document.querySelectorAll('.projects-list .projects-name')].map(el => el.textContent.trim());
+  if (phase === 0 && names.length === 2) {
+    menu.open = true;
+    menu.querySelector('[aria-label="Delete zeta"]').click(); phase = 1;
   } else if (phase === 1 && dialog?.open) {
-    if (!dialog.textContent.includes('2 run records') || !dialog.textContent.includes('repository')) return;
+    if (!dialog.textContent.includes('Delete zeta?') || !dialog.textContent.includes('2 run records') || !dialog.textContent.includes('repository')) return;
     dialog.querySelector('.danger').click(); phase = 2;
-  } else if (phase === 2 && projects.length === 1) {
+  } else if (phase === 2 && names.length === 1 && document.querySelectorAll('.line-row').length === 2) {
     clearInterval(check);
-    fetch('/result', {method: 'POST', body: JSON.stringify({name: projects[0].textContent, remaining: projects.length})});
+    fetch('/result', {method: 'POST', body: JSON.stringify({names, remaining: names.length})});
   }
 }, 10);
 </script>'''
 
-class Handler(rows.Handler):
+class DeleteHandler(Handler):
     def do_DELETE(self):
         run_id = self.path.rsplit('/', 1)[-1]
-        rows.RUNS[:] = [run for run in rows.RUNS if run['id'] != run_id]
+        self.runs[:] = [run for run in self.runs if run['id'] != run_id]
         self.send_response(204)
         self.end_headers()
 
 class DeleteProjectTest(unittest.TestCase):
     def test_deletes_all_selected_project_runs(self):
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
-        try:
-            with tempfile.TemporaryDirectory() as profile:
-                process = subprocess.Popen(['chromium', '--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--user-data-dir=' + profile, f'http://127.0.0.1:{server.server_port}/'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                try:
-                    result = rows.RESULTS.get(timeout=30)
-                finally:
-                    process.terminate()
-                    process.wait(timeout=10)
-            self.assertIn('alpha', result['name'])
-            self.assertEqual({run['id'] for run in rows.RUNS}, {'2', '4'})
-        finally:
-            server.shutdown()
-            thread.join()
-            server.server_close()
+        runs = [dict(run) for run in RUNS]
+        result = run_dashboard(runs, CHECK, handler=DeleteHandler)
+        self.assertEqual(result['names'], ['alpha'])
+        self.assertEqual({run['id'] for run in runs}, {'2', '4'})
 
 if __name__ == '__main__':
     unittest.main()

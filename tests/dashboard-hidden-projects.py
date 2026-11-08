@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
 """Exercise project hiding and restoration in Chromium."""
-import http.server
-import importlib.util
-import os
-import signal
-import pathlib
-import subprocess
-import tempfile
-import threading
 import unittest
 
-path = pathlib.Path(__file__).with_name("dashboard-project-rows.py")
-spec = importlib.util.spec_from_file_location("project_rows", path)
-rows = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(rows)
+from dashboard_browser import run_dashboard
 
-rows.CHECK = """
+RUNS = [
+    {"id": "1", "title": "Z running", "project": "/work/zeta", "stage": "build", "status": "running", "updated_at": 200},
+    {"id": "2", "title": "A running", "project": "/work/alpha", "stage": "build", "status": "running", "updated_at": 300},
+    {"id": "3", "title": "Z waiting", "project": "/work/zeta", "stage": "build", "status": "blocked", "updated_at": 100},
+    {"id": "4", "title": "A define", "project": "/work/alpha", "stage": "define", "status": "running", "updated_at": 400},
+]
+CHECK = """
 <script>
 localStorage.setItem('notifications', 'on');
 const originalFetch = window.fetch;
@@ -34,35 +29,45 @@ window.Notification = class {
   static permission = 'granted';
   constructor() { sessionStorage.setItem('notification-count', String(Number(sessionStorage.getItem('notification-count') || 0) + 1)); }
 };
-setTimeout(() => fetch('/result', {method: 'POST', body: JSON.stringify({diagnostic: sessionStorage.getItem('hidden-test'), focus: document.activeElement.tagName, target: document.querySelectorAll('.project-toggle')[1]?.outerHTML, rows: document.querySelectorAll('.project-row').length})}), 24000);
+const text = (el) => el.textContent.trim();
+const menu = () => document.querySelector('.projects-menu');
+const menuButton = (label) => menu().querySelector(`[aria-label="${label}"]`);
+setTimeout(() => fetch('/result', {method: 'POST', body: JSON.stringify({diagnostic: sessionStorage.getItem('hidden-test'), focus: document.activeElement.tagName, target: menu()?.outerHTML, rows: document.querySelectorAll('.line-row').length})}), 24000);
 const check = setInterval(() => {
-  const projects = [...document.querySelectorAll('.project-row')];
-  if (!sessionStorage.getItem('hidden-test')) {
-    if (projects.length !== 2) return;
-    projects[1].querySelector('.hide-project').click();
+  const rows = [...document.querySelectorAll('.line-row')];
+  const phase = sessionStorage.getItem('hidden-test');
+  if (!phase) {
+    if (rows.length !== 4) return;
+    menu().open = true;
+    // A click gives the button focus, as it would for a person.
+    menuButton('Hide zeta').focus();
+    menuButton('Hide zeta').click();
     sessionStorage.setItem('hidden-test', 'hiding');
-  } else if (sessionStorage.getItem('hidden-test') === 'hiding') {
-    if (document.activeElement !== document.querySelector('.hidden-projects summary')) return;
+  } else if (phase === 'hiding') {
+    // The zeta runs leave the line, and focus stays on the button, which now restores.
+    if (rows.length !== 2 || document.activeElement !== menuButton('Restore zeta')) return;
     sessionStorage.setItem('hidden-test', 'reload');
     location.reload();
-  } else if (sessionStorage.getItem('hidden-test') === 'reload') {
-    if (projects.length !== 1 || !document.querySelector('.hidden-projects button')) return;
-    sessionStorage.setItem('hidden-waiting', String(document.querySelector('.toolbar').textContent.includes('Needs you (0)')));
+  } else if (phase === 'reload') {
+    if (rows.length !== 2 || !menuButton('Restore zeta')) return;
+    sessionStorage.setItem('hidden-stored', localStorage.getItem('hidden-projects'));
+    sessionStorage.setItem('hidden-waiting', String(text(document.querySelector('.andon-summary')).includes('Nothing needs you.')));
     sessionStorage.setItem('hidden-test', 'watch-hidden');
-  } else if (sessionStorage.getItem('hidden-test') === 'watch-hidden') {
+  } else if (phase === 'watch-hidden') {
     if (Number(sessionStorage.getItem('watch-hidden-polls') || 0) < 2) return;
     sessionStorage.setItem('hidden-test', 'restoring');
-    document.querySelector('.hidden-projects').open = true;
-    document.querySelector('.hidden-projects button').focus();
-    document.querySelector('.hidden-projects button').click();
-  } else if (projects.length === 2 && document.activeElement === projects[1].querySelector('.project-toggle') && Number(sessionStorage.getItem('restoring-polls') || 0) >= 2) {
+    menu().open = true;
+    menuButton('Restore zeta').focus();
+    menuButton('Restore zeta').click();
+  } else if (rows.length === 4 && document.activeElement === menuButton('Hide zeta') && Number(sessionStorage.getItem('restoring-polls') || 0) >= 2) {
     clearInterval(check);
     fetch('/result', { method: 'POST', body: JSON.stringify({
-      names: projects.map(row => row.querySelector('.project-heading').textContent.trim()),
+      names: [...document.querySelectorAll('.projects-list .projects-name')].map(text),
+      storedWhileHidden: JSON.parse(sessionStorage.getItem('hidden-stored')),
       stored: JSON.parse(localStorage.getItem('hidden-projects')),
       hiddenWaiting: sessionStorage.getItem('hidden-waiting'),
       notifications: Number(sessionStorage.getItem('notification-count') || 0),
-      waiting: document.querySelector('.toolbar').textContent.includes('Needs you (1)')
+      waiting: text(document.querySelector('.andon-summary')).includes('1 run needs you')
     }) });
   }
 }, 10);
@@ -72,31 +77,14 @@ const check = setInterval(() => {
 
 class HiddenProjectsTest(unittest.TestCase):
     def test_hide_persists_and_restore_recovers_project(self):
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), rows.Handler)
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
-        try:
-            with tempfile.TemporaryDirectory() as profile:
-                process = subprocess.Popen(
-                    ["chromium", "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
-                     "--user-data-dir=" + profile, f"http://127.0.0.1:{server.server_port}/"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-                )
-                try:
-                    result = rows.RESULTS.get(timeout=30)
-                finally:
-                    os.killpg(process.pid, signal.SIGTERM)
-                    process.wait(timeout=10)
-            self.assertNotIn("diagnostic", result, result)
-            self.assertEqual(result["names"], ["▾alpha", "▾zeta"])
-            self.assertEqual(result["stored"], [])
-            self.assertTrue(result["waiting"])
-            self.assertEqual(result["hiddenWaiting"], "true")
-            self.assertEqual(result["notifications"], 0)
-        finally:
-            server.shutdown()
-            thread.join()
-            server.server_close()
+        result = run_dashboard(RUNS, CHECK)
+        self.assertNotIn("diagnostic", result, result)
+        self.assertEqual(result["names"], ["alpha", "zeta"])
+        self.assertEqual(result["storedWhileHidden"], ["/work/zeta"])
+        self.assertEqual(result["stored"], [])
+        self.assertTrue(result["waiting"])
+        self.assertEqual(result["hiddenWaiting"], "true")
+        self.assertEqual(result["notifications"], 0)
 
 
 if __name__ == "__main__":
