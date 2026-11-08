@@ -681,7 +681,7 @@ fn a_replaced_outcome_carries_exactly_the_switches_written_off() {
         codex: false,
     };
     assert_eq!(done, Starter::Replaced(off));
-    let message = done.message("p", None).unwrap();
+    let message = Starter::replaced_message("p", off, None);
     assert!(
         message.contains("whole policy") && message.contains("entry for claude"),
         "{message}"

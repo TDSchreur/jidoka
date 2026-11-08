@@ -681,7 +681,10 @@ fn create_model_routing(agents: &[RoutingAgent], machine: &Machine) -> Result<St
                 "It is a starter policy for {} that routes every stage (define, build, check, finish) of each.",
                 agents.iter().map(|agent| agent.name()).collect::<Vec<_>>().join(" and ")
             );
-            Ok(done.message(&shown, Some(&about)).unwrap_or_default())
+            Ok(match done {
+                Starter::Replaced(off) => Starter::replaced_message(&shown, off, Some(&about)),
+                _ => Starter::created_message(&shown, Some(&about)),
+            })
         }
         // A link that points nowhere is "there" for creating but not for reading, so say which it is.
         Ok(Starter::Left) if fs::metadata(&path).is_err() => Ok(format!(

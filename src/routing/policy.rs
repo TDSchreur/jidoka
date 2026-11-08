@@ -521,9 +521,9 @@ fn starter_stages(agent: RoutingAgent) -> StarterStages {
 /// Which switches of a replaced old-format file are off; they are carried into the starter.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub(crate) struct Off {
-    pub(crate) all: bool,
-    pub(crate) claude: bool,
-    pub(crate) codex: bool,
+    all: bool,
+    claude: bool,
+    codex: bool,
 }
 
 impl Off {
@@ -543,6 +543,24 @@ impl Off {
         ]
         .into_iter()
         .filter_map(|(is_off, agent)| is_off.then_some(agent))
+    }
+
+    fn next_steps(self) -> String {
+        if self == Self::default() {
+            return "Edit the models and efforts, or set \"enabled\": false to switch it off."
+                .to_string();
+        }
+        let mut text = String::from("Edit the models and efforts.");
+        if self.all {
+            text.push_str(" The whole policy is switched off, so runs do not use it yet; remove \"enabled\": false at the top (or set it to true) to switch it on.");
+        }
+        for agent in self.agents() {
+            text.push_str(&format!(
+                " The entry for {} is switched off; remove its \"enabled\": false (or set it to true) to switch it on.",
+                agent.name()
+            ));
+        }
+        text
     }
 }
 
@@ -578,23 +596,27 @@ pub(crate) enum Starter {
 }
 
 impl Starter {
-    /// What the user is told about the file at `shown`, or `None` when nothing was written: what was
-    /// done, then `about` (a sentence on what the starter is, when the caller has one), then what is
-    /// switched off and how to switch it on.
-    pub(crate) fn message(self, shown: &str, about: Option<&str>) -> Option<String> {
-        let (done, off) = match self {
-            Self::Created => (
-                format!("Created model routing policy {shown}"),
-                Off::default(),
-            ),
-            Self::Replaced(off) => (
-                format!(
-                    "Replaced old-format model routing policy {shown} with the per-stage starter"
-                ),
-                off,
-            ),
-            Self::Left => return None,
-        };
+    /// What the user is told about the new starter at `shown`: what was done, then `about` (a sentence on
+    /// what the starter is, when the caller has one), then how to edit it or switch it off.
+    pub(crate) fn created_message(shown: &str, about: Option<&str>) -> String {
+        Self::compose(
+            format!("Created model routing policy {shown}"),
+            about,
+            Off::default(),
+        )
+    }
+
+    /// What the user is told about the starter at `shown` that replaced an old-format file: what was
+    /// done, then `about`, then what is switched off and how to switch it on.
+    pub(crate) fn replaced_message(shown: &str, off: Off, about: Option<&str>) -> String {
+        Self::compose(
+            format!("Replaced old-format model routing policy {shown} with the per-stage starter"),
+            about,
+            off,
+        )
+    }
+
+    fn compose(done: String, about: Option<&str>, off: Off) -> String {
         let mut message = format!("{done}.");
         if let Some(about) = about {
             message.push(' ');
@@ -602,27 +624,7 @@ impl Starter {
         }
         message.push(' ');
         message.push_str(&off.next_steps());
-        Some(message)
-    }
-}
-
-impl Off {
-    fn next_steps(self) -> String {
-        if self == Self::default() {
-            return "Edit the models and efforts, or set \"enabled\": false to switch it off."
-                .to_string();
-        }
-        let mut text = String::from("Edit the models and efforts.");
-        if self.all {
-            text.push_str(" The whole policy is switched off, so runs do not use it yet; remove \"enabled\": false at the top (or set it to true) to switch it on.");
-        }
-        for agent in self.agents() {
-            text.push_str(&format!(
-                " The entry for {} is switched off; remove its \"enabled\": false (or set it to true) to switch it on.",
-                agent.name()
-            ));
-        }
-        text
+        message
     }
 }
 
