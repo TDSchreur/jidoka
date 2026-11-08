@@ -70,7 +70,6 @@ fn main() {
         "code-review",
         "security-review",
         "pr",
-        "humanizer",
         "setup-matt-pocock-skills",
     ] {
         files(
@@ -93,11 +92,7 @@ fn main() {
             &mut output,
         );
     }
-    for name in [
-        "mattpocock-skills-LICENSE",
-        "awesome-copilot-LICENSE",
-        "humanizer-LICENSE",
-    ] {
+    for name in ["mattpocock-skills-LICENSE", "awesome-copilot-LICENSE"] {
         let path = fs::canonicalize(Path::new("third-party").join(name)).unwrap();
         output.push(format!(
             "({:?}, include_bytes!({:?}).as_slice()),",

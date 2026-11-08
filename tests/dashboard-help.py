@@ -172,7 +172,7 @@ class HelpTest(unittest.TestCase):
         skills = result["every"]["Skills"]["terms"]
         for name in ["/factory", "/factory-full", "/factory-balanced", "/factory-fast", "factory-procedures", "grill-with-docs",
                      "to-spec", "to-tickets", "implement-spec", "implement-spec-balanced", "implement-spec-fast", "tdd",
-                     "code-review", "security-review", "pr", "humanizer", "setup-matt-pocock-skills"]:
+                     "code-review", "security-review", "pr", "setup-matt-pocock-skills"]:
             self.assertIn(name, skills)
         self.assertTrue(result["focusBack"])
 

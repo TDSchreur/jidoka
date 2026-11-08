@@ -463,11 +463,6 @@ function Skills() {
       title="Everywhere"
       skills=${[
         [
-          'humanizer',
-          'Rewrites prose that reads like machine text so it reads like a person, without changing facts, code or links. It edits the specs, tickets, summaries, commit messages and pull request descriptions the flow writes.',
-          'all workflows',
-        ],
-        [
           'setup-matt-pocock-skills',
           'Run once per repository, in your normal checkout. Records which issue tracker the repository uses, its triage labels and where the domain docs live, and adds a short section to the agent instructions. Later Runs pick the output up.',
           'before the first Run',
@@ -475,8 +470,7 @@ function Skills() {
       ]}
     />
     <p>
-      Most skills come from <${Code}>mattpocock/skills<//>, <${Code}>github/awesome-copilot<//> and${' '}
-      <${Code}>blader/humanizer<//>; the workflow skills are the factory’s own. <${Code}>skills/README.md<//> in the TDS Factory repository lists where each one started.
+      Most skills come from <${Code}>mattpocock/skills<//>, <${Code}>github/awesome-copilot<//>; the workflow skills are the factory’s own. <${Code}>skills/README.md<//> in the TDS Factory repository lists where each one started.
     </p>
   `;
 }
