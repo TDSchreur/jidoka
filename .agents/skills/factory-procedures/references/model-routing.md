@@ -13,6 +13,8 @@ Read it with `factory run inspect <id> --json`. `model_routing` holds `agent` (`
 - you run in Copilot CLI, which records no selection and is never routed;
 - `factory doctor` warned that the policy cannot apply here.
 
+Define and Finish are also not routed when the run's mode is `factory-fast`, or when the change is small: a clear, bounded request planned in the conversation, without a spec or tickets. Routing those two Stages costs more than it saves there, so they keep the session's model. Build and Check are routed as above.
+
 ## Starting a routed agent
 
 - On Claude Code, the Agent tool's `model` accepts only the aliases `opus`, `sonnet`, `haiku` and `fable`, so pass the recorded model only if it is one of them. Set `effort` to the recorded effort, and start a fresh subagent, never a fork, because a fork ignores `model`.
@@ -22,13 +24,13 @@ Read it with `factory run inspect <id> --json`. `model_routing` holds `agent` (`
 
 ## Per Stage
 
-- **Define**: the interview (factory-grilling) stays with you, because it is a conversation with the user. Writing the spec, writing the tickets and fact-finding lookups in the code or docs run in agents on the define choice. A workflow that plans in the conversation hands the writing of its plan to such an agent.
+- **Define**: the interview (factory-grilling) stays with you, because it is a conversation with the user. Unless the run is `factory-fast` or the change is small, writing the spec, writing the tickets and fact-finding lookups in the code or docs run in agents on the define choice.
 - **Build**: each ticket runs in its own fresh agent on the build choice, one at a time and sequentially in the run's worktree, following the workflow's build skill; so do a Rework's fixes. You still run the verification the workflow requires, or confirm the agent ran it on exactly this code, and you update the run's tickets and Stage.
 - **Check**: tell `factory-code-review` the check choice, because its Standards and Spec sub-agents are the agents to route. Run `factory-security-review` on the check choice only when you start it as a separate agent the same way. Run inline in your own session, it uses your model: do not claim a switch for it.
-- **Finish**: an agent on the finish choice writes the pull request description and fixes CI failures. You run `factory pr open`, `factory pr wait` and `factory pr sync` yourself.
+- **Finish**: unless the run is `factory-fast` or the change is small, an agent on the finish choice writes the pull request description and fixes CI failures. You run `factory pr open`, `factory pr wait` and `factory pr sync` yourself.
 
 When a Stage is not routed, do its work as the workflow says, without handing it to agents for routing's sake.
 
 ## Reporting
 
-Say what happened in each Stage summary: "Build agents ran on sonnet, effort low", or "model routing not applied: <reason>" when the Stage is not routed for one of the reasons above, the model is not one the host takes, or the host refused a setting.
+Say what happened in each Stage summary: "Build agents ran on sonnet, effort low", or "model routing not applied: <reason>" when the Stage is not routed for one of the reasons above (for Define and Finish, "model routing not applied: factory-fast" or "model routing not applied: small change"), the model is not one the host takes, or the host refused a setting.
