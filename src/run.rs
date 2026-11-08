@@ -1106,6 +1106,45 @@ impl RunStore {
         }))
     }
 
+    /// Blocks a running run for a pause its log shows, or sets it running again once the log shows work
+    /// after it. Only a state the pause itself set is cleared: a block or reason the agent set is
+    /// never changed, nor is a done run, nor a run the agent updated after the pause began.
+    pub(crate) fn apply_pause(&self, id: &str, pause: &crate::usage::Pause) -> io::Result<()> {
+        let mut runs = self.shared.runs.lock().map_err(lock_error)?;
+        let Some(index) = runs.iter().position(|run| run.id == id) else {
+            return Ok(());
+        };
+        let mut next = runs[index].clone();
+        let (kind, at) = match (next.status, pause.resumed_at) {
+            (RunStatus::Running, None) if Some(pause.at) >= next.updated_at => {
+                next.status = RunStatus::Blocked;
+                next.blocking_reason = Some(pause.kind.reason().to_string());
+                (RunEventKind::Blocked, pause.at)
+            }
+            (RunStatus::Blocked, Some(resumed)) if is_automatic_reason(&next.blocking_reason) => {
+                next.status = RunStatus::Running;
+                next.blocking_reason = None;
+                (RunEventKind::Resumed, resumed)
+            }
+            _ => return Ok(()),
+        };
+        if next.events.len() < MAX_EVENTS {
+            next.events.push(RunEvent {
+                at,
+                kind,
+                stage: next.stage,
+                reason: next.blocking_reason.clone(),
+            });
+        }
+        next.updated_at = Some(updated_now()?);
+        let old = std::mem::replace(&mut runs[index], next);
+        if let Err(error) = save_runs(&self.shared.path, &runs) {
+            runs[index] = old;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Replaces the usage of a run. A failed save leaves the stored usage as it was.
     pub(crate) fn set_usage(&self, id: &str, usage: Usage) -> io::Result<()> {
         let mut runs = self.shared.runs.lock().map_err(lock_error)?;
@@ -1169,6 +1208,14 @@ impl FieldUpdate {
 
 /// Appends a mark when the stage, rework or ticket in progress differs from the last one. The mark keeps
 /// the activity given with the update that created it.
+fn is_automatic_reason(reason: &Option<String>) -> bool {
+    reason.as_deref().is_some_and(|reason| {
+        crate::usage::PauseKind::ALL
+            .iter()
+            .any(|kind| kind.reason() == reason)
+    })
+}
+
 fn mark(run: &mut Run, at: u64, activity: Option<String>) {
     let stage = run.stage;
     let building = matches!(stage, Stage::Build);

@@ -520,13 +520,32 @@ export function timelinePasses(run, now) {
   return { passes, unstartedTickets: firstBuildPass ? [] : notStarted };
 }
 
-/** The run's blocked and resumed events that carry a time. */
+const PAUSE_WORDS = { usage_limit: 'Usage limit reached', compaction: 'Context compaction' };
+
+/**
+ * The run's moments that carry a time and are shown as lines on the timeline: blocked and resumed events, pauses the
+ * agent's log shows (a usage limit or a compaction), and idle gaps. Pauses and idle gaps become `pause` and `idle` items.
+ */
 function validEvents(run) {
-  return listOf(run.events).filter((event) => event && Number.isFinite(event.at));
+  const events = listOf(run.events).filter((event) => event && Number.isFinite(event.at));
+  const usage = run.usage ?? {};
+  const pauses = listOf(usage.pauses)
+    .filter((pause) => pause && Number.isFinite(pause.at))
+    .map((pause) => ({ kind: 'pause', at: pause.at, resumedAt: Number.isFinite(pause.resumed_at) ? pause.resumed_at : null, name: PAUSE_WORDS[pause.kind] ?? 'Paused' }));
+  const idle = listOf(usage.idle)
+    .filter((gap) => gap && Number.isFinite(gap.from) && Number.isFinite(gap.to) && gap.to > gap.from)
+    .map((gap) => ({ kind: 'idle', at: gap.from, to: gap.to }));
+  return [...events, ...pauses, ...idle].sort((a, b) => a.at - b.at);
 }
 
-/** A blocked or resumed moment as one line with its time. */
+/** A blocked or resumed moment, a pause or an idle gap as one line with its time. */
 function EventLine({ event, now }) {
+  if (event.kind === 'pause' || event.kind === 'idle') {
+    const text = event.kind === 'idle'
+      ? `Idle ${durationWords(event.to - event.at)}`
+      : `${event.name} · ${event.resumedAt !== null ? `resumed after ${durationWords(event.resumedAt - event.at)}` : 'not resumed yet'}`;
+    return html`<p class=${`pass-event ${event.kind}`}>${text}${' · '}<${SheetTime} at=${event.at} now=${now} /></p>`;
+  }
   return html`<p class=${`pass-event ${event.kind === 'blocked' ? 'blocked' : 'resumed'}`}>
     ${event.kind === 'blocked' ? (event.reason ? `Blocked: ${event.reason}` : 'Blocked') : 'Resumed'}${' · '}<${SheetTime} at=${event.at} now=${now} />
   </p>`;

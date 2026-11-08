@@ -280,7 +280,40 @@ pub(crate) fn render(run: &Run) -> String {
             ));
         }
     }
+    if let Some(usage) = &run.usage {
+        if !usage.pauses.is_empty() || !usage.idle.is_empty() {
+            out.push_str("Pauses\n");
+        }
+        for pause in &usage.pauses {
+            let resumed = pause.resumed_at.map_or_else(
+                || "not resumed".to_string(),
+                |at| format!("resumed after {}", duration(at.saturating_sub(pause.at))),
+            );
+            out.push_str(&format!(
+                "  {}  {}, {resumed}\n",
+                format_timestamp(pause.at),
+                pause.kind.reason().to_lowercase()
+            ));
+        }
+        for gap in &usage.idle {
+            out.push_str(&format!(
+                "  {}  idle {}\n",
+                format_timestamp(gap.from),
+                duration(gap.to.saturating_sub(gap.from))
+            ));
+        }
+    }
     out
+}
+
+/// A span of milliseconds as minutes, or hours and minutes.
+fn duration(ms: u64) -> String {
+    let minutes = ms / 60_000;
+    if minutes < 60 {
+        format!("{minutes} min")
+    } else {
+        format!("{} h {} min", minutes / 60, minutes % 60)
+    }
 }
 
 #[cfg(test)]
@@ -293,6 +326,34 @@ mod tests {
             "summaries": {"define": summary}
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn pauses_and_idle_gaps_are_listed() {
+        let mut run = run_with_summary("x");
+        run.usage = Some(
+            serde_json::from_value(serde_json::json!({
+                "status": "tracked", "collected_at": 1,
+                "pauses": [
+                    {"kind": "usage_limit", "at": 1_793_872_800_000_u64, "resumed_at": 1_793_883_600_000_u64},
+                    {"kind": "compaction", "at": 1_793_890_000_000_u64}
+                ],
+                "idle": [{"from": 1_793_872_800_000_u64, "to": 1_793_873_820_000_u64}]
+            }))
+            .unwrap(),
+        );
+        let text = render(&run);
+        assert!(text.contains("Pauses\n"), "{text}");
+        assert!(
+            text.contains("usage limit reached, resumed after 3 h 0 min"),
+            "{text}"
+        );
+        assert!(
+            text.contains("context compaction in progress, not resumed"),
+            "{text}"
+        );
+        assert!(text.contains("idle 17 min"), "{text}");
+        assert!(!render(&run_with_summary("x")).contains("Pauses"));
     }
 
     fn routed_run() -> Run {

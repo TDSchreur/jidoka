@@ -123,6 +123,48 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// What made a run stop working for a while.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PauseKind {
+    UsageLimit,
+    Compaction,
+}
+
+impl PauseKind {
+    pub(crate) const ALL: [Self; 2] = [Self::UsageLimit, Self::Compaction];
+
+    /// The blocking reason set while this pause lasts.
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::UsageLimit => "Usage limit reached",
+            Self::Compaction => "Context compaction in progress",
+        }
+    }
+}
+
+/// A marker in the agent's log that work stopped, and when the next activity followed it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Pause {
+    pub(crate) kind: PauseKind,
+    /// Milliseconds since the Unix epoch.
+    pub(crate) at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) resumed_at: Option<u64>,
+}
+
+/// A stretch with no activity in the agent's log that no pause explains.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct IdleGap {
+    pub(crate) from: u64,
+    pub(crate) to: u64,
+}
+
+/// Activity further apart than this is an idle gap.
+pub(crate) const IDLE_GAP_MS: u64 = 10 * 60 * 1000;
+/// Most pauses and idle gaps one run keeps, so a long or made-up log cannot grow the record.
+const MAX_PAUSES: usize = 50;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Usage {
     pub(crate) status: UsageStatus,
@@ -145,6 +187,12 @@ pub(crate) struct Usage {
     /// Entries two runs could both claim, assigned to neither.
     #[serde(default, skip_serializing_if = "Tokens::is_empty")]
     pub(crate) unattributed: Tokens,
+    /// Usage limits and compactions the log shows inside the run, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) pauses: Vec<Pause>,
+    /// Gaps of more than ten minutes between activity, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) idle: Vec<IdleGap>,
 }
 
 impl Usage {
@@ -158,6 +206,8 @@ impl Usage {
             sessions: Vec::new(),
             rows: Vec::new(),
             unattributed: Tokens::default(),
+            pauses: Vec::new(),
+            idle: Vec::new(),
         }
     }
 
@@ -411,6 +461,68 @@ pub(crate) fn attribute(
     (rows, unattributed, counted)
 }
 
+/// The pauses and the idle gaps of `target` in the sessions it claims, inside its window. A gap that a
+/// pause explains is not also an idle gap.
+pub(crate) fn derive_pauses(
+    target: &Run,
+    sessions: &[SessionData],
+    now: u64,
+) -> (Vec<Pause>, Vec<IdleGap>) {
+    let Some(first) = target.timeline.first() else {
+        return (Vec::new(), Vec::new());
+    };
+    let (start, end) = (
+        first.at,
+        target
+            .finished_at
+            .unwrap_or(now.saturating_add(FUTURE_SLACK_MS)),
+    );
+    let inside = |at: &u64| (start..=end).contains(at);
+    let claimed = sessions.iter().filter(|session| claims(target, session));
+    let mut markers: Vec<(PauseKind, u64)> = Vec::new();
+    let mut activity: Vec<u64> = Vec::new();
+    for session in claimed {
+        markers.extend(session.pauses.iter().filter(|(_, at)| inside(at)));
+        activity.extend(session.activity.iter().filter(|at| inside(at)));
+    }
+    markers.sort_by_key(|(_, at)| *at);
+    activity.sort_unstable();
+    activity.dedup();
+    let mut pauses: Vec<Pause> = Vec::new();
+    for (kind, at) in markers {
+        let resumed_at = activity.iter().copied().find(|ts| *ts > at);
+        // A repeat of a marker that nothing separates from the last one is the same pause.
+        if pauses
+            .last()
+            .is_some_and(|last| last.kind == kind && last.resumed_at == resumed_at)
+        {
+            continue;
+        }
+        pauses.push(Pause {
+            kind,
+            at,
+            resumed_at,
+        });
+    }
+    let mut idle: Vec<IdleGap> = activity
+        .windows(2)
+        .filter(|pair| pair[1] - pair[0] > IDLE_GAP_MS)
+        .map(|pair| IdleGap {
+            from: pair[0],
+            to: pair[1],
+        })
+        .filter(|gap| !pauses.iter().any(|p| (gap.from..=gap.to).contains(&p.at)))
+        .collect();
+    if idle.len() > MAX_PAUSES {
+        // Keep the longest ones.
+        idle.sort_by_key(|gap| std::cmp::Reverse(gap.to - gap.from));
+        idle.truncate(MAX_PAUSES);
+        idle.sort_by_key(|gap| gap.from);
+    }
+    pauses.drain(..pauses.len().saturating_sub(MAX_PAUSES));
+    (pauses, idle)
+}
+
 /// Reads the session logs and works out the usage of `target`. Never fails: whatever cannot be read
 /// becomes a note, or a reason when nothing at all is known.
 pub(crate) fn collect(
@@ -469,6 +581,7 @@ fn collect_limited(
         return Usage::not_tracked(reason, now);
     }
     let (rows, unattributed, counted) = attribute(target, runs, &read.sessions, now);
+    let (pauses, idle) = derive_pauses(target, &read.sessions, now);
     let mut notes: Vec<String> = Vec::new();
     for note in &read.notes {
         if note
@@ -518,6 +631,8 @@ fn collect_limited(
         let mut usage = Usage::not_tracked(reason, now);
         usage.notes = notes;
         usage.unattributed = unattributed;
+        usage.pauses = pauses;
+        usage.idle = idle;
         return usage;
     }
     let mut no_data: Vec<Stage> = Vec::new();
@@ -540,6 +655,8 @@ fn collect_limited(
         sessions: counted.into_iter().take(100).collect(),
         rows,
         unattributed,
+        pauses,
+        idle,
     }
 }
 
@@ -608,6 +725,8 @@ fn keep_more(old: Option<&Usage>, new: Usage) -> Usage {
     let mut kept = old.clone();
     kept.status = UsageStatus::Partial;
     kept.collected_at = new.collected_at;
+    kept.pauses = new.pauses;
+    kept.idle = new.idle;
     let note = "the counts kept from an earlier reading are higher than the latest reading found: a session log is no longer available, or its work is now shared with another run";
     if !kept.notes.iter().any(|n| n == note) {
         kept.notes.push(note.to_string());
@@ -716,14 +835,48 @@ fn collect_locked(
     } else {
         fresh
     };
-    if target
+    let latest = usage.pauses.last().cloned();
+    if !target
         .usage
         .as_ref()
         .is_some_and(|old| same_counts(old, &usage))
     {
+        store.set_usage(id, usage)?;
+    }
+    match latest {
+        Some(pause) => store.apply_pause(id, &pause),
+        None => Ok(()),
+    }
+}
+
+/// How long a run may go without an update before it is no longer watched for pauses.
+const WATCH_WINDOW_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+
+/// One watching pass: collects the runs that are working or paused on their own, so a pause is seen
+/// and cleared without an agent update. Done runs and runs long without an update are left alone.
+pub(crate) fn collect_active(
+    store: &crate::run::RunStore,
+    settings: &UsageSettings,
+    now: u64,
+) -> std::io::Result<()> {
+    if !settings.enabled {
         return Ok(());
     }
-    store.set_usage(id, usage)
+    for run in store.list()? {
+        let automatic = run.status == crate::run::RunStatus::Blocked
+            && run
+                .blocking_reason
+                .as_deref()
+                .is_some_and(|reason| PauseKind::ALL.iter().any(|kind| kind.reason() == reason));
+        let watched = run.status == crate::run::RunStatus::Running || automatic;
+        let recent = run
+            .updated_at
+            .is_some_and(|at| at.saturating_add(WATCH_WINDOW_MS) >= now);
+        if watched && recent {
+            collect_and_store(store, &run.id, settings)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -477,6 +477,32 @@ fn watch_pr_states(
     })
 }
 
+/// How often the dashboard server looks in the logs of working runs for a usage limit or compaction.
+const PAUSE_PASS: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Collects the runs that are working or paused on their own every `pass`, on a blocking thread, so a
+/// pause is seen and cleared without an agent update. One pass is bounded by the collection budget per run.
+fn watch_pauses(
+    store: RunStore,
+    settings: UsageSettings,
+    pass: std::time::Duration,
+) -> rocket::tokio::task::JoinHandle<()> {
+    rocket::tokio::spawn(async move {
+        loop {
+            rocket::tokio::time::sleep(pass).await;
+            let (store, settings) = (store.clone(), settings.clone());
+            let _ = rocket::tokio::task::spawn_blocking(move || {
+                let result = crate::run::updated_now()
+                    .and_then(|now| crate::usage::collect_active(&store, &settings, now));
+                if let Err(error) = result {
+                    eprintln!("Pauses were not checked: {error}");
+                }
+            })
+            .await;
+        }
+    })
+}
+
 pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> io::Result<()> {
     let runtime = rocket::tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -484,6 +510,7 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
         .map_err(io::Error::other)?;
     println!("Dashboard: {url} (press Ctrl+C to stop)");
     runtime.block_on(async {
+        let pause_settings = usage.clone();
         build_rocket_with(path, port, Collector::new(Some(usage)))
             .map_err(|error| {
                 io::Error::new(error.kind(), format!("could not open run storage: {error}"))
@@ -493,6 +520,7 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
                 |rocket| {
                     Box::pin(async move {
                         if let Some(store) = rocket.state::<RunStore>() {
+                            watch_pauses(store.clone(), pause_settings, PAUSE_PASS);
                             watch_pr_states(
                                 store.clone(),
                                 std::sync::Arc::new(RealGh),
