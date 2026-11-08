@@ -271,7 +271,8 @@ body:has(.confirm[open]) { overflow: hidden; }
 .status-row.blocked a, .status-row.blocked .status-updated { color: var(--color-on-amber); }
 .status-row.blocked a:focus-visible { outline-color: var(--color-on-amber); }
 .detail-ticket { margin: 0 0 var(--space-4); overflow-wrap: anywhere; color: var(--color-muted); font-size: var(--text-s); }
-.pr-reason { color: var(--color-muted); font-size: var(--text-s); overflow-wrap: anywhere; }
+.pr-reason { color: var(--color-muted); overflow-wrap: anywhere; }
+.status-row.blocked .pr-reason { color: var(--color-on-amber); }
 .other-reports { margin: var(--space-4) 0; }
 .other-reports h3 { margin: 0 0 var(--space-2); font-size: var(--text-s); font-weight: var(--weight-strong); color: var(--color-muted); }
 .status-reason { flex-basis: 100%; margin: 0; font-size: var(--text-s); line-height: var(--leading-s); overflow-wrap: anywhere; }
@@ -290,9 +291,10 @@ body:has(.confirm[open]) { overflow: hidden; }
 .stop-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-5); }
 .stop-head h3 { margin: 0; font-size: var(--text-m); line-height: var(--leading-s); font-weight: var(--weight-strong); }
 .stop.ahead .stop-head h3 { color: var(--color-muted); }
-.stop-tokens { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); font-variant-numeric: tabular-nums; }
+.stop-meta { display: flex; align-items: baseline; gap: var(--space-5); }
+.ticket-count, .stop-tokens { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); font-variant-numeric: tabular-nums; }
 .stop-summary { margin: var(--space-2) 0 0; overflow-wrap: anywhere; }
-.rework, .ticket-count { margin: var(--space-3) 0 0; }
+.rework { margin: var(--space-3) 0 0; }
 .skills { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin: var(--space-3) 0 0; padding: 0; list-style: none; }
 .skill { padding: 0 var(--space-3); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-s); font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); }
 .reports { margin: var(--space-3) 0 0; padding: 0; list-style: none; font-size: var(--text-xs); line-height: var(--leading-xs); }

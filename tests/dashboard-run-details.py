@@ -54,6 +54,7 @@ ACTIVE = {
 BLOCKED = {
     "id": "run-blocked", "title": "Migrate the orders table", "project": "/work/shop", "stage": "check", "status": "blocked",
     "updated_at": AT, "activity": "Waiting for a decision",
+    "pr": PR, "pr_status": {"url": PR, "state": "unknown", "reason": "gh is not signed in", "checked_at": AT},
     "blocking_reason": "The migration drops a column that the reporting job still reads; confirm it can go before the Run continues.",
 }
 STRAY = {
@@ -136,6 +137,8 @@ const snap = async (id) => {
     otherReports: text(dialog.querySelector('.other-reports')),
     detailTicket: text(dialog.querySelector('.detail-ticket')),
     prReason: text(dialog.querySelector('.pr-reason')),
+    prReasonColor: dialog.querySelector('.pr-reason') ? getComputedStyle(dialog.querySelector('.pr-reason')).color : null,
+    statusRowColor: getComputedStyle(dialog.querySelector('.status-row')).color,
     statusRowBlocked: dialog.querySelector('.status-row').classList.contains('blocked'),
     amber,
     statusBeforeRepository: order('.status-row') < order('.ids'),
@@ -257,10 +260,14 @@ return {shipped: await snap('run-shipped'), active: await snap('run-active'), bl
         self.assertEqual(self.stray["prReason"], "gh is not signed in")
         self.assertIsNone(self.shipped["prReason"])
 
+    def test_pr_reason_on_the_amber_row_uses_the_on_amber_text_colour(self):
+        self.assertEqual(self.blocked["prReason"], "gh is not signed in")
+        self.assertEqual(self.blocked["prReasonColor"], self.blocked["statusRowColor"])
+
     def test_build_shows_the_ticket_progress_count(self):
-        self.assertIn("Tickets 2/2 done", self.stop(self.shipped, "Build")["full"])
-        self.assertIn("Tickets 1/2 done", self.stop(self.stray, "Build")["full"])
-        self.assertNotIn("Tickets", self.stop(self.blocked, "Build")["full"])
+        self.assertIn("2 of 2 tickets done", self.stop(self.shipped, "Build")["full"])
+        self.assertIn("1 of 2 tickets done", self.stop(self.stray, "Build")["full"])
+        self.assertNotIn("tickets done", self.stop(self.blocked, "Build")["full"])
 
     def test_rework_marker_is_on_check_only_when_rework_is_above_zero(self):
         self.assertEqual(self.stop(self.shipped, "Check")["rework"], "Rework 1/2")

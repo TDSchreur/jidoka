@@ -451,12 +451,25 @@ function stationState(run, at) {
   return 'ahead';
 }
 
+/** Where each report belongs: a run report by its stage, a ticket report by its listed ticket, anything else in `other`. */
+function placeReports(run) {
+  const runReports = Array.isArray(run.run_reports) ? run.run_reports : [];
+  const ticketReports = Array.isArray(run.ticket_reports) ? run.ticket_reports : [];
+  const tickets = Array.isArray(run.tickets) ? run.tickets : [];
+  const listed = (r) => tickets.some((t) => t.reference === r.ticket);
+  return {
+    byStage: (id) => runReports.filter((r) => r.stage === id),
+    byTicket: (reference) => ticketReports.filter((r) => r.ticket === reference),
+    other: [...runReports.filter((r) => !STATIONS.includes(r.stage)), ...ticketReports.filter((r) => !listed(r))],
+  };
+}
+
 /** One station of the route: its mark, name and tokens, then what the Run recorded there; a bare name when nothing. */
 function Station({ run, id, name, at, now }) {
   const state = stationState(run, at);
-  const reports = (Array.isArray(run.run_reports) ? run.run_reports : []).filter((r) => r.stage === id);
+  const placed = placeReports(run);
+  const reports = placed.byStage(id);
   const tickets = id === 'build' && Array.isArray(run.tickets) ? run.tickets : [];
-  const ticketReports = Array.isArray(run.ticket_reports) ? run.ticket_reports : [];
   const progress = id === 'build' ? ticketProgress(run) : null;
   const rework = id === 'check' && Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   const summary = run.summaries?.[id];
@@ -465,20 +478,22 @@ function Station({ run, id, name, at, now }) {
     <span class="mark" aria-hidden="true"></span>
     <div class="stop-head">
       <h3>${name}<span class="visually-hidden">${`, ${STATION_STATE[state]}`}</span></h3>
-      ${tokens !== null
-        ? html`<span class="stop-tokens">${compactTokens(tokens)}<span class="visually-hidden">${' fresh tokens'}</span></span>`
+      ${progress || tokens !== null
+        ? html`<span class="stop-meta">
+            ${progress ? html`<span class="ticket-count">${progress.done} of ${progress.total} tickets done</span>` : null}
+            ${tokens !== null ? html`<span class="stop-tokens">${compactTokens(tokens)}<span class="visually-hidden">${' fresh tokens'}</span></span>` : null}
+          </span>`
         : null}
     </div>
     ${summary ? html`<p class="stop-summary">${summary}</p>` : null}
     ${rework !== null ? html`<p class="rework"><span class="chip">Rework${' '}${reworkLabel(rework)}</span></p>` : null}
-    ${progress ? html`<p class="ticket-count"><span class="chip">Tickets${' '}${progress.done}/${progress.total} done</span></p>` : null}
     <${SkillChips} reports=${reports} />
     <${ReportList} reports=${reports} now=${now} />
     ${tickets.length
       ? html`<ol class="ticket-list">
           ${tickets.map((ticket) => {
-            const own = ticketReports.filter((report) => report.ticket === ticket.reference);
-            const current = ticket.status !== 'done' && run.current_ticket != null && run.current_ticket === ticket.reference;
+            const own = placed.byTicket(ticket.reference);
+            const current = ticket.status !== 'done' && run.current_ticket === ticket.reference;
             return html`<li key=${ticket.reference} class=${ticket.status === 'done' ? 'ticket done' : 'ticket'}>
               <p class="ticket-line">
                 <span class="ticket-status">${current ? TICKET_STATUS['in-progress'] : (TICKET_STATUS[ticket.status] ?? String(ticket.status))}</span>
@@ -495,11 +510,7 @@ function Station({ run, id, name, at, now }) {
 
 /** Reports that belong to no station or no listed ticket, so they are never dropped silently. */
 function OtherReports({ run, now }) {
-  const tickets = Array.isArray(run.tickets) ? run.tickets : [];
-  const stray = [
-    ...(Array.isArray(run.run_reports) ? run.run_reports : []).filter((r) => !STATIONS.includes(r.stage)),
-    ...(Array.isArray(run.ticket_reports) ? run.ticket_reports : []).filter((r) => !tickets.some((t) => t.reference === r.ticket)),
-  ];
+  const stray = placeReports(run).other;
   if (!stray.length) return null;
   return html`<section class="other-reports" aria-labelledby="other-reports-title">
     <h3 id="other-reports-title">Other reports</h3>
