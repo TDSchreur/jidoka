@@ -295,7 +295,7 @@ body:has(.confirm[open]) { overflow: hidden; }
 .stop-head h3 { margin: 0; font-size: var(--text-m); line-height: var(--leading-s); font-weight: var(--weight-strong); }
 .stop.ahead .stop-head h3 { color: var(--color-muted); }
 .stop-meta { display: flex; align-items: baseline; gap: var(--space-5); }
-.ticket-count, .stop-tokens { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); font-variant-numeric: tabular-nums; }
+.ticket-count, .stop-tokens, .stop-cost { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); font-variant-numeric: tabular-nums; }
 .stop-summary { margin: var(--space-2) 0 0; overflow-wrap: anywhere; }
 .rework { margin: var(--space-3) 0 0; }
 /* A timeline pass: when it began and how long it ran, then the activity it started with. */

@@ -1,5 +1,6 @@
 mod client;
 mod codex_requests;
+mod cost;
 mod doctor;
 mod gitignore;
 mod inspect;

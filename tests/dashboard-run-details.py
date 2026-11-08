@@ -40,9 +40,15 @@ SHIPPED = {
         {"kind": "activity", "text": "Checkout form built", "stage": "build", "at": AT},
         {"kind": "skill", "text": "factory-code-review", "stage": "check", "at": AT},
     ],
+    # Costs come from the server; gpt-x has no price, so its cost is null.
     "usage": {"status": "tracked", "rows": [
-        row("define", "opus", 1500), row("build", "sonnet", 20000), row("build", "sonnet", 3000, ticket=T1), row("check", "opus", 4000),
-    ]},
+        row("define", "opus", 1500, cost_usd=0.5), row("build", "sonnet", 20000, cost_usd=0.25),
+        row("build", "sonnet", 3000, ticket=T1, cost_usd=0.05), row("check", "gpt-x", 4000, cost_usd=None),
+    ], "cost": {
+        "usd": 0.8, "partial": True, "unpriced_models": ["gpt-x"],
+        "by_stage": {"define": {"usd": 0.5, "partial": False}, "build": {"usd": 0.3, "partial": False}, "check": {"usd": None, "partial": False}},
+        "by_model": {"opus": {"usd": 0.5, "partial": False}, "sonnet": {"usd": 0.3, "partial": False}, "gpt-x": {"usd": None, "partial": False}},
+    }},
 }
 ACTIVE = {
     "id": "run-active", "title": "Speed up the search index", "project": "/work/shop", "repository": "/work/shop",
@@ -163,6 +169,11 @@ const snap = async (id) => {
     usageOpen: dialog.querySelector('details.usage')?.open,
     usageSummary: text(dialog.querySelector('details.usage summary')),
     usageTable: !!dialog.querySelector('details.usage table.usage-table'),
+    rowCosts: [...dialog.querySelectorAll('details.usage table.usage-table:not(.model-table) tbody tr')].map((tr) => text(tr.lastElementChild)),
+    totalCost: text(dialog.querySelector('details.usage table.usage-table:not(.model-table) tfoot td:last-child')),
+    modelRows: [...dialog.querySelectorAll('details.usage table.model-table tbody tr')].map((tr) => [...tr.children].map(text)),
+    modelHeader: [...dialog.querySelectorAll('details.usage table.model-table thead th')].map(text),
+    stopCosts: [...dialog.querySelectorAll('.route > li')].map((li) => text(li.querySelector('.stop-cost'))),
     notes: (dialog.textContent.match(/may be incomplete/g) || []).length,
     noteInFooter: text(dialog.querySelector('.detail-foot .note')),
     times: [...dialog.querySelectorAll('time')].map((t) => ({text: t.textContent, at: t.getAttribute('datetime')})),
@@ -223,6 +234,22 @@ return {shipped: await snap('run-shipped'), active: await snap('run-active'), bl
         self.assertIn("28,500 fresh", self.shipped["usageSummary"])
         self.assertIn("3,000 fresh", self.active["usageSummary"])
         self.assertNotIn("Token usage", self.blocked["text"])
+
+    def test_estimated_cost_is_shown_per_row_model_stage_and_run_with_unknown_as_text(self):
+        # Costs as the server computed them: define $0.50, build $0.25 + $0.05, check unpriced.
+        self.assertEqual(self.shipped["rowCosts"], ["$0.50", "$0.25", "$0.05", "unknown"])
+        self.assertEqual(self.shipped["totalCost"], ">= $0.80 (partial)")
+        self.assertIn("Est. cost >= $0.80 (partial)", self.shipped["usageSummary"])
+        self.assertIn("28,500 fresh", self.shipped["usageSummary"])
+        self.assertEqual(self.shipped["modelHeader"], ["Model", "Fresh", "Cache read", "Est. cost"])
+        # Cache read per model is summed by hand: 5,000 per row.
+        self.assertEqual(
+            self.shipped["modelRows"],
+            [["gpt-x", "4,000", "5,000", "unknown"], ["opus", "1,500", "5,000", "$0.50"], ["sonnet", "23,000", "10,000", "$0.30"]],
+        )
+        self.assertEqual(self.shipped["stopCosts"], ["Estimated cost $0.50", "Estimated cost $0.30", "Estimated cost unknown", None])
+        # A Run whose usage carries no cost shows no cost summary.
+        self.assertNotIn("Est. cost", self.active["usageSummary"])
 
     def test_reports_and_tickets_sit_under_their_stage(self):
         define, build, check, finish = (self.stop(self.shipped, n) for n in ("Define", "Build", "Check", "Finish"))

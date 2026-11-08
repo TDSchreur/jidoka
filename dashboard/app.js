@@ -172,6 +172,14 @@ function usageTotal(run) {
   return counts.length ? counts.reduce((a, b) => a + b, 0) : null;
 }
 
+/** An estimated cost from the server: `$1.23`, `unknown` (never $0), or `>= $1.23 (partial)`. */
+function costText(cost) {
+  const usd = cost?.usd;
+  if (usd === null || usd === undefined) return 'unknown';
+  const amount = usd > 0 && usd < 0.005 ? '<$0.01' : `$${usd.toFixed(2)}`;
+  return cost.partial ? `>= ${amount} (partial)` : amount;
+}
+
 const compactTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
 const tokenCount = (n) => (n === undefined || n === null ? 'n/a' : n.toLocaleString('en-US'));
 
@@ -217,6 +225,16 @@ function UsageDetail({ usage }) {
   const total = rows.map(freshTokens).filter((n) => n !== null).reduce((a, b) => a + b, 0);
   const status =
     usage.status === 'tracked' ? 'Tracked' : usage.status === 'partial' ? 'Partial' : `Not tracked${usage.reason ? `: ${usage.reason}` : ''}`;
+  // Fresh tokens and cache reads per model; a count no row reported stays null (n/a).
+  const perModel = new Map();
+  for (const row of rows) {
+    const sum = perModel.get(row.model) ?? { fresh: null, cache_read: null };
+    const fresh = freshTokens(row);
+    if (fresh !== null) sum.fresh = (sum.fresh ?? 0) + fresh;
+    if (row.cache_read != null) sum.cache_read = (sum.cache_read ?? 0) + row.cache_read;
+    perModel.set(row.model, sum);
+  }
+  const models = [...perModel.entries()].sort(([a], [b]) => a.localeCompare(b));
   const noData = Array.isArray(usage.no_data) ? usage.no_data : [];
   const notes = Array.isArray(usage.notes) ? usage.notes : [];
   return html`<p>${status}</p>
@@ -236,6 +254,7 @@ function UsageDetail({ usage }) {
                   <th scope="col">Output</th>
                   <th scope="col">Reasoning</th>
                   <th scope="col">Subagents</th>
+                  <th scope="col">Est. cost</th>
                 </tr>
               </thead>
               <tbody>
@@ -251,6 +270,7 @@ function UsageDetail({ usage }) {
                     <td>${tokenCount(row.output)}</td>
                     <td>${tokenCount(row.reasoning)}</td>
                     <td>${row.subagents ? tokenCount(freshTokens(row.subagents)) : '-'}</td>
+                    <td>${costText({ usd: row.cost_usd })}</td>
                   </tr>`,
                 )}
               </tbody>
@@ -258,14 +278,42 @@ function UsageDetail({ usage }) {
                 <tr>
                   <th scope="row" colspan="3">Total fresh</th>
                   <td>${tokenCount(total)}</td>
-                  <td colspan="6"></td>
+                  <td colspan="5"></td>
+                  <td>${costText(usage.cost)}</td>
                 </tr>
               </tfoot>
             </table>
           </div>
+          ${models.length
+            ? html`<div class="table-scroll" role="region" aria-label="Token usage and estimated cost per model" tabindex="0">
+                <table class="usage-table model-table">
+                  <caption class="visually-hidden">Token usage and estimated cost per model</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Model</th>
+                      <th scope="col">Fresh</th>
+                      <th scope="col">Cache read</th>
+                      <th scope="col">Est. cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${models.map(
+                      ([model, tokens]) => html`<tr key=${model}>
+                        <td>${model}</td>
+                        <td>${tokenCount(tokens.fresh)}</td>
+                        <td>${tokenCount(tokens.cache_read)}</td>
+                        <td>${costText(usage.cost?.by_model?.[model])}</td>
+                      </tr>`,
+                    )}
+                  </tbody>
+                </table>
+              </div>`
+            : null}
           <p class="usage-note">
             Fresh tokens are input excluding cache reads, plus cache writes and output. Cache reads are shown beside
-            them, not inside. Reasoning is part of output. n/a means the log did not report it; it is not zero.
+            them, not inside. Reasoning is part of output. n/a means the log did not report it; it is not zero. Est. cost is an estimate
+            from the factory's price table; a model without a price is unknown, never zero, and a total that includes
+            one is marked partial.
           </p>`
       : null}
     ${noData.length ? html`<p>No data for: ${noData.map(stageName).join(', ')}</p>` : null}
@@ -655,14 +703,16 @@ function Station({ run, id, name, at, now }) {
   const rework = id === 'check' && Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   const summary = run.summaries?.[id];
   const tokens = stageTokens(run, id);
+  const stageCost = run.usage?.cost?.by_stage?.[id];
   return html`<li class=${`stop ${state}`}>
     <span class="mark" aria-hidden="true"></span>
     <div class="stop-head">
       <h3>${name}<span class="visually-hidden">${`, ${STATION_STATE[state]}`}</span></h3>
-      ${progress || tokens !== null
+      ${progress || tokens !== null || stageCost
         ? html`<span class="stop-meta">
             ${progress ? html`<span class="ticket-count">${progress.done} of ${progress.total} tickets done</span>` : null}
             ${tokens !== null ? html`<span class="stop-tokens">${compactTokens(tokens)}<span class="visually-hidden">${' fresh tokens'}</span></span>` : null}
+            ${stageCost ? html`<span class="stop-cost"><span class="visually-hidden">Estimated cost </span>${costText(stageCost)}</span>` : null}
           </span>`
         : null}
     </div>
@@ -790,7 +840,9 @@ function Detail({ run, now, onClose, onDelete }) {
       ${run.usage
         ? html`<details class="usage" open=${active}>
             <summary>
-              Token usage${total !== null ? html`<span class="usage-total">${tokenCount(total)}${' fresh'}</span>` : null}
+              Token usage${total !== null ? html`<span class="usage-total">${tokenCount(total)}${' fresh'}</span>` : null}${run.usage.cost
+                ? html`<span class="usage-total">${'Est. cost '}${costText(run.usage.cost)}</span>`
+                : null}
             </summary>
             <${UsageDetail} usage=${run.usage} />
           </details>`
