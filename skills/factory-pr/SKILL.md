@@ -24,6 +24,7 @@ Use this template for writing the PR body:
 
 - **Before:** <screenshot/output/failing test run>
   **After:** <screenshot/output/passing test run>
+- **Skill check:** <what was run and its outcome; only when the change edits agent skills>
 
 ## Merge Danger
 
@@ -176,6 +177,8 @@ Concrete evidence that the change works. Show a before and after.
 Screenshots are S-tier - when the environment is set up for it and the change is visual.
 
 Execution-based evidence is A-tier. Test results, console output. Show the exact test that now fails and passes, using pseudocode.
+
+When the change edits agent skills, include a `**Skill check:**` line taken from the commits' `Skill check:` lines. Leave it out otherwise.
 
 ### Merge Danger
 

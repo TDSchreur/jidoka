@@ -698,6 +698,30 @@ mod tests {
     }
 
     #[test]
+    fn bundled_skills_carry_the_skill_check() {
+        for (path, wording) in [
+            (
+                "factory-procedures/SKILL.md",
+                &["Skill check:", "wording only"][..],
+            ),
+            (
+                "factory-code-review/SKILL.md",
+                &["Skill check:", "no commit carries a `Skill check:`"][..],
+            ),
+            ("factory-pr/SKILL.md", &["**Skill check:**"][..]),
+            (
+                "factory-procedures/references/model-routing.md",
+                &["Changing agent skills"][..],
+            ),
+        ] {
+            let text = bundled_text(path);
+            for phrase in wording {
+                assert!(text.contains(phrase), "{path}: {phrase}");
+            }
+        }
+    }
+
+    #[test]
     fn workflows_read_the_user_only_skills_they_use() {
         let user_only: Vec<&str> = bundled_skill_names()
             .into_iter()

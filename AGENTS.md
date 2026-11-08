@@ -24,7 +24,7 @@ The skills that `factory install` bundles (listed in `build.rs`) are used by any
 Read the relevant guide when working on these files or tasks:
 
 - [Reliable tests](.github/instructions/reliable-tests.instructions.md): tests involving time, shared state, files, ports, or processes.
-- [Skill authoring](.github/instructions/agent-skills.instructions.md): skills maintained in this project. When your agent has the `skill-creator` skill, also use it to create or change a skill, and run its evals to check that the change does what was intended.
+- [Skill authoring](.github/instructions/agent-skills.instructions.md): skills maintained in this project, including how to check a skill change.
 - [Dashboard accessibility](.github/instructions/accessibility.instructions.md): dashboard HTML, CSS, and interactive behavior.
 - [Shell scripts](.github/instructions/shell.instructions.md): `*.sh` files, including the Linux installer.
 - [PowerShell scripts](.github/instructions/powershell.instructions.md): `*.ps1` files, including the Windows installer.
