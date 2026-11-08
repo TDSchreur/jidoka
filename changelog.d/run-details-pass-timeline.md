@@ -1,0 +1,3 @@
+## Changed
+
+- The run details sheet shows every pass through a stage instead of four fixed stations: a run with Reworks lists each Build and Check in order, with its start time, how long it ran, and the activity it started with. A Check that was sent back for a Rework says so. Reports are placed in the pass that was running when they were filed, and each stage summary shows on the last pass of its stage. Runs without recorded stage changes keep the four stations. Per-pass token totals are no longer shown on the route; the token usage table is unchanged. `factory run inspect --json` and the API now include the activity of each timeline mark.
