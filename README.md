@@ -447,10 +447,11 @@ The [Rust skill](skills/rust/SKILL.md) and [project instructions](AGENTS.md) gui
 
 Day-to-day work targets `develop`; releases merge `develop` into `master`. See [the release guide](docs/releasing.md) for the release and branch-protection setup.
 
-Run `scripts/verify.sh` before finishing a change and opening a pull request. It runs the same checks as CI, in the same order, and stops at the first failure; it needs `cargo`, `rustfmt` and `clippy` (`rustup component add rustfmt clippy`). The individual commands are:
+Run `scripts/verify.sh` before finishing a change and opening a pull request. It runs the same checks as CI, in the same order, and stops at the first failure; it needs `cargo`, `rustfmt` and `clippy` (`rustup component add rustfmt clippy`), plus `python3` and Chromium or Google Chrome for the dashboard help browser test (set `CHROMIUM` to the browser path if it is not on `PATH` as `chromium`, `chromium-browser` or `google-chrome`). The individual commands are:
 
 ```sh
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
+python3 tests/dashboard-help.py
 ```

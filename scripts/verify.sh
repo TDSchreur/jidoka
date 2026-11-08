@@ -8,6 +8,15 @@ missing() {
   exit 1
 }
 
+# Prints the browser the dashboard help test will use; keep in sync with find_browser in tests/dashboard-help.py.
+browser() {
+  if [ -n "${CHROMIUM:-}" ]; then printf '%s' "$CHROMIUM"; return 0; fi
+  for name in chromium chromium-browser google-chrome; do
+    command -v "$name" 2>/dev/null && return 0
+  done
+  return 1
+}
+
 step() {
   printf '\n==> %s\n' "$*"
   "$@" || { printf 'FAILED: %s\n' "$*" >&2; exit 1; }
@@ -21,9 +30,12 @@ main() {
   command -v cargo >/dev/null 2>&1 || missing cargo
   cargo fmt --version >/dev/null 2>&1 || missing rustfmt
   cargo clippy --version >/dev/null 2>&1 || missing clippy
+  command -v python3 >/dev/null 2>&1 || { printf 'python3 is not available. Install Python 3 to run tests/dashboard-help.py.\n' >&2; exit 1; }
+  browser >/dev/null || { printf 'Chromium is not available. Install chromium or google-chrome (or set CHROMIUM to its path) to run tests/dashboard-help.py.\n' >&2; exit 1; }
   step cargo fmt --check
   step cargo clippy --all-targets --locked -- -D warnings
   step cargo test --locked
+  step python3 tests/dashboard-help.py
   printf '\nAll checks passed.\n'
 }
 main "$@"
