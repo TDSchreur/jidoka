@@ -278,7 +278,13 @@ mod tests {
             (
                 "finish",
                 "done",
-                &["--activity", "Opened PR", "--clear-current-ticket"],
+                &[
+                    "--summary",
+                    "finish=Shipped",
+                    "--activity",
+                    "Opened PR",
+                    "--clear-current-ticket",
+                ],
             ),
         ];
         let mut snapshots = Vec::new();

@@ -1,8 +1,8 @@
 //! The readable form of a run, for `factory run inspect`: everything a new session needs to continue it.
 
 use crate::routing::{model_matches, ModelChoice, ModelRouting};
-use crate::run::{Mode, Run, RunStatus, Stage, TicketStatus};
-use crate::usage::{Usage, UsageStatus};
+use crate::run::{Mode, Run, RunEventKind, RunStatus, Stage, TicketStatus};
+use crate::usage::{format_timestamp, Usage, UsageStatus};
 use std::collections::BTreeSet;
 
 const UNKNOWN: &str = "unknown (not recorded)";
@@ -260,6 +260,24 @@ pub(crate) fn render(run: &Run) -> String {
         out.push_str("Summaries\n");
         for (stage, text) in &run.summaries {
             out.push_str(&format!("  {}: {}\n", stage.name(), shown(text)));
+        }
+    }
+    if !run.events.is_empty() {
+        out.push_str("Events\n");
+        for event in &run.events {
+            let kind = match event.kind {
+                RunEventKind::Blocked => "blocked",
+                RunEventKind::Resumed => "resumed",
+            };
+            let reason = event
+                .reason
+                .as_deref()
+                .map_or_else(String::new, |reason| format!(": {}", shown(reason)));
+            out.push_str(&format!(
+                "  {}  {kind}  {}{reason}\n",
+                format_timestamp(event.at),
+                event.stage.name()
+            ));
         }
     }
     out
@@ -617,6 +635,22 @@ mod tests {
         let text = render(&run);
         assert!(text.contains("  check   sonnet (override)\n"), "{text}");
         assert!(text.contains("  build   sonnet\n"), "{text}");
+    }
+
+    #[test]
+    fn blocked_and_resumed_events_are_listed_with_time_stage_and_reason() {
+        let mut run = run_with_summary("x");
+        assert!(!render(&run).contains("Events"));
+        run.events = serde_json::from_value(serde_json::json!([
+            {"at": 1_762_636_800_000_u64, "kind": "blocked", "stage": "build", "reason": "Needs\nan answer"},
+            {"at": 1_762_640_400_000_u64, "kind": "resumed", "stage": "build"}
+        ]))
+        .unwrap();
+        let text = render(&run);
+        assert!(
+            text.contains("Events\n  2025-11-08 21:20 UTC  blocked  build: Needs an answer\n  2025-11-08 22:20 UTC  resumed  build\n"),
+            "{text}"
+        );
     }
 
     #[test]

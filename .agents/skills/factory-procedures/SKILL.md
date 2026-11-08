@@ -25,7 +25,7 @@ Report progress to the factory dashboard with the `factory` CLI from the run's w
   - When a stage ends: `--summary <define|build|check|finish>=<one or two sentences>`. Summaries of earlier stages are kept.
   - When the pull request exists: `--pr <url>`.
   - A reason you block a run with `--blocking-reason` is the run's status reason; make it say what is needed.
-- **Done:** once the pull request is open and its CI is green (or the project has no CI), run `factory run update <id> finish done --activity "Opened <pull request URL>" --clear-current-ticket`.
+- **Done:** once the pull request is open and its CI is green (or the project has no CI), run `factory run update <id> finish done --summary finish="<what shipped>" --activity "Opened <pull request URL>" --clear-current-ticket`.
 
 Options that are left out keep their current value. If the server or an update fails, report the failure rather than claiming progress is tracked.
 

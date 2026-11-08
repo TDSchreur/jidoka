@@ -520,32 +520,68 @@ export function timelinePasses(run, now) {
   return { passes, unstartedTickets: firstBuildPass ? [] : notStarted };
 }
 
+/** The run's blocked and resumed events that carry a time. */
+function validEvents(run) {
+  return listOf(run.events).filter((event) => event && Number.isFinite(event.at));
+}
+
+/** A blocked or resumed moment as one line with its time. */
+function EventLine({ event, now }) {
+  return html`<p class=${`pass-event ${event.kind === 'blocked' ? 'blocked' : 'resumed'}`}>
+    ${event.kind === 'blocked' ? (event.reason ? `Blocked: ${event.reason}` : 'Blocked') : 'Resumed'}${' · '}<${SheetTime} at=${event.at} now=${now} />
+  </p>`;
+}
+
 /** Appends `item` to the list stored under `key`. */
 function push(map, key, item) {
   map.set(key, [...(map.get(key) ?? []), item]);
 }
 
-/** Where each report belongs on a timeline: in the pass whose time window holds its `at`; the rest in `other`. */
+/**
+ * Where each report and event belongs on a timeline. A report with a stage goes in the last pass of that stage that
+ * started at or before its `at`, else the nearest pass of that stage; one without a stage (older data) goes in the
+ * pass whose time window holds its `at`. The rest are in `other`. An event goes in the pass whose window holds it, else the nearest pass of its stage, else in `otherEvents`.
+ */
 function placeByTime(run, passes, unstartedTickets) {
   const tickets = listOf(run.tickets);
-  const placed = passes.map(() => ({ reports: [], byTicket: new Map() }));
+  const placed = passes.map(() => ({ reports: [], byTicket: new Map(), events: [] }));
   const unstarted = new Map();
   const other = [];
-  const windowOf = (report) => passes.findIndex((pass) => Number.isFinite(report.at) && report.at >= pass.start && report.at < pass.end);
+  const windowIndex = (item) => passes.findIndex((pass) => Number.isFinite(item.at) && item.at >= pass.start && item.at < pass.end);
+  // The last pass of the item's stage that started at or before it, else the first pass of that stage.
+  const stageIndex = (item) => {
+    let first = -1;
+    let lastBefore = -1;
+    passes.forEach((pass, index) => {
+      if (pass.stage !== item.stage) return;
+      if (first === -1) first = index;
+      if (!(pass.start > item.at)) lastBefore = index;
+    });
+    return lastBefore !== -1 ? lastBefore : first;
+  };
+  const hasStage = (report) => STATIONS.includes(report.stage);
+  const passIndex = (report) => (hasStage(report) ? stageIndex(report) : windowIndex(report));
   for (const report of listOf(run.run_reports)) {
-    const at = windowOf(report);
+    const at = passIndex(report);
     (at === -1 ? other : placed[at].reports).push(report);
   }
   for (const report of listOf(run.ticket_reports)) {
-    const at = windowOf(report);
+    const at = passIndex(report);
     const listed = tickets.find((ticket) => ticket.reference === report.ticket);
+    const waiting = listed && unstartedTickets.includes(listed) && (at === -1 || !hasStage(report));
     if (!listed) other.push(report);
-    else if (unstartedTickets.includes(listed)) push(unstarted, listed.reference, report);
+    else if (waiting) push(unstarted, listed.reference, report);
     else if (at === -1) other.push(report);
     else if (passes[at].tickets.includes(listed)) push(placed[at].byTicket, listed.reference, report);
     else placed[at].reports.push(report);
   }
-  return { placed, other, unstarted };
+  const otherEvents = [];
+  for (const event of validEvents(run)) {
+    const inWindow = windowIndex(event);
+    const at = inWindow !== -1 ? inWindow : stageIndex(event);
+    (at === -1 ? otherEvents : placed[at].events).push(event);
+  }
+  return { placed, other, otherEvents, unstarted };
 }
 
 function TicketList({ run, tickets, byTicket, now }) {
@@ -581,6 +617,7 @@ function Pass({ run, pass, placed, now }) {
       <${SheetTime} at=${pass.start} now=${now} />${pass.duration !== null ? html`${' · '}<span class="pass-duration">${durationWords(pass.duration)}</span>` : null}
     </p>
     ${pass.activities.map((activity) => html`<p key=${activity} class="pass-activity">${activity}</p>`)}
+    ${placed.events.map((event, index) => html`<${EventLine} key=${index} event=${event} now=${now} />`)}
     ${summary ? html`<p class="stop-summary">${summary}</p>` : null}
     <${SkillChips} reports=${placed.reports} />
     <${ReportList} reports=${placed.reports} now=${now} showTicket=${true} />
@@ -619,11 +656,12 @@ function Station({ run, id, name, at, now }) {
 }
 
 /** Reports that belong to no station, no pass or no listed ticket, and summaries of stages with no pass, so nothing is dropped silently. */
-function OtherReports({ reports, summaries, now }) {
-  if (!reports.length && !summaries.length) return null;
+function OtherReports({ reports, events, summaries, now }) {
+  if (!reports.length && !events.length && !summaries.length) return null;
   return html`<section class="other-reports" aria-labelledby="other-reports-title">
     <h3 id="other-reports-title">Other reports</h3>
     ${summaries.map(([name, text]) => html`<p key=${name} class="other-summary">${name}: ${text}</p>`)}
+    ${events.map((event, index) => html`<${EventLine} key=${index} event=${event} now=${now} />`)}
     <${SkillChips} reports=${reports} />
     <${ReportList} reports=${reports} now=${now} showTicket=${true} />
   </section>`;
@@ -683,6 +721,7 @@ function Detail({ run, now, onClose, onDelete }) {
   const { passes, unstartedTickets } = timelinePasses(run, now);
   const placed = passes.length ? placeByTime(run, passes, unstartedTickets) : null;
   const otherReports = placed ? placed.other : placeReports(run).other;
+  const otherEvents = placed ? placed.otherEvents : validEvents(run);
   // A summary is kept per stage; one whose stage has no pass in the timeline (it may have been cut short) shows here.
   const orphanSummaries = placed
     ? GROUPS.filter(([id]) => run.summaries?.[id] && !passes.some((pass) => pass.stage === id)).map(([id, name]) => [name, run.summaries[id]])
@@ -728,7 +767,7 @@ function Detail({ run, now, onClose, onDelete }) {
           : GROUPS.map(([id, name], at) => html`<${Station} key=${id} run=${run} id=${id} name=${name} at=${at} now=${now} />`)}
       </ol>
       ${placed ? html`<${UnstartedTickets} run=${run} tickets=${unstartedTickets} byTicket=${placed.unstarted} now=${now} />` : null}
-      <${OtherReports} reports=${otherReports} summaries=${orphanSummaries} now=${now} />
+      <${OtherReports} reports=${otherReports} events=${otherEvents} summaries=${orphanSummaries} now=${now} />
       ${run.usage
         ? html`<details class="usage" open=${active}>
             <summary>

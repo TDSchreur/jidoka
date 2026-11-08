@@ -49,7 +49,7 @@ SHIPPED = {
         {"kind": "activity", "text": "Screenshots reviewed", "stage": "check", "at": T["check1"] + 5000},
         {"kind": "activity", "text": "Third rework approved", "stage": "finish", "at": T["check4"] + 1000},
         {"kind": "activity", "text": "Pull request opened", "stage": "finish", "at": T["end"]},
-        {"kind": "activity", "text": "Noted before the run began", "stage": "define", "at": T["define"] - 60000},
+        {"kind": "activity", "text": "Noted before the run began", "at": T["define"] - 60000},
     ],
     "ticket_reports": [{"ticket": "gone", "kind": "activity", "text": "Report for an unlisted ticket", "at": T["build"]}],
 }
@@ -133,6 +133,7 @@ const snap = async (id) => {
       time: li.querySelector('.pass-when time')?.getAttribute('datetime'),
       duration: text(li.querySelector('.pass-duration')),
       activity: text(li.querySelector('.pass-activity')),
+      events: [...li.querySelectorAll(':scope > .pass-event')].map(text),
       activities: [...li.querySelectorAll(':scope > .pass-activity')].map(text),
       summary: text(li.querySelector('.stop-summary')),
       skills: [...li.querySelectorAll(':scope > .skills > li')].map(text),
@@ -248,23 +249,91 @@ return [0, 59999, min, 12 * min + 59000, 59 * min, 60 * min, 65 * min, 125 * min
             (8, SHIPPED["summaries"]["check"]), (9, SHIPPED["summaries"]["finish"]),
         ])
 
-    def test_reports_land_in_the_pass_whose_time_window_holds_them(self):
+    def test_reports_land_in_the_pass_of_their_stage(self):
         by_label = {i: p for i, p in enumerate(self.rework)}
         self.assertEqual(by_label[1]["skills"], ["frontend-design"])
         self.assertTrue(by_label[1]["reports"][0].endswith("Plan written"))
-        # Filed 5 s into the first Check pass, whatever stage the report names.
+        # Filed 5 s into the first Check pass, and names Check.
         self.assertEqual(by_label[2]["skills"], ["factory-code-review"])
         self.assertTrue(by_label[2]["reports"][0].endswith("Screenshots reviewed"))
         # The first report of the last pass's open-ended window is the one at the run's end.
-        self.assertTrue(by_label[9]["reports"][0].endswith("Pull request opened"))
-        # Filed in the fourth Check pass's window although it names Finish.
-        self.assertTrue(by_label[8]["reports"][0].endswith("Third rework approved"))
+        self.assertTrue(by_label[9]["reports"][-1].endswith("Pull request opened"))
+        # Names Finish, so it goes in the Finish pass although it was filed in the fourth Check window.
+        self.assertEqual(by_label[8]["reports"], [])
+        self.assertTrue(by_label[9]["reports"][0].endswith("Third rework approved"))
         placed = sum(len(p["reports"]) for p in self.rework)
         self.assertEqual(placed, 4)
+
+    def test_a_report_goes_in_the_last_pass_of_its_stage_started_before_it_else_the_nearest_pass(self):
+        # Check passes start at check1..check4; the Build ones at build and the reworks.
+        wanted = {"early": 2, "late": 8, "rework": 7, "nostart": 1}
+        runs = [{
+            **SHIPPED, "id": "run-stage", "ticket_reports": [],
+            "run_reports": [
+                {"kind": "activity", "text": "early", "stage": "check", "at": T["check1"] + 1},
+                {"kind": "activity", "text": "late", "stage": "check", "at": T["end"]},
+                {"kind": "activity", "text": "rework", "stage": "build", "at": T["finish"]},
+                {"kind": "activity", "text": "nostart", "stage": "build", "at": T["define"]},
+            ],
+        }]
+        body = "return await snap('run-stage');"
+        passes = drive(body, runs=runs)["passes"]
+        for text, index in wanted.items():
+            self.assertEqual([i for i, p in enumerate(passes) if any(r.endswith(text) for r in p["reports"])], [index], text)
+
+    def test_ticket_reports_follow_their_stage_and_go_under_the_ticket_only_when_the_pass_lists_it(self):
+        runs = [{
+            **TICKETS, "id": "run-ticket-stage",
+            "ticket_reports": [
+                {"ticket": "t3", "kind": "activity", "text": "Check noted t3", "stage": "check", "at": T["build"] + 1000},
+                {"ticket": "t3", "kind": "activity", "text": "Build noted t3", "stage": "build", "at": T["check1"] + 5000},
+                {"ticket": "t1", "kind": "activity", "text": "Check noted t1", "stage": "check", "at": T["build"] + 2000},
+            ],
+        }]
+        passes = drive("return await snap('run-ticket-stage');", runs=runs)["passes"]
+        build, check = passes[1], passes[2]
+        self.assertTrue(any("Check noted t3" in r for r in check["reports"]))
+        self.assertTrue(any("Check noted t1" in r for r in check["reports"]))
+        self.assertIn("Build noted t3", build["tickets"][2])
+        self.assertNotIn("Check noted", " ".join(build["tickets"]))
+
+    def test_blocked_and_resumed_events_show_as_lines_in_the_pass_that_holds_them(self):
+        runs = [{
+            **BLOCKED, "id": "run-events", "status": "running", "stage": "check", "blocking_reason": None,
+            "timeline": MARKS[:3],
+            "events": [
+                {"at": T["build"] + 60000, "kind": "blocked", "stage": "build", "reason": "Waiting for a decision."},
+                {"at": T["build"] + 120000, "kind": "resumed", "stage": "build"},
+                {"at": T["check1"] + 1000, "kind": "blocked", "stage": "check"},
+            ],
+        }]
+        passes = drive("return await snap('run-events');", runs=runs)["passes"]
+        self.assertEqual([p["events"] for p in passes[:1]], [[]])
+        self.assertEqual(len(passes[1]["events"]), 2)
+        self.assertTrue(passes[1]["events"][0].startswith("Blocked: Waiting for a decision."))
+        self.assertTrue(passes[1]["events"][1].startswith("Resumed"))
+        self.assertEqual(len(passes[2]["events"]), 1)
+        self.assertTrue(passes[2]["events"][0].startswith("Blocked"))
+        # A run without events shows no event lines.
+        self.assertEqual(self.snaps["run-rework"]["passes"][1]["events"], [])
+
+    def test_events_that_match_no_pass_show_under_other_reports(self):
+        runs = [
+            {**BLOCKED, "id": "run-events-define", "timeline": MARKS[:3], "events": [
+                {"at": T["define"] - 5000, "kind": "blocked", "stage": "finish", "reason": "Needs an answer."},
+                {"at": T["define"] - 4000, "kind": "resumed", "stage": "finish"},
+            ]},
+            {**EMPTY_TIMELINE, "id": "run-events-empty", "events": [{"at": T["build"], "kind": "blocked", "stage": "build", "reason": "No timeline."}]},
+        ]
+        snaps = drive("return {a: await snap('run-events-define'), b: await snap('run-events-empty')};", runs=runs)
+        self.assertIn("Blocked: Needs an answer.", snaps["a"]["other"])
+        self.assertIn("Resumed", snaps["a"]["other"])
+        self.assertIn("Blocked: No timeline.", snaps["b"]["other"])
 
     def test_reports_before_the_first_mark_and_for_unlisted_tickets_go_to_other_reports(self):
         other = self.snaps["run-rework"]["other"]
         self.assertIn("Other reports", other)
+        # No stage (older data) and before the first pass: no window holds it.
         self.assertIn("Noted before the run began", other)
         self.assertIn("Report for an unlisted ticket", other)
         self.assertNotIn("Plan written", other)

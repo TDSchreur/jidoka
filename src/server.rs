@@ -258,9 +258,7 @@ fn update_run(
             }
         })?
         .ok_or((HttpStatus::NotFound, "Not found".into()))?;
-    if updated.collect_usage {
-        collector.after_update(store, &updated.run.id);
-    }
+    collector.after_update(store, &updated.run.id);
     Ok(Json(updated.run))
 }
 
@@ -1049,7 +1047,7 @@ mod tests {
         );
         let collector = api.rocket().state::<Collector>().unwrap();
 
-        // An update that changes neither the stage nor the ticket collects nothing.
+        // Every update collects, even one that changes neither the stage nor the ticket.
         assert_eq!(
             report(
                 &api,
@@ -1061,7 +1059,11 @@ mod tests {
             HttpStatus::Ok
         );
         collector.wait_idle().await;
-        assert!(fetch(&api, &run.id).await.1.unwrap().usage.is_none());
+        let usage = fetch(&api, &run.id).await.1.unwrap().usage;
+        assert_eq!(
+            usage.expect("a plain update collects").sessions,
+            ["session-one"]
+        );
 
         // Moving to Build collects, without delaying the answer, and records what it found.
         let store = api.rocket().state::<RunStore>().unwrap().clone();
@@ -1106,7 +1108,12 @@ mod tests {
         assert_eq!(usage.rows[0].tokens.input, Some(42));
 
         // Collecting again after finishing gives the same numbers, not double.
-        report(&api, &run.id, r#"{"stage":"finish","status":"done"}"#).await;
+        report(
+            &api,
+            &run.id,
+            r#"{"stage":"finish","status":"done","summaries":{"finish":"Shipped"}}"#,
+        )
+        .await;
         collector.wait_idle().await;
         let usage = fetch(&api, &run.id).await.1.unwrap().usage.unwrap();
         assert_eq!(
@@ -1117,6 +1124,22 @@ mod tests {
                 .sum::<u64>(),
             42
         );
+    }
+
+    #[rocket::async_test]
+    async fn finish_done_without_a_summary_is_a_bad_request() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
+        let response = report(&api, &run.id, r#"{"stage":"finish","status":"done"}"#).await;
+        assert_eq!(response.status(), HttpStatus::BadRequest);
+        assert!(response
+            .into_string()
+            .await
+            .unwrap()
+            .contains("--summary finish="));
+        let stored = fetch(&api, &run.id).await.1.unwrap();
+        assert!(stored.finished_at.is_none());
     }
 
     #[rocket::async_test]
@@ -2293,7 +2316,7 @@ mod tests {
             .update(
                 &run.id,
                 serde_json::from_str(&format!(
-                    r#"{{"stage":"finish","status":"done","pr":"{pr}"}}"#
+                    r#"{{"stage":"finish","status":"done","pr":"{pr}","summaries":{{"finish":"Shipped"}}}}"#
                 ))
                 .unwrap(),
             )
@@ -2330,7 +2353,7 @@ mod tests {
             .post(format!("/api/runs/{}", run.id))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
-            .body(r#"{"stage":"finish","status":"done","pr_status":{"state":"open"}}"#)
+            .body(r#"{"stage":"finish","status":"done","summaries":{"finish":"Shipped"},"pr_status":{"state":"open"}}"#)
             .dispatch()
             .await;
         assert_ne!(response.status(), HttpStatus::Ok);
@@ -2367,7 +2390,7 @@ mod tests {
             .update(
                 &run.id,
                 serde_json::from_str(
-                    r#"{"stage":"finish","status":"done","pr":"https://github.com/o/r/pull/7"}"#,
+                    r#"{"stage":"finish","status":"done","summaries":{"finish":"Shipped"},"pr":"https://github.com/o/r/pull/7"}"#,
                 )
                 .unwrap(),
             )
@@ -2857,7 +2880,7 @@ mod tests {
                     })
                     .unwrap();
                 let update: UpdateRun =
-                    serde_json::from_value(serde_json::json!({ "stage": stage, "status": status }))
+                    serde_json::from_value(serde_json::json!({ "stage": stage, "status": status, "summaries": { "finish": "Shipped" } }))
                         .unwrap();
                 store.update(&run.id, update).unwrap();
                 let response = delete(&api, &run.id, &headers).await;
@@ -3076,7 +3099,7 @@ mod tests {
         let response = report(
             &restarted,
             "42",
-            r#"{"stage":"finish","status":"done","activity":null,"current_ticket":null}"#,
+            r#"{"stage":"finish","status":"done","summaries":{"finish":"Shipped"},"activity":null,"current_ticket":null}"#,
         )
         .await;
         assert_eq!(response.status(), HttpStatus::Ok);
@@ -3137,7 +3160,7 @@ mod tests {
         report(
             &restarted,
             &run.id,
-            r#"{"stage":"finish","status":"done","rework":null}"#,
+            r#"{"stage":"finish","status":"done","summaries":{"finish":"Shipped"},"rework":null}"#,
         )
         .await;
         assert!(load_runs(&path).unwrap()[0].rework.is_none());
