@@ -217,10 +217,10 @@ flowchart TB
 
 #### Token usage
 
-The dashboard reads the token counts your agents write to their own session logs and shows them per run, stage, model and ticket. It counts tokens only, never money, and it keeps only counts, identifiers and the reasoning effort of each call: no conversation text, prompts, tool output or credentials are stored.
+The dashboard reads the token counts your agents write to their own session logs and shows them per run, stage, model and ticket. It also estimates the cost from a built-in price table (see below), and it keeps only counts, identifiers and the reasoning effort of each call: no conversation text, prompts, tool output or credentials are stored.
 
 - `factory run stats <id>` prints the breakdown (stage, model and ticket, with the rework and work with no ticket in their own rows), the totals per model, and what the figures do not cover. `factory run stats --all` adds the totals per model over all runs and names the runs it leaves out.
-- The dashboard shows the fresh tokens on a run's row and the breakdown in the run's detail.
+- The dashboard shows the fresh tokens on a run's row and the breakdown in the run's detail: per row, per model (fresh tokens, cache reads and estimated cost) and per stage.
 
 **What the figures mean.** Every agent is normalized to the same four counts:
 
@@ -232,6 +232,8 @@ The dashboard reads the token counts your agents write to their own session logs
 | Output | Output tokens, including reasoning tokens where the agent counts them in output. |
 
 **Fresh tokens** are the headline figure: input excluding cache reads, plus cache writes and output. Cache reads are shown beside them, not inside, so large cached contexts do not hide the work. Reasoning is shown as "of which" and is never added to output twice. Codex and Copilot report cached tokens inside their input; the dashboard takes them out so all agents compare. A count an agent does not report is `n/a`, never zero.
+
+**Estimated cost.** `factory run stats` and the dashboard show an estimated cost per row, model, stage and run: input, output, cache reads and cache writes (the 5-minute price) times the model's price per million tokens in USD. The prices are built into the factory (`src/cost.rs`, with their source and date), so they cover only the Claude models listed there, and the cost is computed when you look, never stored: a price change applies to existing runs. A model without a price shows `unknown`, never `$0.00`, and a total that includes one shows `>= $X (partial)` with the unpriced models named; if nothing is priced the total is `unknown`. A row that reported neither input nor output is `unknown` too. It is an estimate: discounts, batch or priority pricing and long-context rates are not applied. In the API (`/api/runs`), unknown costs are `null`.
 
 **How a session is tied to a run.** Folder and time are never enough on their own. A session counts for a run when its id was recorded on the run, or its log holds a `factory run update`, `inspect` or `stats` command naming the run's id (the id elsewhere in a log, such as in a listing, does not count). `factory run start` and `factory run update` record Claude Code's session id automatically; for another agent, pass `--session <id>` when you know it. Within a session, each log entry goes to the stage, rework and ticket the run was in at that moment (the run keeps a small timeline of when those changed). Work that spans two runs at the same moment in one session is not divided by guessing: it is reported as not assigned. Subagent usage is included once, in the stage and model it ran under, and shown as a separate share.
 

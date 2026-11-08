@@ -1,13 +1,14 @@
 //! `factory run stats`: token usage per stage, model and ticket, in plain text.
 
 use crate::{
+    cost::{self, PRICES},
     inspect::shown,
     run::{Run, Stage},
     usage::{format_timestamp, Tokens, Usage, UsageRow, UsageStatus},
 };
 use std::collections::BTreeMap;
 
-const EXPLANATION: &str = "Fresh tokens are input excluding cache reads, plus cache writes and output. Cache reads are shown beside them, not inside. Reasoning is part of output and is not added again. n/a means the log did not report it; it is never zero.";
+const EXPLANATION: &str = "Fresh tokens are input excluding cache reads, plus cache writes and output. Cache reads are shown beside them, not inside. Reasoning is part of output and is not added again. n/a means the log did not report it; it is never zero.\nEst. cost is an estimate from the built-in price table (USD per million tokens); a model without a price is unknown, never zero, and a total that includes one is marked partial.";
 
 /// `12,345`, or `n/a` for a count that was not reported.
 pub(crate) fn number(value: Option<u64>) -> String {
@@ -65,11 +66,11 @@ pub(crate) fn table_with(rows: &[Vec<String>], header: &[&str], text_columns: us
     out
 }
 
-fn token_cells(tokens: &Tokens, subagents: &Tokens) -> Vec<String> {
+fn token_cells(tokens: &Tokens, subagents: &Tokens, cost: String) -> Vec<String> {
     vec![
         number(tokens.fresh()),
-        number(tokens.input),
         number(tokens.cache_read),
+        number(tokens.input),
         number(tokens.cache_write),
         number(tokens.output),
         number(tokens.reasoning),
@@ -78,20 +79,22 @@ fn token_cells(tokens: &Tokens, subagents: &Tokens) -> Vec<String> {
         } else {
             number(subagents.fresh())
         },
+        cost,
     ]
 }
 
-const HEADER: [&str; 10] = [
+const HEADER: [&str; 11] = [
     "Stage",
     "Model",
     "Ticket",
     "Fresh",
-    "Input",
     "Cache read",
+    "Input",
     "Cache write",
     "Output",
     "Reasoning",
     "Subagents",
+    "Est. cost",
 ];
 
 /// The totals of the rows per model.
@@ -103,6 +106,22 @@ fn per_model(rows: &[UsageRow]) -> BTreeMap<String, (Tokens, Tokens)> {
         entry.1.add(&row.subagents);
     }
     models
+}
+
+fn model_rows(rows: &[UsageRow]) -> Vec<Vec<String>> {
+    let costs = cost::by_model(rows, PRICES);
+    per_model(rows)
+        .into_iter()
+        .map(|(model, (tokens, subagents))| {
+            let mut cells = vec![String::new(), shown(&model), String::new()];
+            cells.extend(token_cells(
+                &tokens,
+                &subagents,
+                cost::format(&costs[&model]),
+            ));
+            cells
+        })
+        .collect()
 }
 
 fn status_line(usage: &Usage) -> String {
@@ -137,24 +156,28 @@ pub(crate) fn render_run(run: &Run) -> String {
             .iter()
             .map(|row| {
                 let mut cells = vec![row.stage.name().to_string(), shown(&row.model), bucket(row)];
-                cells.extend(token_cells(&row.tokens, &row.subagents));
+                let row_cost = cost::format_usd(cost::row_cost(row, PRICES));
+                cells.extend(token_cells(&row.tokens, &row.subagents, row_cost));
                 cells
             })
             .collect();
         out.push_str(&table(&rows, &HEADER));
         out.push_str("\nPer model\n");
-        let models: Vec<Vec<String>> = per_model(&usage.rows)
-            .into_iter()
-            .map(|(model, (tokens, subagents))| {
-                let mut cells = vec![String::new(), shown(&model), String::new()];
-                cells.extend(token_cells(&tokens, &subagents));
-                cells
-            })
-            .collect();
-        out.push_str(&table(&models, &HEADER));
+        out.push_str(&table(&model_rows(&usage.rows), &HEADER));
+        out.push_str("\nEstimated cost per stage\n");
+        for (stage, stage_cost) in cost::by_stage(&usage.rows, PRICES) {
+            out.push_str(&format!(
+                "  {stage}: {}\n",
+                cost::format_with_models(&stage_cost)
+            ));
+        }
         out.push_str(&format!(
             "\nTotal fresh tokens: {}\n",
             number(usage.fresh())
+        ));
+        out.push_str(&format!(
+            "Total estimated cost: {}\n",
+            cost::format_with_models(&cost::total(&usage.rows, PRICES))
         ));
     }
     for stage in &usage.no_data {
@@ -241,18 +264,15 @@ pub(crate) fn render_all(runs: &[Run]) -> String {
         ));
     }
     out.push_str("\nPer model, over the runs whose usage is tracked or partial\n");
-    let models: Vec<Vec<String>> = per_model(&all)
-        .into_iter()
-        .map(|(model, (tokens, subagents))| {
-            let mut cells = vec![String::new(), shown(&model), String::new()];
-            cells.extend(token_cells(&tokens, &subagents));
-            cells
-        })
-        .collect();
+    let models = model_rows(&all);
     if models.is_empty() {
         out.push_str("  no model usage is tracked\n");
     } else {
         out.push_str(&table(&models, &HEADER));
+        out.push_str(&format!(
+            "\nTotal estimated cost: {}\n",
+            cost::format_with_models(&cost::total(&all, PRICES))
+        ));
     }
     if !partial.is_empty() {
         out.push_str(&format!("\nPartial coverage: {} (run `factory run stats <id>` for what is missing). Their totals may be too low.\n", partial.join(", ")));
@@ -312,9 +332,11 @@ mod tests {
             ticket.contains("120") && ticket.contains("n/a"),
             "no cache fields reported: {ticket}"
         );
-        assert!(
-            ticket.trim_end().ends_with("45"),
-            "subagent fresh: {ticket}"
+        let fields: Vec<&str> = ticket.split_whitespace().collect();
+        assert_eq!(
+            fields[fields.len() - 2..],
+            ["45", "unknown"],
+            "subagent fresh and cost: {ticket}"
         );
         assert!(
             text.lines()
@@ -350,6 +372,74 @@ mod tests {
             "{per_model}"
         );
         assert!(text.contains("Total fresh tokens: 1,713"), "{text}");
+    }
+
+    fn priced() -> serde_json::Value {
+        json!({"status": "tracked", "collected_at": 0, "rows": [
+            {"stage": "build", "model": "claude-opus-5-5", "input": 1_000_000, "cache_read": 10_000_000, "output": 100_000},
+            {"stage": "check", "model": "claude-opus-5-5", "input": 500_000, "output": 0},
+            {"stage": "check", "model": "gpt-test", "input": 5, "output": 5}
+        ]})
+    }
+
+    #[test]
+    fn stats_show_estimated_cost_per_row_model_stage_and_run_with_unpriced_models_unknown() {
+        // Opus 5.5: $4 in, $20 out, $0.20 cache read per million tokens.
+        // build: 1M*4 + 0.1M*20 + 10M*0.2 = 4 + 2 + 2 = $8.00; check: 0.5M*4 = $2.00.
+        let text = render_run(&run("1", "Task", priced()));
+        let line = |needle: &str| {
+            text.lines()
+                .find(|l| l.contains(needle))
+                .unwrap()
+                .to_string()
+        };
+        assert!(line("build").trim_end().ends_with("$8.00"), "{text}");
+        assert!(line("gpt-test").trim_end().ends_with("unknown"), "{text}");
+        assert!(text.contains("  build: $8.00\n"), "{text}");
+        assert!(
+            text.contains("  check: >= $2.00 (partial), 1 unpriced: gpt-test\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Total estimated cost: >= $10.00 (partial), 1 unpriced: gpt-test"),
+            "{text}"
+        );
+        assert!(!text.contains("$0.00"), "{text}");
+        // Cache read sits right after Fresh in the per-model table.
+        let header = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("Stage"))
+            .unwrap();
+        assert!(header.find("Fresh") < header.find("Cache read"), "{header}");
+        assert!(header.find("Cache read") < header.find("Input"), "{header}");
+    }
+
+    #[test]
+    fn a_run_with_only_unpriced_models_has_unknown_cost() {
+        let only = json!({"status": "tracked", "collected_at": 0, "rows": [{"stage": "build", "model": "gpt-test", "input": 5, "output": 5}]});
+        let text = render_run(&run("1", "Task", only));
+        assert!(
+            text.contains("Total estimated cost: unknown, 1 unpriced: gpt-test"),
+            "{text}"
+        );
+        assert!(!text.contains('$'), "{text}");
+    }
+
+    #[test]
+    fn stats_for_all_runs_show_cache_read_and_cost_per_model() {
+        let text = render_all(&[run("1", "Task", priced())]);
+        let per_model = text.split("Per model").nth(1).unwrap();
+        assert!(per_model.contains("Cache read"), "{per_model}");
+        assert!(
+            per_model.lines().any(|l| l.contains("claude-opus-5-5")
+                && l.contains("10,000,000")
+                && l.trim_end().ends_with("$10.00")),
+            "{per_model}"
+        );
+        assert!(
+            text.contains("Total estimated cost: >= $10.00 (partial)"),
+            "{text}"
+        );
     }
 
     #[test]

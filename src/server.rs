@@ -198,14 +198,37 @@ fn info(request: Security) -> Result<Json<Info>, HttpStatus> {
 }
 
 #[rocket::get("/api/runs")]
-fn list_runs(request: Security, store: &State<RunStore>) -> Result<Json<Vec<Run>>, HttpStatus> {
+fn list_runs(
+    request: Security,
+    store: &State<RunStore>,
+) -> Result<Json<Vec<serde_json::Value>>, HttpStatus> {
     if !request.local {
         return Err(HttpStatus::BadRequest);
     }
-    store.list().map(Json).map_err(|error| {
-        eprintln!("Run storage error: {error}");
-        HttpStatus::InternalServerError
-    })
+    store
+        .list()
+        .map_err(|error| {
+            eprintln!("Run storage error: {error}");
+            HttpStatus::InternalServerError
+        })?
+        .iter()
+        .map(run_with_cost)
+        .collect::<Result<Vec<_>, _>>()
+        .map(Json)
+        .map_err(|error| {
+            eprintln!("Run cost serialization error: {error}");
+            HttpStatus::InternalServerError
+        })
+}
+
+/// A run as the API shows it: the stored record plus the estimated cost of its usage, from the price
+/// table as it is now. The cost is never stored.
+fn run_with_cost(run: &Run) -> serde_json::Result<serde_json::Value> {
+    let mut value = serde_json::to_value(run)?;
+    if let Some(usage) = &run.usage {
+        value["usage"] = crate::cost::usage_json(usage, crate::cost::PRICES)?;
+    }
+    Ok(value)
 }
 
 #[rocket::post("/api/runs", data = "<new>")]
@@ -263,7 +286,11 @@ fn update_run(
 }
 
 #[rocket::get("/api/runs/<id>")]
-fn get_run(request: Security, id: &str, store: &State<RunStore>) -> Result<Json<Run>, HttpStatus> {
+fn get_run(
+    request: Security,
+    id: &str,
+    store: &State<RunStore>,
+) -> Result<Json<serde_json::Value>, HttpStatus> {
     if !request.local {
         return Err(HttpStatus::BadRequest);
     }
@@ -276,8 +303,13 @@ fn get_run(request: Security, id: &str, store: &State<RunStore>) -> Result<Json<
             eprintln!("Run storage error: {error}");
             HttpStatus::InternalServerError
         })?
-        .map(Json)
         .ok_or(HttpStatus::NotFound)
+        .and_then(|run| {
+            run_with_cost(&run).map(Json).map_err(|error| {
+                eprintln!("Run cost serialization error: {error}");
+                HttpStatus::InternalServerError
+            })
+        })
 }
 
 /// Deletes the Run record only; nothing the Run created (worktree, branch, pull request) is touched.
@@ -1555,10 +1587,9 @@ mod tests {
         ));
         assert!(script.contains("No data for:"));
         assert!(css.contains(".usage-table {") && css.contains(".table-scroll:focus-visible"));
-        assert!(
-            !script.contains("price") && !script.contains("cost"),
-            "tokens only, no money"
-        );
+        // The cost comes from the server; the dashboard holds no prices of its own.
+        assert!(script.contains("usd === null || usd === undefined) return 'unknown'"));
+        assert!(!script.contains("claude-opus") && !script.contains("per million"));
     }
 
     #[rocket::async_test]
