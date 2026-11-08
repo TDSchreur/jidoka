@@ -46,6 +46,8 @@
 
 **Workspace**: A run's own git worktree and feature branch, created from the pull request base branch, which the run records as its worktree, branch and base commit. `factory run begin` creates it.
 
+**Run cleanup**: Removing a run's Workspace once its pull request is merged: `factory run cleanup <id>` removes the worktree and the local feature branch, never discarding uncommitted changes or commits that were not in the merged pull request, and clears them from the run context. When the repository is the factory itself, it offers to reinstall the factory for the agents whose skills are installed.
+
 **Ticket report**: A short, agent-reported skill or activity associated with a ticket in a run. Reports may be incomplete and are not independent proof of the work.
 
 **Run report**: A short, agent-reported skill or activity associated with a run rather than a particular ticket. Reports may be incomplete and are not independent proof of the work.
