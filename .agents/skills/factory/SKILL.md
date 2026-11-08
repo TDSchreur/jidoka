@@ -1,6 +1,6 @@
 ---
 name: factory
-description: Assess a software change and select the appropriate factory execution workflow. Use when the user asks to run factory.
+description: Assess a software change and select the appropriate factory execution workflow. Use when the user asks to build a feature, fix a bug, or continue a run (run ID); picks Fast, Balanced or Full.
 ---
 
 # Factory workflow selection

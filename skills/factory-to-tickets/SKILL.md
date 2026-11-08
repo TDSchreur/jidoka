@@ -53,7 +53,7 @@ Ask the user:
 - Are the blocking edges correct: does each ticket only depend on tickets that genuinely gate it?
 - Should any tickets be merged or split further?
 
-Iterate until the user approves the breakdown.
+Iterate until the user approves the breakdown, unless the calling workflow waives it; then choose the breakdown yourself and state it.
 
 ### 5. Publish the tickets to the configured tracker
 

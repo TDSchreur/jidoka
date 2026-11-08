@@ -1,6 +1,6 @@
 ---
 name: factory-triage
-description: Move issues and external PRs through a state machine of triage roles, categorise, verify, grill if needed, and write agent-ready briefs.
+description: Move issues and external PRs through a state machine of triage roles, categorise, verify, grill if needed, and write agent-ready briefs. Use when triaging issues or PRs or finding what needs attention.
 disable-model-invocation: true
 ---
 
