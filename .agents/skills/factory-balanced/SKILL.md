@@ -20,10 +20,6 @@ To continue an existing run, follow Continuing a run in [factory-procedures](../
 
 Follow Workspace in [factory-procedures](../factory-procedures/SKILL.md): every run gets its own fresh worktree, and the PR base branch chosen there is used in Finish.
 
-## Writing
-
-Follow Writing in [factory-procedures](../factory-procedures/SKILL.md) for all human-facing prose in every stage. Load `humanizer` when that section says to, not when the run starts.
-
 ## Define
 
 When the request is clear and bounded, use it as the spec and state the plan and explicit acceptance criteria in the conversation; no tracker setup is needed for that. Otherwise follow Tracker setup in [factory-procedures](../factory-procedures/SKILL.md) and use `to-spec` once to write a concise spec from the request and the code, without interviewing the user, stating explicit acceptance criteria either way. Before Build, if the plan and criteria exist only in the conversation, follow Saving the plan in [factory-procedures](../factory-procedures/SKILL.md).

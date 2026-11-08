@@ -20,10 +20,6 @@ To continue an existing run, follow Continuing a run in [factory-procedures](../
 
 Follow Workspace in [factory-procedures](../factory-procedures/SKILL.md): every run gets its own fresh worktree, and the PR base branch chosen there is used in Finish.
 
-## Writing
-
-Follow Writing in [factory-procedures](../factory-procedures/SKILL.md) for all human-facing prose in every stage. Load `humanizer` when that section says to, not when the run starts.
-
 ## Define
 
 Before anything else in Define, follow Tracker setup in [factory-procedures](../factory-procedures/SKILL.md).
