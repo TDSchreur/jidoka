@@ -2,7 +2,7 @@
 
 This eval checks which workflow the installed `factory` skill picks for a request: Full, Balanced, Fast, or no new run. Run it before and after changing the selector or the text every run loads (`factory`, the three workflows, `factory-procedures`). That way you can see whether the change shifted any choice.
 
-It calls a paid model about ten times per repetition, so it is not part of CI or `scripts/verify.sh`. One repetition of all ten cases takes a minute or two and cost between $0.50 and $1.20 on the Claude Code default model in the first trials.
+It calls a paid model once per case in each repetition, so it is not part of CI or `scripts/verify.sh`. One repetition of all cases takes a minute or two and cost between $0.50 and $1.20 on the Claude Code default model in the first trials.
 
 ## Running it
 
