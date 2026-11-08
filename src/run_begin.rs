@@ -19,6 +19,8 @@ pub(crate) trait RunApi {
     fn get(&self, id: &str) -> Result<RunSummary, String>;
     /// Updates a run like `factory run update <id> <stage> <status> <options>`.
     fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String>;
+    /// The id and title of every run, whatever its status, that records this agent session.
+    fn runs_with_session(&self, session: &str) -> Result<Vec<(String, String)>, String>;
 }
 
 /// What `begin --run` needs to know about a run.
@@ -147,6 +149,8 @@ pub(crate) struct Begun {
     pub(crate) gitignore_added: Vec<String>,
     /// Why `.gitignore` could not be updated; the run itself is fine.
     pub(crate) gitignore_warning: Option<String>,
+    /// Set when this agent session is already recorded on another run; the run itself is fine.
+    pub(crate) session_warning: Option<String>,
 }
 
 /// Why no workspace was made.
@@ -262,6 +266,29 @@ fn retry_command(run: &str, options: &Options, named: &Named) -> String {
     command
 }
 
+/// A warning when `session` is already recorded on a run other than `resumed`. Any failure to list runs
+/// gives no warning.
+fn session_warning(
+    api: &dyn RunApi,
+    session: Option<&str>,
+    resumed: Option<&str>,
+) -> Option<String> {
+    let others: Vec<String> = api
+        .runs_with_session(session?)
+        .ok()?
+        .into_iter()
+        .filter(|(id, _)| Some(id.as_str()) != resumed)
+        .map(|(id, title)| format!("{id} ({title})"))
+        .collect();
+    if others.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "This agent session is already recorded on run {}. Start each run in a fresh agent session or after /clear.",
+        others.join(", ")
+    ))
+}
+
 /// Creates the run and its workspace. Never deletes, resets, checks out over or cleans anything.
 pub(crate) fn begin(
     dir: &Path,
@@ -285,6 +312,7 @@ pub(crate) fn begin(
                 .into(),
         ));
     }
+    let session_warning = session_warning(api, session.as_deref(), options.run.as_deref());
     let (run, title) = match &options.run {
         Some(id) => {
             let known = api.get(id).map_err(BeginError::NoRun)?;
@@ -348,6 +376,7 @@ pub(crate) fn begin(
                         base_commit: workspace.base_commit,
                         gitignore_added,
                         gitignore_warning,
+                        session_warning,
                     })
                 }
                 Err(error) => Err(blocked(
@@ -721,6 +750,9 @@ pub(crate) fn render(begun: &Begun) -> String {
         ));
     }
     if let Some(warning) = &begun.gitignore_warning {
+        text.push_str(&format!("Warning: {}\n", shown(warning)));
+    }
+    if let Some(warning) = &begun.session_warning {
         text.push_str(&format!("Warning: {}\n", shown(warning)));
     }
     text

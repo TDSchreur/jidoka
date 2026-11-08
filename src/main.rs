@@ -393,6 +393,15 @@ impl run_begin::RunApi for ServerApi {
     fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
         report_run(ADDRESS, id, stage, status, options).map_err(|e| e.to_string())
     }
+
+    fn runs_with_session(&self, session: &str) -> Result<Vec<(String, String)>, String> {
+        let runs = fetch_runs(ADDRESS).map_err(|e| e.to_string())?;
+        Ok(runs
+            .into_iter()
+            .filter(|run| run.sessions.iter().any(|known| known == session))
+            .map(|run| (run.id, run.title))
+            .collect())
+    }
 }
 
 /// `factory run begin <title>`, or `--run <id>` to resume: creates a run and its workspace.
