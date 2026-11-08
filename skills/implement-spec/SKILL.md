@@ -10,7 +10,7 @@ Adapted from the `implement-spec` skill in mattpocock/skills (MIT); see the lice
 
 Implement the provided spec and its tickets on a single feature branch, building each ticket test-first. The tickets are a **task graph** with blocking relationships, not a list of steps, so always take a ticket whose blockers are done.
 
-The issue tracker should have been provided to you. If not, tell the user to run `/setup-matt-pocock-skills`.
+The issue tracker should have been provided to you. If not, tell the user to run `/setup-tds-factory`.
 
 1. Read the spec and tickets, identify dependencies, and inspect the relevant code and project instructions. Reuse context already gathered by the calling workflow.
 2. Create or use the task's feature branch. Work sequentially in the current checkout, one ticket at a time.

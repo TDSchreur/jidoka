@@ -102,13 +102,13 @@ fn problems_say_what_to_do() {
         stderr: String::new(),
     })]);
     assert!(read(&not_json, PR).unwrap_err().0.contains("not JSON"));
-    // Another host, such as GitLab, has no pull request state here, and no tool is asked.
-    let gitlab = ScriptedGh::new(vec![view("OPEN", false)]);
-    let problem = read(&gitlab, "https://gitlab.com/o/r/-/merge_requests/3")
+    // Another host has no pull request state here, and no tool is asked.
+    let other = ScriptedGh::new(vec![view("OPEN", false)]);
+    let problem = read(&other, "https://git.example.com/o/r/pulls/3")
         .unwrap_err()
         .0;
     assert!(problem.contains("GitHub and Azure Repos"), "{problem}");
-    assert!(gitlab.calls().is_empty());
+    assert!(other.calls().is_empty());
     // A GitHub Enterprise pull request has the same shape, so gh is asked.
     let enterprise = ScriptedGh::new(vec![view("MERGED", false)]);
     assert_eq!(

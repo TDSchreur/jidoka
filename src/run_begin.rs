@@ -1,6 +1,6 @@
 //! `factory run begin`: creates a run and its workspace (a worktree on a new branch from the base) and records it.
 
-use crate::{inspect::shown, routing::ModelRouting};
+use crate::{gitignore::ensure_ignored, inspect::shown, routing::ModelRouting};
 use serde::Serialize;
 use std::{path::Path, process::Command};
 
@@ -143,6 +143,10 @@ pub(crate) struct Begun {
     pub(crate) branch: String,
     pub(crate) base: String,
     pub(crate) base_commit: String,
+    /// The entries `begin` added to the worktree's `.gitignore`.
+    pub(crate) gitignore_added: Vec<String>,
+    /// Why `.gitignore` could not be updated; the run itself is fine.
+    pub(crate) gitignore_warning: Option<String>,
 }
 
 /// Why no workspace was made.
@@ -164,6 +168,22 @@ pub(crate) enum BeginError {
 const MAX_REASON_CHARS: usize = 300;
 /// The longest branch name derived from a title.
 const MAX_NAME_CHARS: usize = 40;
+/// What every run's worktree keeps out of git: the factory's own folder and the local tracker.
+const RUN_IGNORED: &[&str] = &[".factory/", ".scratch/"];
+
+/// Adds the run folders to the worktree's `.gitignore`: the entries added and, when the file could not be
+/// updated, a warning (the run itself is fine).
+fn ignore_run_folders(worktree: &Path) -> (Vec<String>, Option<String>) {
+    match ensure_ignored(worktree, RUN_IGNORED) {
+        Ok(added) => (added, None),
+        Err(error) => (
+            Vec::new(),
+            Some(format!(
+                "Could not update the worktree's .gitignore: {error}"
+            )),
+        ),
+    }
+}
 
 /// Runs git in `dir`. The error is what git printed, or why it could not be started.
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -317,13 +337,19 @@ pub(crate) fn begin(
                 args.extend(["--session", session]);
             }
             match api.update(&run, "define", "running", &args) {
-                Ok(()) => Ok(Begun {
-                    run,
-                    worktree: workspace.worktree,
-                    branch: workspace.branch,
-                    base: workspace.base,
-                    base_commit: workspace.base_commit,
-                }),
+                Ok(()) => {
+                    let (gitignore_added, gitignore_warning) =
+                        ignore_run_folders(Path::new(&workspace.worktree));
+                    Ok(Begun {
+                        run,
+                        worktree: workspace.worktree,
+                        branch: workspace.branch,
+                        base: workspace.base,
+                        base_commit: workspace.base_commit,
+                        gitignore_added,
+                        gitignore_warning,
+                    })
+                }
                 Err(error) => Err(blocked(
                     api,
                     &run,
@@ -680,14 +706,24 @@ fn workspace(
 
 /// The run and where its workspace is, as text; the run first.
 pub(crate) fn render(begun: &Begun) -> String {
-    format!(
+    let mut text = format!(
         "Run: {}\nWorktree: {}\nBranch: {}\nBase: {}\nBase commit: {}\n",
         shown(&begun.run),
         shown(&begun.worktree),
         shown(&begun.branch),
         shown(&begun.base),
         shown(&begun.base_commit)
-    )
+    );
+    if !begun.gitignore_added.is_empty() {
+        text.push_str(&format!(
+            "Added to .gitignore (commit it with the first commit): {}\n",
+            begun.gitignore_added.join(", ")
+        ));
+    }
+    if let Some(warning) = &begun.gitignore_warning {
+        text.push_str(&format!("Warning: {}\n", shown(warning)));
+    }
+    text
 }
 
 #[cfg(test)]

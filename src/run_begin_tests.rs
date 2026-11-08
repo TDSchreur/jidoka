@@ -221,6 +221,125 @@ fn a_fresh_run_gets_a_worktree_from_the_fetched_base_and_records_it() {
     assert_eq!(created[0].2.as_deref(), project.repo.to_str());
 }
 
+fn gitignore_of(worktree: &str) -> Option<String> {
+    fs::read_to_string(Path::new(worktree).join(".gitignore")).ok()
+}
+
+#[test]
+fn begin_creates_a_gitignore_with_the_factory_and_scratch_folders() {
+    let project = Project::new();
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
+    assert_eq!(
+        gitignore_of(&begun.worktree).as_deref(),
+        Some(".factory/\n.scratch/\n")
+    );
+    // Only the new file differs from the base.
+    assert_eq!(
+        git(Path::new(&begun.worktree), &["status", "--porcelain"]),
+        "?? .gitignore"
+    );
+}
+
+#[test]
+fn begin_reports_the_added_ignore_entries() {
+    let project = Project::new();
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
+    assert_eq!(begun.gitignore_added, [".factory/", ".scratch/"]);
+    assert_eq!(begun.gitignore_warning, None);
+    assert!(render(&begun).contains("Added to .gitignore"));
+}
+
+#[test]
+fn an_unreadable_gitignore_is_a_warning_not_a_failed_begin() {
+    let project = Project::new();
+    fs::create_dir(project.repo.join(".gitignore")).unwrap();
+    fs::write(project.repo.join(".gitignore/keep"), "x").unwrap();
+    git(&project.repo, &["add", ".gitignore/keep"]);
+    git(&project.repo, &["commit", "-q", "-m", "dir"]);
+    git(&project.repo, &["push", "-q", "origin", "develop"]);
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
+    assert!(begun.gitignore_added.is_empty());
+    assert!(begun.gitignore_warning.is_some());
+    // Reading a directory fails with EISDIR; the "os error" suffix is not localised.
+    // The EISDIR code (21) is the Unix errno; Windows reports a different code, so only Unix checks it.
+    #[cfg(unix)]
+    assert!(
+        begun
+            .gitignore_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("(os error 21)")),
+        "{:?}",
+        begun.gitignore_warning
+    );
+}
+
+// Creating symlinks on Windows needs a privilege that CI and users often lack, so this runs on Unix only.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_gitignore_is_a_warning_and_its_target_is_untouched() {
+    let project = Project::new();
+    fs::write(project.repo.join("elsewhere"), "secret\n").unwrap();
+    std::os::unix::fs::symlink("elsewhere", project.repo.join(".gitignore")).unwrap();
+    git(&project.repo, &["add", "elsewhere", ".gitignore"]);
+    git(&project.repo, &["commit", "-q", "-m", "link"]);
+    git(&project.repo, &["push", "-q", "origin", "develop"]);
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
+    assert!(begun.gitignore_added.is_empty());
+    assert!(begun.gitignore_warning.unwrap().contains("symlink"));
+    let target = Path::new(&begun.worktree).join("elsewhere");
+    assert_eq!(fs::read_to_string(target).unwrap(), "secret\n");
+}
+
+#[test]
+fn begin_appends_to_a_tracked_gitignore_and_shows_only_that_change() {
+    let project = Project::new();
+    fs::write(project.repo.join(".gitignore"), "/target/").unwrap();
+    git(&project.repo, &["add", ".gitignore"]);
+    git(&project.repo, &["commit", "-q", "-m", "ignore"]);
+    git(&project.repo, &["push", "-q", "origin", "develop"]);
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
+    assert_eq!(
+        gitignore_of(&begun.worktree).as_deref(),
+        Some("/target/\n.factory/\n.scratch/\n")
+    );
+    assert_eq!(
+        git(Path::new(&begun.worktree), &["status", "--porcelain"]),
+        "M .gitignore"
+    );
+}
+
+#[test]
+fn a_blocked_begin_leaves_no_gitignore_and_the_retry_resumes() {
+    let project = Project::new();
+    let mut failing = options("Retry me");
+    failing.branch = Some("retry-me".into());
+    failing.base = Some("nope".into());
+    blocked(begin(
+        &project.repo,
+        &failing,
+        &FakeApi::default(),
+        None,
+        None,
+    ));
+    assert!(!project.worktrees.join("retry-me").exists());
+    assert!(!project.repo.join(".gitignore").exists());
+    let api = api_with_run("Retry me");
+    let begun = begin(
+        &project.repo,
+        &resuming("Retry me", "retry-me"),
+        &api,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(gitignore_of(&begun.worktree).is_some());
+}
+
 #[test]
 fn an_explicit_base_and_branch_are_used_as_given() {
     let project = Project::new();
@@ -427,6 +546,8 @@ fn the_output_has_the_run_first_and_the_same_fields_in_json() {
         branch: "x".into(),
         base: "develop".into(),
         base_commit: "abc123".into(),
+        gitignore_added: vec![".factory/".into()],
+        gitignore_warning: None,
     };
     let text = render(&begun);
     assert!(text.starts_with("Run: 100\n"), "{text}");
@@ -436,6 +557,7 @@ fn the_output_has_the_run_first_and_the_same_fields_in_json() {
     let json = serde_json::to_value(&begun).unwrap();
     assert_eq!(json["run"], "100");
     assert_eq!(json["base_commit"], "abc123");
+    assert_eq!(json["gitignore_added"][0], ".factory/");
 }
 
 #[test]
@@ -888,6 +1010,8 @@ fn the_text_output_is_printable_whatever_the_folder_is_called() {
         branch: "b".into(),
         base: "develop".into(),
         base_commit: "abc".into(),
+        gitignore_added: Vec::new(),
+        gitignore_warning: Some("bad \u{1b}[2J".into()),
     };
     assert!(!render(&begun).chars().any(|c| c.is_control() && c != '\n'));
 }

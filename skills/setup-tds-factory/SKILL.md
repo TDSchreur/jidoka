@@ -1,14 +1,14 @@
 ---
-name: setup-matt-pocock-skills
+name: setup-tds-factory
 description: "Configure this repo for the engineering skills: set up its issue tracker, triage label vocabulary, and domain doc layout. Run once before first use of the other engineering skills."
 disable-model-invocation: true
 ---
 
-# Setup Matt Pocock's Skills
+# Setup TDS Factory
 
 Scaffold the per-repo configuration that the engineering skills assume:
 
-- **Issue tracker**: where issues live (GitHub by default; GitLab, Azure Boards and local markdown are also supported out of the box)
+- **Issue tracker**: where issues live (GitHub by default; Azure Boards and local markdown are the other two)
 - **Triage labels**: the strings used for the five canonical triage roles
 - **Domain docs**: where `GLOSSARY.md` and ADRs live, and the consumer rules for reading them
 
@@ -37,21 +37,19 @@ Lead each section with the recommended answer so the user can accept it in a wor
 
 **Section A: Issue tracker.**
 
-> Explainer: The "issue tracker" is where issues live for this repo. Skills like `to-tickets`, `triage`, and `to-spec` read from and write to it. They need to know whether to call `gh issue create`, write a markdown file under `.scratch/`, or follow some other workflow you describe. Pick the place you actually track work for this repo.
+> Explainer: The "issue tracker" is where issues live for this repo. Skills like `to-tickets`, `triage`, and `to-spec` read from and write to it. They need to know whether to call `gh issue create`, or write a markdown file under `.scratch/`. Pick the place you actually track work for this repo.
 
-Default posture: these skills were designed for GitHub. If a `git remote` points at GitHub, propose that. If a `git remote` points at GitLab (`gitlab.com` or a self-hosted host), propose GitLab. If a `git remote` points at Azure Repos, propose Azure Boards. Otherwise (or if the user prefers), offer:
+Default posture: these skills were designed for GitHub. If a `git remote` points at GitHub, propose that. If a `git remote` points at Azure Repos, propose Azure Boards. Otherwise (or if the user prefers), offer these three, the only supported trackers:
 
 - **GitHub**: issues live in the repo's GitHub Issues (uses the `gh` CLI)
-- **GitLab**: issues live in the repo's GitLab Issues (uses the [`glab`](https://gitlab.com/gitlab-org/cli) CLI)
-- **Azure Boards**: issues live as work items in an Azure DevOps project (uses the `az` CLI with the `azure-devops` extension). Available for any repository host, including GitHub and GitLab repos.
+- **Azure Boards**: issues live as work items in an Azure DevOps project (uses the `az` CLI with the `azure-devops` extension). Available for any repository host, including GitHub repos.
 - **Local markdown**: issues live as files under `.scratch/<feature>/` in this repo (good for solo projects or repos without a remote)
-- **Other** (Jira, Linear, etc.): ask the user to describe the workflow in one paragraph; the skill will record it as freeform prose
 
-The tracker is independent of where the code is hosted: a GitHub repo can track its work in Azure Boards, and an Azure Repos repo can use any other option.
+The tracker is independent of where the code is hosted: a GitHub repo can track its work in Azure Boards, and an Azure Repos repo can use any of the three.
 
-Record the choice in `docs/agents/issue-tracker.md`. The GitHub and GitLab templates carry a "PRs as a request surface" flag, defaulted **off**. Leave it off and don't raise it: a user who wants external PRs in the triage queue can flip the flag in the file later. The Azure Boards template fixes this flag at **no**, because pull requests are not work items.
+Record the choice in `docs/agents/issue-tracker.md`. The GitHub template carries a "PRs as a request surface" flag, defaulted **off**. Leave it off and don't raise it: a user who wants external PRs in the triage queue can flip the flag in the file later. The Azure Boards template fixes this flag at **no**, because pull requests are not work items.
 
-A GitHub or GitLab tracker needs a reachable repo. When the user picks one and no `git remote` points at that host, get the repo URL from them and wire it up (`git init` if needed, `git remote add origin <url>`) before going further. Done when `gh repo view` / `glab repo view` prints the project from inside this directory; if it can't, stop and tell the user what's missing.
+A GitHub tracker needs a reachable repo. When the user picks one and no `git remote` points at that host, get the repo URL from them and wire it up (`git init` if needed, `git remote add origin <url>`) before going further. Done when `gh repo view` prints the project from inside this directory; if it can't, stop and tell the user what's missing.
 
 An Azure Boards tracker needs a reachable project and its process details. When the user picks it:
 
@@ -116,18 +114,15 @@ The block:
 
 Include the `### Triage labels` sub-block, and write `docs/agents/triage-labels.md`, only when `triage` is installed and Section B ran. When it isn't, both are omitted.
 
-When Section B ran on GitHub or GitLab, create each configured label the tracker lacks (`gh label create` / `glab label create`). On Azure Boards the triage labels are work item tags, which are created the first time they are applied, so there is nothing to create.
+When Section B ran on GitHub, create each configured label the tracker lacks (`gh label create`). On Azure Boards the triage labels are work item tags, which are created the first time they are applied, so there is nothing to create.
 
 Then write the docs files using the seed templates in this skill folder as a starting point:
 
 - [issue-tracker-github.md](./issue-tracker-github.md): GitHub issue tracker
-- [issue-tracker-gitlab.md](./issue-tracker-gitlab.md): GitLab issue tracker
 - [issue-tracker-azure-boards.md](./issue-tracker-azure-boards.md): Azure Boards issue tracker
 - [issue-tracker-local.md](./issue-tracker-local.md): local-markdown issue tracker
 - [triage-labels.md](./triage-labels.md): label mapping (only if `triage` is installed)
 - [domain.md](./domain.md): domain doc consumer rules + layout
-
-For "other" issue trackers, write `docs/agents/issue-tracker.md` from scratch using the user's description.
 
 ### 5. Done
 
