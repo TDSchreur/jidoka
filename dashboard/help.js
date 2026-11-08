@@ -488,6 +488,11 @@ function Dashboard({ reworkCap }) {
         Runs, the line and the list of waiting Runs scroll on their own.
       </p>
       <p>
+        Open a Run to see its route: one entry for every pass through a stage, so a Run with Reworks lists each Build
+        and Check in order. Each entry shows when it started, how long it ran and the activity it started with. A Check
+        that led to a Rework is marked sent back.
+      </p>
+      <p>
         Projects in the toolbar lists every project. Hide removes a project's Runs from the board in this browser, and
         Restore brings them back. Hidden projects do not count towards the waiting count or notifications, and their
         Runs are kept. Delete removes the project's Run records after you confirm; repository files, worktrees,
@@ -539,7 +544,13 @@ function Dashboard({ reworkCap }) {
     <//>
     <${Topic} title="The Run detail">
       <p>
-        A panel on the right that follows the Run along its four stations. <${Code}>factory run inspect<//> prints the full record, including the worktree and base commit, and a new session reads it to continue the Run. The header shows the title, project, workflow mode and branch, then one status row: the status, the pull request and its state, the spec, the Rework count when there is any, and when the Run was last updated. A blocked Run turns that row amber and shows the full status reason. Below it, Define, Build, Check and Finish each show their summary, the skills used, the activity the agent reported and the fresh tokens spent there. Build also shows how many tickets are done and lists them with their own reports; the current ticket is marked In progress. Reports that fit no station or listed ticket appear under Other reports. Check shows the Rework. A station with nothing recorded shows only its name. Token usage is a section with the full table, open while the Run is active. The footer has the repository and Run id with copy buttons, and <em>Delete run…</em>. The sheet does not show the worktree path, the base commit or how long ago the pull request state was checked. Fields the agent never recorded are left out, never guessed.
+        A panel on the right that follows the Run along its route. <${Code}>factory run inspect<//> prints the full record, including the worktree and base commit, and a new session reads it to continue the Run. The header shows the title, project, workflow mode and branch, then one status row: the status, the pull request and its state, the spec, the Rework count when there is any, and when the Run was last updated. A blocked Run turns that row amber and shows the full status reason.
+      </p>
+      <p>
+        Below it, the route shows one entry per stage pass from the Run's timeline. Each Rework gets its own Build entry labelled <em>Build · Rework N</em>, and a Check that sent work back says so. Each entry shows when it started, how long it took, the activity it started with and the reports that came in during it. Stage summaries sit on the last pass of their stage. Tokens are not shown per pass; the Token usage table has them per stage. The first ordinary Build pass (not a Rework) lists the tickets it started and every ticket no pass has started yet, with their own reports, and the current ticket is marked In progress. A Rework Build pass lists only the tickets it started. Tickets that have not started appear in a Tickets group when the Run has no ordinary Build pass, even if it has Rework Build passes. Other reports holds reports outside every pass, reports for tickets that are not listed and summaries of stages without a pass.
+      </p>
+      <p>
+        Older Runs without a timeline still show the four stations, Define, Build, Check and Finish, each with its summary, skills, activity and the fresh tokens spent there. Token usage is a section with the full table, open while the Run is active. The footer has the repository and Run id with copy buttons, and <em>Delete run…</em>. The sheet does not show the worktree path, the base commit or how long ago the pull request state was checked. Fields the agent never recorded are left out, never guessed.
       </p>
     <//>
     <${Topic} title="Token usage">

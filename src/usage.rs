@@ -81,6 +81,9 @@ pub(crate) struct Mark {
     /// The reference of the ticket in progress, in Build.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) ticket: Option<String>,
+    /// What the run was doing when it started this pass, from the update that created the mark.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) activity: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
