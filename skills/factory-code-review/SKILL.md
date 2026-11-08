@@ -55,6 +55,15 @@ Each smell reads *what it is* → *how to fix*; match it against the diff:
 - **Middle Man**: a class or function that mostly just delegates onward. → cut it, call the real target direct.
 - **Refused Bequest**: a subclass or implementer that ignores or overrides most of what it inherits. → drop the inheritance, use composition.
 
+The Standards axis also carries a **cross-platform checklist**, with the same two rules, applied only when the project targets more than one platform (more than one operating system, or a platform-gated build). Match it against the diff:
+
+- **Paths**: hard-coded separators or paths built by string concatenation instead of per component; absolute or home-relative paths assumed to exist.
+- **Permissions**: file modes, executable bits, symlinks, or Unix-only APIs used without a guard or an equivalent on the other platforms.
+- **Platform-gated code**: a `cfg`, `#ifdef`, or `os.name` branch where code, imports, or variables are used in one branch only (unused or missing on the other platform), or where one platform's branch is never compiled or run by the checks.
+- **Line endings**: text compared, hashed, or written assuming `\n`, or files whose line endings the diff changes.
+- **Case sensitivity**: file names that differ only by case, or lookups that assume a case-sensitive file system.
+- **Shell and processes**: shell syntax, quoting, program names, `PATH` lookup, or signals that differ between shells and operating systems.
+
 ### 4. Spawn both sub-agents in parallel
 
 Issue both sub-agent calls together, in the foreground, and aggregate the reports they return.
@@ -64,8 +73,8 @@ If the caller gives you a model and an effort for the review agents, start both 
 **Standards sub-agent prompt** should include:
 
 - The full diff command and commit list.
-- The list of standards-source files you found in step 3, **plus the smell baseline from step 3** pasted in full (the sub-agent has no other access to it).
-- The brief: "Report, per file/hunk where relevant, (a) every place the diff violates a documented standard: cite the standard (file + the rule); and (b) any baseline smell you spot: name it and quote the hunk. Distinguish hard violations from judgement calls: documented-standard breaches can be hard, but baseline smells are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling enforces. Under 400 words."
+- The list of standards-source files you found in step 3, **plus the smell baseline and the cross-platform checklist from step 3** pasted in full (the sub-agent has no other access to them).
+- The brief: "Report, per file/hunk where relevant, (a) every place the diff violates a documented standard: cite the standard (file + the rule); and (b) any baseline smell you spot: name it and quote the hunk. Distinguish hard violations from judgement calls: documented-standard breaches can be hard, but baseline smells and cross-platform findings are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling enforces. Under 400 words."
 
 **Spec sub-agent prompt** should include:
 

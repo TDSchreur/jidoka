@@ -32,7 +32,7 @@ window.Notification = class {
 const text = (el) => el.textContent.trim();
 const menu = () => document.querySelector('.projects-menu');
 const menuButton = (label) => menu().querySelector(`[aria-label="${label}"]`);
-setTimeout(() => fetch('/result', {method: 'POST', body: JSON.stringify({diagnostic: sessionStorage.getItem('hidden-test'), focus: document.activeElement.tagName, target: menu()?.outerHTML, rows: document.querySelectorAll('.line-row').length})}), 24000);
+setTimeout(() => fetch('/result', {method: 'POST', body: JSON.stringify({diagnostic: sessionStorage.getItem('hidden-test'), focus: document.activeElement.tagName, target: menu()?.outerHTML, rows: document.querySelectorAll('.line-row').length})}), PAGE_WAIT_MS);
 const check = setInterval(() => {
   const rows = [...document.querySelectorAll('.line-row')];
   const phase = sessionStorage.getItem('hidden-test');
