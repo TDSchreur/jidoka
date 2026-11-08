@@ -2,6 +2,24 @@
 # Switch the local factory installation between the latest release and develop.
 set -eu
 
+# Installs the skills, passing each entry of FACTORY_CLAUDE_CONFIG_DIRS (separated by colons) as
+# --config-dir. The positional parameters serve as an array, so paths with spaces stay intact.
+install_skills() {
+  binary=$1
+  agents=$2
+  dirs=${FACTORY_CLAUDE_CONFIG_DIRS:-}
+  set -- install --agent "$agents"
+  old_ifs=$IFS
+  IFS=:
+  set -f
+  for dir in $dirs; do
+    if [ -n "$dir" ]; then set -- "$@" --config-dir "$dir"; fi
+  done
+  set +f
+  IFS=$old_ifs
+  "$binary" "$@"
+}
+
 main() {
   case "${1:-}" in
     release | develop) mode=$1 ;;
@@ -58,7 +76,7 @@ main() {
   cp "$binary" "$local_bin.new"
   chmod 755 "$local_bin.new"
   mv -f "$local_bin.new" "$local_bin"
-  "$local_bin" install --agent "$agents"
+  install_skills "$local_bin" "$agents"
   "$local_bin" --version
   printf 'Installed %s. Ensure ~/.local/bin is on PATH and restart the dashboard if needed.\n' "$mode"
 }

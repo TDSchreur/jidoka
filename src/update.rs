@@ -172,20 +172,34 @@ fn replace_executable(current: &Path, new: &Path) -> io::Result<()> {
 /// The agents that already have bundled skills installed.
 pub(crate) fn installed_agents(
     home: &Path,
+    config_dirs: &[String],
     var: impl Fn(&str) -> Option<OsString>,
 ) -> Vec<&'static str> {
+    let has_skills =
+        |root: PathBuf| install::bundled_skill_files().any(|file| root.join(file).is_file());
     AGENTS
         .into_iter()
         .filter(|agent| {
-            install::skills_root(agent, home, &var).is_ok_and(|root| {
-                install::bundled_skill_files().any(|file| root.join(file).is_file())
-            })
+            if *agent == "claude" {
+                return install::claude_config_dirs(config_dirs, home, &var)
+                    .is_ok_and(|dirs| dirs.into_iter().any(|dir| has_skills(dir.join("skills"))));
+            }
+            install::skills_root(agent, home, &var).is_ok_and(has_skills)
         })
         .collect()
 }
 
 /// Runs `factory update`: installs the latest release over this executable, then its skills.
-pub(crate) fn update(current: &str, release: bool, agents: Option<&str>) -> Result<(), String> {
+pub(crate) fn update(
+    current: &str,
+    release: bool,
+    agents: Option<&str>,
+    config_dirs: &[String],
+) -> Result<(), String> {
+    // Checked first, so a bad `--config-dir` fails before anything is downloaded or written.
+    let home = install::home_dir().map_err(|error| error.to_string())?;
+    let claude_dirs = install::claude_config_dirs(config_dirs, &home, |name| env::var_os(name))
+        .map_err(|error| error.to_string())?;
     let latest = latest_version()?;
     if status(current, release, &latest)? == Status::UpToDate {
         install::ensure_default_policy(|name| env::var_os(name))
@@ -195,18 +209,17 @@ pub(crate) fn update(current: &str, release: bool, agents: Option<&str>) -> Resu
     }
     let agents = match agents {
         Some(agents) => {
-            let home = install::home_dir().map_err(|error| error.to_string())?;
             for agent in agents.split(',').map(str::trim) {
                 install::skills_root(agent, &home, |name| env::var_os(name))
                     .map_err(|error| error.to_string())?;
             }
             agents.to_string()
         }
-        None => {
-            let home = install::home_dir().map_err(|error| error.to_string())?;
-            installed_agents(&home, |name| env::var_os(name)).join(",")
-        }
+        None => installed_agents(&home, config_dirs, |name| env::var_os(name)).join(","),
     };
+    if !config_dirs.is_empty() && !agents.split(',').any(|agent| agent.trim() == "claude") {
+        return Err("--config-dir applies to the claude agent, which is not being updated; use --agent claude or run 'factory install --agent claude --config-dir <path>'.".into());
+    }
     let asset = asset_name()?;
     let exe =
         env::current_exe().map_err(|error| format!("Cannot find this executable: {error}"))?;
@@ -236,13 +249,19 @@ pub(crate) fn update(current: &str, release: bool, agents: Option<&str>) -> Resu
         println!("No installed skills found. Run 'factory install --agent <codex|claude|copilot>' to install them.");
     } else {
         // The new binary carries the new skills, so it installs them.
-        let installed = Command::new(&exe)
-            .args(["install", "--agent", &agents])
+        let mut command = Command::new(&exe);
+        command.args(["install", "--agent", &agents]);
+        if !config_dirs.is_empty() {
+            for dir in &claude_dirs {
+                command.arg("--config-dir").arg(dir);
+            }
+        }
+        let installed = command
             .status()
             .map_err(|error| format!("Could not run the new factory: {error}"))?;
         if !installed.success() {
             return Err(format!(
-                "factory was updated, but installing the skills failed. Run 'factory install --agent {agents}'."
+                "factory was updated, but installing the skills failed. Run 'factory install --agent {agents}' again, with the same --config-dir options."
             ));
         }
     }
@@ -330,11 +349,25 @@ mod tests {
     fn only_agents_with_installed_skills_are_updated() {
         let home = tempfile::tempdir().unwrap();
         let none = |_: &str| None;
-        assert!(installed_agents(home.path(), none).is_empty());
+        assert!(installed_agents(home.path(), &[], none).is_empty());
         let file = install::bundled_skill_files().next().unwrap();
         let path = home.path().join(".claude/skills").join(file);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, "x").unwrap();
-        assert_eq!(installed_agents(home.path(), none), ["claude"]);
+        assert_eq!(installed_agents(home.path(), &[], none), ["claude"]);
+    }
+
+    #[test]
+    fn config_dirs_decide_whether_claude_is_installed() {
+        let home = tempfile::tempdir().unwrap();
+        let work = home.path().join(".claude-work");
+        let file = install::bundled_skill_files().next().unwrap();
+        let path = work.join("skills").join(file);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "x").unwrap();
+        let none = |_: &str| None;
+        let dirs = [work.display().to_string()];
+        assert!(installed_agents(home.path(), &[], none).is_empty());
+        assert_eq!(installed_agents(home.path(), &dirs, none), ["claude"]);
     }
 }

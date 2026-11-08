@@ -81,6 +81,24 @@ restore_changes() {
   fi
 }
 
+# Installs the skills, passing each entry of FACTORY_CLAUDE_CONFIG_DIRS (separated by colons) as
+# --config-dir. The positional parameters serve as an array, so paths with spaces stay intact.
+install_skills() {
+  binary=$1
+  agents=$2
+  dirs=${FACTORY_CLAUDE_CONFIG_DIRS:-}
+  set -- install --agent "$agents"
+  old_ifs=$IFS
+  IFS=:
+  set -f
+  for dir in $dirs; do
+    if [ -n "$dir" ]; then set -- "$@" --config-dir "$dir"; fi
+  done
+  set +f
+  IFS=$old_ifs
+  "$binary" "$@"
+}
+
 main() {
   command -v pkill >/dev/null || { echo 'pkill (procps) is required.' >&2; exit 1; }
   agents=$(choose_agents) || exit 1
@@ -98,7 +116,7 @@ main() {
   cargo build --release --locked
   cargo install --path . --locked --force
   command -v factory >/dev/null 2>&1 || echo "Add ${CARGO_HOME:-$HOME/.cargo}/bin to PATH so the factory command resolves." >&2
-  "$root/target/release/factory" install --agent "$agents"
+  install_skills "$root/target/release/factory" "$agents"
   "$root/target/release/factory" --version
   stop_dashboard
   start_dashboard "$root/target/release/factory"

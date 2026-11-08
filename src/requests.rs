@@ -3,7 +3,7 @@
 use crate::{
     codex_requests::read_codex_requests,
     inspect::shown,
-    request_logs::{read_requests, uncategorized, Category, Request, SessionRequests},
+    request_logs::{read_requests, uncategorized, Category, Request, RequestRead, SessionRequests},
     run::Run,
     stats::{number, table_with},
     usage::{mark_at, overlaps, Tokens, FUTURE_SLACK_MS},
@@ -151,12 +151,27 @@ pub(crate) fn analyze(
         .min()
         .unwrap_or(first.at);
     let limits = ReadLimits::default();
-    let read = read_requests(&roots.claude, &ids, &recorded, from, deadline, limits);
+    let mut read = RequestRead::default();
+    for root in &roots.claude {
+        let one = read_requests(root, &ids, &recorded, from, deadline, limits);
+        read.sessions.extend(one.sessions);
+        for note in one.notes {
+            if !read.notes.contains(&note) {
+                read.notes.push(note);
+            }
+        }
+        read.root_found |= one.root_found;
+        read.timed_out |= one.timed_out;
+        read.truncated |= one.truncated;
+        if one.timed_out || one.truncated {
+            break;
+        }
+    }
     let codex = read_codex_requests(&roots.codex, &ids, &recorded, from, deadline, limits);
     // Copilot: the usage reader finds its requests, which are counted but not categorized.
     let others = read_sessions(
         &Roots {
-            claude: PathBuf::new(),
+            claude: Vec::new(),
             codex: PathBuf::new(),
             ..roots.clone()
         },
