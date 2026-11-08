@@ -1,14 +1,15 @@
 //! The model-routing policy file: reading it, what it means for a run that starts, and the starter
 //! `factory doctor --create-model-routing` writes.
 //!
-//! The file has two forms. The single-agent form (`agent`, `roles`, `tasks`) is the original one and keeps
-//! working. The multi-agent form has an `agents` object with an entry per agent (`claude`, `codex`), each
-//! with its own `roles`, `tasks` and an optional `enabled`. Mixing the two forms is an error.
+//! The file has an `agents` object with an entry per agent (`claude`, `codex`), each with a `stages` map
+//! from Stage to model and effort and an optional `enabled`. The earlier format (roles and tasks, or the
+//! single-agent form) is recognised only to replace it with the starter (see `install_starter`) and to tell the user to do so.
 //!
-//! A run starts in one agent. For a multi-agent file the caller must say which (`--agent`), and the run
-//! records only that agent's policy: another agent's policy is never used instead.
+//! A run starts in one agent. The caller must say which (`--agent`), and the run records only that agent's
+//! policy: another agent's policy is never used instead.
 
-use super::{ModelRouting, Role, RoleChoice, RoutingAgent, Task};
+use super::{ModelChoice, ModelRouting, RoutingAgent};
+use crate::run::Stage;
 use serde::{de, Deserialize, Deserializer};
 use serde_json::Value;
 use std::{
@@ -82,22 +83,20 @@ pub(crate) fn parse_start_options(options: &[&str]) -> Result<Option<Host>, Stri
     }
 }
 
-/// One agent's roles and the task mapping, as written in the file.
+/// One agent's model per Stage, as written in the file.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct AgentPolicy {
     /// A disabled entry is not checked and routes nothing.
     pub(crate) enabled: bool,
-    pub(crate) roles: BTreeMap<Role, RoleChoice>,
-    pub(crate) tasks: BTreeMap<Task, Role>,
+    pub(crate) stages: BTreeMap<Stage, ModelChoice>,
 }
 
 impl AgentPolicy {
-    /// What a run records for this agent: the roles and the task mapping, with no overrides yet.
+    /// What a run records for this agent: the per-Stage models, with no overrides yet.
     pub(crate) fn selection(&self, agent: RoutingAgent) -> ModelRouting {
         ModelRouting {
             agent,
-            roles: self.roles.clone(),
-            tasks: self.tasks.clone(),
+            stages: self.stages.clone(),
             overrides: BTreeMap::new(),
         }
     }
@@ -108,13 +107,6 @@ impl AgentPolicy {
 pub(crate) enum Policy {
     /// No file, or switched off at the top. Nothing in a switched-off file is checked.
     Off,
-    /// The single-agent form for Copilot CLI: nothing is routed.
-    CopilotOnly,
-    /// The single-agent form.
-    Single {
-        agent: RoutingAgent,
-        policy: AgentPolicy,
-    },
     /// The `agents` form. At least one entry is present.
     Multi {
         claude: Option<AgentPolicy>,
@@ -155,8 +147,6 @@ impl Resolution {
 pub(crate) enum NotRouted {
     /// Copilot CLI is not supported.
     Copilot,
-    /// A single-agent policy written for this other agent.
-    OtherAgent(RoutingAgent),
     /// The `agents` form has no entry for the agent.
     NoEntry,
     /// The agent's entry has `enabled: false`.
@@ -168,12 +158,6 @@ impl NotRouted {
     pub(crate) fn text(self, host: Host) -> String {
         match self {
             Self::Copilot => COPILOT_NOTICE.to_string(),
-            Self::OtherAgent(agent) => format!(
-                "The model-routing policy is for {}, so this {} run is not routed: every stage uses the session's model. To route {} too, put both agents under \"agents\" (see the README).",
-                agent.name(),
-                host.name(),
-                host.name()
-            ),
             Self::NoEntry => format!(
                 "The model-routing policy has no entry for {0}, so this run is not routed: every stage uses the session's model. Add \"agents\".\"{0}\" to route it.",
                 host.name()
@@ -197,67 +181,50 @@ impl Policy {
     /// What the policy does for a run in `host`: the one place that decides which agent's part applies and
     /// why none does, for `factory run start` and for `factory doctor` alike. `None` when the policy is off.
     pub(crate) fn coverage(&self, host: Host) -> Option<Coverage> {
-        let agent = match (self, host.routing_agent()) {
-            (Self::Off, _) => return None,
-            (Self::CopilotOnly, _) | (_, None) => {
-                return Some(Coverage::NotRouted(NotRouted::Copilot))
-            }
-            (_, Some(agent)) => agent,
+        if matches!(self, Self::Off) {
+            return None;
+        }
+        let Some(agent) = host.routing_agent() else {
+            return Some(Coverage::NotRouted(NotRouted::Copilot));
         };
-        Some(match self {
-            Self::Single {
-                agent: policy_agent,
-                policy,
-            } if *policy_agent == agent => Coverage::Routed(policy.selection(agent)),
-            Self::Single {
-                agent: policy_agent,
-                ..
-            } => Coverage::NotRouted(NotRouted::OtherAgent(*policy_agent)),
-            Self::Multi { .. } => match self.entry(agent) {
-                None => Coverage::NotRouted(NotRouted::NoEntry),
-                Some(entry) if !entry.enabled => Coverage::NotRouted(NotRouted::SwitchedOff),
-                Some(entry) => Coverage::Routed(entry.selection(agent)),
-            },
-            Self::Off | Self::CopilotOnly => unreachable!("handled above"),
+        Some(match self.entry(agent) {
+            None => Coverage::NotRouted(NotRouted::NoEntry),
+            Some(entry) if !entry.enabled => Coverage::NotRouted(NotRouted::SwitchedOff),
+            Some(entry) => Coverage::Routed(entry.selection(agent)),
         })
     }
 
-    /// The policy for a run that starts in `host`. `None` means the caller did not say, which only the
-    /// single-agent form allows (it always has, and then the agent named in the file is recorded).
+    /// The policy for a run that starts in `host`. `None` means the caller did not say, which is only
+    /// acceptable when no entry is switched on.
     pub(crate) fn resolve(&self, host: Option<Host>) -> Result<Resolution, String> {
         let Some(host) = host else {
-            return match self {
-                Self::Off | Self::CopilotOnly => Ok(Resolution::resolved(self, Host::Copilot)),
-                Self::Single { agent, policy } => {
-                    Ok(Resolution::selection(policy.selection(*agent)))
-                }
-                Self::Multi { claude, codex } => {
-                    if [claude, codex]
-                        .iter()
-                        .all(|e| e.as_ref().is_none_or(|e| !e.enabled))
-                    {
-                        return Ok(Resolution::default());
-                    }
-                    Err(format!(
-                        "the policy configures several agents ({}), so `factory run start` must be told which agent the run is in: add `--agent claude` or `--agent codex`",
-                        self.configured().join(", ")
-                    ))
-                }
+            let Self::Multi { claude, codex } = self else {
+                return Ok(Resolution::default());
             };
+            if [claude, codex]
+                .iter()
+                .all(|e| e.as_ref().is_none_or(|e| !e.enabled))
+            {
+                return Ok(Resolution::default());
+            }
+            return Err(format!(
+                "the policy configures several agents ({}), so `factory run start` must be told which agent the run is in: add `--agent claude` or `--agent codex`",
+                self.configured().join(", ")
+            ));
         };
         Ok(Resolution::resolved(self, host))
     }
 
-    /// The entry for `agent` in the multi-agent form.
+    /// The entry for `agent`.
     pub(crate) fn entry(&self, agent: RoutingAgent) -> Option<&AgentPolicy> {
         match (self, agent) {
             (Self::Multi { claude, .. }, RoutingAgent::Claude) => claude.as_ref(),
             (Self::Multi { codex, .. }, RoutingAgent::Codex) => codex.as_ref(),
-            _ => None,
+            (Self::Off, _) => None,
         }
     }
 
-    /// The agents that have an entry in the multi-agent form, in a fixed order.
+    /// The agents that have an entry, in a fixed order.
     pub(crate) fn configured(&self) -> Vec<&'static str> {
         [RoutingAgent::Claude, RoutingAgent::Codex]
             .into_iter()
@@ -313,8 +280,7 @@ where
 struct Entry {
     #[serde(default = "enabled_by_default")]
     enabled: bool,
-    roles: Unique<Role, RoleChoice>,
-    tasks: Unique<Task, Role>,
+    stages: Unique<Stage, ModelChoice>,
 }
 
 /// The `agents` object, as written. A repeated agent is a duplicate-field error.
@@ -325,7 +291,7 @@ struct Agents {
     codex: Option<Entry>,
 }
 
-/// The policy file as the user writes it, before the two forms are told apart.
+/// The policy file as the user writes it.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct File {
@@ -333,43 +299,14 @@ struct File {
     #[serde(default = "enabled_by_default")]
     #[allow(dead_code)]
     enabled: bool,
-    agent: Option<RoutingAgent>,
-    roles: Option<Unique<Role, RoleChoice>>,
-    tasks: Option<Unique<Task, Role>>,
-    agents: Option<Agents>,
+    agents: Agents,
 }
 
 impl From<Entry> for AgentPolicy {
     fn from(entry: Entry) -> Self {
         Self {
             enabled: entry.enabled,
-            roles: entry.roles.0,
-            tasks: entry.tasks.0,
-        }
-    }
-}
-
-impl File {
-    fn into_policy(self) -> Result<Policy, String> {
-        match (self.agents, self.agent, self.roles, self.tasks) {
-            (Some(agents), None, None, None) => agents.into_policy(),
-            (Some(_), _, _, _) => Err(
-                "it mixes `agent`, `roles` or `tasks` with `agents`; use one form: either those three fields for one agent, or `agents` with an entry per agent".into(),
-            ),
-            (None, Some(agent), Some(roles), Some(tasks)) => {
-                let policy = AgentPolicy {
-                    enabled: true,
-                    roles: roles.0,
-                    tasks: tasks.0,
-                };
-                policy.selection(agent).validate()?;
-                Ok(Policy::Single { agent, policy })
-            }
-            (None, None, _, _) => Err(
-                "missing field `agent` (or use `agents` with an entry per agent)".into(),
-            ),
-            (None, Some(_), None, _) => Err("missing field `roles`".into()),
-            (None, Some(_), Some(_), None) => Err("missing field `tasks`".into()),
+            stages: entry.stages.0,
         }
     }
 }
@@ -399,6 +336,27 @@ impl Agents {
             codex: checked("codex", RoutingAgent::Codex, self.codex)?,
         })
     }
+}
+
+/// Whether `text` is a policy file in the earlier format: roles and tasks in an agent entry, or the
+/// single-agent form (`agent`, `roles` or `tasks` at the top). Text that is not JSON is not old-format.
+pub(crate) fn is_old_format(text: &str) -> bool {
+    serde_json::from_str::<Value>(text).is_ok_and(|value| old_format(&value))
+}
+
+fn old_format(value: &Value) -> bool {
+    let top = ["agent", "roles", "tasks"]
+        .iter()
+        .any(|key| value.get(key).is_some());
+    let entries = value
+        .get("agents")
+        .and_then(Value::as_object)
+        .is_some_and(|agents| {
+            agents
+                .values()
+                .any(|entry| entry.get("roles").is_some() || entry.get("tasks").is_some())
+        });
+    top || entries
 }
 
 /// Where the user-level policy lives: `$XDG_CONFIG_HOME/tds-factory/` or `~/.config/tds-factory/`,
@@ -460,10 +418,10 @@ pub(crate) fn read(path: &Path) -> Result<Policy, String> {
     if value.get("enabled") == Some(&Value::Bool(false)) {
         return Ok(Policy::Off);
     }
-    // Copilot CLI records no selection, so the rest of its single-agent file is not read.
-    if value.get("agents").is_none() && value.get("agent") == Some(&Value::String("copilot".into()))
-    {
-        return Ok(Policy::CopilotOnly);
+    if old_format(&value) {
+        return Err(fail(
+            "the model-routing policy is in the old format (roles and tasks, or a single agent); run `factory install` or `factory doctor --create-model-routing` to replace it with the per-stage starter (your custom values are not migrated)".into(),
+        ));
     }
     if value.pointer("/agents/copilot").is_some() {
         return Err(fail(
@@ -473,11 +431,12 @@ pub(crate) fn read(path: &Path) -> Result<Policy, String> {
     // Read again from the text: the typed form refuses repeated keys, which a parsed value would not show.
     let file: File = serde_json::from_str(&text)
         .map_err(|error| fail(format!("invalid model-routing policy: {error}")))?;
-    file.into_policy()
+    file.agents
+        .into_policy()
         .map_err(|problem| fail(format!("invalid model-routing policy: {problem}")))
 }
 
-/// The policy for a run that is starting in `host`, which may be unknown only for the single-agent form.
+/// The policy for a run that is starting in `host`, which may be unknown only when nothing is switched on.
 pub(crate) fn load(path: &Path, host: Option<Host>) -> Result<Resolution, String> {
     // Nothing is routed on Copilot CLI, so a mistake in the file cannot matter to such a run.
     if host == Some(Host::Copilot) {
@@ -491,38 +450,103 @@ pub(crate) fn load(path: &Path, host: Option<Host>) -> Result<Resolution, String
         .map_err(|problem| format!("{}: {problem}", path.display()))
 }
 
-/// The three roles of a starter entry. Only the `check` task is routed so far, so only it is mapped.
+/// The cost-optimised model and effort per Stage in a starter entry.
+fn starter_choices(agent: RoutingAgent) -> [(Stage, &'static str, &'static str); 4] {
+    match agent {
+        RoutingAgent::Claude => [
+            (Stage::Define, "sonnet", "low"),
+            (Stage::Build, "sonnet", "low"),
+            (Stage::Check, "sonnet", "medium"),
+            (Stage::Finish, "haiku", "low"),
+        ],
+        RoutingAgent::Codex => [
+            (Stage::Define, "gpt-6.1-terra", "low"),
+            (Stage::Build, "gpt-6.1-terra", "low"),
+            (Stage::Check, "gpt-6.1-terra", "medium"),
+            (Stage::Finish, "gpt-6-luna", "low"),
+        ],
+    }
+}
+
 fn starter_entry(agent: RoutingAgent) -> String {
-    let ((strong, strong_effort), (coding, coding_effort), (routine, routine_effort)) = match agent
-    {
-        RoutingAgent::Claude => (("sonnet", "medium"), ("sonnet", "medium"), ("haiku", "low")),
-        RoutingAgent::Codex => (
-            ("gpt-6.1-terra", "medium"),
-            ("gpt-6.1-terra", "medium"),
-            ("gpt-6-luna", "low"),
-        ),
-    };
+    let stages: Vec<String> = starter_choices(agent)
+        .iter()
+        .map(|(stage, model, effort)| {
+            format!(
+                "        \"{}\": {{ \"model\": \"{model}\", \"effort\": \"{effort}\" }}",
+                stage.name()
+            )
+        })
+        .collect();
     format!(
-        r#"    "{}": {{
-      "roles": {{
-        "strong": {{ "model": "{strong}", "effort": "{strong_effort}" }},
-        "coding": {{ "model": "{coding}", "effort": "{coding_effort}" }},
-        "routine": {{ "model": "{routine}", "effort": "{routine_effort}" }}
-      }},
-      "tasks": {{ "check": "strong" }}
-    }}"#,
-        agent.name()
+        "    \"{}\": {{\n      \"stages\": {{\n{}\n      }}\n    }}",
+        agent.name(),
+        stages.join(",\n")
     )
 }
 
-/// A starting policy in the multi-agent form, written by `factory doctor --create-model-routing`: an entry
-/// with all three roles for each agent in `agents`, routing only `check`, the one task that uses routing.
+/// A starting policy written by `factory doctor --create-model-routing`: an entry routing all four Stages
+/// for each agent in `agents`.
 fn starter(agents: &[RoutingAgent]) -> String {
     let entries: Vec<String> = agents.iter().map(|agent| starter_entry(*agent)).collect();
     format!(
         "{{\n  \"enabled\": true,\n  \"agents\": {{\n{}\n  }}\n}}\n",
         entries.join(",\n")
     )
+}
+
+/// What `install_starter` did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Starter {
+    Created,
+    /// An old-format file was deleted and the starter written in its place.
+    Replaced,
+    /// Something is there that is not an old-format file: it is untouched.
+    Left,
+}
+
+/// Whether the file at `path` is a regular file (not a link) that is within the size cap and in the
+/// old format and still switched on. A switched-off file is the user's choice to not route, so it stays.
+fn is_replaceable_old_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() > MAX_POLICY_BYTES {
+        return false;
+    }
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    // Checked again on the open file, and read bounded, as `read` does.
+    if !file.metadata().is_ok_and(|opened| opened.is_file()) {
+        return false;
+    }
+    let mut text = String::new();
+    if (&mut file)
+        .take(MAX_POLICY_BYTES + 1)
+        .read_to_string(&mut text)
+        .is_err()
+        || text.len() as u64 > MAX_POLICY_BYTES
+    {
+        return false;
+    }
+    is_old_format(&text)
+        && serde_json::from_str::<Value>(&text)
+            .is_ok_and(|value| value.get("enabled") != Some(&Value::Bool(false)))
+}
+
+/// Like `create_starter`, but an old-format file at `path` is deleted first so the starter replaces it.
+/// A current-format, unrecognised, unreadable or non-regular file (a link included) is left alone.
+pub(crate) fn install_starter(path: &Path, agents: &[RoutingAgent]) -> io::Result<Starter> {
+    let replace = is_replaceable_old_file(path);
+    if replace {
+        fs::remove_file(path)?;
+    }
+    Ok(match (create_starter(path, agents)?, replace) {
+        (true, true) => Starter::Replaced,
+        (true, false) => Starter::Created,
+        (false, _) => Starter::Left,
+    })
 }
 
 /// Writes the starter for `agents` to `path`, creating its folder. Whatever is already at `path`, even a

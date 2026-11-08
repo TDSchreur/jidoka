@@ -1,5 +1,5 @@
 use crate::pr_state::PrStatus;
-use crate::routing::{ModelRouting, Role, Task};
+use crate::routing::{ModelChoice, ModelRouting};
 use crate::usage::{Collection, Mark, Usage};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -10,7 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory-full|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <build|check|finish>=<strong|coding|routine> (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
+pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory-full|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
 const MAX_TICKETS: usize = 100;
@@ -78,9 +78,21 @@ pub(crate) struct Run {
     /// The state of the pull request, read from its host by the dashboard server. Callers cannot set it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) pr_status: Option<PrStatus>,
-    /// The model-routing selection resolved when the run started; absent when none applied.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The model-routing selection resolved when the run started; absent when none applied. A selection
+    /// recorded in an earlier shape reads as absent.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "routing_or_none"
+    )]
     pub(crate) model_routing: Option<ModelRouting>,
+}
+
+fn routing_or_none<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ModelRouting>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
@@ -90,6 +102,19 @@ pub(crate) enum Stage {
     Build,
     Check,
     Finish,
+}
+
+impl Stage {
+    pub(crate) const ALL: [Stage; 4] = [Stage::Define, Stage::Build, Stage::Check, Stage::Finish];
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Define => "define",
+            Self::Build => "build",
+            Self::Check => "check",
+            Self::Finish => "finish",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -265,7 +290,7 @@ pub(crate) struct UpdateRun {
     pub(crate) sessions: Vec<String>,
     /// The run's whole set of model-routing overrides; null removes them.
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
-    pub(crate) model_routing: FieldUpdate<BTreeMap<Task, Role>>,
+    pub(crate) model_routing: FieldUpdate<BTreeMap<Stage, ModelChoice>>,
 }
 
 // Missing fields preserve stored values; null clears them; values replace them.
@@ -577,7 +602,7 @@ pub(crate) fn parse_update(
         serde_json::from_value(status.into())?,
     );
     let mut tickets: Vec<NewTicket> = Vec::new();
-    let mut overrides: BTreeMap<Task, Role> = BTreeMap::new();
+    let mut overrides: BTreeMap<Stage, ModelChoice> = BTreeMap::new();
     let mut args = options.iter();
     while let Some(flag) = args.next() {
         let mut next_value = || {
@@ -645,17 +670,14 @@ pub(crate) fn parse_update(
                     return Err(repeated().into());
                 }
                 let value = next_value()?;
-                let (task, role) = split_pair(flag, value)?;
-                let task: Task = serde_json::from_value(task.into()).map_err(|_| {
-                    format!("Unknown task {task:?} for --model-routing; use build, check or finish")
+                let (name, choice) = split_pair(flag, value)?;
+                let stage: Stage = serde_json::from_value(name.into()).map_err(|_| {
+                    format!("Unknown stage {name:?} for --model-routing; use define, build, check or finish")
                 })?;
-                let role: Role = serde_json::from_value(role.into()).map_err(|_| {
-                    format!(
-                        "Unknown role {role:?} for --model-routing; use strong, coding or routine"
-                    )
-                })?;
-                if overrides.insert(task, role).is_some() {
-                    return Err(format!("Role for {} given twice", task.name()).into());
+                let choice = ModelChoice::parse(choice)
+                    .map_err(|problem| format!("Invalid --model-routing for {name}: {problem}"))?;
+                if overrides.insert(stage, choice).is_some() {
+                    return Err(format!("Model for {name} given twice").into());
                 }
                 continue;
             }
@@ -1438,11 +1460,10 @@ mod tests {
     fn selection() -> crate::routing::ModelRouting {
         serde_json::from_value(serde_json::json!({
             "agent": "claude",
-            "roles": {
-                "strong": {"model": "opus", "effort": "high"},
-                "coding": {"model": "sonnet", "effort": "medium"}
-            },
-            "tasks": {"build": "coding", "check": "strong"}
+            "stages": {
+                "build": {"model": "sonnet", "effort": "medium"},
+                "check": {"model": "opus", "effort": "high"}
+            }
         }))
         .unwrap()
     }
@@ -1461,71 +1482,116 @@ mod tests {
         (store, run)
     }
 
+    fn choice(routing: &ModelRouting, stage: Stage) -> (String, Option<String>) {
+        let choice = routing.choice_for(stage).expect("a routed stage");
+        (choice.model.clone(), choice.effort.clone())
+    }
+
+    fn pair(model: &str, effort: Option<&str>) -> (String, Option<String>) {
+        (model.to_string(), effort.map(str::to_string))
+    }
+
     #[test]
-    fn a_task_override_beats_the_policy_replaces_earlier_ones_clears_and_survives_a_restart() {
-        use crate::routing::{Role, Task};
+    fn a_stage_override_beats_the_policy_replaces_earlier_ones_clears_and_survives_a_restart() {
         let dir = TestDir::new();
         let (store, run) = routed_store(&dir);
         let routing =
             |store: &RunStore| store.get(&run.id).unwrap().unwrap().model_routing.unwrap();
-        assert_eq!(routing(&store).role_for(Task::Check), Some(Role::Strong));
+        assert_eq!(
+            choice(&routing(&store), Stage::Check),
+            pair("opus", Some("high"))
+        );
 
+        // An override with an effort, and one without that drops the policy's effort.
         store
-            .update(&run.id, update(&["--model-routing", "check=coding"]))
+            .update(
+                &run.id,
+                update(&[
+                    "--model-routing",
+                    "check=sonnet:low",
+                    "--model-routing",
+                    "define=haiku",
+                ]),
+            )
             .unwrap();
-        assert_eq!(routing(&store).role_for(Task::Check), Some(Role::Coding));
-        assert_eq!(routing(&store).role_for(Task::Build), Some(Role::Coding));
-        // The policy's own mapping is untouched.
-        assert_eq!(routing(&store).tasks[&Task::Check], Role::Strong);
+        assert_eq!(
+            choice(&routing(&store), Stage::Check),
+            pair("sonnet", Some("low"))
+        );
+        assert_eq!(choice(&routing(&store), Stage::Define), pair("haiku", None));
+        assert_eq!(
+            choice(&routing(&store), Stage::Build),
+            pair("sonnet", Some("medium"))
+        );
+        // The policy's own stages are untouched.
+        assert_eq!(routing(&store).stages[&Stage::Check].model, "opus");
 
         // A new set of overrides replaces the old one, and an unrelated update keeps it.
         store
-            .update(&run.id, update(&["--model-routing", "build=strong"]))
+            .update(&run.id, update(&["--model-routing", "build=opus"]))
             .unwrap();
-        assert_eq!(routing(&store).role_for(Task::Check), Some(Role::Strong));
-        assert_eq!(routing(&store).role_for(Task::Build), Some(Role::Strong));
+        assert_eq!(
+            choice(&routing(&store), Stage::Check),
+            pair("opus", Some("high"))
+        );
+        assert_eq!(choice(&routing(&store), Stage::Build), pair("opus", None));
         store
             .update(&run.id, update(&["--activity", "later"]))
             .unwrap();
-        assert_eq!(routing(&store).role_for(Task::Build), Some(Role::Strong));
+        assert_eq!(choice(&routing(&store), Stage::Build), pair("opus", None));
 
         let reopened = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        assert_eq!(routing(&reopened).role_for(Task::Build), Some(Role::Strong));
+        assert_eq!(
+            choice(&routing(&reopened), Stage::Build),
+            pair("opus", None)
+        );
 
         store
             .update(&run.id, update(&["--clear-model-routing"]))
             .unwrap();
-        assert_eq!(routing(&store).role_for(Task::Build), Some(Role::Coding));
+        assert_eq!(
+            choice(&routing(&store), Stage::Build),
+            pair("sonnet", Some("medium"))
+        );
         assert!(routing(&store).overrides.is_empty());
     }
 
     #[test]
-    fn bad_task_overrides_are_refused_and_change_nothing() {
+    fn bad_stage_overrides_are_refused_and_change_nothing() {
         let dir = TestDir::new();
         let (store, run) = routed_store(&dir);
-        // The command line refuses what cannot be a task or a role.
+        let long = "m".repeat(65);
+        let long_model = format!("check={long}");
+        let long_effort = format!("check=sonnet:{long}");
         for options in [
-            &["--model-routing", "deploy=coding"][..],
-            &["--model-routing", "check=boss"],
+            &["--model-routing", "deploy=sonnet"][..],
             &["--model-routing", "check"],
+            &["--model-routing", "check="],
+            &["--model-routing", "check=son net"],
+            &["--model-routing", "check=sonnet:"],
+            &["--model-routing", "check=sonnet:hi gh"],
+            &["--model-routing", long_model.as_str()],
+            &["--model-routing", long_effort.as_str()],
             &[
                 "--model-routing",
-                "check=coding",
+                "check=sonnet",
                 "--model-routing",
-                "check=strong",
+                "check=opus",
             ],
-            &["--model-routing", "check=coding", "--clear-model-routing"],
+            &["--model-routing", "check=sonnet", "--clear-model-routing"],
         ] {
             assert!(
                 parse_update("build", "running", options).is_err(),
                 "{options:?}"
             );
         }
-        // The run refuses a role it does not have, such as routine here.
-        let error = store
-            .update(&run.id, update(&["--model-routing", "finish=routine"]))
-            .unwrap_err();
-        assert!(error.to_string().contains("routine"), "{error}");
+        // An unknown stage names the valid ones.
+        let error = parse_update("build", "running", &["--model-routing", "deploy=sonnet"])
+            .unwrap_err()
+            .to_string();
+        for stage in ["define", "build", "check", "finish"] {
+            assert!(error.contains(stage), "{error}");
+        }
         assert!(store
             .get(&run.id)
             .unwrap()
@@ -1537,12 +1603,45 @@ mod tests {
         // A run that has no selection has nothing to override.
         let plain = new_run(&store, "plain");
         let error = store
-            .update(&plain.id, update(&["--model-routing", "check=coding"]))
+            .update(&plain.id, update(&["--model-routing", "check=sonnet"]))
             .unwrap_err();
         assert!(error.to_string().contains("model routing"), "{error}");
         // Clearing where there is nothing to clear is harmless.
         store
             .update(&plain.id, update(&["--clear-model-routing"]))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_stored_run_with_the_old_roles_and_tasks_shape_reads_as_not_routed_and_is_not_rewritten() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let run = store
+            .create(NewRun {
+                title: "old".into(),
+                project: "/work/repo".into(),
+                repository: None,
+                session: None,
+                model_routing: Some(selection()),
+            })
+            .unwrap();
+        drop(store);
+        let text = fs::read_to_string(&path).unwrap();
+        let current = serde_json::to_string(&selection()).unwrap();
+        let old =
+            r#"{"agent":"claude","roles":{"strong":{"model":"opus"}},"tasks":{"check":"strong"}}"#;
+        let replaced = text.replacen(&current, old, 1);
+        assert_ne!(text, replaced, "the fixture must carry the old shape");
+        fs::write(&path, &replaced).unwrap();
+
+        let reopened = RunStore::open(&path).unwrap();
+        let read = reopened.get(&run.id).unwrap().unwrap();
+        assert!(read.model_routing.is_none());
+        // Reading rewrote nothing, and the run can still be updated.
+        assert_eq!(fs::read_to_string(&path).unwrap(), replaced);
+        reopened
+            .update(&run.id, update(&["--activity", "later"]))
             .unwrap();
     }
 

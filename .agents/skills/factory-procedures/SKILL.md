@@ -12,7 +12,7 @@ The `factory-full`, `factory-balanced` and `factory-fast` workflows read this fi
 
 Report progress to the factory dashboard with the `factory` CLI from the run's worktree (see Workspace). Update only at the points below; do not send periodic updates.
 
-- **Start:** before Define, create the run. Normally `factory run begin` does this together with the workspace (see Workspace); keep the run ID it prints. When the workspace is not made that way, run `factory run start "<short task title>" --agent <agent>` and keep the printed run ID. `<agent>` is the coding agent you are running in: `claude` for Claude Code, `codex` for Codex, `copilot` for Copilot CLI. The factory uses it to pick that agent's model-routing policy, and says on standard error when it applies none; keep that for the Check summary. If the command stops with a message about the policy, tell the user what it says and stop. If the server is not running, start `factory dashboard` as a background process, then retry once. If a different or outdated server occupies the port, or the CLI rejects an option (including `--agent`), report that it needs to be stopped or upgraded.
+- **Start:** before Define, create the run. Normally `factory run begin` does this together with the workspace (see Workspace); keep the run ID it prints. When the workspace is not made that way, run `factory run start "<short task title>" --agent <agent>` and keep the printed run ID. `<agent>` is the coding agent you are running in: `claude` for Claude Code, `codex` for Codex, `copilot` for Copilot CLI. The factory uses it to pick that agent's model-routing policy, and says on standard error when it applies none; keep that for the Stage summaries. If the command stops with a message about the policy, tell the user what it says and stop. If the server is not running, start `factory dashboard` as a background process, then retry once. If a different or outdated server occupies the port, or the CLI rejects an option (including `--agent`), report that it needs to be stopped or upgraded.
 - **Stage:** at the start of each later stage the workflow has, run `factory run update <id> <stage> running --activity "<what the stage is doing>"`.
 - **Milestone:** after a meaningful milestone, such as tickets created or checks passing, run `factory run update <id> <stage> running --activity "<short phrase>"`. Keep the activity to one short line without secrets.
 - **Ticket:** when work on a ticket with an HTTP(S) URL starts, add `--current-ticket "<url>"` to that update. When no ticket is in progress anymore, add `--clear-current-ticket`. Leave it unset for local Markdown tickets.
@@ -83,7 +83,7 @@ Fix actionable findings yourself within the Rework allowance; findings alone nev
 
 ## Model routing
 
-How a run's model-routing selection applies to the agents that Check starts is in [references/model-routing.md](references/model-routing.md). The workflows with a Check stage read it at the start of every Check pass; nothing else uses it.
+How a run's model-routing selection applies to every Stage (Define, Build, Check and Finish) is in [references/model-routing.md](references/model-routing.md). All three workflows read it at the start of each Stage they have, and again at every Rework and Check pass after one.
 
 ## Pull request and CI
 

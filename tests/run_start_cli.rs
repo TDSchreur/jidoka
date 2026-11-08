@@ -12,7 +12,7 @@ fn a_mistake_in_the_policy_stops_the_start_and_names_the_file() {
     let policy = folder.join("model-routing.json");
     fs::write(
         &policy,
-        r#"{"agent":"claude","roles":{"coding":{"model":"sonnet"}},"tasks":{"check":"strong"}}"#,
+        r#"{"agents":{"claude":{"stages":{"check":{"model":"son net"}}}}}"#,
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_factory"))
@@ -24,7 +24,7 @@ fn a_mistake_in_the_policy_stops_the_start_and_names_the_file() {
     assert!(!output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(error.contains(&policy.display().to_string()), "{error}");
-    assert!(error.contains("strong"), "{error}");
+    assert!(error.contains("Model"), "{error}");
 }
 
 /// `factory run start` with a temporary configuration folder holding this policy.
@@ -48,8 +48,8 @@ fn start(
 }
 
 const BOTH: &str = r#"{"agents":{
-    "claude":{"roles":{"strong":{"model":"opus"}},"tasks":{"check":"strong"}},
-    "codex":{"roles":{"strong":{"model":"gpt-6-astra"}},"tasks":{"check":"strong"}}}}"#;
+    "claude":{"stages":{"check":{"model":"opus"}}},
+    "codex":{"stages":{"check":{"model":"gpt-6-astra"}}}}}"#;
 
 #[test]
 fn a_policy_for_several_agents_needs_the_agent_option_and_says_how_to_give_it() {
@@ -70,15 +70,38 @@ fn a_policy_for_several_agents_needs_the_agent_option_and_says_how_to_give_it() 
 
 #[test]
 fn a_mistake_in_one_agents_entry_stops_a_start_for_either_agent() {
-    let broken = BOTH.replace("\"check\":\"strong\"}}}}", "\"check\":\"coding\"}}}}");
+    let broken = BOTH.replace("gpt-6-astra", "gpt 6");
     for agent in ["claude", "codex"] {
         let (output, _path, _config) = start(&broken, &["--agent", agent]);
         assert!(!output.status.success(), "{agent}");
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(
-            error.contains("agents.codex") && error.contains("coding"),
+            error.contains("agents.codex") && error.contains("Model"),
             "{agent}: {error}"
         );
+    }
+}
+
+#[test]
+fn an_old_format_policy_stops_the_start_and_says_how_to_replace_it() {
+    let old = [
+        r#"{"agents":{"claude":{"roles":{"strong":{"model":"opus"}},"tasks":{"check":"strong"}}}}"#,
+        r#"{"agent":"claude","roles":{"strong":{"model":"opus"}},"tasks":{"check":"strong"}}"#,
+    ];
+    for policy in old {
+        let (output, path, _config) = start(policy, &["--agent", "claude"]);
+        assert!(!output.status.success(), "{policy}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        for expected in [
+            "model-routing.json",
+            "old format",
+            "factory install",
+            "factory doctor --create-model-routing",
+        ] {
+            assert!(error.contains(expected), "{policy}: {error}");
+        }
+        // The file is only read, never rewritten.
+        assert_eq!(fs::read_to_string(path).unwrap(), policy);
     }
 }
 

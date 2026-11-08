@@ -130,7 +130,7 @@ function Stages({ reworkCap }) {
     <//>
     <${Topic} title="Build">
       <p>
-        Implement the spec on the Run’s feature branch, in its worktree, one ticket at a time and without subagents.
+        Implement the spec on the Run’s feature branch, in its worktree, one ticket at a time. When model routing routes Build, each ticket runs in a fresh agent on Build’s model.
         The agent runs the project’s relevant checks as it goes. Before the work leaves Build, it runs the
         project’s full verification: every command the project’s instructions say to run before merging, which
         should match its CI. A missing tool or a failing check blocks the Run until it is fixed.
@@ -170,7 +170,7 @@ function Stages({ reworkCap }) {
           With no actionable findings the Run moves to Finish. Otherwise it goes back to Build for a Rework.
         </li>
         <li>
-          If the Run has a model routing policy for Check, the review agents use the model and effort it names. A security review the agent runs itself stays on the
+          When model routing routes Check, the review agents use the model and effort it names. A security review the agent runs itself stays on the
           agent’s own model. The Model routing tab explains how.
         </li>
       </ul>
@@ -321,7 +321,7 @@ function Workflows({ reworkCap }) {
     <${Topic} title="What they share">
       <ul>
         <li>A fresh worktree and branch for every Run, and progress reported to this dashboard.</li>
-        <li>Build runs one ticket at a time in one worktree, without subagents.</li>
+        <li>Build runs one ticket at a time in one worktree; with model routing, each ticket in a fresh agent.</li>
         <li>
           The project’s own verification, taken from its agent instructions, contributing docs or build files. A
           missing tool or a failing check blocks the Run; it is never skipped.
@@ -614,20 +614,21 @@ function ModelRouting() {
   return html`
     <${Topic} title="What it does">
       <p>
-        Model routing lets you say which model and effort each kind of task should use, apart from the workflow. When a
+        Model routing lets you say which model and effort each Stage should use, apart from the workflow. When a
         Run starts, the factory reads your policy once and records the choice on the Run, so editing the file later does
-        not change a Run in progress. For now the role mapped to <${Code}>check<//> sets the model and effort of the
-        review agents in Check. Build and Finish still run on the session’s model, and a Run without a policy runs
-        as it always did.
+        not change a Run in progress. Every Stage can be routed: your own session keeps its model and talks to you, and
+        each routed Stage’s work is handed to fresh agents on that Stage’s model and effort. A Stage you leave out, and
+        a Run without a policy, run as they always did.
       </p>
     <//>
     <${Topic} title="The policy file">
       <p>
         One file, <${Code}>model-routing.json<//>, in the factory’s config folder: <${Code}>$XDG_CONFIG_HOME/tds-factory/<//>
         ${' '}(or <${Code}>~/.config/tds-factory/<//>) on Linux, and <${Code}>%APPDATA%\\tds-factory\\<//> on Windows. It has an
-        entry for each agent under <${Code}>agents<//> (<${Code}>claude<//> and <${Code}>codex<//>), and each entry has up to
-        three roles (<${Code}>strong<//>, <${Code}>coding<//>, <${Code}>routine<//>) with a model and an effort, and says
-        which role handles <${Code}>build<//>, <${Code}>check<//> and <${Code}>finish<//>. A run records only the entry of
+        entry for each agent under <${Code}>agents<//> (<${Code}>claude<//> and <${Code}>codex<//>), and each entry has${' '}
+        <${Code}>stages<//> that map <${Code}>define<//>, <${Code}>build<//>, <${Code}>check<//> and${' '}
+        <${Code}>finish<//> to a model and an optional effort. A file in the earlier format (roles and tasks) stops a Run from starting
+        until <${Code}>factory install<//> replaces it. A run records only the entry of
         the agent it started in, which the workflow names with <${Code}>factory run start --agent<//>. Set${' '}
         <${Code}>"enabled": false<//> at the top, or inside an entry, to switch routing off without deleting anything.
       </p>
@@ -635,18 +636,26 @@ function ModelRouting() {
   "enabled": true,
   "agents": {
     "claude": {
-      "roles": { "strong": { "model": "opus", "effort": "high" } },
-      "tasks": { "check": "strong" }
+      "stages": {
+        "define": { "model": "sonnet", "effort": "low" },
+        "build": { "model": "sonnet", "effort": "low" },
+        "check": { "model": "sonnet", "effort": "medium" },
+        "finish": { "model": "haiku", "effort": "low" }
+      }
     },
     "codex": {
-      "roles": { "strong": { "model": "gpt-6-astra", "effort": "high" } },
-      "tasks": { "check": "strong" }
+      "stages": {
+        "define": { "model": "gpt-6.1-terra", "effort": "low" },
+        "build": { "model": "gpt-6.1-terra", "effort": "low" },
+        "check": { "model": "gpt-6.1-terra", "effort": "medium" },
+        "finish": { "model": "gpt-6-luna", "effort": "low" }
+      }
     }
   }
 }</code></pre>
       <p>
-        <${Code}>factory doctor --agent claude --create-model-routing<//> writes a starter like this with an entry for each agent (add${' '}
-        <${Code}>--agent claude<//> or <${Code}>--agent codex<//> for one). It never overwrites a file that is already there.
+        <${Code}>factory doctor --agent claude --create-model-routing<//> writes this starter with an entry for each agent (add${' '}
+        <${Code}>--agent claude<//> or <${Code}>--agent codex<//> for one). It replaces only a switched-on file in the earlier format, and never overwrites any other file.
       </p>
     <//>
     <${Topic} title="Checking that it works">
@@ -658,12 +667,13 @@ function ModelRouting() {
           appears only when a policy file exists and is switched on.
         </li>
         <li>
-          <${Code}>factory run inspect ${'<id>'}<//> shows, per task, the requested model and effort next to the models and
+          <${Code}>factory run inspect ${'<id>'}<//> shows, per Stage, the requested model and effort next to the models and
           efforts the Run’s logs show. When usage is fully tracked, a model that was never observed reads <${Code}>MISMATCH<//>, and so does an effort that differs from the one requested. With partial usage it reads "not observed", because the data may be missing, and a log that records no effort reads "effort not recorded".
         </li>
         <li>
-          To give one task another role for one Run, use${' '}
-          <${Code}>factory run update ${'<id>'} ${'<stage>'} ${'<status>'} --model-routing check=coding<//>.
+          To give one Stage another model for one Run, use${' '}
+          <${Code}>factory run update ${'<id>'} ${'<stage>'} ${'<status>'} --model-routing check=sonnet:medium<//>
+          (<${Code}>${'<stage>'}=${'<model>'}[:${'<effort>'}]<//>).
         </li>
       </ul>
     <//>
@@ -672,21 +682,21 @@ function ModelRouting() {
         items=${[
           [
             'Claude Code',
-            'The review agents start as fresh subagents with the model and effort from the policy. The model must be one of the aliases opus, sonnet, haiku or fable, and the effort option needs a recent Claude Code.',
+            'Each Stage’s agents start as fresh subagents with the model and effort from the policy. The model must be one of the aliases opus, sonnet, haiku or fable, and the effort option needs a recent Claude Code.',
           ],
           [
             'Codex',
-            'The review agents start through Codex’s own subagent settings with the model and reasoning effort from the policy.',
+            'Each Stage’s agents start through Codex’s own subagent settings with the model and reasoning effort from the policy.',
           ],
           [
             'Copilot CLI',
-            'Not supported. Copilot picks a subagent’s model from its own settings per agent name and offers no choice per call, so every stage there keeps the session’s model. A policy that names copilot records nothing.',
+            'Not supported. Copilot picks a subagent’s model from its own settings per agent name and offers no choice per call, so every stage there keeps the session’s model. ',
           ],
         ]}
       />
       <p>
-        A coordinator and its review agents on the same model at different efforts share one usage row, so${' '}
-        <${Code}>inspect<//> cannot tell their efforts apart. When the policy cannot be applied, the Check summary says
+        A coordinator and its agents on the same model at different efforts share one usage row, so${' '}
+        <${Code}>inspect<//> cannot tell their efforts apart. When the policy cannot be applied, the Stage summary says
         why.
       </p>
     <//>
