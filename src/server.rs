@@ -1402,17 +1402,17 @@ mod tests {
         };
         let long = "m".repeat(65);
         for routing in [
-            // A task names a role the selection does not have.
-            r#"{"agent":"claude","roles":{"coding":{"model":"sonnet"}},"tasks":{"check":"strong"}}"#.to_string(),
+            // The earlier shape, with roles and tasks.
+            r#"{"agent":"claude","roles":{"strong":{"model":"sonnet"}},"tasks":{"check":"strong"}}"#.to_string(),
             // Empty, oversized and unsafe text.
-            r#"{"agent":"claude","roles":{"coding":{"model":""}},"tasks":{}}"#.to_string(),
-            format!(r#"{{"agent":"claude","roles":{{"coding":{{"model":"{long}"}}}},"tasks":{{}}}}"#),
-            r#"{"agent":"claude","roles":{"coding":{"model":"son net"}},"tasks":{}}"#.to_string(),
-            r#"{"agent":"claude","roles":{"coding":{"model":"sonnet","effort":"hi\u001b[2Jgh"}},"tasks":{}}"#.to_string(),
-            // Unknown field, unknown task, unknown agent (Copilot records no selection).
-            r#"{"agent":"claude","roles":{},"tasks":{},"extra":1}"#.to_string(),
-            r#"{"agent":"claude","roles":{"coding":{"model":"sonnet"}},"tasks":{"deploy":"coding"}}"#.to_string(),
-            r#"{"agent":"copilot","roles":{},"tasks":{}}"#.to_string(),
+            r#"{"agent":"claude","stages":{"check":{"model":""}}}"#.to_string(),
+            format!(r#"{{"agent":"claude","stages":{{"check":{{"model":"{long}"}}}}}}"#),
+            r#"{"agent":"claude","stages":{"check":{"model":"son net"}}}"#.to_string(),
+            r#"{"agent":"claude","stages":{"check":{"model":"sonnet","effort":"hi\u001b[2Jgh"}}}"#.to_string(),
+            // Unknown field, unknown stage, unknown agent (Copilot records no selection).
+            r#"{"agent":"claude","stages":{},"extra":1}"#.to_string(),
+            r#"{"agent":"claude","stages":{"deploy":{"model":"sonnet"}}}"#.to_string(),
+            r#"{"agent":"copilot","stages":{}}"#.to_string(),
         ] {
             let response = api
                 .post("/api/runs")
@@ -1432,11 +1432,13 @@ mod tests {
             .is_empty());
         let run = start(
             &api,
-            &with(r#"{"agent":"codex","roles":{"strong":{"model":"gpt-6-astra","effort":"high"}},"tasks":{"check":"strong"}}"#),
+            &with(
+                r#"{"agent":"codex","stages":{"check":{"model":"gpt-6-astra","effort":"high"}}}"#,
+            ),
         )
         .await;
         let routing = run.model_routing.unwrap();
-        assert_eq!(routing.roles.len(), 1);
+        assert_eq!(routing.stages.len(), 1);
     }
 
     #[rocket::async_test]

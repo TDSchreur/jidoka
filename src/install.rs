@@ -55,7 +55,8 @@ pub fn install(agents: &str, config_dirs: &[String]) -> io::Result<()> {
     Ok(())
 }
 
-/// Create the initial routing policy without replacing any existing user configuration.
+/// Create the initial routing policy. Only a file in the old format is replaced; any other existing
+/// configuration is kept.
 pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> io::Result<()> {
     let path = crate::routing::policy_path_in(var).ok_or_else(|| {
         io::Error::new(
@@ -67,7 +68,7 @@ pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> i
         crate::routing::RoutingAgent::Claude,
         crate::routing::RoutingAgent::Codex,
     ];
-    let created = crate::routing::create_starter(&path, &agents).map_err(|error| {
+    let created = crate::routing::install_starter(&path, &agents).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!(
@@ -76,8 +77,8 @@ pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> i
             ),
         )
     })?;
-    if created {
-        println!("Created default model routing policy: {}", path.display());
+    if let Some(summary) = created.message(&path.display().to_string(), None) {
+        println!("{summary}");
     }
     Ok(())
 }
@@ -793,26 +794,32 @@ mod tests {
     #[test]
     fn the_model_routing_procedure_says_how_to_read_and_apply_the_selection() {
         // A Windows checkout may have CRLF line endings.
-        // Only Check uses it, so it lives in a reference file read when Check starts.
         let section =
             bundled_text("factory-procedures/references/model-routing.md").replace("\r\n", "\n");
+        let procedures = bundled_text("factory-procedures/SKILL.md");
         assert!(
-            bundled_text("factory-procedures/SKILL.md")
-                .contains("[references/model-routing.md](references/model-routing.md)"),
-            "the procedures do not point to the model routing reference"
+            procedures.contains("[references/model-routing.md](references/model-routing.md)")
+                && procedures.contains("applies to every Stage"),
+            "the procedures do not point to the model routing reference for every Stage"
         );
         for needle in [
             "factory run inspect <id> --json",
             "`model_routing`",
-            "`overrides.check`",
-            "`tasks.check`",
+            "`overrides.<stage>`",
+            "`stages.<stage>`",
             "never a fork",
             "only the aliases `opus`, `sonnet`, `haiku` and `fable`",
+            "neither the model nor the effort",
             "model routing not applied",
             "Copilot CLI",
             "do not claim a switch",
             "only the entry of the agent named with `--agent`",
             "never another agent's",
+            // Each Stage says what is handed to agents and what stays with the coordinator.
+            "the interview (grilling) stays with you",
+            "each ticket runs in its own fresh agent on the build choice",
+            "tell `code-review` the check choice",
+            "You run `factory pr open`, `factory pr wait` and `factory pr sync` yourself",
         ] {
             assert!(section.contains(needle), "Model routing lacks {needle}");
         }
@@ -823,18 +830,42 @@ mod tests {
     }
 
     #[test]
-    fn only_the_workflows_with_a_check_point_to_the_model_routing_procedure() {
+    fn every_workflow_reads_model_routing_at_each_of_its_stages() {
+        let link = "[Model routing](../factory-procedures/references/model-routing.md)";
+        for skill in WORKFLOW_SKILLS {
+            let text = bundled_text(&format!("{skill}/SKILL.md")).replace("\r\n", "\n");
+            let stages: &[&str] = if skill == "factory-fast" {
+                &["Define", "Build", "Finish"]
+            } else {
+                &["Define", "Build", "Check", "Finish"]
+            };
+            for stage in stages {
+                let body = text
+                    .split_once(&format!("\n## {stage}\n"))
+                    .map(|(_, rest)| rest.split("\n## ").next().unwrap_or(rest))
+                    .unwrap_or_else(|| panic!("{skill} has no {stage} section"));
+                assert!(
+                    body.contains(link),
+                    "{skill} does not read Model routing in {stage}"
+                );
+            }
+            // A routed Build hands each ticket to a fresh agent, overriding the build skill's
+            // "do not require subagents".
+            assert!(
+                text.contains("When Build is routed, hand each ticket"),
+                "{skill} does not hand routed Build tickets to agents"
+            );
+        }
         for skill in ["factory-full", "factory-balanced"] {
             let text = bundled_text(&format!("{skill}/SKILL.md"));
             assert!(
-                text.contains("(../factory-procedures/references/model-routing.md)")
-                    && text.contains("at the start of every Check pass, including after a Rework"),
+                text.contains("At the start of every Check pass, including after a Rework"),
                 "{skill} does not read Model routing at every Check pass"
             );
         }
         let fast = bundled_text("factory-fast/SKILL.md");
         assert!(
-            !fast.contains("Model routing"),
+            !fast.contains("for Check") && !fast.contains("Check pass"),
             "factory-fast has no Check to route"
         );
     }

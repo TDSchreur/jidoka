@@ -1,15 +1,16 @@
-//! Model routing: which model and effort each kind of task should use, recorded on a run when it starts.
+//! Model routing: which model and effort each Stage should use, recorded on a run when it starts.
 //! "Routing" alone already means workflow selection in this repository, so this is always model routing.
-//! The record holds only the roles and the task mapping of the agent the run started in. Only the review
-//! agents that Check starts use it; Build, Finish and the coordinating session are not routed.
+//! The record holds only the per-Stage models of the agent the run started in. The coordinating session
+//! is not routed.
 
+use crate::run::Stage;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 mod policy;
 pub(crate) use policy::{
-    create_starter, load, parse_start_options, policy_path_in, read, Coverage, Host, NotRouted,
-    Policy, Resolution, COPILOT_NOTICE,
+    install_starter, load, parse_start_options, policy_path_in, read, Coverage, Host, NotRouted,
+    Policy, Resolution, Starter, COPILOT_NOTICE,
 };
 
 /// The coding agent a selection is for. Copilot CLI is not here: it records no selection.
@@ -20,26 +21,10 @@ pub(crate) enum RoutingAgent {
     Claude,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum Role {
-    Strong,
-    Coding,
-    Routine,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum Task {
-    Build,
-    Check,
-    Finish,
-}
-
-/// A role's model and effort. Both are free text: the factory keeps no list of valid values.
+/// A Stage's model and effort. Both are free text: the factory keeps no list of valid values.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RoleChoice {
+pub(crate) struct ModelChoice {
     pub(crate) model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) effort: Option<String>,
@@ -50,12 +35,11 @@ pub(crate) struct RoleChoice {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ModelRouting {
     pub(crate) agent: RoutingAgent,
-    pub(crate) roles: BTreeMap<Role, RoleChoice>,
-    /// The policy's mapping of tasks to roles, as it was when the run started.
-    pub(crate) tasks: BTreeMap<Task, Role>,
-    /// Roles chosen for this run by hand; they win over `tasks` and leave it untouched.
+    /// The policy's model per Stage, as it was when the run started. A Stage left out is not routed.
+    pub(crate) stages: BTreeMap<Stage, ModelChoice>,
+    /// Choices made for this run by hand; they win over `stages` and leave it untouched.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) overrides: BTreeMap<Task, Role>,
+    pub(crate) overrides: BTreeMap<Stage, ModelChoice>,
 }
 
 /// Whether an observed model id is the model that was requested. A requested alias is a whole part of the
@@ -87,32 +71,43 @@ fn check_text(name: &str, value: &str) -> Result<(), String> {
 }
 
 impl ModelRouting {
-    /// The role that handles `task`: this run's override if it has one, otherwise the policy's mapping.
-    pub(crate) fn role_for(&self, task: Task) -> Option<Role> {
+    /// The model for `stage`: this run's override if it has one, otherwise the policy's choice.
+    pub(crate) fn choice_for(&self, stage: Stage) -> Option<&ModelChoice> {
         self.overrides
-            .get(&task)
-            .or_else(|| self.tasks.get(&task))
-            .copied()
+            .get(&stage)
+            .or_else(|| self.stages.get(&stage))
     }
 
     /// The rules every selection follows, whether the CLI resolved it or the API received it.
     pub(crate) fn validate(&self) -> Result<(), String> {
-        for choice in self.roles.values() {
-            check_text("Model", &choice.model)?;
-            if let Some(effort) = &choice.effort {
-                check_text("Effort", effort)?;
-            }
-        }
-        for (task, role) in self.tasks.iter().chain(&self.overrides) {
-            if !self.roles.contains_key(role) {
-                return Err(format!(
-                    "The {} task uses the {} role, which is not defined under roles",
-                    task.name(),
-                    role.name()
-                ));
-            }
+        for choice in self.stages.values().chain(self.overrides.values()) {
+            choice.validate()?;
         }
         Ok(())
+    }
+}
+
+impl ModelChoice {
+    fn validate(&self) -> Result<(), String> {
+        check_text("Model", &self.model)?;
+        if let Some(effort) = &self.effort {
+            check_text("Effort", effort)?;
+        }
+        Ok(())
+    }
+
+    /// Parses `<model>[:<effort>]`, as given to `--model-routing`.
+    pub(crate) fn parse(text: &str) -> Result<Self, String> {
+        let (model, effort) = match text.split_once(':') {
+            Some((model, effort)) => (model, Some(effort)),
+            None => (text, None),
+        };
+        let choice = Self {
+            model: model.to_string(),
+            effort: effort.map(str::to_string),
+        };
+        choice.validate()?;
+        Ok(choice)
     }
 }
 
@@ -121,28 +116,6 @@ impl RoutingAgent {
         match self {
             Self::Codex => "codex",
             Self::Claude => "claude",
-        }
-    }
-}
-
-impl Role {
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::Strong => "strong",
-            Self::Coding => "coding",
-            Self::Routine => "routine",
-        }
-    }
-}
-
-impl Task {
-    pub(crate) const ALL: [Task; 3] = [Task::Build, Task::Check, Task::Finish];
-
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::Build => "build",
-            Self::Check => "check",
-            Self::Finish => "finish",
         }
     }
 }
