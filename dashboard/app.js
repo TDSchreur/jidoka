@@ -493,7 +493,7 @@ function Station({ run, id, name, at, now }) {
       ? html`<ol class="ticket-list">
           ${tickets.map((ticket) => {
             const own = placed.byTicket(ticket.reference);
-            const current = ticket.status !== 'done' && run.current_ticket === ticket.reference;
+            const current = ticket.status !== 'done' && run.current_ticket != null && run.current_ticket === ticket.reference;
             return html`<li key=${ticket.reference} class=${ticket.status === 'done' ? 'ticket done' : 'ticket'}>
               <p class="ticket-line">
                 <span class="ticket-status">${current ? TICKET_STATUS['in-progress'] : (TICKET_STATUS[ticket.status] ?? String(ticket.status))}</span>
@@ -529,7 +529,7 @@ function PrLink({ run }) {
   return html`<span class="status-item">
     ${url ? html`<a href=${url.href} target="_blank" rel="noopener noreferrer">PR ${shortRef(url)}</a>` : `PR ${run.pr}`}
     ${state ? html`${' '}<span class=${`pr-word ${known && status.state}`} title=${status.state === 'unknown' ? status.reason : null}>${state}</span>` : null}
-    ${known && status.state === 'unknown' && status.reason ? html`${' '}<span class="pr-reason">${status.reason}</span>` : null}
+    ${known && status.state === 'unknown' && status.reason ? html`:${' '}<span class="pr-reason">${status.reason}</span>` : null}
   </span>`;
 }
 

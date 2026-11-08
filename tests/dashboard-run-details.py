@@ -72,7 +72,9 @@ STRAY = {
 CURRENT = {**ACTIVE, "id": "run-current", "title": "Current one", "current_ticket": "local-1",
            "tickets": [{"reference": "local-1", "title": "Index in the background", "status": "pending"},
                        {"reference": "local-2", "title": "Other", "status": "pending"}]}
-RUNS = [SHIPPED, ACTIVE, BLOCKED, STRAY, CURRENT]
+NO_CURRENT = {**ACTIVE, "id": "run-no-current", "title": "No current one", "current_ticket": None,
+              "tickets": [{"title": "Unreferenced work", "status": "pending"}]}
+RUNS = [SHIPPED, ACTIVE, BLOCKED, STRAY, CURRENT, NO_CURRENT]
 
 # Opens each Run's sheet in turn like a visitor and reports what it shows.
 HELPERS = """
@@ -109,7 +111,7 @@ def drive(body, runs=RUNS, **options):
 class RunDetailsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.shipped, cls.active, cls.blocked, cls.stray, cls.current = cls.snapshots()
+        cls.shipped, cls.active, cls.blocked, cls.stray, cls.current, cls.no_current = cls.snapshots()
 
     @staticmethod
     def snapshots():
@@ -169,10 +171,10 @@ const snap = async (id) => {
   await closeRun();
   return out;
 };
-return {shipped: await snap('run-shipped'), active: await snap('run-active'), blocked: await snap('run-blocked'), stray: await snap('run-stray'), current: await snap('run-current')};
+return {shipped: await snap('run-shipped'), active: await snap('run-active'), blocked: await snap('run-blocked'), stray: await snap('run-stray'), current: await snap('run-current'), noCurrent: await snap('run-no-current')};
 """
         result = drive(body)
-        return result["shipped"], result["active"], result["blocked"], result["stray"], result["current"]
+        return result["shipped"], result["active"], result["blocked"], result["stray"], result["current"], result["noCurrent"]
 
     def stop(self, snapshot, name):
         return next(s for s in snapshot["stops"] if s["name"] == name)
@@ -251,12 +253,17 @@ return {shipped: await snap('run-shipped'), active: await snap('run-active'), bl
         self.assertTrue(tickets[1].startswith("Pending"))
         self.assertIsNone(self.current["detailTicket"])
 
+    def test_pending_ticket_without_reference_is_not_in_progress_when_the_run_has_no_current_ticket(self):
+        tickets = self.stop(self.no_current, "Build")["tickets"]
+        self.assertEqual(len(tickets), 1)
+        self.assertTrue(tickets[0].startswith("Pending"))
+
     def test_current_ticket_missing_from_the_list_shows_under_the_title(self):
         self.assertEqual(self.stray["detailTicket"], "Current ticket: local-9")
         self.assertIsNone(self.active["detailTicket"])
 
     def test_unknown_pr_state_reason_is_visible_text(self):
-        self.assertIn("state unknown", self.stray["statusRow"])
+        self.assertIn("state unknown: gh is not signed in", self.stray["statusRow"])
         self.assertEqual(self.stray["prReason"], "gh is not signed in")
         self.assertIsNone(self.shipped["prReason"])
 
