@@ -334,3 +334,49 @@ fn doctor_leaves_a_current_format_or_unrecognised_policy_alone() {
         assert!(stdout.contains("already exists"), "{stdout}");
     }
 }
+
+#[test]
+fn doctor_says_nothing_was_off_when_nothing_was() {
+    let (_, stdout) = create_over(OLD_MULTI);
+    assert!(!stdout.contains("stays off"), "{stdout}");
+    assert!(!stdout.contains("is switched off"), "{stdout}");
+    assert!(
+        stdout.contains("starter policy for claude and codex"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("\"enabled\": false"), "{stdout}");
+}
+
+#[test]
+fn doctor_names_the_whole_policy_when_it_was_off() {
+    let (_, stdout) = create_over(r#"{"enabled":false,"agents":{"claude":{"roles":{}}}}"#);
+    assert!(stdout.contains("whole policy is switched off"), "{stdout}");
+    assert!(
+        stdout.contains("remove \"enabled\": false at the top"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("entry for"), "{stdout}");
+}
+
+#[test]
+fn doctor_names_the_agent_entry_that_was_off() {
+    let (_, stdout) =
+        create_over(r#"{"agents":{"codex":{"enabled":false,"roles":{}},"claude":{"roles":{}}}}"#);
+    assert!(
+        stdout.contains("entry for codex is switched off"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("remove its \"enabled\": false"), "{stdout}");
+    assert!(!stdout.contains("whole policy"), "{stdout}");
+}
+
+#[test]
+fn doctor_names_both_the_whole_policy_and_the_agent_when_both_were_off() {
+    let (_, stdout) =
+        create_over(r#"{"enabled":false,"agents":{"claude":{"enabled":false,"roles":{}}}}"#);
+    assert!(stdout.contains("whole policy is switched off"), "{stdout}");
+    assert!(
+        stdout.contains("entry for claude is switched off"),
+        "{stdout}"
+    );
+}

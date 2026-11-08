@@ -552,7 +552,7 @@ fn an_old_format_file_is_replaced_unless_it_is_oversized_or_not_a_file() {
     fs::write(&path, old).unwrap();
     assert_eq!(
         install_starter(&path, &[RoutingAgent::Claude]).unwrap(),
-        Starter::Replaced
+        Starter::Replaced(Off::default())
     );
     assert!(read(&path).is_ok());
 
@@ -575,7 +575,10 @@ fn replaced_starter(old: &str, agents: &[RoutingAgent]) -> serde_json::Value {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("model-routing.json");
     fs::write(&path, old).unwrap();
-    assert_eq!(install_starter(&path, agents).unwrap(), Starter::Replaced);
+    assert!(matches!(
+        install_starter(&path, agents).unwrap(),
+        Starter::Replaced(_)
+    ));
     serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap()
 }
 
@@ -662,4 +665,29 @@ fn a_link_to_an_old_format_file_is_not_followed_into_replacement() {
         .unwrap()
         .file_type()
         .is_symlink());
+}
+
+#[test]
+fn a_replaced_outcome_carries_exactly_the_switches_written_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("model-routing.json");
+    let old = r#"{"enabled":false,"agents":{"claude":{"enabled":false,"roles":{}},"codex":{"enabled":false,"roles":{}}}}"#;
+    fs::write(&path, old).unwrap();
+    // The codex entry is not written, so it is not reported as off.
+    let done = install_starter(&path, &[RoutingAgent::Claude]).unwrap();
+    let off = Off {
+        all: true,
+        claude: true,
+        codex: false,
+    };
+    assert_eq!(done, Starter::Replaced(off));
+    let message = done.message("p", None).unwrap();
+    assert!(
+        message.contains("whole policy") && message.contains("entry for claude"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("codex") && !message.contains("stays off"),
+        "{message}"
+    );
 }

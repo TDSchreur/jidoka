@@ -77,7 +77,7 @@ pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> i
             ),
         )
     })?;
-    if let Some(summary) = created.summary(&path.display().to_string()) {
+    if let Some(summary) = created.message(&path.display().to_string(), None) {
         println!("{summary}");
     }
     Ok(())

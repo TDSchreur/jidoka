@@ -348,6 +348,9 @@ pub(crate) fn is_old_format(text: &str) -> bool {
 /// The top-level keys that mark the single-agent (earlier) format.
 const OLD_TOP_KEYS: [&str; 3] = ["agent", "roles", "tasks"];
 
+/// The keys in an agent entry that mark the earlier format.
+const OLD_ENTRY_KEYS: [&str; 2] = ["roles", "tasks"];
+
 fn old_top_level(value: &Value) -> bool {
     OLD_TOP_KEYS.iter().any(|key| value.get(key).is_some())
 }
@@ -360,7 +363,7 @@ fn old_format(value: &Value) -> bool {
         .is_some_and(|agents| {
             agents
                 .values()
-                .any(|entry| entry.get("roles").is_some() || entry.get("tasks").is_some())
+                .any(|entry| OLD_ENTRY_KEYS.iter().any(|key| entry.get(key).is_some()))
         });
     top || entries
 }
@@ -516,11 +519,31 @@ fn starter_stages(agent: RoutingAgent) -> StarterStages {
 }
 
 /// Which switches of a replaced old-format file are off; they are carried into the starter.
-#[derive(Clone, Copy, Default)]
-struct Off {
-    all: bool,
-    claude: bool,
-    codex: bool,
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(crate) struct Off {
+    pub(crate) all: bool,
+    pub(crate) claude: bool,
+    pub(crate) codex: bool,
+}
+
+impl Off {
+    /// Only the agents written to the starter carry a switch.
+    fn within(self, agents: &[RoutingAgent]) -> Self {
+        Self {
+            all: self.all,
+            claude: self.claude && agents.contains(&RoutingAgent::Claude),
+            codex: self.codex && agents.contains(&RoutingAgent::Codex),
+        }
+    }
+
+    fn agents(self) -> impl Iterator<Item = RoutingAgent> {
+        [
+            (self.claude, RoutingAgent::Claude),
+            (self.codex, RoutingAgent::Codex),
+        ]
+        .into_iter()
+        .filter_map(|(is_off, agent)| is_off.then_some(agent))
+    }
 }
 
 /// A starting policy written by `factory doctor --create-model-routing`: an entry routing all four Stages
@@ -544,38 +567,62 @@ fn starter(agents: &[RoutingAgent], off: Off) -> String {
     text
 }
 
-/// What is switched off in the policy file at `path`: `None` when it cannot be read as JSON, otherwise
-/// whether the whole policy is off and the names of the agent entries that are off.
-pub(crate) fn switched_off(path: &Path) -> Option<(bool, Vec<&'static str>)> {
-    let value: Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
-    let is_off = |pointer: &str| value.pointer(pointer) == Some(&Value::Bool(false));
-    let agents = ["claude", "codex"]
-        .into_iter()
-        .filter(|name| is_off(&format!("/agents/{name}/enabled")))
-        .collect();
-    Some((is_off("/enabled"), agents))
-}
-
 /// What `install_starter` did.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Starter {
     Created,
-    /// An old-format file was deleted and the starter written in its place.
-    Replaced,
+    /// An old-format file was deleted and the starter written in its place, with these switches off.
+    Replaced(Off),
     /// Something is there that is not an old-format file: it is untouched.
     Left,
 }
 
 impl Starter {
-    /// What happened to the file at `shown`, or `None` when nothing was written.
-    pub(crate) fn summary(self, shown: &str) -> Option<String> {
-        match self {
-            Self::Created => Some(format!("Created model routing policy {shown}")),
-            Self::Replaced => Some(format!(
-                "Replaced old-format model routing policy {shown} with the per-stage starter; a switch that was off stays off"
-            )),
-            Self::Left => None,
+    /// What the user is told about the file at `shown`, or `None` when nothing was written: what was
+    /// done, then `about` (a sentence on what the starter is, when the caller has one), then what is
+    /// switched off and how to switch it on.
+    pub(crate) fn message(self, shown: &str, about: Option<&str>) -> Option<String> {
+        let (done, off) = match self {
+            Self::Created => (
+                format!("Created model routing policy {shown}"),
+                Off::default(),
+            ),
+            Self::Replaced(off) => (
+                format!(
+                    "Replaced old-format model routing policy {shown} with the per-stage starter"
+                ),
+                off,
+            ),
+            Self::Left => return None,
+        };
+        let mut message = format!("{done}.");
+        if let Some(about) = about {
+            message.push(' ');
+            message.push_str(about);
         }
+        message.push(' ');
+        message.push_str(&off.next_steps());
+        Some(message)
+    }
+}
+
+impl Off {
+    fn next_steps(self) -> String {
+        if self == Self::default() {
+            return "Edit the models and efforts, or set \"enabled\": false to switch it off."
+                .to_string();
+        }
+        let mut text = String::from("Edit the models and efforts.");
+        if self.all {
+            text.push_str(" The whole policy is switched off, so runs do not use it yet; remove \"enabled\": false at the top (or set it to true) to switch it on.");
+        }
+        for agent in self.agents() {
+            text.push_str(&format!(
+                " The entry for {} is switched off; remove its \"enabled\": false (or set it to true) to switch it on.",
+                agent.name()
+            ));
+        }
+        text
     }
 }
 
@@ -617,14 +664,14 @@ fn old_file_switches(path: &Path) -> Option<Off> {
 /// keeping its switched-off policy or agents off. A current-format, unrecognised, unreadable or
 /// non-regular file (a link included) is left alone.
 pub(crate) fn install_starter(path: &Path, agents: &[RoutingAgent]) -> io::Result<Starter> {
-    let old = old_file_switches(path);
+    let old = old_file_switches(path).map(|off| off.within(agents));
     if old.is_some() {
         fs::remove_file(path)?;
     }
     let created = write_starter(path, agents, old.unwrap_or_default())?;
-    Ok(match (created, old.is_some()) {
-        (true, true) => Starter::Replaced,
-        (true, false) => Starter::Created,
+    Ok(match (created, old) {
+        (true, Some(off)) => Starter::Replaced(off),
+        (true, None) => Starter::Created,
         (false, _) => Starter::Left,
     })
 }

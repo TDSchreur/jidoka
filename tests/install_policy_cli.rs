@@ -130,3 +130,51 @@ fn install_leaves_a_current_format_or_unrecognised_policy_alone() {
         assert!(!stdout.contains("Replaced"), "{stdout}");
     }
 }
+
+const SWITCH_ON: &str = "remove its \"enabled\": false";
+
+#[test]
+fn install_says_nothing_was_off_when_nothing_was() {
+    let (_, stdout, _) = install_over(OLD_MULTI);
+    assert!(!stdout.contains("stays off"), "{stdout}");
+    assert!(
+        !stdout.contains("switched off.") && !stdout.contains("is switched off"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("\"enabled\": false"), "{stdout}");
+}
+
+#[test]
+fn install_names_the_whole_policy_when_it_was_off() {
+    let (_, stdout, _) = install_over(r#"{"enabled":false,"agents":{"claude":{"roles":{}}}}"#);
+    assert!(stdout.contains("whole policy is switched off"), "{stdout}");
+    assert!(
+        stdout.contains("remove \"enabled\": false at the top"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("entry for"), "{stdout}");
+}
+
+#[test]
+fn install_names_the_agent_entry_that_was_off() {
+    let (_, stdout, _) =
+        install_over(r#"{"agents":{"codex":{"enabled":false,"roles":{}},"claude":{"roles":{}}}}"#);
+    assert!(
+        stdout.contains("entry for codex is switched off"),
+        "{stdout}"
+    );
+    assert!(stdout.contains(SWITCH_ON), "{stdout}");
+    assert!(!stdout.contains("claude is switched off"), "{stdout}");
+    assert!(!stdout.contains("whole policy"), "{stdout}");
+}
+
+#[test]
+fn install_names_both_the_whole_policy_and_the_agent_when_both_were_off() {
+    let (_, stdout, _) =
+        install_over(r#"{"enabled":false,"agents":{"claude":{"enabled":false,"roles":{}}}}"#);
+    assert!(stdout.contains("whole policy is switched off"), "{stdout}");
+    assert!(
+        stdout.contains("entry for claude is switched off"),
+        "{stdout}"
+    );
+}

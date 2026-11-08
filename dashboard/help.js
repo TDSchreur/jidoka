@@ -655,7 +655,7 @@ function ModelRouting() {
 }</code></pre>
       <p>
         <${Code}>factory doctor --agent claude --create-model-routing<//> writes this starter with an entry for each agent (add${' '}
-        <${Code}>--agent claude<//> or <${Code}>--agent codex<//> for one). It replaces only a file in the earlier format, keeping a switched-off policy or agent switched off (doctor says so, and that removing its <${Code}>"enabled": false<//> switches it on), and never overwrites any other file.
+        <${Code}>--agent claude<//> or <${Code}>--agent codex<//> for one). It replaces only a file in the earlier format, keeping a switched-off policy or agent switched off (install, update and doctor name what is off, and that removing its <${Code}>"enabled": false<//> switches it on), and never overwrites any other file.
       </p>
     <//>
     <${Topic} title="Checking that it works">

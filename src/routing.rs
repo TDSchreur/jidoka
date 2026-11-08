@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 
 mod policy;
 pub(crate) use policy::{
-    install_starter, load, parse_start_options, policy_path_in, read, switched_off, Coverage, Host,
-    NotRouted, Policy, Resolution, Starter, COPILOT_NOTICE,
+    install_starter, load, parse_start_options, policy_path_in, read, Coverage, Host, NotRouted,
+    Policy, Resolution, Starter, COPILOT_NOTICE,
 };
 
 /// The coding agent a selection is for. Copilot CLI is not here: it records no selection.

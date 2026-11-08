@@ -6,7 +6,7 @@
 //! only when `--create-model-routing` asks for it.
 
 use crate::install::{bundled_skill_files, claude_config_dirs, skills_root};
-use crate::routing::{install_starter, policy_path_in, switched_off, RoutingAgent, Starter};
+use crate::routing::{install_starter, policy_path_in, RoutingAgent, Starter};
 use serde::Serialize;
 use std::{
     ffi::OsString,
@@ -676,25 +676,12 @@ fn create_model_routing(agents: &[RoutingAgent], machine: &Machine) -> Result<St
     )?;
     let shown = printable(&path.display().to_string());
     match install_starter(&path, agents) {
-        Ok(done @ (Starter::Created | Starter::Replaced)) => {
-            let (all_off, off_agents) = switched_off(&path).unwrap_or_default();
-            let next = if all_off {
-                "The policy is switched off, so runs do not use it yet. Edit the models and efforts, and remove \"enabled\": false at the top (or set it to true) to switch it on."
-                    .to_string()
-            } else if off_agents.is_empty() {
-                "Edit the models and efforts, or set \"enabled\": false to switch it off."
-                    .to_string()
-            } else {
-                format!(
-                    "Edit the models and efforts, or set \"enabled\": false to switch it off. The entry for {} is switched off; remove its \"enabled\": false (or set it to true) to switch it on.",
-                    off_agents.join(" and ")
-                )
-            };
-            Ok(format!(
-                "{}. It is a starter policy for {} that routes every stage (define, build, check, finish) of each. {next}",
-                done.summary(&shown).unwrap_or_default(),
+        Ok(done @ (Starter::Created | Starter::Replaced(_))) => {
+            let about = format!(
+                "It is a starter policy for {} that routes every stage (define, build, check, finish) of each.",
                 agents.iter().map(|agent| agent.name()).collect::<Vec<_>>().join(" and ")
-            ))
+            );
+            Ok(done.message(&shown, Some(&about)).unwrap_or_default())
         }
         // A link that points nowhere is "there" for creating but not for reading, so say which it is.
         Ok(Starter::Left) if fs::metadata(&path).is_err() => Ok(format!(
