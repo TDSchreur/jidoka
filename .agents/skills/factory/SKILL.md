@@ -5,6 +5,8 @@ description: Assess a software change and select the appropriate factory executi
 
 # Factory workflow selection
 
+Start each run in a fresh agent session or after `/clear`, and heed the warning `factory run begin` prints when the session already belongs to another run.
+
 Assess the request before starting a workflow. Identify the intended outcome and constraints, read applicable project instructions, and inspect enough relevant code or documentation to understand the change.
 
 Apply these rules in order:

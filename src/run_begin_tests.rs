@@ -114,6 +114,10 @@ struct FakeApi {
     existing: RefCell<Option<RunSummary>>,
     /// Every update fails, as when the server cannot be reached.
     fail_updates: std::cell::Cell<bool>,
+    /// Runs that record the session: id and title.
+    session_runs: RefCell<Vec<(String, String)>>,
+    /// Listing runs fails.
+    fail_listing: std::cell::Cell<bool>,
 }
 
 impl RunApi for FakeApi {
@@ -136,6 +140,13 @@ impl RunApi for FakeApi {
             .borrow()
             .clone()
             .ok_or_else(|| format!("Run {id} was not found"))
+    }
+
+    fn runs_with_session(&self, _session: &str) -> Result<Vec<(String, String)>, String> {
+        if self.fail_listing.get() {
+            return Err("the server is not reachable".into());
+        }
+        Ok(self.session_runs.borrow().clone())
     }
 
     fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
@@ -548,6 +559,7 @@ fn the_output_has_the_run_first_and_the_same_fields_in_json() {
         base_commit: "abc123".into(),
         gitignore_added: vec![".factory/".into()],
         gitignore_warning: None,
+        session_warning: None,
     };
     let text = render(&begun);
     assert!(text.starts_with("Run: 100\n"), "{text}");
@@ -1012,6 +1024,7 @@ fn the_text_output_is_printable_whatever_the_folder_is_called() {
         base_commit: "abc".into(),
         gitignore_added: Vec::new(),
         gitignore_warning: Some("bad \u{1b}[2J".into()),
+        session_warning: None,
     };
     assert!(!render(&begun).chars().any(|c| c.is_control() && c != '\n'));
 }
@@ -1117,4 +1130,62 @@ fn a_name_that_is_taken_is_found_before_anything_else_can_fail() {
     let resume_api = api_with_run("B work");
     let begun = begin(&project.repo, &fixed, &resume_api, None, None).unwrap();
     assert_ne!(begun.worktree, a.worktree);
+}
+
+fn api_with_session_run(id: &str, title: &str) -> FakeApi {
+    let api = FakeApi::default();
+    api.session_runs
+        .borrow_mut()
+        .push((id.into(), title.into()));
+    api
+}
+
+#[test]
+fn a_session_already_on_another_run_gives_a_warning() {
+    let project = Project::new();
+    let api = api_with_session_run("7", "Earlier work");
+    let begun = begin(&project.repo, &options("New"), &api, Some("s".into()), None).unwrap();
+    let warning = begun.session_warning.clone().unwrap();
+    assert!(warning.contains("7 (Earlier work)"), "{warning}");
+    assert!(warning.contains("/clear"), "{warning}");
+    assert!(render(&begun).contains("Warning: This agent session"));
+    let json = serde_json::to_value(&begun).unwrap();
+    assert_eq!(json["session_warning"], warning);
+}
+
+#[test]
+fn no_session_id_or_no_other_run_gives_no_warning() {
+    let project = Project::new();
+    let api = api_with_session_run("7", "Earlier work");
+    let begun = begin(&project.repo, &options("A"), &api, None, None).unwrap();
+    assert_eq!(begun.session_warning, None);
+
+    let project = Project::new();
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("B"), &api, Some("s".into()), None).unwrap();
+    assert_eq!(begun.session_warning, None);
+}
+
+#[test]
+fn a_resumed_run_is_not_counted_against_itself() {
+    let project = Project::new();
+    let api = api_with_session_run("55", "Resumed");
+    *api.existing.borrow_mut() = Some(RunSummary {
+        title: "Resumed".into(),
+        finished: false,
+        worktree: None,
+    });
+    let mut opts = options("");
+    opts.run = Some("55".into());
+    let begun = begin(&project.repo, &opts, &api, Some("s".into()), None).unwrap();
+    assert_eq!(begun.session_warning, None);
+}
+
+#[test]
+fn a_list_failure_gives_no_warning_and_begin_succeeds() {
+    let project = Project::new();
+    let api = FakeApi::default();
+    api.fail_listing.set(true);
+    let begun = begin(&project.repo, &options("C"), &api, Some("s".into()), None).unwrap();
+    assert_eq!(begun.session_warning, None);
 }
