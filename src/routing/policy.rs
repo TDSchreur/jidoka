@@ -710,6 +710,8 @@ fn write_starter(path: &Path, agents: &[RoutingAgent], off: Off) -> io::Result<b
             Ok(true)
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        // Windows refuses a folder at `path` with "access denied" rather than "already exists".
+        Err(_) if fs::symlink_metadata(path).is_ok() => Ok(false),
         Err(error) => Err(error),
     }
 }
