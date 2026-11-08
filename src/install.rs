@@ -287,17 +287,32 @@ fn remove_retired_humanizer(root: &Path) {
     match fs::remove_dir_all(&dir) {
         Ok(()) => println!("Removed: {}", dir.display()),
         Err(error) => eprintln!(
-            "warning: cannot remove retired skill {}: {error}",
+            "warning: cannot remove retired skill {}: {error}. It may be partly deleted and will not be retried, so remove the folder by hand.",
             dir.display()
         ),
     }
 }
 
+/// True when `dir` holds exactly the retired files and the folders they sit in, with the same
+/// content (ignoring CR), and nothing else.
 fn is_retired_humanizer(dir: &Path) -> bool {
     let mut found = Vec::new();
-    if !collect_files(dir, Path::new(""), &mut found)
-        || found.len() != RETIRED_HUMANIZER_FILES.len()
-    {
+    if !collect_entries(dir, Path::new(""), &mut found) {
+        return false;
+    }
+    let mut expected: Vec<PathBuf> = Vec::new();
+    for (path, _) in RETIRED_HUMANIZER_FILES {
+        let path = Path::new(path);
+        expected.extend(
+            path.parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(Path::to_path_buf),
+        );
+        expected.push(path.to_path_buf());
+    }
+    expected.sort();
+    found.sort();
+    if found != expected {
         return false;
     }
     // Git may have checked the files out with CRLF line endings, so compare without them.
@@ -308,14 +323,13 @@ fn is_retired_humanizer(dir: &Path) -> bool {
             .collect::<Vec<_>>()
     };
     RETIRED_HUMANIZER_FILES.iter().all(|(path, content)| {
-        found.iter().any(|found| found == Path::new(path))
-            && fs::read(dir.join(path)).is_ok_and(|actual| plain(&actual) == plain(content))
+        fs::read(dir.join(path)).is_ok_and(|actual| plain(&actual) == plain(content))
     })
 }
 
-/// Lists the files under `dir` relative to it. Returns false when `dir` is missing, or when it
+/// Lists the files and folders under `dir` relative to it. Returns false when `dir` is missing, or when it
 /// holds anything but plain files and folders, such as a symlink.
-fn collect_files(dir: &Path, relative: &Path, found: &mut Vec<PathBuf>) -> bool {
+fn collect_entries(dir: &Path, relative: &Path, found: &mut Vec<PathBuf>) -> bool {
     let Ok(kind) = dir.symlink_metadata().map(|meta| meta.file_type()) else {
         return false;
     };
@@ -331,9 +345,8 @@ fn collect_files(dir: &Path, relative: &Path, found: &mut Vec<PathBuf>) -> bool 
             return false;
         };
         let path = relative.join(entry.file_name());
-        if kind.is_file() {
-            found.push(path);
-        } else if !(kind.is_dir() && collect_files(&entry.path(), &path, found)) {
+        found.push(path.clone());
+        if !(kind.is_file() || kind.is_dir() && collect_entries(&entry.path(), &path, found)) {
             return false;
         }
     }
@@ -1160,12 +1173,15 @@ mod tests {
     #[test]
     fn install_keeps_a_humanizer_that_is_not_the_factory_copy() {
         let home = tempfile::tempdir().unwrap();
-        let mutations: [(&str, Mutation); 5] = [
+        let mutations: [(&str, Mutation); 6] = [
             ("edited skill", |h| {
                 fs::write(h.join("SKILL.md"), "my own edits").unwrap()
             }),
             ("edited yaml", |h| {
                 fs::write(h.join("agents/openai.yaml"), "mine").unwrap()
+            }),
+            ("extra empty dir", |h| {
+                fs::create_dir(h.join("extra")).unwrap()
             }),
             ("extra file", |h| {
                 fs::write(h.join("notes.md"), "mine").unwrap()
@@ -1187,6 +1203,7 @@ mod tests {
         }
     }
 
+    // Creating symlinks on Windows needs a privilege that CI and users often lack, so this runs on Unix only.
     #[cfg(unix)]
     #[test]
     fn install_keeps_a_humanizer_that_contains_a_symlink() {
