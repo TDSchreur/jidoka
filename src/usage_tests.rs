@@ -1660,6 +1660,33 @@ mod auto_block {
     }
 
     #[test]
+    fn a_pause_block_stays_when_the_collection_cannot_show_the_pause_is_over() {
+        // Tracking switched off.
+        let mut off = Fixture::new();
+        assert_eq!(off.limit(1_000).status, RunStatus::Blocked);
+        off.settings.enabled = false;
+        collect_and_store(&off.store, &off.id, &off.settings).unwrap();
+        assert_eq!(off.run().status, RunStatus::Blocked);
+        assert_eq!(off.run().events.len(), 1);
+
+        // The session logs are gone.
+        let mut gone = Fixture::new();
+        assert_eq!(gone.limit(1_000).status, RunStatus::Blocked);
+        fs::remove_dir_all(gone.world.dir.path().join("claude")).unwrap();
+        collect_and_store(&gone.store, &gone.id, &gone.settings).unwrap();
+        assert_eq!(gone.run().status, RunStatus::Blocked);
+        assert_eq!(gone.run().events.len(), 1);
+
+        // The read ran out of time.
+        let mut slow = Fixture::new();
+        assert_eq!(slow.limit(1_000).status, RunStatus::Blocked);
+        slow.settings.budget = Duration::ZERO;
+        collect_and_store(&slow.store, &slow.id, &slow.settings).unwrap();
+        assert_eq!(slow.run().status, RunStatus::Blocked);
+        assert_eq!(slow.run().events.len(), 1);
+    }
+
+    #[test]
     fn a_block_the_agent_set_is_never_changed_by_a_pause() {
         let mut f = Fixture::new();
         f.agent_update(RunStatus::Blocked, Some("Need keys"));

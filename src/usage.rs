@@ -200,6 +200,10 @@ pub(crate) struct Usage {
     /// Gaps of more than ten minutes between activity, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) idle: Vec<IdleGap>,
+    /// Whether the logs were found and read completely, so an empty `pauses` means the log shows none.
+    /// Not stored: only the collection that just ran knows.
+    #[serde(skip)]
+    pub(crate) log_complete: bool,
 }
 
 impl Usage {
@@ -215,6 +219,7 @@ impl Usage {
             unattributed: Tokens::default(),
             pauses: Vec::new(),
             idle: Vec::new(),
+            log_complete: false,
         }
     }
 
@@ -589,6 +594,7 @@ fn collect_limited(
     }
     let (rows, unattributed, counted) = attribute(target, runs, &read.sessions, now);
     let (pauses, idle) = derive_pauses(target, &read.sessions, now);
+    let log_complete = read.roots_found > 0 && !read.timed_out && !read.truncated;
     let mut notes: Vec<String> = Vec::new();
     for note in &read.notes {
         if note
@@ -640,6 +646,7 @@ fn collect_limited(
         usage.unattributed = unattributed;
         usage.pauses = pauses;
         usage.idle = idle;
+        usage.log_complete = log_complete;
         return usage;
     }
     let mut no_data: Vec<Stage> = Vec::new();
@@ -664,6 +671,7 @@ fn collect_limited(
         unattributed,
         pauses,
         idle,
+        log_complete,
     }
 }
 
@@ -732,7 +740,10 @@ fn keep_more(old: Option<&Usage>, new: Usage) -> Usage {
     let mut kept = old.clone();
     kept.status = UsageStatus::Partial;
     kept.collected_at = new.collected_at;
-    kept.pauses = new.pauses;
+    kept.log_complete = false;
+    if !new.pauses.is_empty() {
+        kept.pauses = new.pauses;
+    }
     kept.idle = new.idle;
     let note = "the counts kept from an earlier reading are higher than the latest reading found: a session log is no longer available, or its work is now shared with another run";
     if !kept.notes.iter().any(|n| n == note) {
@@ -843,12 +854,18 @@ fn collect_locked(
         fresh
     };
     let latest = usage.pauses.last().cloned();
+    let authoritative = settings.enabled && usage.log_complete;
     if !target
         .usage
         .as_ref()
         .is_some_and(|old| same_counts(old, &usage))
     {
         store.set_usage(id, usage)?;
+    }
+    // "No pause in the log" only counts when the whole log was read: a run is never resumed on a reading
+    // that is off, partial or empty.
+    if latest.is_none() && !authoritative {
+        return Ok(());
     }
     store.apply_pause(id, latest.as_ref())
 }
@@ -868,11 +885,7 @@ pub(crate) fn collect_active(
     }
     let mut first_error = None;
     for run in store.list()? {
-        let automatic = run.status == crate::run::RunStatus::Blocked
-            && run
-                .blocking_reason
-                .as_deref()
-                .is_some_and(|reason| PauseKind::from_reason(reason).is_some());
+        let automatic = crate::run::is_automatic_reason(run.status, run.blocking_reason.as_deref());
         let watched = run.status == crate::run::RunStatus::Running || automatic;
         let recent = run
             .updated_at

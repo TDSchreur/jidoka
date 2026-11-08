@@ -1126,7 +1126,7 @@ impl RunStore {
         };
         let mut next = runs[index].clone();
         let agent_at = next.agent_updated_at.or(next.updated_at);
-        let automatic = is_automatic_reason(&next.blocking_reason);
+        let automatic = is_automatic_reason(next.status, next.blocking_reason.as_deref());
         let now = updated_now()?;
         let (kind, at) = match (next.status, latest) {
             (
@@ -1249,11 +1249,10 @@ impl FieldUpdate {
     }
 }
 
-/// Whether the blocking reason is one the dashboard sets for a pause, not one the agent gave.
-fn is_automatic_reason(reason: &Option<String>) -> bool {
-    reason
-        .as_deref()
-        .is_some_and(|reason| PauseKind::from_reason(reason).is_some())
+/// Whether a run is blocked for a reason the dashboard sets for a pause, not one the agent gave.
+pub(crate) fn is_automatic_reason(status: RunStatus, reason: Option<&str>) -> bool {
+    status == RunStatus::Blocked
+        && reason.is_some_and(|reason| PauseKind::from_reason(reason).is_some())
 }
 
 /// Appends a mark when the stage, rework or ticket in progress differs from the last one. The mark keeps
