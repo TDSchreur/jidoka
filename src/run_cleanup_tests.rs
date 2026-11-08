@@ -136,11 +136,6 @@ impl Fixture {
         }
     }
 
-    /// The worktree's line in `git worktree list --porcelain`, as git prints its path.
-    fn listed_line(&self) -> String {
-        format!("worktree {}\n", self.wt.display())
-    }
-
     fn recorded(&self) -> Recorded {
         Recorded {
             id: "7".into(),
@@ -272,7 +267,7 @@ fn a_rerun_after_the_worktree_was_deleted_by_hand_succeeds() {
     assert_eq!(cleaned.worktree, Step::Removed);
     assert_eq!(cleaned.branch, Step::Removed);
     assert!(!fx.branch_exists());
-    assert!(!run_git(&fx.repo, &["worktree", "list", "--porcelain"]).contains("wt"));
+    assert!(listed_wt(&fx).is_none());
 }
 
 #[test]
@@ -352,8 +347,36 @@ fn a_fully_clean_rerun_reports_already_clean() {
     assert!(!none.needs_update());
 }
 
-fn listed(fx: &Fixture) -> String {
-    run_git(&fx.repo, &["worktree", "list", "--porcelain"])
+/// One entry of `git worktree list --porcelain`.
+struct Listed {
+    path: String,
+    locked: bool,
+}
+
+fn listed(fx: &Fixture) -> Vec<Listed> {
+    let mut entries: Vec<Listed> = Vec::new();
+    for line in run_git(&fx.repo, &["worktree", "list", "--porcelain"]).lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            entries.push(Listed {
+                path: path.to_string(),
+                locked: false,
+            });
+        } else if line.starts_with("locked") {
+            if let Some(entry) = entries.last_mut() {
+                entry.locked = true;
+            }
+        }
+    }
+    entries
+}
+
+/// The fixture worktree's entry. Git prints its path with forward slashes and long names, so it is matched
+/// by the last component of the path, which is the worktree directory's name.
+fn listed_wt(fx: &Fixture) -> Option<Listed> {
+    let name = fx.wt.file_name().unwrap().to_string_lossy().into_owned();
+    listed(fx)
+        .into_iter()
+        .find(|entry| entry.path.rsplit(['/', '\\']).next() == Some(name.as_str()))
 }
 
 #[test]
@@ -374,9 +397,8 @@ fn a_stale_worktree_leaves_other_stale_registrations_alone() {
     fs::remove_dir_all(&other).unwrap();
     fs::remove_dir_all(&fx.wt).unwrap();
     fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
-    let list = listed(&fx);
-    assert!(list.contains("other-wt"), "{list}");
-    assert!(!list.contains(&fx.listed_line()), "{list}");
+    assert!(listed(&fx).iter().any(|e| e.path.ends_with("other-wt")));
+    assert!(listed_wt(&fx).is_none());
 }
 
 #[test]
@@ -388,7 +410,8 @@ fn a_locked_stale_worktree_refuses_and_removes_nothing() {
     assert!(message.contains("locked"), "{message}");
     assert!(message.contains("Nothing was removed"), "{message}");
     assert!(fx.branch_exists());
-    assert!(listed(&fx).contains(&fx.listed_line()), "{}", listed(&fx));
+    let entry = listed_wt(&fx).expect("the locked worktree stays registered");
+    assert!(entry.locked, "the entry is not locked");
 }
 
 #[test]
@@ -482,7 +505,7 @@ fn a_stale_worktree_behind_a_symlinked_parent_is_matched() {
     fs::remove_dir_all(&fx.wt).unwrap();
     let cleaned = fx.cleanup(&run, &fx.gh()).unwrap();
     assert_eq!(cleaned.worktree, Step::Removed);
-    assert!(!listed(&fx).contains(&fx.listed_line()));
+    assert!(listed_wt(&fx).is_none());
 }
 
 #[test]

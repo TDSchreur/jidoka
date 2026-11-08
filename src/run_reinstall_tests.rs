@@ -100,7 +100,7 @@ impl Fixture {
     fn named(factory: bool, name: &str) -> Self {
         let tmp = TempDir::new().unwrap();
         let repo = tmp.path().join(name);
-        fs::create_dir(&repo).unwrap();
+        fs::create_dir_all(&repo).unwrap();
         git(&repo, &["init", "-q", "-b", "develop"]);
         if factory {
             fs::write(repo.join("Cargo.toml"), "[package]\nname = \"factory\"\n").unwrap();
@@ -176,7 +176,7 @@ fn off_a_terminal_the_commands_are_printed_and_nothing_runs() {
     assert!(io.ran.is_empty() && io.asked.is_empty());
     assert!(io.said.contains(&format!(
         "cargo install --path {} --locked --force",
-        fx.repo.display()
+        quote(&fx.repo.display().to_string(), false)
     )));
     assert!(io
         .said
@@ -335,6 +335,8 @@ fn printed_commands_quote_a_path_with_a_space() {
     assert_eq!(quote("--locked", false), "--locked");
 }
 
+// Windows cannot create a directory name with control characters.
+#[cfg(unix)]
 #[test]
 fn control_characters_in_a_path_never_reach_the_terminal() {
     let fx = Fixture::named(true, "re\u{1b}[31mpo");
@@ -430,35 +432,24 @@ fn on_windows_a_path_the_shell_would_expand_gets_no_pasteable_command() {
 
 #[test]
 fn on_windows_an_allowlisted_path_is_printed_paste_ready() {
-    for (name, quoted) in [
-        ("C:\\Program Files (x86)\\f", true),
-        ("C:\\R-D_1.2\\f", false),
-    ] {
+    // Relative names, so that they are created under the temporary base on every platform.
+    for name in ["Program Files (x86)/f", "R-D_1.2/f", "RUNNER~1/f"] {
         let fx = Fixture::named(true, name);
         fx.windows.set(true);
         let path = fx.repo.display().to_string();
         let mut io = Recorder::default();
         fx.offer(Some(&fx.head), &["claude"], false, false, &mut io)
             .unwrap();
-        let want = if quoted {
-            format!("--path \"{path}\" --locked")
-        } else {
-            format!("--path {path} --locked")
-        };
-        assert!(io.said.contains(&want), "{}", io.said);
+        let want = format!("--path {} --locked", quote(&path, true));
+        assert!(io.said.contains(&want), "{want}: {}", io.said);
         assert!(!io.said.contains("by hand"), "{}", io.said);
     }
+    assert_eq!(quote("RUNNER~1", true), "\"RUNNER~1\"");
 }
 
 #[test]
 fn on_windows_a_path_outside_the_allowlist_gets_the_by_hand_message() {
-    for name in [
-        "C:\\a\u{201d}; calc; \u{201d}b",
-        "C:\\a,b",
-        "C:\\R&D",
-        "C:\\a@b",
-        "C:\\a'b",
-    ] {
+    for name in ["a\u{201d}; calc; \u{201d}b", "a,b", "R&D", "a@b", "a'b"] {
         let fx = Fixture::named(true, name);
         fx.windows.set(true);
         let mut io = Recorder::default();

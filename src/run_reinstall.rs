@@ -53,11 +53,12 @@ impl Command {
 }
 
 /// Whether `word` can be pasted into both PowerShell and cmd once double-quoted: only ASCII letters and
-/// digits, spaces and `_ . - : \ / ( )`. Anything else (expansion, escapes, separators, look-alike quotes)
+/// digits, spaces and `_ . - : \ / ( ) ~`. `~` is allowed because Windows temp and user folders are often
+/// 8.3 short names such as `RUNNER~1`. Anything else (expansion, escapes, separators, look-alike quotes)
 /// could be interpreted by one of them.
 fn windows_safe(word: &str) -> bool {
     word.chars()
-        .all(|c| c.is_ascii_alphanumeric() || " _.-:\\/()".contains(c))
+        .all(|c| c.is_ascii_alphanumeric() || " _.-:\\/()~".contains(c))
 }
 
 /// Whether `word` cannot be quoted safely for both PowerShell and cmd.
@@ -66,9 +67,10 @@ fn windows_unsafe(word: &str) -> bool {
 }
 
 /// `word` as one shell word: left alone when it is plain, otherwise in POSIX single quotes, or in double
-/// quotes on Windows. Double quotes only keep spaces together there: PowerShell still expands `$` and the
-/// backtick and cmd `%`, and `\"` means nothing to cmd, so a Windows word with such characters must not be
-/// pasted at all (see `windows_safe`).
+/// quotes on Windows. On Windows `~` is not plain, so a word with it (such as `RUNNER~1`) is double-quoted,
+/// where it is inert in PowerShell and cmd. Double quotes only keep spaces together there: PowerShell still
+/// expands `$` and the backtick and cmd `%`, and `\"` means nothing to cmd, so a Windows word with such
+/// characters must not be pasted at all (see `windows_safe`).
 pub(crate) fn quote(word: &str, windows: bool) -> String {
     let plain = |c: char| {
         c.is_ascii_alphanumeric() || (if windows { "_-./:\\" } else { "_-./:=,@+" }).contains(c)
