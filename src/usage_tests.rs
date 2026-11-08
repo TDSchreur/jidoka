@@ -1461,6 +1461,22 @@ fn no_log_text_reaches_the_stored_usage() {
     assert!(!serde_json::to_string(&usage).unwrap().contains("SECRET"));
 }
 
+#[test]
+fn a_partial_read_that_finds_no_pause_keeps_the_pauses_found_before() {
+    let old: Usage = serde_json::from_value(json!({
+        "status": "tracked", "collected_at": 5,
+        "rows": [{"stage": "build", "model": "m", "input": 100, "output": 10}],
+        "pauses": [{"kind": "usage_limit", "at": 7}]
+    }))
+    .unwrap();
+    let new = Usage::not_tracked("logs gone", 9);
+    let kept = keep_more(Some(&old), new);
+    assert_eq!(kept.status, UsageStatus::Partial);
+    assert_eq!(kept.pauses, old.pauses);
+    assert_eq!(kept.collected_at, 9);
+    assert!(!kept.log_complete);
+}
+
 // --- blocking and resuming through the store --------------------------------------------------------
 
 mod auto_block {
@@ -1556,6 +1572,29 @@ mod auto_block {
             }
             self.store.update(&self.id, update).unwrap();
         }
+    }
+
+    #[test]
+    fn a_repeated_complete_collection_with_unchanged_logs_saves_nothing() {
+        let mut f = Fixture::new();
+        f.activity(1_000);
+        // A reopened store holds the saved usage, whose `log_complete` is not stored.
+        let path = f.world.dir.path().join("runs.json");
+        let stored = RunStore::open(&path).unwrap();
+        let before = stored.get(&f.id).unwrap().unwrap().usage.unwrap();
+        assert!(!before.log_complete);
+        // Wait until a new collection would carry a later timestamp, so a save would show.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while crate::run::updated_now().unwrap() <= before.collected_at {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "clock did not advance"
+            );
+            std::thread::yield_now();
+        }
+        collect_and_store(&stored, &f.id, &f.settings).unwrap();
+        let after = stored.get(&f.id).unwrap().unwrap().usage.unwrap();
+        assert_eq!(after.collected_at, before.collected_at);
     }
 
     #[test]

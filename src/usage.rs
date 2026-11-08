@@ -713,12 +713,16 @@ pub(crate) fn switched_off_by(value: Option<&str>) -> bool {
     })
 }
 
+/// Whether two readings hold the same counts. When they were taken and whether the log was read completely
+/// (not stored) are not counts.
 fn same_counts(a: &Usage, b: &Usage) -> bool {
     Usage {
         collected_at: 0,
+        log_complete: false,
         ..a.clone()
     } == Usage {
         collected_at: 0,
+        log_complete: false,
         ..b.clone()
     }
 }
@@ -854,7 +858,7 @@ fn collect_locked(
         fresh
     };
     let latest = usage.pauses.last().cloned();
-    let authoritative = settings.enabled && usage.log_complete;
+    let authoritative = usage.log_complete;
     if !target
         .usage
         .as_ref()
