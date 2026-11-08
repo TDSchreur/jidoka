@@ -35,8 +35,8 @@ main() {
   step cargo fmt --check
   step cargo clippy --all-targets --locked -- -D warnings
   step cargo test --locked
-  for name in delete-project help hidden-projects project-rows run-reports ticket-reports; do
-    step python3 "tests/dashboard-$name.py"
+  for test in tests/dashboard-*.py; do
+    step python3 "$test"
   done
   printf '\nAll checks passed.\n'
 }

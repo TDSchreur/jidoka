@@ -5,7 +5,7 @@ import unittest
 from dashboard_browser import run_dashboard
 
 RUNS = [
-    {"id": "1", "title": "Z running", "project": "/work/zeta", "stage": "build", "status": "running", "updated_at": 200},
+    {"id": "1", "title": "Z running", "project": "/work/zeta", "stage": "build", "status": "running", "updated_at": 350},
     {"id": "2", "title": "A running", "project": "/work/alpha", "stage": "build", "status": "running", "updated_at": 300},
     {"id": "3", "title": "Z waiting", "project": "/work/zeta", "stage": "build", "status": "blocked", "updated_at": 100},
     {"id": "4", "title": "A define", "project": "/work/alpha", "stage": "define", "status": "running", "updated_at": 400},
@@ -32,9 +32,10 @@ const check = setInterval(() => {
 class ProjectRowsTest(unittest.TestCase):
     def test_the_line_puts_blocked_runs_first_and_the_menu_lists_each_project(self):
         result = run_dashboard(RUNS, CHECK)
-        # Blocked first, then the most recently updated.
-        self.assertEqual(result["titles"], ["Z waiting", "A define", "A running", "Z running"])
-        self.assertEqual(result["projects"], ["zeta", "alpha", "alpha", "zeta"])
+        # One order across both projects: blocked first, then the most recently updated. Sorting within each
+        # project would give alpha's runs before zeta's.
+        self.assertEqual(result["titles"], ["Z waiting", "A define", "Z running", "A running"])
+        self.assertEqual(result["projects"], ["zeta", "alpha", "zeta", "alpha"])
         self.assertEqual(result["where"], ["Build, blocked", "Define", "Build", "Build"])
         self.assertEqual(result["menu"], "Projects (2)")
         self.assertEqual(result["menuRows"], [["alpha", "2 runs"], ["zeta", "2 runs"]])

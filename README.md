@@ -453,10 +453,5 @@ Run `scripts/verify.sh` before finishing a change and opening a pull request. It
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
-python3 tests/dashboard-delete-project.py
-python3 tests/dashboard-help.py
-python3 tests/dashboard-hidden-projects.py
-python3 tests/dashboard-project-rows.py
-python3 tests/dashboard-run-reports.py
-python3 tests/dashboard-ticket-reports.py
+for test in tests/dashboard-*.py; do python3 "$test"; done
 ```

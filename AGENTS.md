@@ -37,7 +37,7 @@ Read the relevant guide when working on these files or tasks:
 - Format: `cargo fmt --check`
 - Lint: `cargo clippy --all-targets -- -D warnings`
 - Test: `cargo test`
-- Dashboard browser tests: `python3 tests/dashboard-<name>.py` for each of `delete-project`, `help`, `hidden-projects`, `project-rows`, `run-reports` and `ticket-reports` (needs `python3` and Chromium or Google Chrome; they share `tests/dashboard_browser.py`)
+- Dashboard browser tests: `python3 tests/dashboard-<name>.py` for every `tests/dashboard-*.py` (needs `python3` and Chromium or Google Chrome; they share `tests/dashboard_browser.py`, written for Linux and macOS and run on Linux only in CI)
 
 After a pull request merges, run `scripts/update-local.sh` from the main checkout to pull `develop`, rebuild, reinstall the `factory` command and the skills, and restart the dashboard, so local agents always use the latest factory.
 

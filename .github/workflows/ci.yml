@@ -38,12 +38,12 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
       # Uses the Chrome or Chromium preinstalled on ubuntu-latest; the tests look it up on PATH.
-      # Keep this list and its order in sync with scripts/verify.sh.
+      # Runs every tests/dashboard-*.py in name order, as scripts/verify.sh does.
       - name: Test the dashboard in a browser
         if: runner.os == 'Linux'
         run: |
-          for name in delete-project help hidden-projects project-rows run-reports ticket-reports; do
-            python3 "tests/dashboard-$name.py"
+          for test in tests/dashboard-*.py; do
+            python3 "$test"
           done
       - name: Build and inspect Windows release
         if: runner.os == 'Windows'

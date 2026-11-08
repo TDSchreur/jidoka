@@ -50,6 +50,7 @@ const check = setInterval(() => {
     location.reload();
   } else if (phase === 'reload') {
     if (rows.length !== 2 || !menuButton('Restore zeta')) return;
+    sessionStorage.setItem('hidden-stored', localStorage.getItem('hidden-projects'));
     sessionStorage.setItem('hidden-waiting', String(text(document.querySelector('.andon-summary')).includes('Nothing needs you.')));
     sessionStorage.setItem('hidden-test', 'watch-hidden');
   } else if (phase === 'watch-hidden') {
@@ -62,6 +63,7 @@ const check = setInterval(() => {
     clearInterval(check);
     fetch('/result', { method: 'POST', body: JSON.stringify({
       names: [...document.querySelectorAll('.projects-list .projects-name')].map(text),
+      storedWhileHidden: JSON.parse(sessionStorage.getItem('hidden-stored')),
       stored: JSON.parse(localStorage.getItem('hidden-projects')),
       hiddenWaiting: sessionStorage.getItem('hidden-waiting'),
       notifications: Number(sessionStorage.getItem('notification-count') || 0),
@@ -78,6 +80,7 @@ class HiddenProjectsTest(unittest.TestCase):
         result = run_dashboard(RUNS, CHECK)
         self.assertNotIn("diagnostic", result, result)
         self.assertEqual(result["names"], ["alpha", "zeta"])
+        self.assertEqual(result["storedWhileHidden"], ["/work/zeta"])
         self.assertEqual(result["stored"], [])
         self.assertTrue(result["waiting"])
         self.assertEqual(result["hiddenWaiting"], "true")

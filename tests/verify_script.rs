@@ -81,6 +81,7 @@ fn runs_the_ci_checks_in_order_and_reports_success() {
             "fmt --check",
             "clippy --all-targets --locked -- -D warnings",
             "test --locked",
+            "python3 tests/dashboard-assets.py",
             "python3 tests/dashboard-delete-project.py",
             "python3 tests/dashboard-help.py",
             "python3 tests/dashboard-hidden-projects.py",
@@ -131,7 +132,7 @@ fn a_failing_dashboard_test_fails_the_run() {
     assert!(!run.success, "{}", run.output);
     assert_eq!(
         run.checks.last().unwrap(),
-        "python3 tests/dashboard-delete-project.py"
+        "python3 tests/dashboard-assets.py"
     );
     assert!(!run.output.contains("All checks passed"));
 }
