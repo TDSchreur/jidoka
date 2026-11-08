@@ -50,6 +50,26 @@
     "accepted": ["fast"]
   },
   {
+    "id": "rename-module",
+    "request": "Rename the `config` module to `settings` and update every reference.",
+    "accepted": ["balanced", "fast"]
+  },
+  {
+    "id": "delete-export-command",
+    "request": "Delete the deprecated `export` subcommand and its tests.",
+    "accepted": ["balanced", "fast"]
+  },
+  {
+    "id": "docs-only",
+    "request": "Rewrite docs/guide.md so it explains how to install and set up the project.",
+    "accepted": ["balanced", "fast"]
+  },
+  {
+    "id": "explicit-full-rename",
+    "request": "Run factory-full: rename the `config` module to `settings`.",
+    "accepted": ["full"]
+  },
+  {
     "id": "continue-run",
     "request": "Continue run 42.",
     "accepted": ["none"]
