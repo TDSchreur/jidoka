@@ -655,7 +655,7 @@ function ModelRouting() {
 }</code></pre>
       <p>
         <${Code}>factory doctor --agent claude --create-model-routing<//> writes this starter with an entry for each agent (add${' '}
-        <${Code}>--agent claude<//> or <${Code}>--agent codex<//> for one). It replaces only a switched-on file in the earlier format, and never overwrites any other file.
+        <${Code}>--agent claude<//> or <${Code}>--agent codex<//> for one). It replaces only a file in the earlier format, keeping a switched-off policy or agent switched off, and never overwrites any other file.
       </p>
     <//>
     <${Topic} title="Checking that it works">
@@ -690,7 +690,7 @@ function ModelRouting() {
           ],
           [
             'Copilot CLI',
-            'Not supported. Copilot picks a subagent’s model from its own settings per agent name and offers no choice per call, so every stage there keeps the session’s model. ',
+            'Not supported. Copilot picks a subagent’s model from its own settings per agent name and offers no choice per call, so every Stage keeps the session’s model there.',
           ],
         ]}
       />

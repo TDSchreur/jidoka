@@ -88,11 +88,23 @@ pub(crate) struct Run {
     pub(crate) model_routing: Option<ModelRouting>,
 }
 
+/// Reads a stored selection, treating only the earlier shape (an object with `roles` or `tasks`) as absent.
+/// Any other invalid value is an error.
 fn routing_or_none<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<ModelRouting>, D::Error> {
-    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
-    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    if value
+        .as_object()
+        .is_some_and(|object| object.contains_key("roles") || object.contains_key("tasks"))
+    {
+        return Ok(None);
+    }
+    serde_json::from_value(value)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
@@ -1643,6 +1655,37 @@ mod tests {
         reopened
             .update(&run.id, update(&["--activity", "later"]))
             .unwrap();
+    }
+
+    #[test]
+    fn a_stored_selection_that_is_neither_current_nor_the_old_shape_is_an_error() {
+        for bad in [
+            r#"{"agent":"claude","stages":{"define":{"model":5}}}"#,
+            r#"{"agent":"claude","stages":{},"extra":1}"#,
+            r#"{"agent":"nobody","stages":{}}"#,
+            r#"5"#,
+            r#""roles""#,
+        ] {
+            let dir = TestDir::new();
+            let path = dir.0.path().join("runs.json");
+            let store = RunStore::open(&path).unwrap();
+            store
+                .create(NewRun {
+                    title: "bad".into(),
+                    project: "/work/repo".into(),
+                    repository: None,
+                    session: None,
+                    model_routing: Some(selection()),
+                })
+                .unwrap();
+            drop(store);
+            let text = fs::read_to_string(&path).unwrap();
+            let current = serde_json::to_string(&selection()).unwrap();
+            let replaced = text.replacen(&current, bad, 1);
+            assert_ne!(text, replaced, "the fixture must carry the bad value");
+            fs::write(&path, &replaced).unwrap();
+            assert!(load_runs(&path).is_err(), "{bad} was accepted");
+        }
     }
 
     #[test]

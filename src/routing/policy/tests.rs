@@ -545,7 +545,7 @@ fn the_policy_lives_in_the_factorys_config_directory() {
 }
 
 #[test]
-fn an_old_format_file_is_replaced_but_only_a_plain_switched_on_one() {
+fn an_old_format_file_is_replaced_unless_it_is_oversized_or_not_a_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("model-routing.json");
     let old = r#"{"agent":"claude","roles":{},"tasks":{}}"#;
@@ -556,14 +556,6 @@ fn an_old_format_file_is_replaced_but_only_a_plain_switched_on_one() {
     );
     assert!(read(&path).is_ok());
 
-    // Switched off, oversized and a directory are not replaced.
-    let off = r#"{"enabled":false,"agent":"claude","roles":{}}"#;
-    fs::write(&path, off).unwrap();
-    assert_eq!(
-        install_starter(&path, &[RoutingAgent::Claude]).unwrap(),
-        Starter::Left
-    );
-    assert_eq!(fs::read_to_string(&path).unwrap(), off);
     let big = format!("{{\"roles\":{{}},\"pad\":\"{}\"}}", "x".repeat(1 << 20));
     fs::write(&path, &big).unwrap();
     assert_eq!(
@@ -577,6 +569,79 @@ fn an_old_format_file_is_replaced_but_only_a_plain_switched_on_one() {
         install_starter(&folder, &[RoutingAgent::Claude]).unwrap(),
         Starter::Left
     );
+}
+
+fn replaced_starter(old: &str, agents: &[RoutingAgent]) -> serde_json::Value {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("model-routing.json");
+    fs::write(&path, old).unwrap();
+    assert_eq!(install_starter(&path, agents).unwrap(), Starter::Replaced);
+    serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap()
+}
+
+const BOTH: [RoutingAgent; 2] = [RoutingAgent::Claude, RoutingAgent::Codex];
+
+#[test]
+fn a_switched_off_old_file_is_replaced_by_a_switched_off_starter() {
+    for old in [
+        r#"{"enabled":false,"agent":"claude","roles":{}}"#,
+        r#"{"enabled":false,"agents":{"claude":{"roles":{}}}}"#,
+    ] {
+        let value = replaced_starter(old, &BOTH);
+        assert_eq!(value["enabled"], false, "{old}");
+        assert!(value["agents"]["claude"].get("enabled").is_none(), "{old}");
+        assert!(value["agents"]["codex"]["stages"]["build"].is_object());
+    }
+    // The switched-off starter is still a policy that reads, and a run start does not stop on it.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("model-routing.json");
+    fs::write(&path, r#"{"enabled":false,"roles":{}}"#).unwrap();
+    install_starter(&path, &BOTH).unwrap();
+    assert!(matches!(read(&path).unwrap(), Policy::Off));
+    assert_eq!(load(&path, Some(Host::Claude)).unwrap().selection, None);
+}
+
+#[test]
+fn a_switched_off_agent_in_an_old_file_stays_off_in_the_starter() {
+    let old = r#"{"agents":{
+        "claude":{"enabled":false,"roles":{}},
+        "codex":{"roles":{},"tasks":{}}}}"#;
+    let value = replaced_starter(old, &BOTH);
+    assert!(value.get("enabled").is_none_or(|on| on == true));
+    assert_eq!(value["agents"]["claude"]["enabled"], false);
+    assert!(value["agents"]["codex"].get("enabled").is_none());
+    assert!(value["agents"]["claude"]["stages"]["define"].is_object());
+
+    // Only the agents written to the starter carry a switch.
+    let value = replaced_starter(old, &[RoutingAgent::Codex]);
+    assert!(value["agents"].get("claude").is_none());
+    assert!(value["agents"]["codex"].get("enabled").is_none());
+}
+
+#[test]
+fn a_switched_on_old_file_gives_a_switched_on_starter_and_the_old_single_form_carries_only_the_top_switch(
+) {
+    let value = replaced_starter(r#"{"enabled":true,"roles":{}}"#, &BOTH);
+    assert_eq!(value["enabled"], true);
+    // The single-agent form has no agent entries to carry.
+    let value = replaced_starter(
+        r#"{"agent":"claude","roles":{},"agents":{"claude":{"enabled":false}}}"#,
+        &BOTH,
+    );
+    assert_eq!(value["enabled"], true);
+    assert!(value["agents"]["claude"].get("enabled").is_none());
+}
+
+#[test]
+fn a_starter_keeps_the_stages_in_workflow_order_and_is_pretty_printed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("model-routing.json");
+    create_starter(&path, &BOTH).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.ends_with("}\n") && text.lines().count() > 10, "{text}");
+    let at = |stage: &str| text.find(&format!("\"{stage}\"")).unwrap();
+    assert!(at("define") < at("build") && at("build") < at("check") && at("check") < at("finish"));
+    assert!(text.find("\"claude\"").unwrap() < text.find("\"codex\"").unwrap());
 }
 
 #[cfg(unix)]

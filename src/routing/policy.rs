@@ -10,7 +10,7 @@
 
 use super::{ModelChoice, ModelRouting, RoutingAgent};
 use crate::run::Stage;
-use serde::{de, Deserialize, Deserializer};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -340,6 +340,7 @@ impl Agents {
 
 /// Whether `text` is a policy file in the earlier format: roles and tasks in an agent entry, or the
 /// single-agent form (`agent`, `roles` or `tasks` at the top). Text that is not JSON is not old-format.
+#[cfg(test)]
 pub(crate) fn is_old_format(text: &str) -> bool {
     serde_json::from_str::<Value>(text).is_ok_and(|value| old_format(&value))
 }
@@ -450,49 +451,92 @@ pub(crate) fn load(path: &Path, host: Option<Host>) -> Result<Resolution, String
         .map_err(|problem| format!("{}: {problem}", path.display()))
 }
 
-/// The cost-optimised model and effort per Stage in a starter entry.
-fn starter_choices(agent: RoutingAgent) -> [(Stage, &'static str, &'static str); 4] {
-    match agent {
-        RoutingAgent::Claude => [
-            (Stage::Define, "sonnet", "low"),
-            (Stage::Build, "sonnet", "low"),
-            (Stage::Check, "sonnet", "medium"),
-            (Stage::Finish, "haiku", "low"),
-        ],
-        RoutingAgent::Codex => [
-            (Stage::Define, "gpt-6.1-terra", "low"),
-            (Stage::Build, "gpt-6.1-terra", "low"),
-            (Stage::Check, "gpt-6.1-terra", "medium"),
-            (Stage::Finish, "gpt-6-luna", "low"),
-        ],
+/// The cost-optimised model and effort of each Stage in a starter entry, in workflow order.
+#[derive(Serialize)]
+struct StarterStages {
+    define: ModelChoice,
+    build: ModelChoice,
+    check: ModelChoice,
+    finish: ModelChoice,
+}
+
+/// One agent's starter entry; `enabled` is written only when it is off.
+#[derive(Serialize)]
+struct StarterEntry {
+    #[serde(skip_serializing_if = "is_true")]
+    enabled: bool,
+    stages: StarterStages,
+}
+
+#[derive(Serialize)]
+struct StarterAgents {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    claude: Option<StarterEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    codex: Option<StarterEntry>,
+}
+
+#[derive(Serialize)]
+struct StarterFile {
+    enabled: bool,
+    agents: StarterAgents,
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+fn choice(model: &str, effort: &str) -> ModelChoice {
+    ModelChoice {
+        model: model.into(),
+        effort: Some(effort.into()),
     }
 }
 
-fn starter_entry(agent: RoutingAgent) -> String {
-    let stages: Vec<String> = starter_choices(agent)
-        .iter()
-        .map(|(stage, model, effort)| {
-            format!(
-                "        \"{}\": {{ \"model\": \"{model}\", \"effort\": \"{effort}\" }}",
-                stage.name()
-            )
-        })
-        .collect();
-    format!(
-        "    \"{}\": {{\n      \"stages\": {{\n{}\n      }}\n    }}",
-        agent.name(),
-        stages.join(",\n")
-    )
+fn starter_stages(agent: RoutingAgent) -> StarterStages {
+    match agent {
+        RoutingAgent::Claude => StarterStages {
+            define: choice("sonnet", "low"),
+            build: choice("sonnet", "low"),
+            check: choice("sonnet", "medium"),
+            finish: choice("haiku", "low"),
+        },
+        RoutingAgent::Codex => StarterStages {
+            define: choice("gpt-6.1-terra", "low"),
+            build: choice("gpt-6.1-terra", "low"),
+            check: choice("gpt-6.1-terra", "medium"),
+            finish: choice("gpt-6-luna", "low"),
+        },
+    }
+}
+
+/// Which switches of a replaced old-format file are off; they are carried into the starter.
+#[derive(Clone, Copy, Default)]
+struct Off {
+    all: bool,
+    claude: bool,
+    codex: bool,
 }
 
 /// A starting policy written by `factory doctor --create-model-routing`: an entry routing all four Stages
-/// for each agent in `agents`.
-fn starter(agents: &[RoutingAgent]) -> String {
-    let entries: Vec<String> = agents.iter().map(|agent| starter_entry(*agent)).collect();
-    format!(
-        "{{\n  \"enabled\": true,\n  \"agents\": {{\n{}\n  }}\n}}\n",
-        entries.join(",\n")
-    )
+/// for each agent in `agents`, switched on except what `off` carries over.
+fn starter(agents: &[RoutingAgent], off: Off) -> String {
+    let entry = |agent, is_off: bool| {
+        agents.contains(&agent).then(|| StarterEntry {
+            enabled: !is_off,
+            stages: starter_stages(agent),
+        })
+    };
+    let file = StarterFile {
+        enabled: !off.all,
+        agents: StarterAgents {
+            claude: entry(RoutingAgent::Claude, off.claude),
+            codex: entry(RoutingAgent::Codex, off.codex),
+        },
+    };
+    let mut text = serde_json::to_string_pretty(&file).expect("the starter serializes");
+    text.push('\n');
+    text
 }
 
 /// What `install_starter` did.
@@ -505,44 +549,65 @@ pub(crate) enum Starter {
     Left,
 }
 
-/// Whether the file at `path` is a regular file (not a link) that is within the size cap and in the
-/// old format and still switched on. A switched-off file is the user's choice to not route, so it stays.
-fn is_replaceable_old_file(path: &Path) -> bool {
-    let Ok(metadata) = fs::symlink_metadata(path) else {
-        return false;
-    };
-    if !metadata.is_file() || metadata.len() > MAX_POLICY_BYTES {
-        return false;
+impl Starter {
+    /// What happened to the file at `shown`, or `None` when nothing was written.
+    pub(crate) fn summary(self, shown: &str) -> Option<String> {
+        match self {
+            Self::Created => Some(format!("Created model routing policy {shown}")),
+            Self::Replaced => Some(format!(
+                "Replaced old-format model routing policy {shown} with the per-stage starter; a switch that was off stays off"
+            )),
+            Self::Left => None,
+        }
     }
-    let Ok(mut file) = fs::File::open(path) else {
-        return false;
-    };
-    // Checked again on the open file, and read bounded, as `read` does.
-    if !file.metadata().is_ok_and(|opened| opened.is_file()) {
-        return false;
-    }
-    let mut text = String::new();
-    if (&mut file)
-        .take(MAX_POLICY_BYTES + 1)
-        .read_to_string(&mut text)
-        .is_err()
-        || text.len() as u64 > MAX_POLICY_BYTES
-    {
-        return false;
-    }
-    is_old_format(&text)
-        && serde_json::from_str::<Value>(&text)
-            .is_ok_and(|value| value.get("enabled") != Some(&Value::Bool(false)))
 }
 
-/// Like `create_starter`, but an old-format file at `path` is deleted first so the starter replaces it.
-/// A current-format, unrecognised, unreadable or non-regular file (a link included) is left alone.
+/// The switches of the file at `path` when it is a regular file (not a link) within the size cap and in
+/// the old format, whether switched on or off: such a file is replaced and its switches carried over.
+fn old_file_switches(path: &Path) -> Option<Off> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_POLICY_BYTES {
+        return None;
+    }
+    let mut file = fs::File::open(path).ok()?;
+    // Checked again on the open file, and read bounded, as `read` does.
+    if !file.metadata().is_ok_and(|opened| opened.is_file()) {
+        return None;
+    }
+    let mut text = String::new();
+    (&mut file)
+        .take(MAX_POLICY_BYTES + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    if text.len() as u64 > MAX_POLICY_BYTES {
+        return None;
+    }
+    let value: Value = serde_json::from_str(&text).ok()?;
+    if !old_format(&value) {
+        return None;
+    }
+    let is_off = |pointer: &str| value.pointer(pointer) == Some(&Value::Bool(false));
+    // The single-agent form has no agent entries; only its top-level switch applies.
+    let single = ["agent", "roles", "tasks"]
+        .iter()
+        .any(|key| value.get(key).is_some());
+    Some(Off {
+        all: is_off("/enabled"),
+        claude: !single && is_off("/agents/claude/enabled"),
+        codex: !single && is_off("/agents/codex/enabled"),
+    })
+}
+
+/// Like `create_starter`, but an old-format file at `path` is deleted first so the starter replaces it,
+/// keeping its switched-off policy or agents off. A current-format, unrecognised, unreadable or
+/// non-regular file (a link included) is left alone.
 pub(crate) fn install_starter(path: &Path, agents: &[RoutingAgent]) -> io::Result<Starter> {
-    let replace = is_replaceable_old_file(path);
-    if replace {
+    let old = old_file_switches(path);
+    if old.is_some() {
         fs::remove_file(path)?;
     }
-    Ok(match (create_starter(path, agents)?, replace) {
+    let created = write_starter(path, agents, old.unwrap_or_default())?;
+    Ok(match (created, old.is_some()) {
         (true, true) => Starter::Replaced,
         (true, false) => Starter::Created,
         (false, _) => Starter::Left,
@@ -551,7 +616,12 @@ pub(crate) fn install_starter(path: &Path, agents: &[RoutingAgent]) -> io::Resul
 
 /// Writes the starter for `agents` to `path`, creating its folder. Whatever is already at `path`, even a
 /// link that points nowhere, is left alone and `false` is returned.
+#[cfg(test)]
 pub(crate) fn create_starter(path: &Path, agents: &[RoutingAgent]) -> io::Result<bool> {
+    write_starter(path, agents, Off::default())
+}
+
+fn write_starter(path: &Path, agents: &[RoutingAgent], off: Off) -> io::Result<bool> {
     if let Some(folder) = path.parent() {
         fs::create_dir_all(folder)?;
     }
@@ -562,7 +632,7 @@ pub(crate) fn create_starter(path: &Path, agents: &[RoutingAgent]) -> io::Result
     {
         Ok(mut file) => {
             // A half-written starter would look like the user's own file and block every run start.
-            if let Err(error) = file.write_all(starter(agents).as_bytes()) {
+            if let Err(error) = file.write_all(starter(agents, off).as_bytes()) {
                 drop(file);
                 return Err(match fs::remove_file(path) {
                     Ok(()) => error,

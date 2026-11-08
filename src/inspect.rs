@@ -7,15 +7,6 @@ use std::collections::BTreeSet;
 
 const UNKNOWN: &str = "unknown (not recorded)";
 
-fn stage_name(stage: Stage) -> &'static str {
-    match stage {
-        Stage::Define => "define",
-        Stage::Build => "build",
-        Stage::Check => "check",
-        Stage::Finish => "finish",
-    }
-}
-
 fn mode_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Full => "factory-full",
@@ -217,7 +208,7 @@ pub(crate) fn render(run: &Run) -> String {
     out.push_str(&format!(
         "{:<14}{} ({}){}\n",
         "Stage",
-        stage_name(run.stage),
+        run.stage.name(),
         status_name(run.status),
         run.rework
             .map_or(String::new(), |n| format!(", rework {n}"))
@@ -268,7 +259,7 @@ pub(crate) fn render(run: &Run) -> String {
     } else {
         out.push_str("Summaries\n");
         for (stage, text) in &run.summaries {
-            out.push_str(&format!("  {}: {}\n", stage_name(*stage), shown(text)));
+            out.push_str(&format!("  {}: {}\n", stage.name(), shown(text)));
         }
     }
     out

@@ -676,14 +676,9 @@ fn create_model_routing(agents: &[RoutingAgent], machine: &Machine) -> Result<St
     )?;
     let shown = printable(&path.display().to_string());
     match install_starter(&path, agents) {
-        Ok(Starter::Created) => Ok(format!(
-            "Created {shown}, a starter policy for {} that routes every stage (define, build, check, finish) of each. \
-             It is switched on: edit the models and efforts, or set \"enabled\": false to switch it off.",
-            agents.iter().map(|agent| agent.name()).collect::<Vec<_>>().join(" and ")
-        )),
-        Ok(Starter::Replaced) => Ok(format!(
-            "Replaced old-format model routing policy at {shown} with the per-stage starter for {}. \
-             It is switched on: edit the models and efforts, or set \"enabled\": false to switch it off.",
+        Ok(done @ (Starter::Created | Starter::Replaced)) => Ok(format!(
+            "{}. It is a starter policy for {} that routes every stage (define, build, check, finish) of each. Edit the models and efforts, or set \"enabled\": false to switch it off.",
+            done.summary(&shown).unwrap_or_default(),
             agents.iter().map(|agent| agent.name()).collect::<Vec<_>>().join(" and ")
         )),
         // A link that points nowhere is "there" for creating but not for reading, so say which it is.

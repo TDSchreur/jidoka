@@ -313,6 +313,15 @@ fn doctor_replaces_an_old_format_policy_in_either_form_and_says_so() {
 }
 
 #[test]
+fn doctor_replaces_a_switched_off_old_policy_and_keeps_the_switches_off() {
+    let (text, stdout) = create_over(r#"{"enabled":false,"agent":"claude","roles":{}}"#);
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(value["enabled"], false);
+    assert!(value["agents"]["claude"]["stages"]["build"].is_object());
+    assert!(stdout.contains("Replaced old-format"), "{stdout}");
+}
+
+#[test]
 fn doctor_leaves_a_current_format_or_unrecognised_policy_alone() {
     for existing in [
         r#"{"agents":{"codex":{"stages":{"build":{"model":"x"}}}}}"#,

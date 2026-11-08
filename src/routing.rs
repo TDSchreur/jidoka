@@ -88,7 +88,7 @@ impl ModelRouting {
 }
 
 impl ModelChoice {
-    pub(crate) fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), String> {
         check_text("Model", &self.model)?;
         if let Some(effort) = &self.effort {
             check_text("Effort", effort)?;

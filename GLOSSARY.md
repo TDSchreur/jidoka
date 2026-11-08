@@ -18,7 +18,7 @@
 
 **Workflow mode**: The workflow skill that carries a run: `factory-full` (quality), `factory-balanced`, or `factory-fast` (speed). Modes differ in how much Define, Build, and Check do.
 
-**Model routing**: Choosing the model and effort each Stage's agents run on, independently of the workflow mode. The coordinating session keeps its own model; a routed Stage hands its work to agents started on the Stage's model, while conversation with the user stays in the coordinating session. It is not the same as workflow selection, which `/factory` does. A run records its model-routing selection when it starts. Copilot CLI is not supported: every stage there keeps the session's model.
+**Model routing**: Choosing the model and effort each Stage's agents run on, independently of the workflow mode. The coordinating session keeps its own model; a routed Stage hands its work to agents started on the Stage's model, while conversation with the user stays in the coordinating session. It is not the same as workflow selection, which `/factory` does. A run records its model-routing selection when it starts. Copilot CLI is not supported: every Stage there keeps the session's model.
 
 **Model routing policy**: The user-owned file that describes model routing: for each agent (Claude Code, Codex), a model and optional effort per Stage. A Stage left out keeps the session's model. A run starts in one agent and records only that agent's part. The factory reads the file once, when a run starts.
 

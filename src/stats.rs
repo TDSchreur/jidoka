@@ -9,15 +9,6 @@ use std::collections::BTreeMap;
 
 const EXPLANATION: &str = "Fresh tokens are input excluding cache reads, plus cache writes and output. Cache reads are shown beside them, not inside. Reasoning is part of output and is not added again. n/a means the log did not report it; it is never zero.";
 
-fn stage_name(stage: Stage) -> &'static str {
-    match stage {
-        Stage::Define => "define",
-        Stage::Build => "build",
-        Stage::Check => "check",
-        Stage::Finish => "finish",
-    }
-}
-
 /// `12,345`, or `n/a` for a count that was not reported.
 pub(crate) fn number(value: Option<u64>) -> String {
     let Some(value) = value else {
@@ -145,11 +136,7 @@ pub(crate) fn render_run(run: &Run) -> String {
             .rows
             .iter()
             .map(|row| {
-                let mut cells = vec![
-                    stage_name(row.stage).to_string(),
-                    shown(&row.model),
-                    bucket(row),
-                ];
+                let mut cells = vec![row.stage.name().to_string(), shown(&row.model), bucket(row)];
                 cells.extend(token_cells(&row.tokens, &row.subagents));
                 cells
             })
@@ -171,7 +158,7 @@ pub(crate) fn render_run(run: &Run) -> String {
         ));
     }
     for stage in &usage.no_data {
-        out.push_str(&format!("{}: no data\n", stage_name(*stage)));
+        out.push_str(&format!("{}: no data\n", stage.name()));
     }
     if !usage.unattributed.is_empty() {
         out.push_str(&format!(

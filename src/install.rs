@@ -77,15 +77,8 @@ pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> i
             ),
         )
     })?;
-    match created {
-        crate::routing::Starter::Created => {
-            println!("Created default model routing policy: {}", path.display());
-        }
-        crate::routing::Starter::Replaced => println!(
-            "Replaced old-format model routing policy at {} with the per-stage starter",
-            path.display()
-        ),
-        crate::routing::Starter::Left => {}
+    if let Some(summary) = created.summary(&path.display().to_string()) {
+        println!("{summary}");
     }
     Ok(())
 }
