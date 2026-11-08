@@ -261,38 +261,83 @@ fn install_to(root: &Path) -> io::Result<()> {
             println!("Removed: {}", dir.display());
         }
     }
-    remove_retired_humanizer(root)
+    remove_retired_humanizer(root);
+    Ok(())
 }
 
-/// The license the factory installed with Humanizer before it dropped the skill. It is only compared
-/// against, never installed.
-const RETIRED_HUMANIZER_LICENSE: &[u8] = include_bytes!("retired/humanizer-LICENSE");
+/// The files the factory installed for Humanizer before it dropped the skill, kept only to
+/// recognise that copy. They are compared against, never installed.
+const RETIRED_HUMANIZER_FILES: [(&str, &[u8]); 3] = [
+    ("SKILL.md", include_bytes!("retired/humanizer-SKILL.md")),
+    (
+        "agents/openai.yaml",
+        include_bytes!("retired/humanizer-openai.yaml"),
+    ),
+    ("LICENSE", include_bytes!("retired/humanizer-LICENSE")),
+];
 
-/// Removes a `humanizer` skill the factory installed earlier, recognised by its license. A copy
-/// with another or no license is the user's own and stays.
-fn remove_retired_humanizer(root: &Path) -> io::Result<()> {
+/// Removes a `humanizer` skill folder the factory installed earlier. Only an exact, unmodified
+/// copy goes: the same files and nothing else, none of them a symlink. Anything else is the
+/// user's own and stays. A failure to remove it is a warning, not an install failure.
+fn remove_retired_humanizer(root: &Path) {
     let dir = root.join("humanizer");
-    let Ok(license) = fs::read(dir.join("LICENSE")) else {
-        return Ok(());
-    };
-    // Git may have checked the license out with CRLF line endings, so compare without them.
+    if !is_retired_humanizer(&dir) {
+        return;
+    }
+    match fs::remove_dir_all(&dir) {
+        Ok(()) => println!("Removed: {}", dir.display()),
+        Err(error) => eprintln!(
+            "warning: cannot remove retired skill {}: {error}",
+            dir.display()
+        ),
+    }
+}
+
+fn is_retired_humanizer(dir: &Path) -> bool {
+    let mut found = Vec::new();
+    if !collect_files(dir, Path::new(""), &mut found)
+        || found.len() != RETIRED_HUMANIZER_FILES.len()
+    {
+        return false;
+    }
+    // Git may have checked the files out with CRLF line endings, so compare without them.
     let plain = |text: &[u8]| {
         text.iter()
             .copied()
             .filter(|byte| *byte != b'\r')
             .collect::<Vec<_>>()
     };
-    if plain(&license) != plain(RETIRED_HUMANIZER_LICENSE) {
-        return Ok(());
+    RETIRED_HUMANIZER_FILES.iter().all(|(path, content)| {
+        found.iter().any(|found| found == Path::new(path))
+            && fs::read(dir.join(path)).is_ok_and(|actual| plain(&actual) == plain(content))
+    })
+}
+
+/// Lists the files under `dir` relative to it. Returns false when `dir` is missing, or when it
+/// holds anything but plain files and folders, such as a symlink.
+fn collect_files(dir: &Path, relative: &Path, found: &mut Vec<PathBuf>) -> bool {
+    let Ok(kind) = dir.symlink_metadata().map(|meta| meta.file_type()) else {
+        return false;
+    };
+    if !kind.is_dir() {
+        return false;
     }
-    fs::remove_dir_all(&dir).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("cannot remove retired skill {}: {error}", dir.display()),
-        )
-    })?;
-    println!("Removed: {}", dir.display());
-    Ok(())
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { return false };
+        let Ok(kind) = entry.file_type() else {
+            return false;
+        };
+        let path = relative.join(entry.file_name());
+        if kind.is_file() {
+            found.push(path);
+        } else if !(kind.is_dir() && collect_files(&entry.path(), &path, found)) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Replaces `dir` with `staging`, so the skill matches the bundle exactly.
@@ -596,9 +641,9 @@ mod tests {
     }
 
     #[test]
-    fn no_bundled_skill_but_humanizer_mentions_humanizer() {
+    fn bundled_skills_do_not_mention_humanizer() {
         for (path, content) in BUNDLED {
-            if path.starts_with("humanizer/") || path.starts_with("licenses/") {
+            if path.starts_with("licenses/") {
                 continue;
             }
             let text = String::from_utf8_lossy(content).to_lowercase();
@@ -1038,10 +1083,36 @@ mod tests {
         );
     }
 
-    /// The license the factory used to install with Humanizer, read from the file kept for the comparison.
-    fn retired_humanizer_license() -> Vec<u8> {
-        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/retired/humanizer-LICENSE"))
-            .unwrap()
+    type Mutation = fn(&Path);
+    type RetiredFile = (&'static str, Vec<u8>);
+
+    /// The files the factory installed for Humanizer, read from the copies kept for the comparison.
+    fn retired_humanizer_files() -> Vec<RetiredFile> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/retired");
+        [
+            ("SKILL.md", "humanizer-SKILL.md"),
+            ("agents/openai.yaml", "humanizer-openai.yaml"),
+            ("LICENSE", "humanizer-LICENSE"),
+        ]
+        .map(|(installed, kept)| (installed, fs::read(dir.join(kept)).unwrap()))
+        .into()
+    }
+
+    fn write_retired_humanizer(root: &Path, crlf: bool) {
+        for (path, content) in retired_humanizer_files() {
+            let content = if crlf {
+                String::from_utf8(content)
+                    .unwrap()
+                    .replace("\r\n", "\n")
+                    .replace('\n', "\r\n")
+                    .into_bytes()
+            } else {
+                content
+            };
+            let file = root.join("humanizer").join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, content).unwrap();
+        }
     }
 
     /// Skills roots for every agent plus two `--config-dir` folders, as `factory install` resolves them.
@@ -1070,10 +1141,7 @@ mod tests {
     fn install_removes_the_humanizer_the_factory_installed_earlier() {
         let home = tempfile::tempdir().unwrap();
         for root in all_skills_roots(home.path()) {
-            fs::create_dir_all(root.join("humanizer/agents")).unwrap();
-            fs::write(root.join("humanizer/SKILL.md"), "name: humanizer").unwrap();
-            fs::write(root.join("humanizer/agents/openai.yaml"), "x").unwrap();
-            fs::write(root.join("humanizer/LICENSE"), retired_humanizer_license()).unwrap();
+            write_retired_humanizer(&root, false);
             install_to(&root).unwrap();
             assert!(!root.join("humanizer").exists(), "{root:?}");
             assert!(root.join("tdd/SKILL.md").is_file(), "{root:?}");
@@ -1084,40 +1152,91 @@ mod tests {
     fn install_removes_the_humanizer_when_git_changed_its_line_endings() {
         let home = tempfile::tempdir().unwrap();
         let root = home.path().join("skills");
-        let crlf = String::from_utf8(retired_humanizer_license())
-            .unwrap()
-            .replace("\r\n", "\n")
-            .replace('\n', "\r\n");
-        fs::create_dir_all(root.join("humanizer")).unwrap();
-        fs::write(root.join("humanizer/LICENSE"), crlf).unwrap();
+        write_retired_humanizer(&root, true);
         install_to(&root).unwrap();
         assert!(!root.join("humanizer").exists());
     }
 
     #[test]
-    fn install_keeps_a_humanizer_the_user_installed_themselves() {
+    fn install_keeps_a_humanizer_that_is_not_the_factory_copy() {
         let home = tempfile::tempdir().unwrap();
-        for root in all_skills_roots(home.path()) {
-            let mut other = retired_humanizer_license();
-            other.extend_from_slice(b"\nCopyright (c) someone else\n");
-            fs::create_dir_all(root.join("humanizer")).unwrap();
-            fs::write(root.join("humanizer/SKILL.md"), "mine").unwrap();
-            fs::write(root.join("humanizer/LICENSE"), other).unwrap();
-            let unlicensed = root.parent().unwrap().join("unlicensed");
-            fs::create_dir_all(unlicensed.join("humanizer")).unwrap();
-            fs::write(unlicensed.join("humanizer/SKILL.md"), "mine").unwrap();
+        let mutations: [(&str, Mutation); 5] = [
+            ("edited skill", |h| {
+                fs::write(h.join("SKILL.md"), "my own edits").unwrap()
+            }),
+            ("edited yaml", |h| {
+                fs::write(h.join("agents/openai.yaml"), "mine").unwrap()
+            }),
+            ("extra file", |h| {
+                fs::write(h.join("notes.md"), "mine").unwrap()
+            }),
+            ("other license", |h| {
+                fs::write(h.join("LICENSE"), "someone else").unwrap()
+            }),
+            ("no license", |h| {
+                fs::remove_file(h.join("LICENSE")).unwrap()
+            }),
+        ];
+        for (name, mutate) in mutations {
+            let root = home.path().join(name);
+            write_retired_humanizer(&root, false);
+            mutate(&root.join("humanizer"));
             install_to(&root).unwrap();
-            install_to(&unlicensed).unwrap();
-            assert_eq!(
-                fs::read_to_string(root.join("humanizer/SKILL.md")).unwrap(),
-                "mine",
-                "{root:?}"
-            );
-            assert!(root.join("humanizer/LICENSE").is_file(), "{root:?}");
-            assert_eq!(
-                fs::read_to_string(unlicensed.join("humanizer/SKILL.md")).unwrap(),
-                "mine"
-            );
+            assert!(root.join("humanizer").is_dir(), "{name}");
+            assert!(root.join("tdd/SKILL.md").is_file(), "{name}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_keeps_a_humanizer_that_contains_a_symlink() {
+        let home = tempfile::tempdir().unwrap();
+        let outside = home.path().join("outside");
+        let root = home.path().join("file-link");
+        write_retired_humanizer(&root, false);
+        let skill = root.join("humanizer/SKILL.md");
+        fs::remove_file(&skill).unwrap();
+        fs::write(&outside, &retired_humanizer_files()[0].1).unwrap();
+        std::os::unix::fs::symlink(&outside, &skill).unwrap();
+        install_to(&root).unwrap();
+        assert!(root.join("humanizer").is_dir());
+
+        let target = home.path().join("target");
+        write_retired_humanizer(&target, false);
+        let root = home.path().join("dir-link");
+        fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(target.join("humanizer"), root.join("humanizer")).unwrap();
+        install_to(&root).unwrap();
+        assert!(root.join("humanizer").symlink_metadata().is_ok());
+        assert!(target.join("humanizer/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn selector_replaces_full_and_all_entry_points_survive_reinstall_for_each_agent() {
+        let home = tempfile::tempdir().unwrap();
+        let roots = skills_roots("codex,claude,copilot", &[], home.path(), |_: &str| None).unwrap();
+        for root in roots {
+            fs::create_dir_all(root.join("factory")).unwrap();
+            fs::write(
+                root.join("factory/SKILL.md"),
+                bundled_text("factory-full/SKILL.md"),
+            )
+            .unwrap();
+            for _ in 0..2 {
+                install_to(&root).unwrap();
+                for skill in [
+                    "factory",
+                    "factory-full",
+                    "factory-balanced",
+                    "factory-fast",
+                ] {
+                    assert_eq!(
+                        fs::read_to_string(root.join(skill).join("SKILL.md")).unwrap(),
+                        bundled_text(&format!("{skill}/SKILL.md")),
+                        "{root:?}: {skill}"
+                    );
+                }
+            }
         }
     }
 

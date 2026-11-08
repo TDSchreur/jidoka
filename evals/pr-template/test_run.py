@@ -32,9 +32,8 @@ class EvalTest(unittest.TestCase):
     def run_eval(self, answer, status=0):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for skill in ("pr",):
-                (root / "skills" / skill).mkdir(parents=True)
-                (root / "skills" / skill / "SKILL.md").write_text("fixture")
+            (root / "skills" / "pr").mkdir(parents=True)
+            (root / "skills" / "pr" / "SKILL.md").write_text("fixture")
             executable = root / "claude"
             executable.write_text("#!" + sys.executable + "\nimport json, sys\nprint(json.dumps({'result': " + repr(answer) + "}))\nsys.exit(" + str(status) + ")\n")
             executable.chmod(0o755)

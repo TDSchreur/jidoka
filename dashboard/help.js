@@ -470,7 +470,7 @@ function Skills() {
       ]}
     />
     <p>
-      Most skills come from <${Code}>mattpocock/skills<//>, <${Code}>github/awesome-copilot<//>; the workflow skills are the factory’s own. <${Code}>skills/README.md<//> in the TDS Factory repository lists where each one started.
+      Most skills come from <${Code}>mattpocock/skills<//> and <${Code}>github/awesome-copilot<//>; the workflow skills are the factory’s own. <${Code}>skills/README.md<//> in the TDS Factory repository lists where each one started.
     </p>
   `;
 }
