@@ -1,9 +1,9 @@
-"""Shared harness for the tests/dashboard-*.py browser tests (requires Chromium or Chrome; set CHROMIUM to pick one).
+"""Shared harness for the tests/dashboard-*.py browser tests (set CHROMIUM to pick the browser).
 
-Each test passes the runs the dashboard should list and a `<script>` that drives the page and POSTs its findings
-to /result. Written for Linux and macOS; on Windows it should work with CHROMIUM set to chrome.exe, but CI and
-scripts/verify.sh run it on Linux only and it has not been tried on Windows. `run_dashboard` serves the real dashboard files from 127.0.0.1 on a free port, opens them in a headless
-browser with a throwaway profile, and returns what the page reported.
+`run_dashboard` serves the real dashboard files from 127.0.0.1 on a free port with the runs and the check script a
+test passes, opens them in a headless browser with a throwaway profile, and returns what the page POSTed to /result.
+
+Written for Linux and macOS, run on Linux in CI, and untested on Windows (set CHROMIUM elsewhere).
 """
 import http.server
 import json
@@ -15,6 +15,7 @@ import signal
 import subprocess
 import tempfile
 import threading
+import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parents[1] / "dashboard"
 WAIT_SECONDS = 120
@@ -50,13 +51,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path == "/api/runs":
+        route = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
+        if route == "/api/runs":
             data, kind = json.dumps(self.runs).encode(), "application/json"
-        elif self.path == "/":
+        elif route == "/":
             data, kind = (ROOT / "index.html").read_bytes() + self.check.encode(), "text/html"
-        elif self.path.startswith("/assets/"):
-            path = (ROOT / self.path.removeprefix("/assets/")).resolve()
-            if not path.is_relative_to(ROOT.resolve()) or not path.is_file():
+        elif route.startswith("/assets/"):
+            try:
+                path = (ROOT / route.removeprefix("/assets/")).resolve()
+                found = path.is_relative_to(ROOT.resolve()) and path.is_file()
+            except (OSError, ValueError):
+                found = False
+            if not found:
                 self.send_error(404)
                 return
             data = path.read_bytes()
@@ -75,17 +81,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 def stop(process):
     """Stops the browser and its helper processes, so none still writes into the profile that is about to be removed."""
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    else:
+    group = os.name != "nt"
+    if group:
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+    else:
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            process.kill()
     try:
         process.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        process.kill()
+        if group:
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
         process.wait()
 
 
