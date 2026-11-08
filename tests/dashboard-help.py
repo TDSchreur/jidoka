@@ -123,14 +123,21 @@ def run_browser(width, height):
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
     try:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile, \
+                tempfile.TemporaryFile(mode="w+", errors="replace") as log:
             process = subprocess.Popen(
                 [find_browser(), "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+                 "--no-first-run", "--no-default-browser-check", "--disable-extensions",
                  f"--window-size={width},{height}", "--user-data-dir=" + profile, f"http://127.0.0.1:{server.server_port}/"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=log,
             )
             try:
-                return RESULTS.get(timeout=60)
+                try:
+                    return RESULTS.get(timeout=120)
+                except queue.Empty:
+                    log.seek(0)
+                    tail = "".join(log.readlines()[-40:])
+                    raise RuntimeError(f"No result from the browser within 120s (exit code {process.poll()}). Browser stderr:\n{tail}") from None
             finally:
                 process.terminate()
                 process.wait(timeout=10)
