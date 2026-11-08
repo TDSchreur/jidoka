@@ -136,6 +136,11 @@ impl Fixture {
         }
     }
 
+    /// The worktree's line in `git worktree list --porcelain`, as git prints its path.
+    fn listed_line(&self) -> String {
+        format!("worktree {}\n", self.wt.display())
+    }
+
     fn recorded(&self) -> Recorded {
         Recorded {
             id: "7".into(),
@@ -371,7 +376,7 @@ fn a_stale_worktree_leaves_other_stale_registrations_alone() {
     fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
     let list = listed(&fx);
     assert!(list.contains("other-wt"), "{list}");
-    assert!(!list.contains("/wt\n"), "{list}");
+    assert!(!list.contains(&fx.listed_line()), "{list}");
 }
 
 #[test]
@@ -383,7 +388,7 @@ fn a_locked_stale_worktree_refuses_and_removes_nothing() {
     assert!(message.contains("locked"), "{message}");
     assert!(message.contains("Nothing was removed"), "{message}");
     assert!(fx.branch_exists());
-    assert!(listed(&fx).contains("/wt\n"), "{}", listed(&fx));
+    assert!(listed(&fx).contains(&fx.listed_line()), "{}", listed(&fx));
 }
 
 #[test]
@@ -419,10 +424,30 @@ fn a_directory_git_does_not_list_is_left_alone_and_said_so() {
     assert_eq!(cleaned.worktree, Step::LeftAlone);
     assert!(fx.wt.exists());
     let text = render(&fx.recorded(), cleaned);
-    assert!(text.contains("left alone"), "{text}");
-    assert!(
-        !text.contains("already gone\n") || !text.contains("Worktree"),
-        "{text}"
+    assert_eq!(
+        text,
+        format!(
+            "Worktree {} exists but git does not list it as a worktree, so it was left alone (not removed)\nDeleted local branch feature (the remote branch is untouched)\n",
+            fx.wt.display()
+        )
+    );
+}
+
+#[test]
+fn a_left_alone_directory_with_nothing_else_to_remove_says_nothing_was_removed() {
+    let fx = Fixture::new();
+    run_git(&fx.repo, &["worktree", "remove", fx.wt.to_str().unwrap()]);
+    run_git(&fx.repo, &["branch", "-D", "feature"]);
+    fs::create_dir(&fx.wt).unwrap();
+    let cleaned = fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
+    assert_eq!(cleaned.worktree, Step::LeftAlone);
+    let text = render(&fx.recorded(), cleaned);
+    assert_eq!(
+        text,
+        format!(
+            "Nothing was removed.\nWorktree {} exists but git does not list it as a worktree, so it was left alone (not removed)\nLocal branch feature was already gone\n",
+            fx.wt.display()
+        )
     );
 }
 
@@ -457,7 +482,7 @@ fn a_stale_worktree_behind_a_symlinked_parent_is_matched() {
     fs::remove_dir_all(&fx.wt).unwrap();
     let cleaned = fx.cleanup(&run, &fx.gh()).unwrap();
     assert_eq!(cleaned.worktree, Step::Removed);
-    assert!(!listed(&fx).contains("/wt\n"));
+    assert!(!listed(&fx).contains(&fx.listed_line()));
 }
 
 #[test]

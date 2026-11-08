@@ -135,11 +135,10 @@ pub(crate) fn cleanup(
         ));
     }
     if let Some(branch) = run.branch.as_deref() {
-        let wanted = Some(branch);
         if entries
             .iter()
             .filter(|entry| Some(*entry) != own)
-            .any(|entry| entry.branch.as_deref() == wanted)
+            .any(|entry| entry.branch.as_deref() == Some(branch))
         {
             return refuse(format!(
                 "The branch {} is checked out in another worktree (the main checkout included). Nothing was removed.",
@@ -234,6 +233,7 @@ pub(crate) fn cleanup(
     if let Some(Target { listed, .. }) = worktree {
         git.git(repository, &["worktree", "remove", "--", &listed])
             .map_err(|e| git_problem("worktree remove", &e))?;
+        // The pre-checks already ran, so this re-list only guards against a race since then.
         if worktrees(git, repository)?
             .iter()
             .any(|entry| entry.path == listed)
@@ -245,6 +245,7 @@ pub(crate) fn cleanup(
         }
         cleaned.worktree = Step::Removed;
     }
+    // The pre-checks already ran, so this re-check only guards against a race since then.
     if let Some(branch) = run.branch.as_deref().filter(|_| checked.is_some()) {
         if worktrees(git, repository)?
             .iter()
@@ -335,7 +336,11 @@ pub(crate) fn render(run: &Recorded, cleaned: Cleaned) -> String {
     let branch = shown_or(&run.branch);
     let mut text = String::new();
     if cleaned.worktree != Step::Removed && cleaned.branch != Step::Removed {
-        text.push_str(&format!("Run {} is already clean.\n", run.id));
+        if cleaned.worktree == Step::LeftAlone {
+            text.push_str("Nothing was removed.\n");
+        } else {
+            text.push_str(&format!("Run {} is already clean.\n", run.id));
+        }
     }
     match cleaned.worktree {
         Step::Removed => text.push_str(&format!("Removed worktree {worktree}\n")),

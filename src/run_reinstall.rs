@@ -52,21 +52,27 @@ impl Command {
     }
 }
 
-/// Characters that PowerShell or cmd still interpret inside double quotes (expansion, escapes, separators),
-/// so no quoting makes a word holding one safe to paste on Windows.
-const WINDOWS_UNSAFE: &str = "$`%\"^&()!';<>|\n\r";
+/// Whether `word` can be pasted into both PowerShell and cmd once double-quoted: only ASCII letters and
+/// digits, spaces and `_ . - : \ / ( )`. Anything else (expansion, escapes, separators, look-alike quotes)
+/// could be interpreted by one of them.
+fn windows_safe(word: &str) -> bool {
+    word.chars()
+        .all(|c| c.is_ascii_alphanumeric() || " _.-:\\/()".contains(c))
+}
 
 /// Whether `word` cannot be quoted safely for both PowerShell and cmd.
 fn windows_unsafe(word: &str) -> bool {
-    word.chars().any(|c| WINDOWS_UNSAFE.contains(c))
+    !windows_safe(word)
 }
 
 /// `word` as one shell word: left alone when it is plain, otherwise in POSIX single quotes, or in double
 /// quotes on Windows. Double quotes only keep spaces together there: PowerShell still expands `$` and the
 /// backtick and cmd `%`, and `\"` means nothing to cmd, so a Windows word with such characters must not be
-/// pasted at all (see `windows_unsafe`).
+/// pasted at all (see `windows_safe`).
 pub(crate) fn quote(word: &str, windows: bool) -> String {
-    let plain = |c: char| c.is_ascii_alphanumeric() || "_-./:=,@+".contains(c);
+    let plain = |c: char| {
+        c.is_ascii_alphanumeric() || (if windows { "_-./:\\" } else { "_-./:=,@+" }).contains(c)
+    };
     if !word.is_empty() && word.chars().all(plain) {
         word.to_string()
     } else if windows {
