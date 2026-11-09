@@ -212,14 +212,14 @@ pub(crate) fn mentioned_runs(text: &str, ids: &HashSet<&str>) -> HashSet<String>
             .collect::<Vec<u8>>();
         let before: String = before.into_iter().rev().map(char::from).collect();
         let before = before.trim_end_matches(['"', '\'', '`', ' ']);
-        let names_a_command = COMMANDS.iter().any(|command| {
+        let command_starts_a_word = COMMANDS.iter().any(|command| {
             before.strip_suffix(command).is_some_and(|rest| {
                 rest.chars()
                     .next_back()
                     .is_none_or(|c| c.is_ascii_whitespace())
             })
         });
-        if names_a_command {
+        if command_starts_a_word {
             found.insert(text[start..at].to_string());
         }
     }
