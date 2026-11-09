@@ -4,7 +4,9 @@
 //! session's model. Nothing here changes a file or calls a model; at most it asks an agent for its `--version`.
 
 use super::{find_program, read_doc, Check, Machine};
-use crate::routing::{policy_path_in, read, Coverage, Host, ModelRouting, Policy, RoutingAgent};
+use crate::routing::{
+    policy_path_in, read, Coverage, Host, ModelRouting, Policy, RoutingAgent, COPILOT_EFFORTS,
+};
 use std::path::Path;
 
 /// The Agent tool's `effort` option first appeared in this Claude Code release.
@@ -12,8 +14,6 @@ const CLAUDE_MIN_VERSION: (u32, u32, u32) = (2, 1, 292);
 /// The only model names the Agent tool accepts.
 const CLAUDE_MODELS: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
 const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
-/// The efforts Copilot CLI lists for `--reasoning-effort`.
-const COPILOT_EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// The routing checks for `agent` (all agents when `None`), as `--agent` on `factory doctor` selects. What
 /// the policy does for each agent comes from `Policy::coverage`, the same rule `factory run start` follows;
@@ -137,12 +137,7 @@ fn copilot_checks(selection: &ModelRouting, machine: &Machine) -> Vec<Check> {
     vec![
         host_check("copilot", machine, None),
         copilot_model_check(selection),
-        effort_check(
-            selection,
-            "Copilot CLI",
-            &COPILOT_EFFORTS,
-            "Set effort to none, minimal, low, medium, high, xhigh or max for each routed stage.",
-        ),
+        effort_check(selection, "Copilot CLI", &COPILOT_EFFORTS),
         Check::skipped("overrides", "Copilot configuration is not checked"),
     ]
 }
@@ -163,12 +158,7 @@ fn claude_checks(selection: &ModelRouting, root: &Path, machine: &Machine) -> Ve
     vec![
         host_check("claude", machine, Some(CLAUDE_MIN_VERSION)),
         claude_model_check(selection),
-        effort_check(
-            selection,
-            "Claude Code",
-            &CLAUDE_EFFORTS,
-            "Set effort to low, medium, high, xhigh or max for each routed stage.",
-        ),
+        effort_check(selection, "Claude Code", &CLAUDE_EFFORTS),
         claude_overrides_check(root, machine),
     ]
 }
@@ -199,7 +189,7 @@ fn claude_model_check(selection: &ModelRouting) -> Check {
     )
 }
 
-fn effort_check(selection: &ModelRouting, host: &str, accepted: &[&str], fix: &str) -> Check {
+fn effort_check(selection: &ModelRouting, host: &str, accepted: &[&str]) -> Check {
     let (mut unsupported, mut unset) = (Vec::new(), Vec::new());
     for (stage, choice) in &selection.stages {
         match choice.effort.as_deref() {
@@ -230,7 +220,14 @@ fn effort_check(selection: &ModelRouting, host: &str, accepted: &[&str], fix: &s
             format!("every routed stage has an effort {host} accepts; which levels a model offers is not checked"),
         );
     }
-    Check::warning("effort", problems.join("; "), fix)
+    Check::warning(
+        "effort",
+        problems.join("; "),
+        format!(
+            "Set effort to one of {} for each routed stage.",
+            accepted.join(", ")
+        ),
+    )
 }
 
 /// Where Claude Code settings can set environment variables, besides the environment itself.
