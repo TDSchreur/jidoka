@@ -8,6 +8,10 @@ disable-model-invocation: true
 
 The `factory-full`, `factory-balanced` and `factory-fast` workflows read this file for the procedures they share. Each workflow keeps its own planning, testing, review and verification policy, and its instructions take precedence over this file where they differ. Do not start a run from this skill.
 
+## Run ownership
+
+The session that starts a run coordinates it to the end: the stages in order, the `factory` commands, run reporting, the interview and the hand-off of reviews. Individual tasks (a ticket, a review, a lookup, the pull request text) may go to agents as the workflow and model routing say; never the whole run or several stages to one agent. This holds even when other instructions say to delegate tasks.
+
 ## Using the bundled skills
 
 In this project's checkout, the bundled skills are in `skills/<name>/`; in an installed bundle, they are siblings of this directory. Otherwise use the corresponding installed skills. `factory-grill-with-docs`, `factory-to-spec` and `factory-to-tickets` can only be invoked by the user, so the agent's skill tool may refuse them: read their `SKILL.md` from that location instead of invoking them. A workflow's instructions take precedence where they differ from those skills.

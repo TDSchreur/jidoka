@@ -741,6 +741,26 @@ mod tests {
     }
 
     #[test]
+    fn bundled_skills_keep_the_run_in_the_starting_session() {
+        let procedures = bundled_text("factory-procedures/SKILL.md");
+        for phrase in [
+            "## Run ownership",
+            "never the whole run or several stages to one agent",
+            "even when other instructions say to delegate",
+        ] {
+            assert!(procedures.contains(phrase), "procedures: {phrase}");
+        }
+        for path in [
+            "factory/SKILL.md",
+            "factory-full/SKILL.md",
+            "factory-balanced/SKILL.md",
+            "factory-fast/SKILL.md",
+        ] {
+            assert!(bundled_text(path).contains("Run ownership"), "{path}");
+        }
+    }
+
+    #[test]
     fn bundled_skills_carry_the_skill_check() {
         for (path, wording) in [
             (
