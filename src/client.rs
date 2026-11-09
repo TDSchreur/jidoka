@@ -142,7 +142,14 @@ fn api_post(
     // Read on every call, so a restarted dashboard needs no manual step. The token is never put in an error.
     let token = std::fs::read_to_string(token_file)
         .map(|token| token.trim().to_string())
-        .map_err(|_| "no CLI token for the factory server; start or restart 'factory dashboard'")?;
+        .ok()
+        .filter(|token| {
+            token.len() == 64
+                && token
+                    .bytes()
+                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        })
+        .ok_or("no CLI token for the factory server; start or restart 'factory dashboard'")?;
     api_request(server, route, Some((&token, body)))
 }
 
@@ -489,6 +496,40 @@ mod tests {
     }
 
     #[test]
+    fn a_malformed_token_file_is_refused_before_anything_is_sent() {
+        let dir = TestDir::new();
+        let server = TestServer::start(&dir.0.path().join("runs.json"));
+        let valid = token_of(&server);
+        let upper = valid.to_uppercase();
+        let evil = format!("{}\r\nX-Evil: 1", &valid[..32]);
+        let nonhex = format!("{}g", &valid[..63]);
+        for bad in [
+            format!("{valid}\r\nX-Evil: 1"),
+            evil,
+            "abc123".into(),
+            upper,
+            nonhex,
+        ] {
+            fs::write(&server.token_file, &bad).unwrap();
+            let message = start_run(
+                &server.address,
+                &server.token_file,
+                "t",
+                "/w",
+                None,
+                None,
+                None,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(message.contains("no CLI token"), "{message}");
+            assert!(message.contains("factory dashboard"), "{message}");
+            assert!(!message.contains("X-Evil"), "{message}");
+        }
+        assert!(server.runs().as_array().unwrap().is_empty());
+    }
+
+    #[test]
     fn rejected_token_hints_at_restarting_the_dashboard_without_leaking_tokens() {
         let dir = TestDir::new();
         let server = TestServer::start(&dir.0.path().join("runs.json"));
@@ -513,7 +554,7 @@ mod tests {
     fn a_refusal_other_than_a_bad_token_is_not_blamed_on_the_token() {
         let dir = TestDir::new();
         let token_file = dir.0.path().join("session-token");
-        fs::write(&token_file, "token").unwrap();
+        fs::write(&token_file, "a".repeat(64)).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
         let thread = std::thread::spawn(move || {

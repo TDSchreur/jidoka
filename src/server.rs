@@ -240,6 +240,16 @@ fn secure_data_dir(runs: &Path) -> io::Result<Option<String>> {
 /// Creates `path`, which must not exist (and is never a followed symlink), holding `content`; mode 0600 on Unix.
 fn write_new_file(path: &Path, content: &str) -> io::Result<()> {
     use std::io::Write;
+    write_new_file_with(path, content, |file, bytes| file.write_all(bytes))
+}
+
+/// `write_new_file` with the write step injected. When the write fails after the file was created, the
+/// file is removed again; an open error never removes anything (an existing file is not ours).
+fn write_new_file_with(
+    path: &Path,
+    content: &str,
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> io::Result<()>,
+) -> io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -247,7 +257,13 @@ fn write_new_file(path: &Path, content: &str) -> io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(path)?.write_all(content.as_bytes())
+    let mut file = options.open(path)?;
+    let written = write(&mut file, content.as_bytes());
+    if written.is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+    written
 }
 
 /// The browser sends an `Origin` on a same-origin DELETE; it must be the dashboard itself.
@@ -4209,6 +4225,34 @@ mod tests {
         let runs = dir.0.path().join("tds-factory").join("runs.json");
         assert_eq!(secure_data_dir(&runs).unwrap(), None);
         assert_eq!(secure_data_dir(&runs).unwrap(), None);
+    }
+
+    #[test]
+    fn a_failed_write_removes_the_new_file_but_an_open_error_keeps_the_existing_one() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("partial");
+        let error = write_new_file_with(&path, "secret", |_, _| Err(io::Error::other("disk full")))
+            .unwrap_err();
+        assert_eq!(error.to_string(), "disk full");
+        assert!(!path.exists(), "the partial file is removed");
+        let taken = dir.0.path().join("taken");
+        fs::write(&taken, "theirs").unwrap();
+        let error = write_new_file_with(&taken, "secret", |_, _| Ok(())).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&taken).unwrap(), "theirs");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlinked_data_folder_stops_startup_naming_the_folder() {
+        let dir = TestDir::new();
+        let link = dir.0.path().join("tds-factory");
+        std::os::unix::fs::symlink(dir.0.path().join("missing"), &link).unwrap();
+        let error = secure_data_dir(&link.join("runs.json")).unwrap_err();
+        assert!(
+            error.to_string().contains(&*link.to_string_lossy()),
+            "{error}"
+        );
     }
 
     #[test]
