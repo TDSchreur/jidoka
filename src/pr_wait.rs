@@ -197,7 +197,7 @@ pub(crate) struct RealGh;
 
 impl Gh for RealGh {
     fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
-        let output = Command::new("az")
+        let output = Command::new(crate::doctor::az_program())
             .args(args)
             .env("AZURE_CORE_ONLY_SHOW_ERRORS", "true")
             .env("AZURE_EXTENSION_USE_DYNAMIC_INSTALL", "no")

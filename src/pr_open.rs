@@ -32,7 +32,7 @@ pub(crate) struct RealGh;
 
 impl Gh for RealGh {
     fn az(&self, dir: &Path, args: &[&str]) -> Result<GhOutput, GhError> {
-        let output = Command::new("az")
+        let output = Command::new(crate::doctor::az_program())
             .current_dir(dir)
             .args(args)
             .env("AZURE_CORE_ONLY_SHOW_ERRORS", "true")
