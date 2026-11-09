@@ -2147,17 +2147,17 @@ mod tests {
         report.provider.iter().find(|check| check.id == id)
     }
 
-    /// A fake host tool on PATH: a shell script that exits 0 only for the listed argument lines. Tests that
-    /// use it run on Unix only, because the fake is a `#!/bin/sh` script.
-    #[cfg(unix)]
     #[test]
     fn windows_skips_the_extensionless_launcher_next_to_the_cmd_one() {
-        use std::os::unix::fs::PermissionsExt;
         let bin = tempfile::tempdir().unwrap();
         for name in ["az", "az.cmd"] {
             let file = bin.path().join(name);
             fs::write(&file, "").unwrap();
-            fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+            }
         }
         let extensions = windows_extensions(".COM;.EXE;;.cmd");
         assert_eq!(extensions, [".COM", ".EXE", ".cmd"]);
@@ -2165,6 +2165,9 @@ mod tests {
         assert_eq!(found, bin.path().join("az.cmd"));
     }
 
+    /// A fake host tool on PATH: a shell script that exits 0 only for the listed argument lines. Tests that
+    /// use it run on Unix only, because the fake is a `#!/bin/sh` script.
+    #[cfg(unix)]
     fn fake_tool(bin: &Path, name: &str, succeeds_for: &[&str]) {
         use std::os::unix::fs::PermissionsExt;
         let cases: String = succeeds_for
