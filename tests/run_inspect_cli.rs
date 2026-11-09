@@ -102,7 +102,10 @@ fn inspect_with_fake_server(data: &std::path::Path, args: &[&str]) -> std::proce
         .env("LOCALAPPDATA", data)
         .output()
         .unwrap();
-    server.join().unwrap();
+    // When the CLI fails before connecting, the server would wait in `accept` forever.
+    if output.status.success() {
+        server.join().unwrap();
+    }
     output
 }
 

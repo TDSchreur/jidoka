@@ -53,11 +53,13 @@ fn update_prints_each_warning_on_stderr_and_exits_zero() {
         .args(["run", "update", "1", "finish", "done"])
         .env("FACTORY_TEST_ADDRESS", &address)
         .env("XDG_DATA_HOME", data.path())
+        .env("LOCALAPPDATA", data.path())
         .env_remove("CLAUDE_SESSION_ID")
         .output()
         .unwrap();
-    server.join().unwrap();
+    // Check the CLI first: when it fails before connecting, the server would wait in `accept` forever.
     assert_eq!(output.status.code(), Some(0), "{output:?}");
+    server.join().unwrap();
     assert_eq!(String::from_utf8_lossy(&output.stdout), "Updated run 1\n");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Warning: first warning\n"), "{stderr}");
