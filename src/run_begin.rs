@@ -153,6 +153,14 @@ pub(crate) struct Begun {
     pub(crate) session_warning: Option<String>,
 }
 
+/// What `begin --json` prints: the workspace and the path the run's plan is saved at.
+#[derive(Serialize)]
+pub(crate) struct Output<'a> {
+    #[serde(flatten)]
+    pub(crate) begun: &'a Begun,
+    pub(crate) plan: String,
+}
+
 /// Why no workspace was made.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum BeginError {
@@ -734,7 +742,7 @@ fn workspace(
 }
 
 /// The run and where its workspace is, as text; the run first.
-pub(crate) fn render(begun: &Begun) -> String {
+pub(crate) fn render(begun: &Begun, plan: &str) -> String {
     let mut text = format!(
         "Run: {}\nWorktree: {}\nBranch: {}\nBase: {}\nBase commit: {}\n",
         shown(&begun.run),
@@ -743,6 +751,7 @@ pub(crate) fn render(begun: &Begun) -> String {
         shown(&begun.base),
         shown(&begun.base_commit)
     );
+    text.push_str(&format!("Plan: {}\n", shown(plan)));
     if !begun.gitignore_added.is_empty() {
         text.push_str(&format!(
             "Added to .gitignore (commit it with the first commit): {}\n",

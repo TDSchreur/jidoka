@@ -203,6 +203,11 @@ fn join_efforts<'a>(efforts: impl IntoIterator<Item = &'a str>) -> String {
     efforts.into_iter().map(shown).collect::<Vec<_>>().join("/")
 }
 
+/// Where this run's plan is saved, as the last line of the report.
+pub(crate) fn plan_line(plan: &str) -> String {
+    field("Plan", Some(plan))
+}
+
 pub(crate) fn render(run: &Run) -> String {
     let mut out = format!("Run {}: {}\n", run.id, shown(&run.title));
     out.push_str(&format!(

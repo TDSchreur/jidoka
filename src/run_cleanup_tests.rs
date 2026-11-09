@@ -199,6 +199,18 @@ fn a_merged_pull_request_removes_the_worktree_and_branch() {
 }
 
 #[test]
+fn cleanup_leaves_the_runs_plan_in_the_data_dir() {
+    let fx = Fixture::new();
+    let data = tempfile::tempdir().unwrap();
+    let runs = data.path().join("runs.json");
+    let plan = crate::plans::plan_path_ready(&runs, None, "100").unwrap();
+    std::fs::write(&plan, "# plan").unwrap();
+    fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
+    assert!(!fx.wt.exists());
+    assert_eq!(std::fs::read_to_string(&plan).unwrap(), "# plan");
+}
+
+#[test]
 fn anything_but_merged_refuses_and_removes_nothing() {
     let fx = Fixture::new();
     for (state, draft) in [

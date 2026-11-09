@@ -75,7 +75,7 @@ Do not require extra approval of test seams or a separate ticket-breakdown appro
 
 When a run's plan and acceptance criteria exist only in the conversation, save them before Build so another session can continue without the original chat. Skip this when the spec is already a tracker issue or a file in the repository, and record that reference instead.
 
-1. Write a concise Markdown file with the task, the plan and the acceptance criteria to `factory-plan.md` in the run worktree's git directory (`git rev-parse --absolute-git-dir`). If that is not writable, write `<worktree path>.factory-plan.md` beside the worktree instead and remove it together with the worktree. The file stays out of the pull request.
+1. Take the plan path from `factory run begin` or `factory run inspect` (the `Plan` line, or `plan` in `--json`), and write a concise Markdown file with the task, the plan and the acceptance criteria there. It lives in the factory data folder, outside the repository and the pull request, and stays after the worktree is cleaned up.
 2. Record it with `factory run update <id> <stage> <status> --spec <absolute path>`. This is the same context option as a tracker spec, so no tracker is involved.
 3. When the plan changes, rewrite the file. Never save secrets or a transcript.
 

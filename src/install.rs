@@ -557,10 +557,22 @@ mod tests {
             .unwrap();
         for needle in [
             "--spec",
-            "git rev-parse --absolute-git-dir",
+            "factory run begin",
+            "factory run inspect",
             "acceptance criteria",
         ] {
             assert!(saving.contains(needle), "saving the plan lacks {needle}");
+        }
+        for old in [
+            "git directory",
+            "git-dir",
+            ".factory-plan.md",
+            "beside the worktree",
+        ] {
+            assert!(
+                !saving.contains(old),
+                "saving the plan still mentions {old}"
+            );
         }
         // Continuing: inspect first, verify the recorded state, and never discard work.
         let continuing = text

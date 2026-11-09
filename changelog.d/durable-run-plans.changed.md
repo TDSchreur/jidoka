@@ -1,0 +1,1 @@
+A run's plan is now saved in the factory data folder (`plans/<run id>.md`, or `plans-<port>/` for a dashboard on another port) instead of the worktree's git directory or beside the worktree, so it outlives the worktree. `factory run begin` and `factory run inspect` show the path, and `factory run cleanup` leaves the plan.

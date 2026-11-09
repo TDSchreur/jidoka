@@ -7,6 +7,7 @@ mod document;
 mod gitignore;
 mod inspect;
 mod install;
+mod plans;
 mod pr_open;
 mod pr_state;
 mod pr_sync;
@@ -145,11 +146,15 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 ["--json"] => true,
                 _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
             };
-            let run = fetch_run(ADDRESS, id)?;
+            let run = fetch_run(&update_address(), id)?;
+            let plan = plan_path(id)?.to_string_lossy().into_owned();
             if json {
-                println!("{}", serde_json::to_string_pretty(&run)?);
+                let mut shown = serde_json::to_value(&run)?;
+                shown["plan"] = plan.into();
+                println!("{}", serde_json::to_string_pretty(&shown)?);
             } else {
                 print!("{}", inspect::render(&run));
+                print!("{}", inspect::plan_line(&plan));
             }
         }
         ["run", "stats", "--all"] => print!("{}", stats::render_all(&fetch_runs(ADDRESS)?)),
@@ -519,10 +524,15 @@ fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::erro
         resolution.selection,
     ) {
         Ok(begun) => {
+            let plan = plan_path(&begun.run)?.to_string_lossy().into_owned();
             if parsed.json {
-                println!("{}", serde_json::to_string_pretty(&begun)?);
+                let shown = run_begin::Output {
+                    begun: &begun,
+                    plan,
+                };
+                println!("{}", serde_json::to_string_pretty(&shown)?);
             } else {
-                print!("{}", run_begin::render(&begun));
+                print!("{}", run_begin::render(&begun, &plan));
             }
             Ok(0)
         }
@@ -672,6 +682,11 @@ fn update_address() -> String {
 
 fn cli_token_file() -> io::Result<PathBuf> {
     Ok(server::token_path(&data_path(DEFAULT_PORT)?, DEFAULT_PORT))
+}
+
+/// Where the plan of run `id` is saved, in the default dashboard's data dir; its folder is created.
+fn plan_path(id: &str) -> io::Result<PathBuf> {
+    plans::plan_path_ready(&data_path(DEFAULT_PORT)?, None, id)
 }
 
 /// The default dashboard keeps `runs.json`; one on another port keeps its own file and shares nothing.
