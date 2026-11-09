@@ -259,7 +259,7 @@ fn begin_reports_the_added_ignore_entries() {
     let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
     assert_eq!(begun.gitignore_added, [".factory/", ".scratch/"]);
     assert_eq!(begun.gitignore_warning, None);
-    assert!(render(&begun).contains("Added to .gitignore"));
+    assert!(render(&begun, "/p/plans/100.md").contains("Added to .gitignore"));
 }
 
 #[test]
@@ -561,7 +561,7 @@ fn the_output_has_the_run_first_and_the_same_fields_in_json() {
         gitignore_warning: None,
         session_warning: None,
     };
-    let text = render(&begun);
+    let text = render(&begun, "/p/plans/100.md");
     assert!(text.starts_with("Run: 100\n"), "{text}");
     for part in ["/w/repo.worktrees/x", "x", "develop", "abc123"] {
         assert!(text.contains(part), "{part}: {text}");
@@ -570,6 +570,29 @@ fn the_output_has_the_run_first_and_the_same_fields_in_json() {
     assert_eq!(json["run"], "100");
     assert_eq!(json["base_commit"], "abc123");
     assert_eq!(json["gitignore_added"][0], ".factory/");
+}
+
+#[test]
+fn begin_shows_the_plan_path_in_text_and_json() {
+    let begun = Begun {
+        run: "100".into(),
+        worktree: "/w/x".into(),
+        branch: "x".into(),
+        base: "develop".into(),
+        base_commit: "abc123".into(),
+        gitignore_added: Vec::new(),
+        gitignore_warning: None,
+        session_warning: None,
+    };
+    let text = render(&begun, "/data/plans/100.md");
+    assert!(text.contains("Plan: /data/plans/100.md\n"), "{text}");
+    let json = serde_json::to_value(Output {
+        begun: &begun,
+        plan: "/data/plans/100.md".into(),
+    })
+    .unwrap();
+    assert_eq!(json["plan"], "/data/plans/100.md");
+    assert_eq!(json["run"], "100");
 }
 
 #[test]
@@ -1026,7 +1049,9 @@ fn the_text_output_is_printable_whatever_the_folder_is_called() {
         gitignore_warning: Some("bad \u{1b}[2J".into()),
         session_warning: None,
     };
-    assert!(!render(&begun).chars().any(|c| c.is_control() && c != '\n'));
+    assert!(!render(&begun, "/p/plans/100.md")
+        .chars()
+        .any(|c| c.is_control() && c != '\n'));
 }
 
 #[test]
@@ -1148,7 +1173,7 @@ fn a_session_already_on_another_run_gives_a_warning() {
     let warning = begun.session_warning.clone().unwrap();
     assert!(warning.contains("7 (Earlier work)"), "{warning}");
     assert!(warning.contains("/clear"), "{warning}");
-    assert!(render(&begun).contains("Warning: This agent session"));
+    assert!(render(&begun, "/p/plans/100.md").contains("Warning: This agent session"));
     let json = serde_json::to_value(&begun).unwrap();
     assert_eq!(json["session_warning"], warning);
 }

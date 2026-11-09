@@ -7,6 +7,7 @@ mod document;
 mod gitignore;
 mod inspect;
 mod install;
+mod plans;
 mod pr_open;
 mod pr_state;
 mod pr_sync;
@@ -145,11 +146,15 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 ["--json"] => true,
                 _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
             };
-            let run = fetch_run(ADDRESS, id)?;
+            let run = fetch_run(&cli_address(), id)?;
+            let plan = plan_path(id)?.to_string_lossy().into_owned();
             if json {
-                println!("{}", serde_json::to_string_pretty(&run)?);
+                let mut shown = serde_json::to_value(&run)?;
+                shown["plan"] = plan.into();
+                println!("{}", serde_json::to_string_pretty(&shown)?);
             } else {
                 print!("{}", inspect::render(&run));
+                print!("{}", inspect::plan_line(&plan));
             }
         }
         ["run", "stats", "--all"] => print!("{}", stats::render_all(&fetch_runs(ADDRESS)?)),
@@ -205,7 +210,14 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             if let Some(session) = session.as_deref() {
                 options.extend(["--session", session]);
             }
-            report_run(ADDRESS, &cli_token_file()?, id, stage, status, &options)?;
+            report_run(
+                &cli_address(),
+                &cli_token_file()?,
+                id,
+                stage,
+                status,
+                &options,
+            )?;
             println!("Updated run {id}");
         }
         ["pr", "wait", id, options @ ..] if !id.starts_with('-') => {
@@ -512,10 +524,15 @@ fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::erro
         resolution.selection,
     ) {
         Ok(begun) => {
+            let plan = plan_path(&begun.run)?.to_string_lossy().into_owned();
             if parsed.json {
-                println!("{}", serde_json::to_string_pretty(&begun)?);
+                let shown = run_begin::Output {
+                    begun: &begun,
+                    plan,
+                };
+                println!("{}", serde_json::to_string_pretty(&shown)?);
             } else {
-                print!("{}", run_begin::render(&begun));
+                print!("{}", run_begin::render(&begun, &plan));
             }
             Ok(0)
         }
@@ -652,9 +669,24 @@ fn report_to_dashboard(
     report_run(ADDRESS, &token_file, id, stage, status, options).map_err(|e| e.to_string())
 }
 
+/// The server `run update` talks to. Debug builds honor `FACTORY_TEST_ADDRESS`, so CLI tests can use a
+/// fake server on an OS-assigned port; release builds always use the default dashboard.
+fn cli_address() -> String {
+    #[cfg(debug_assertions)]
+    if let Ok(address) = env::var("FACTORY_TEST_ADDRESS") {
+        return address;
+    }
+    ADDRESS.to_string()
+}
+
 /// Where the default dashboard writes the CLI token that POSTs must send.
 fn cli_token_file() -> io::Result<PathBuf> {
     Ok(server::token_path(&data_path(DEFAULT_PORT)?, DEFAULT_PORT))
+}
+
+/// Where the plan of run `id` is saved, in the default dashboard's data dir; its folder is created.
+fn plan_path(id: &str) -> io::Result<PathBuf> {
+    plans::plan_path_ready(&data_path(DEFAULT_PORT)?, DEFAULT_PORT, id)
 }
 
 /// The default dashboard keeps `runs.json`; one on another port keeps its own file and shares nothing.

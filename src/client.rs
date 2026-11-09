@@ -44,13 +44,24 @@ pub(crate) fn report_run(
         return Err("Invalid run id".into());
     }
     let update = parse_update(stage, status, options)?;
-    api_post(
+    let response = api_post(
         server,
         token_file,
         &format!("/api/runs/{id}"),
         &serde_json::to_vec(&update)?,
     )?;
+    for warning in update_warnings(&response) {
+        eprintln!("Warning: {warning}");
+    }
     Ok(())
+}
+
+/// The warnings in an update response; none when it has no list (an older server).
+fn update_warnings(response: &[u8]) -> Vec<String> {
+    serde_json::from_slice::<serde_json::Value>(response)
+        .ok()
+        .and_then(|body| serde_json::from_value(body.get("warnings")?.clone()).ok())
+        .unwrap_or_default()
 }
 
 /// What answers on a dashboard port.

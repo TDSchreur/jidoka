@@ -847,6 +847,28 @@ struct Shared {
 #[derive(Debug)]
 pub(crate) struct UpdateOutcome {
     pub(crate) run: Run,
+    /// Notes on an update that was accepted but looks wrong; each is one line telling the agent what to do.
+    pub(crate) warnings: Vec<String>,
+}
+
+/// Warns, without refusing, when an update skips a stage or finishes Build without a spec.
+fn update_warnings(previous: Stage, next: &Run) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if next.status == RunStatus::Done && previous != next.stage {
+        warnings.push(format!(
+            "Stage {} was set to done but never entered (the run was in {}); set each stage to running first.",
+            next.stage.name(),
+            previous.name()
+        ));
+    }
+    let leaves_build = (next.stage == Stage::Build && next.status == RunStatus::Done)
+        || (next.stage == Stage::Check && previous != Stage::Check);
+    if leaves_build && next.mode == Some(Mode::Full) && next.spec.is_none() {
+        warnings.push(
+            "This Full run has no spec recorded; record it with --spec <url|path>.".to_string(),
+        );
+    }
+    warnings
 }
 
 impl RunStore {
@@ -944,6 +966,7 @@ impl RunStore {
         let mut next = runs[index].clone();
         let was_blocked = matches!(next.status, RunStatus::Blocked);
         let was_finished = next.stage == Stage::Finish && next.status == RunStatus::Done;
+        let previous_stage = next.stage;
         next.stage = update.stage;
         next.status = update.status;
         let started_with = match &update.activity {
@@ -960,6 +983,7 @@ impl RunStore {
         update.base_commit.map_hex().apply(&mut next.base_commit);
         update.spec.apply(&mut next.spec);
         update.pr.apply(&mut next.pr);
+        let warnings = update_warnings(previous_stage, &next);
         match update.tickets {
             FieldUpdate::Keep => {}
             FieldUpdate::Clear => next.tickets.clear(),
@@ -1111,6 +1135,7 @@ impl RunStore {
         }
         Ok(Some(UpdateOutcome {
             run: runs[index].clone(),
+            warnings,
         }))
     }
 
@@ -1928,6 +1953,69 @@ mod tests {
 
     fn update(options: &[&str]) -> UpdateRun {
         parse_update("build", "running", options).unwrap()
+    }
+
+    fn warnings_for(
+        store: &RunStore,
+        id: &str,
+        stage: &str,
+        status: &str,
+        options: &[&str],
+    ) -> Vec<String> {
+        store
+            .update(id, parse_update(stage, status, options).unwrap())
+            .unwrap()
+            .unwrap()
+            .warnings
+    }
+
+    #[test]
+    fn done_on_a_never_entered_stage_warns_but_the_normal_flow_does_not() {
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let run = new_run(&store, "task");
+        assert!(warnings_for(&store, &run.id, "build", "running", &[]).is_empty());
+        assert!(warnings_for(&store, &run.id, "build", "done", &[]).is_empty());
+        let warnings = warnings_for(&store, &run.id, "finish", "done", &FINISH_SUMMARY);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("finish") && warnings[0].contains("never entered"));
+        assert_eq!(store.get(&run.id).unwrap().unwrap().stage, Stage::Finish);
+    }
+
+    #[test]
+    fn a_full_run_without_a_spec_warns_when_build_is_done_or_check_starts() {
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let run = new_run(&store, "task");
+        let id = &run.id;
+        warnings_for(&store, id, "build", "running", &["--mode", "factory-full"]);
+        let done = warnings_for(&store, id, "build", "done", &[]);
+        assert_eq!(done.len(), 1);
+        assert!(done[0].contains("no spec"));
+        assert!(!done[0].contains("before Build"), "{}", done[0]);
+        let check = warnings_for(&store, id, "check", "running", &[]);
+        assert_eq!(check.len(), 1);
+        assert!(warnings_for(&store, id, "check", "running", &[]).is_empty());
+        warnings_for(
+            &store,
+            id,
+            "build",
+            "running",
+            &["--spec", "https://example.com/1"],
+        );
+        assert!(warnings_for(&store, id, "build", "done", &[]).is_empty());
+    }
+
+    #[test]
+    fn balanced_and_fast_runs_do_not_warn_about_a_missing_spec() {
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        for mode in ["factory-balanced", "factory-fast"] {
+            let run = new_run(&store, "task");
+            warnings_for(&store, &run.id, "build", "running", &["--mode", mode]);
+            assert!(warnings_for(&store, &run.id, "build", "done", &[]).is_empty());
+            assert!(warnings_for(&store, &run.id, "check", "running", &[]).is_empty());
+        }
     }
 
     #[test]
