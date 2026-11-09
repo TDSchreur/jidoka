@@ -3,6 +3,7 @@ mod codex_requests;
 mod copilot_requests;
 mod cost;
 mod doctor;
+mod document;
 mod gitignore;
 mod inspect;
 mod install;

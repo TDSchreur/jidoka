@@ -161,6 +161,62 @@ function RefLink({ value, label }) {
   return url ? html`<a href=${url.href} target="_blank" rel="noopener noreferrer">${label}</a>` : null;
 }
 
+/** A button styled as a link that opens a run's local document (a spec or ticket) in the Reader. */
+function ReaderLink({ run, reference, children, label }) {
+  const [open, setOpen] = useState(false);
+  return html`<button type="button" class="link-button" aria-label=${label} onClick=${() => setOpen(true)}>${children}</button
+    >${open ? html`<${Reader} run=${run} reference=${reference} onClose=${() => setOpen(false)} />` : null}`;
+}
+
+/** A run's local document in a modal dialog over the page, fetched on every open. Escape and Close close only the Reader. */
+function Reader({ run, reference, onClose }) {
+  const dialog = useRef(null);
+  const [doc, setDoc] = useState(null);
+  useEffect(() => {
+    const element = dialog.current;
+    if (!element.open) element.showModal();
+    // Escape closes the topmost modal dialog, here this one, and fires `close`.
+    const onNativeClose = () => onClose();
+    element.addEventListener('close', onNativeClose);
+    return () => element.removeEventListener('close', onNativeClose);
+  }, []);
+  useEffect(() => {
+    let current = true;
+    fetch(`api/runs/${encodeURIComponent(run.id)}/document?reference=${encodeURIComponent(reference)}`)
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (response.ok) return { name: body.name, html: body.html };
+        if (body.available === false) return { gone: body.path ?? reference };
+        return { error: body.error ?? `Could not load the document (${response.status})` };
+      })
+      .catch((error) => ({ error: String(error.message ?? error) }))
+      .then((result) => current && setDoc(result));
+    return () => {
+      current = false;
+    };
+  }, []);
+  const heading = doc?.name ?? reference.split(/[\\/]/).pop();
+  return html`<dialog
+    ref=${dialog}
+    class="reader"
+    aria-labelledby="reader-title"
+    onClick=${(event) => event.stopPropagation()}
+  >
+    <div class="reader-bar">
+      <h2 id="reader-title">${heading}</h2>
+      <button type="button" class="toggle reader-close" onClick=${() => dialog.current.close()}>Close</button>
+    </div>
+    ${doc === null
+      ? html`<p class="reader-note" role="status">Loading…</p>`
+      : doc.gone !== undefined
+        ? html`<p class="reader-note">This document is no longer available (${doc.gone})</p>`
+        : doc.error !== undefined
+          ? html`<p class="reader-note">${doc.error}</p>`
+          : // The server escapes raw HTML and keeps only http(s) links, so this Markdown is safe to inject.
+            html`<div class="reader-doc" dangerouslySetInnerHTML=${{ __html: doc.html }}></div>`}
+  </dialog>`;
+}
+
 /** Fresh tokens: input excluding cache reads, plus cache writes and output; null when neither input nor output is known. */
 const freshTokens = (t) => (t.input == null && t.output == null ? null : (t.input ?? 0) + (t.cache_write ?? 0) + (t.output ?? 0));
 
@@ -337,7 +393,11 @@ function PrStateLabel({ run }) {
 function ContextLinks({ run }) {
   const named = (label) => html`${label}<span class="visually-hidden">${` of ${run.title}`}</span>`;
   const pr = run.pr ? html`<${RefLink} value=${run.pr} label=${named('Pull request')} />` : null;
-  const spec = run.spec ? html`<${RefLink} value=${run.spec} label=${named('Spec')} />` : null;
+  const spec = !run.spec
+    ? null
+    : httpUrl(run.spec)
+      ? html`<${RefLink} value=${run.spec} label=${named('Spec')} />`
+      : html`<${ReaderLink} run=${run} reference=${run.spec} label=${`View spec of ${run.title}`}>View</${ReaderLink}>`;
   return pr || spec
     ? html`<span class="links">${pr}${spec}</span>`
     : null;
@@ -664,7 +724,9 @@ function TicketList({ run, tickets, byTicket, now }) {
       return html`<li key=${ticket.reference} class=${ticket.status === 'done' ? 'ticket done' : 'ticket'}>
         <p class="ticket-line">
           <span class="ticket-status">${current ? TICKET_STATUS['in-progress'] : (TICKET_STATUS[ticket.status] ?? String(ticket.status))}</span>
-          <span class="ticket-name"><${TicketRef} value=${String(ticket.reference)} />${' '}${ticket.title}</span>
+          <span class="ticket-name"><${TicketRef} value=${String(ticket.reference)} />${' '}${httpUrl(ticket.reference)
+            ? ticket.title
+            : html`<${ReaderLink} run=${run} reference=${String(ticket.reference)}>${ticket.title}</${ReaderLink}>`}</span>
         </p>
         <${SkillChips} reports=${own} />
         <${ReportList} reports=${own} now=${now} />
@@ -789,6 +851,7 @@ function Detail({ run, now, onClose, onDelete }) {
   const active = run.status !== 'done';
   const blocked = run.status === 'blocked';
   const spec = run.spec ? httpUrl(run.spec) : null;
+  const localSpec = run.spec && !spec ? String(run.spec) : null;
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   const total = usageTotal(run);
   const listed = Array.isArray(run.tickets) && run.tickets.some((t) => t.reference === run.current_ticket);
@@ -831,6 +894,7 @@ function Detail({ run, now, onClose, onDelete }) {
         <span class=${STATUSES.includes(run.status) ? `badge ${run.status}` : 'badge'}>${statusLabel(run.status)}</span>
         <${PrLink} run=${run} />
         ${spec ? html`<span class="status-item"><a href=${spec.href} target="_blank" rel="noopener noreferrer">Spec ${shortRef(spec)}</a></span>` : null}
+        ${localSpec ? html`<span class="status-item">Spec <${ReaderLink} run=${run} reference=${localSpec}>View</${ReaderLink}></span>` : null}
         ${rework !== null ? html`<span class="status-item">Rework${' '}${reworkLabel(rework)}</span>` : null}
         ${ts !== null ? html`<span class="status-item status-updated">Updated${' '}<${SheetTime} at=${ts} now=${now} /></span>` : null}
         ${blocked && run.blocking_reason ? html`<p class="status-reason">${run.blocking_reason}</p>` : null}
