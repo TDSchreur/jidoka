@@ -92,7 +92,7 @@ fn verify_full(
     }
 }
 
-/// The `python3 tests/dashboard-*.py` steps the script should run: every such file in the repo, in byte order.
+/// The harness self-test step, then the `python3 tests/dashboard-*.py` steps the script should run: every such file in the repo, in byte order.
 fn dashboard_steps() -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests"))
         .unwrap()
@@ -101,9 +101,12 @@ fn dashboard_steps() -> Vec<String> {
         .collect();
     names.sort();
     assert!(!names.is_empty());
-    names
-        .into_iter()
-        .map(|name| format!("python3 tests/{name}"))
+    std::iter::once("python3 -m unittest discover -s tests -p test_*.py".to_owned())
+        .chain(
+            names
+                .into_iter()
+                .map(|name| format!("python3 tests/{name}")),
+        )
         .collect()
 }
 
