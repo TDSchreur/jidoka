@@ -557,7 +557,7 @@ fn a_session_without_subagent_logs_is_marked_coordinator_only() {
 }
 
 #[test]
-fn copilot_requests_are_counted_but_not_categorized_and_codex_ones_are_categorized() {
+fn copilot_usage_records_without_a_message_stay_uncategorized_and_codex_ones_are_categorized() {
     let world = World::new();
     world.file(
         "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-abc.jsonl",
@@ -586,7 +586,7 @@ fn copilot_requests_are_counted_but_not_categorized_and_codex_ones_are_categoriz
             (Category::NotCategorized, true, 1)
         ]
     );
-    // The Codex rows know their tool output (none here); the Copilot rows do not.
+    // The Codex rows know their tool output (none here); the Copilot rows have no message to read it from.
     assert_eq!(result.categories[0].counts.tool_output_bytes, Some(0));
     let copilot = &result.categories[1].counts;
     assert_eq!(copilot.tokens.input, Some(40));
@@ -603,10 +603,124 @@ fn copilot_requests_are_counted_but_not_categorized_and_codex_ones_are_categoriz
         result
             .notes
             .iter()
-            .any(|n| n.contains("Copilot requests are not categorized")),
+            .any(|n| n.contains("no matching assistant message")),
         "{:?}",
         result.notes
     );
+}
+
+fn copilot_message(at: u64, call: &str, calls: &[Value]) -> String {
+    json!({"type": "assistant.message", "timestamp": iso(at), "data": {"messageId": "m", "model": "gpt-test",
+        "content": "", "toolRequests": calls, "turnId": "0", "apiCallId": call}})
+    .to_string()
+}
+
+fn copilot_call(id: &str, name: &str, arguments: Value) -> Value {
+    json!({"toolCallId": id, "name": name, "arguments": arguments, "type": "function"})
+}
+
+fn copilot_result(at: u64, id: &str, content: &str) -> String {
+    json!({"type": "tool.execution_complete", "timestamp": iso(at), "data": {"toolCallId": id, "success": true,
+        "result": {"content": content, "detailedContent": "not counted, the model never sees it"}}})
+    .to_string()
+}
+
+#[test]
+fn copilot_requests_are_categorized_by_their_tool_calls_and_subagents_shown_apart() {
+    let world = World::new();
+    world.file(
+        "copilot/session-state/c1/events.jsonl",
+        &[
+            copilot_message(
+                10,
+                "a1",
+                &[copilot_call(
+                    "t1",
+                    "bash",
+                    json!({"command": "cargo test", "description": "d"}),
+                )],
+            ),
+            copilot_usage(11, "a1", false),
+            copilot_result(12, "t1", "ok 12 tests"),
+            copilot_message(
+                20,
+                "a2",
+                &[
+                    copilot_call("t2", "view", json!({"path": "/p/src/main.rs"})),
+                    copilot_call(
+                        "t3",
+                        "task",
+                        json!({"name": "probe", "agent_type": "explore", "prompt": "x"}),
+                    ),
+                ],
+            ),
+            copilot_usage(21, "a2", false),
+            copilot_result(22, "t2", "fn main() {}"),
+            copilot_result(23, "t3", "done"),
+            copilot_message(
+                30,
+                "a3",
+                &[copilot_call(
+                    "t4",
+                    "bash",
+                    json!({"command": format!("factory run update {RUN_A} build running")}),
+                )],
+            ),
+            copilot_usage(31, "a3", false),
+            copilot_result(32, "t4", ""),
+            copilot_message(40, "a4", &[]),
+            copilot_usage(41, "a4", false),
+            // A subagent request, with its own commands.
+            copilot_message(
+                50,
+                "s1",
+                &[copilot_call(
+                    "t5",
+                    "bash",
+                    json!({"command": "git commit -m x"}),
+                )],
+            ),
+            copilot_usage(51, "s1", true),
+            copilot_result(52, "t5", "[main abc] x"),
+            // The result of this call is not in the log, so its output size is unknown.
+            copilot_message(
+                60,
+                "a5",
+                &[copilot_call(
+                    "t6",
+                    "bash",
+                    json!({"command": "cargo build"}),
+                )],
+            ),
+            copilot_usage(61, "a5", false),
+        ],
+    );
+    let target = run(RUN_A, 0, Some(100), &["c1"]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+
+    assert_eq!(
+        sources(&result),
+        [
+            (Category::Commit, true, 1),
+            (Category::Verification, false, 2),
+            (Category::StandaloneReporting, false, 1),
+            (Category::ReadingEditingAnalysis, false, 1),
+            (Category::TextOnly, false, 1),
+        ]
+    );
+    let sizes: Vec<_> = result
+        .categories
+        .iter()
+        .map(|row| row.counts.tool_output_bytes)
+        .collect();
+    // verification: "ok 12 tests" only, because the second request's result is missing.
+    assert_eq!(sizes, [Some(12), Some(11), Some(0), Some(16), Some(0)]);
+    assert_eq!(result.subagents.requests, 1);
+    assert!(result.coordinator_only_sessions.is_empty());
+    assert!(!result
+        .notes
+        .iter()
+        .any(|n| n.contains("no matching assistant message")));
 }
 
 fn codex_usage(at: u64, response: &str) -> String {

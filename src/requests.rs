@@ -2,17 +2,17 @@
 
 use crate::{
     codex_requests::read_codex_requests,
+    copilot_requests::read_copilot_requests,
     inspect::shown,
-    request_logs::{read_requests, uncategorized, Category, Request, RequestRead, SessionRequests},
+    request_logs::{read_requests, Category, Request, RequestRead, SessionRequests},
     run::Run,
     stats::{number, table_with},
     usage::{mark_at, overlaps, Tokens, FUTURE_SLACK_MS},
-    usage_logs::{read_sessions, ReadLimits, Roots},
+    usage_logs::{ReadLimits, Roots},
 };
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashSet},
-    path::PathBuf,
     time::Instant,
 };
 
@@ -159,33 +159,20 @@ pub(crate) fn analyze(
         }
     }
     let codex = read_codex_requests(&roots.codex, &ids, &recorded, from, deadline, limits);
-    // Copilot: the usage reader finds its requests, which are counted but not categorized.
-    let others = read_sessions(
-        &Roots {
-            claude: Vec::new(),
-            codex: PathBuf::new(),
-            ..roots.clone()
-        },
-        &ids,
-        &recorded,
-        from,
-        deadline,
-        limits,
-    );
+    let copilot = read_copilot_requests(&roots.copilot, &ids, &recorded, from, deadline, limits);
     let (timed_out, truncated) = (
-        read.timed_out || codex.timed_out || others.timed_out,
-        read.truncated || codex.truncated || others.truncated,
+        read.timed_out || codex.timed_out || copilot.timed_out,
+        read.truncated || codex.truncated || copilot.truncated,
     );
     result.notes.extend(read.notes.iter().cloned());
-    for note in &codex.notes {
+    for note in codex.notes.iter().chain(&copilot.notes) {
         if !result.notes.contains(note) {
             result.notes.push(note.clone());
         }
     }
     let mut sessions = read.sessions;
     sessions.extend(codex.sessions);
-    let other_notes = others.notes;
-    sessions.extend(uncategorized(others.sessions));
+    sessions.extend(copilot.sessions);
     if timed_out {
         result
             .notes
@@ -201,18 +188,8 @@ pub(crate) fn analyze(
         .iter()
         .filter(|session| claims(target, session))
         .collect();
-    for note in &other_notes {
-        if note
-            .session
-            .as_ref()
-            .is_some_and(|id| claimed.iter().any(|s| s.id == *id))
-            && !result.notes.contains(&note.text)
-        {
-            result.notes.push(note.text.clone());
-        }
-    }
     if claimed.is_empty() {
-        result.notes.push(if !read.root_found && !codex.root_found && others.roots_found == 0 {
+        result.notes.push(if !read.root_found && !codex.root_found && !copilot.root_found {
             "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()
         } else {
             "no session log executed a factory run update for this run and none was recorded for it"
@@ -285,7 +262,7 @@ pub(crate) fn analyze(
         .any(|row| row.category == Category::NotCategorized)
     {
         result.notes.push(
-            "Copilot requests are not categorized and have no tool output size, so the tool output totals cover Claude Code and Codex requests only; a Copilot session counts for a run by the usage reader's rule, which is a recorded session id or a log that names the run".into(),
+            "Some Copilot requests have no matching assistant message in the log, so they are not categorized and have no tool output size; the tool output totals leave them out".into(),
         );
     }
     if result.ambiguous.requests > 0 {
