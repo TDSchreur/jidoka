@@ -30,7 +30,7 @@ Reason about the code like a security researcher rather than matching patterns: 
 
 ## Execution Workflow
 
-Follow these steps in order every time, because each step feeds the next (for example, the self-verification pass needs the findings of the scans before it):
+Follow these steps in order every time, because the later steps build on the earlier ones: the self-verification pass checks the scans' findings, and the report and patches use the verified results:
 
 ### Step 1 — Scope Resolution
 Determine what to scan:
@@ -143,9 +143,9 @@ Explicitly state: **"Review each patch before applying. Nothing has been changed
 - Always produce a findings summary table first (counts by severity), so the reader sees the overall picture before the details
 - Never auto-apply any patch, because a security fix needs a human to confirm it; present patches for human review only
 - Always include a confidence rating per finding (High / Medium / Low)
-- **Group findings** by category, not by file
-- **Be specific** — include file path, line number, and the exact vulnerable code snippet
-- **Explain the risk** in plain English — what could an attacker do with this?
+- Group findings by category, not by file
+- Be specific: include file path, line number, and the exact vulnerable code snippet
+- Explain the risk in plain English — what could an attacker do with this?
 - If the codebase is clean, say so clearly: "No vulnerabilities found" with what was scanned
 
 ## Reference Files

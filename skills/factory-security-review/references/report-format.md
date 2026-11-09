@@ -47,7 +47,7 @@ Secrets Scan: <n> exposed credentials found
 
 ### Findings (Grouped by Category)
 
-For EACH finding, use this card format:
+For each finding, use this card format:
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
