@@ -475,20 +475,36 @@ fn verification_check(root: &Path, path: &OsString) -> Check {
 }
 
 /// Finds `name` in the `PATH` folders; on Windows it also tries the `PATHEXT` extensions.
-fn find_program(name: &str, path: &OsString) -> Option<PathBuf> {
-    let extensions: Vec<String> = if cfg!(windows) {
-        std::iter::once(String::new())
-            .chain(
-                std::env::var("PATHEXT")
-                    .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
-                    .split(';')
-                    .filter(|ext| ext.starts_with('.'))
-                    .map(str::to_string),
-            )
-            .collect()
+pub(crate) fn find_program(name: &str, path: &OsString) -> Option<PathBuf> {
+    let extensions = if cfg!(windows) {
+        let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        windows_extensions(&pathext)
     } else {
         vec![String::new()]
     };
+    find_with_extensions(name, path, &extensions)
+}
+
+/// What to run for `az`. Windows starts only `az.exe` for a bare name, but the Azure CLI installs `az.cmd`,
+/// so the launcher found on `PATH` is used.
+pub(crate) fn az_program() -> PathBuf {
+    std::env::var_os("PATH")
+        .and_then(|path| find_program("az", &path))
+        .filter(|found| found.is_absolute())
+        .unwrap_or_else(|| PathBuf::from("az"))
+}
+
+/// The extensions Windows runs, in `PATHEXT` order. A file without one, such as the Bash launcher
+/// next to `az.cmd`, is not something Windows can run, so it is not a candidate.
+fn windows_extensions(pathext: &str) -> Vec<String> {
+    pathext
+        .split(';')
+        .filter(|ext| ext.starts_with('.'))
+        .map(str::to_string)
+        .collect()
+}
+
+fn find_with_extensions(name: &str, path: &OsString, extensions: &[String]) -> Option<PathBuf> {
     std::env::split_paths(path).find_map(|dir| {
         extensions.iter().find_map(|ext| {
             let candidate = dir.join(format!("{name}{ext}"));
@@ -2129,6 +2145,24 @@ mod tests {
 
     fn provider_check<'a>(report: &'a Report, id: &str) -> Option<&'a Check> {
         report.provider.iter().find(|check| check.id == id)
+    }
+
+    #[test]
+    fn windows_skips_the_extensionless_launcher_next_to_the_cmd_one() {
+        let bin = tempfile::tempdir().unwrap();
+        for name in ["az", "az.cmd"] {
+            let file = bin.path().join(name);
+            fs::write(&file, "").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let extensions = windows_extensions(".COM;.EXE;;.cmd");
+        assert_eq!(extensions, [".COM", ".EXE", ".cmd"]);
+        let found = find_with_extensions("az", &bin.path().into(), &extensions).unwrap();
+        assert_eq!(found, bin.path().join("az.cmd"));
     }
 
     /// A fake host tool on PATH: a shell script that exits 0 only for the listed argument lines. Tests that
