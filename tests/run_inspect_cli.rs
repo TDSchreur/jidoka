@@ -99,6 +99,7 @@ fn inspect_with_fake_server(data: &std::path::Path, args: &[&str]) -> std::proce
         .args(args)
         .env("FACTORY_TEST_ADDRESS", &address)
         .env("XDG_DATA_HOME", data)
+        .env("LOCALAPPDATA", data)
         .output()
         .unwrap();
     server.join().unwrap();
@@ -111,7 +112,7 @@ fn inspect_shows_the_plan_path_in_text_and_creates_its_folder() {
     let data = tempfile::tempdir().unwrap();
     let output = inspect_with_fake_server(data.path(), &["run", "inspect", "7"]);
     assert!(output.status.success(), "{output:?}");
-    let plan = data.path().join("tds-factory/plans/7.md");
+    let plan = data.path().join("tds-factory").join("plans").join("7.md");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains(&format!("Plan          {}\n", plan.display())),
@@ -130,7 +131,9 @@ fn inspect_shows_the_plan_path_in_json() {
     assert_eq!(
         json["plan"],
         data.path()
-            .join("tds-factory/plans/7.md")
+            .join("tds-factory")
+            .join("plans")
+            .join("7.md")
             .to_string_lossy()
             .as_ref()
     );
