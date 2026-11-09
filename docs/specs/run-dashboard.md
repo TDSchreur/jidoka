@@ -7,3 +7,7 @@ Keep the system local and small: a run needs a title, project, stage, and status
 Verify run creation and updates, persistence across restart, invalid requests, and dashboard display. Preserve the existing CLI help and version commands.
 
 The board groups runs into rows by project, sorted by project name. Each row has a column per stage, with blocked runs first.
+
+The Reader shows a run's local spec or ticket, a recorded reference that is not an http(s) link, as rendered Markdown in a dialog over the run's detail. A View link in the run row and the detail opens the spec, and a local ticket's title opens that ticket. The dialog says when the file is no longer available and closes with Close or Escape without closing the detail.
+
+`GET /api/runs/<id>/document?reference=<reference>` serves it. Only the run's recorded spec and ticket references are served, and only `.md` files up to 1 MB. A relative reference resolves against the run's worktree, then its repository. The canonical path must be inside the worktree, the repository, the worktree's git directory, or `<worktree>.factory-plan.md`. A missing file answers 404 with `{"available":false,"path":...}`. The server renders the Markdown, escapes raw HTML and keeps only http(s) links.
