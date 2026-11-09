@@ -6,7 +6,7 @@ It calls a paid model once per case in each repetition, so it is not part of CI 
 
 ## Validation status
 
-Every case in `cases.json` has `"validated": false`. That means nobody has yet run the case against Copilot and confirmed that its accepted actions are right and that Copilot's answers are stable. The runner prints `UNVALIDATED` next to those cases and counts them in the summary. Treat a pass or fail on them as a hint. After you have run a case several times with Copilot and checked its answers, set `"validated": true`.
+A case with `"validated": true` has been run five times against Copilot, with the same accepted action every time. All four current cases passed that check; `verification-fails` always chose `fix`, so its other accepted action, `block`, has never been seen. A case with `"validated": false` has not been checked yet: the runner prints `UNVALIDATED` next to it and counts it in the summary, so treat its result as a hint. New cases start as `false`; set `true` after running the case several times with Copilot and checking its answers.
 
 ## Running it
 
