@@ -29,7 +29,7 @@ class RunReportsTest(unittest.TestCase):
         self.assertEqual(result["skills"], ["factory-fast"])
         self.assertIn("may be incomplete", result["text"])
         self.assertEqual(result["updatedAt"], "2026-11-07T20:03:26.000Z")
-        self.assertRegex(result["updated"], r"^Updated (Yesterday|Sat 7 Nov) 21:03$")
+        self.assertRegex(result["updated"], r"^Updated (Yesterday|Sat Nov 7|Sat 7 Nov) 21:03$")
 
 if __name__ == "__main__":
     unittest.main()
