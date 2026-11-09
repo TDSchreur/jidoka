@@ -122,7 +122,7 @@ pub(crate) fn fetch_run(server: &str, id: &str) -> Result<Run, Box<dyn std::erro
         "GET",
         &format!("/api/runs/{id}"),
         &[],
-        "",
+        None,
     )?)?)
 }
 
@@ -133,7 +133,7 @@ pub(crate) fn fetch_runs(server: &str) -> Result<Vec<Run>, Box<dyn std::error::E
         "GET",
         "/api/runs",
         &[],
-        "",
+        None,
     )?)?)
 }
 
@@ -147,7 +147,7 @@ fn api_post(
     let token = std::fs::read_to_string(token_file)
         .map(|token| token.trim().to_string())
         .map_err(|_| "no CLI token for the factory server; start or restart 'factory dashboard'")?;
-    api_request(server, "POST", route, body, &token)
+    api_request(server, "POST", route, body, Some(&token))
 }
 
 // Requests name the address they connect to in `Host`, which is the server's own authority.
@@ -156,14 +156,14 @@ fn api_request(
     method: &str,
     route: &str,
     body: &[u8],
-    cli_token: &str,
+    cli_token: Option<&str>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut stream = TcpStream::connect(server).map_err(|e| {
         io::Error::new(e.kind(), format!("cannot connect to factory server at {server}; start it with 'factory dashboard': {e}"))
     })?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    if method == "POST" {
+    if let (true, Some(cli_token)) = (method == "POST", cli_token) {
         write!(stream, "POST {route} HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\n{CLI_TOKEN_HEADER}: {cli_token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
     } else {
         write!(
@@ -528,6 +528,19 @@ mod tests {
             let mut seen = Vec::new();
             let mut chunk = [0u8; 1024];
             while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                let read = stream.read(&mut chunk).unwrap();
+                seen.extend_from_slice(&chunk[..read]);
+            }
+            // Take the whole body too: closing with unread data resets the connection and hides the response.
+            let head_end = seen.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            let head = String::from_utf8_lossy(&seen[..head_end]).to_lowercase();
+            let length: usize = head
+                .split("content-length: ")
+                .nth(1)
+                .and_then(|rest| rest.split("\r\n").next())
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            while seen.len() < head_end + length {
                 let read = stream.read(&mut chunk).unwrap();
                 seen.extend_from_slice(&chunk[..read]);
             }
