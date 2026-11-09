@@ -157,6 +157,23 @@ The server listens only on localhost but has no user authentication. Other users
 
 The workflow skills [`factory-full`](.agents/skills/factory-full/SKILL.md), [`factory-balanced`](.agents/skills/factory-balanced/SKILL.md), and [`factory-fast`](.agents/skills/factory-fast/SKILL.md) coordinate the flow using skills from [mattpocock/skills](https://github.com/mattpocock/skills) and [github/awesome-copilot](https://github.com/github/awesome-copilot). After installing the skills, ask your coding agent to run one of them on your task. See [skills/README.md](skills/README.md) for the upstream origins.
 
+### Agent comparison
+
+The factory installs the same skills for Claude Code, Codex and GitHub Copilot, but the agents differ in a few places:
+
+| | Claude Code | Codex | GitHub Copilot |
+| --- | --- | --- | --- |
+| Skills folder | `$CLAUDE_CONFIG_DIR/skills` or `~/.claude/skills` | `$CODEX_HOME` skills folder | `$COPILOT_HOME/skills` or `~/.copilot/skills` |
+| Model routing | Agent tool `model` and `effort` | Subagent model and effort settings | `task` tool `model` and `reasoning_effort` |
+| Model names | Aliases only: `opus`, `sonnet`, `haiku`, `fable` | Plain text, not checked | Exact IDs such as `claude-sonnet-5.5` |
+| Unavailable model | Not applicable | Not checked | Silently runs on the session's model |
+| `factory doctor` model checks | Version and routed models and efforts | Skipped | Policy checks only; account access not checked |
+| Usage logs | Read | Read | Read (`events.jsonl`) |
+| Pause detection (usage limit, compaction) | Yes | No | No |
+| Installed stage agents and read-only reviewers | No | No | No |
+
+The last row is a difference from the [old project](https://github.com/TDSchreur/tds-factory), which installed them for every agent. See the [functionality comparison](docs/reports/old-project-functionality-comparison.md).
+
 ### Workflow modes
 
 TDS Factory has three workflow modes that trade speed against rigor: `/factory-full` favors quality, `/factory-fast` favors speed, and `/factory-balanced` sits between them. All three report progress to the dashboard and end with the same Finish stage; `/factory-fast` skips Check. Each run uses its own fresh git worktree based on `origin/<base branch>`, so several runs can proceed at once. Start the run in a fresh, dedicated worktree if your agent environment provides one, or the workflow creates one next to the repository. The original checkout is not modified, and the worktree is kept after the pull request opens until the pull request merges and you remove it with `factory run cleanup`.
