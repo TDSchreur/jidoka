@@ -641,7 +641,7 @@ pub(crate) fn civil_day(millis: u64) -> String {
 // --- Copilot ----------------------------------------------------------------------------------------
 
 /// Copilot counts cache reads and writes inside `inputTokens`; both are taken out of input. Reasoning
-/// tokens are part of output.
+/// tokens are part of output. Each record also names the effort of its call as `reasoningEffort`.
 fn parse_copilot(text: &str, session: &str) -> Parsed {
     let mut parsed = Parsed::default();
     for (number, line) in text
@@ -694,8 +694,7 @@ fn parse_copilot(text: &str, session: &str) -> Parsed {
                 model,
                 tokens,
                 subagent: usage["initiator"] == "sub-agent",
-                // Copilot's usage records carry no effort.
-                effort: None,
+                effort: effort_name(&usage["reasoningEffort"]),
             },
         );
     }
