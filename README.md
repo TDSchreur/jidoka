@@ -403,12 +403,20 @@ Write one policy file, `model-routing.json`, in the factory's config folder: `$X
         "check": { "model": "gpt-6.1-terra", "effort": "medium" },
         "finish": { "model": "gpt-6-luna", "effort": "low" }
       }
+    },
+    "copilot": {
+      "stages": {
+        "define": { "model": "claude-sonnet-5.5", "effort": "low" },
+        "build": { "model": "claude-sonnet-5.5", "effort": "low" },
+        "check": { "model": "claude-sonnet-5.5", "effort": "medium" },
+        "finish": { "model": "claude-haiku-4.5", "effort": "low" }
+      }
     }
   }
 }
 ```
 
-`factory install` and `factory update` create this policy when no file exists, and replace a file in the earlier format (roles and tasks, or the single-agent form) with it, printing the path. A switch that was off in the earlier file stays off: a top-level `"enabled": false`, and an agent entry's `"enabled": false` (the single-agent form carries only the top-level one). The message names what is off (the whole policy, each agent entry) and says to remove its `"enabled": false` to switch it on; when nothing was off, the message only offers `"enabled": false` to switch the policy off. They preserve any other file, including a current-format policy and a symbolic link. `factory doctor --create-model-routing` can also create it explicitly, with both agents or just the one named by `--agent`; see [Checking readiness](#checking-readiness).
+`factory install` and `factory update` create this policy when no file exists, and replace a file in the earlier format (roles and tasks, or the single-agent form) with it, printing the path. A switch that was off in the earlier file stays off: a top-level `"enabled": false`, and an agent entry's `"enabled": false` (the single-agent form carries only the top-level one). The message names what is off (the whole policy, each agent entry) and says to remove its `"enabled": false` to switch it on; when nothing was off, the message only offers `"enabled": false` to switch the policy off. They preserve any other file, including a current-format policy and a symbolic link. `factory doctor --create-model-routing` can also create it explicitly, with all three agents or just the one named by `--agent`; see [Checking readiness](#checking-readiness).
 
 - Each entry under `agents` is `claude`, `codex` or `copilot` and has `stages`, and optionally `enabled`. `stages` maps `define`, `build`, `check` and `finish` to a `model` and an optional `effort`; a Stage you leave out is not routed and keeps the session's model. `enabled` defaults to `true`; set it to `false` at the top to switch routing off for every agent, or inside an entry to switch off that agent only, without deleting anything. The defaults above favour cheap models and low effort to keep token use down.
 - Models and efforts are plain text of up to 64 letters, digits and `. _ : / -`. The factory keeps no list of valid models, so a new model works without a factory release, and checking that your agent accepts a value is up to you. Copilot CLI entries are checked a little further, because it quietly ignores what it does not know: the model must not be a Claude Code alias (`opus`, `sonnet`, `haiku`, `fable`; Copilot needs exact IDs such as `claude-sonnet-5.5`), and the effort must be one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`.
