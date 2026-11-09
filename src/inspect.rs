@@ -559,6 +559,40 @@ mod tests {
     }
 
     #[test]
+    fn a_copilot_request_is_compared_with_exact_model_ids_and_recorded_efforts() {
+        let mut run: Run = serde_json::from_value(serde_json::json!({
+            "id": "1", "title": "t", "project": "/p", "stage": "build", "status": "running",
+            "model_routing": {
+                "agent": "copilot",
+                "stages": {
+                    "build": {"model": "claude-sonnet-5.5", "effort": "medium"},
+                    "check": {"model": "claude-haiku-4.5", "effort": "low"}
+                }
+            },
+            "usage": {"status": "tracked", "collected_at": 1, "rows": [
+                {"stage": "build", "model": "claude-sonnet-5.5", "efforts": ["high"], "input": 10, "output": 5},
+                {"stage": "check", "model": "gpt-5.6-terra", "input": 10, "output": 5}
+            ]}
+        }))
+        .unwrap();
+        let text = render(&run);
+        assert_eq!(
+            observed(&text, "build"),
+            "observed: claude-sonnet-5.5 (effort high); MISMATCH: effort medium was requested, observed high"
+        );
+        // A silent fallback to the session's model is a mismatch.
+        assert_eq!(
+            observed(&text, "check"),
+            "observed: gpt-5.6-terra; MISMATCH: claude-haiku-4.5 was requested and never observed"
+        );
+        run.usage.as_mut().unwrap().status = UsageStatus::Partial;
+        assert_eq!(
+            observed(&render(&run), "check"),
+            "observed: gpt-5.6-terra; claude-haiku-4.5 not observed (usage is partial, so it may be missing)"
+        );
+    }
+
+    #[test]
     fn partial_usage_does_not_turn_a_missing_model_into_a_mismatch() {
         let text = render(&with_usage(
             "partial",
