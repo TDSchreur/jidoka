@@ -20,7 +20,7 @@ File issues only into the user's own repo. Never file into `mattpocock/skills` (
 
 ## Pull requests as a triage surface
 
-**PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
+**PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/factory-triage` reads this flag.)_
 
 When set to `yes`, PRs run through the same labels and states as issues, using the `gh pr` equivalents:
 

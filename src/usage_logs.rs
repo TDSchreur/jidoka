@@ -1,13 +1,14 @@
 //! Readers for the session logs of Claude Code, Codex and Copilot. Each keeps only the model, the
 //! reasoning effort (Claude Code and Codex record it), the token counts and the timestamp of a response, plus which run ids and session ids a log names. No conversation
-//! text, prompt, tool output or credential leaves this module.
+//! text, prompt, tool output or credential leaves this module. Claude Code logs also give the moments of
+//! pause markers (usage limit, compaction) and of activity, as timestamps only.
 //!
 //! Formats (see the README for what is validated): Claude Code transcripts and their subagent transcripts,
 //! Codex rollout files, and Copilot `events.jsonl` files.
 
 use crate::{
-    install::agent_home,
-    usage::{parse_timestamp, Entry, Tokens},
+    install::{agent_home, expand_config_dir},
+    usage::{parse_timestamp, Entry, PauseKind, Tokens},
 };
 use serde_json::Value;
 use std::{
@@ -41,19 +42,35 @@ impl Default for ReadLimits {
 /// Where each agent keeps its session logs.
 #[derive(Clone, Debug)]
 pub(crate) struct Roots {
-    pub(crate) claude: PathBuf,
+    /// Every Claude config directory's `projects` folder: the resolved one and the ones named in
+    /// `FACTORY_CLAUDE_CONFIG_DIRS`.
+    pub(crate) claude: Vec<PathBuf>,
     pub(crate) codex: PathBuf,
     pub(crate) copilot: PathBuf,
 }
 
 impl Roots {
     /// The agents' usual folders under `home`, honoring `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `COPILOT_HOME` as install does.
+    /// `FACTORY_CLAUDE_CONFIG_DIRS` (the platform's path-list separator) adds Claude config directories.
+    /// Empty and relative entries are ignored, and a folder named twice is read once.
     pub(crate) fn from_home(
         home: &Path,
         var: &dyn Fn(&str) -> Option<OsString>,
     ) -> io::Result<Self> {
+        let mut claude = vec![agent_home("claude", home, var)?.join("projects")];
+        if let Some(extra) = var("FACTORY_CLAUDE_CONFIG_DIRS") {
+            for dir in std::env::split_paths(&extra) {
+                let Ok(dir) = expand_config_dir(&dir.to_string_lossy(), home) else {
+                    continue;
+                };
+                let projects = dir.join("projects");
+                if !claude.contains(&projects) {
+                    claude.push(projects);
+                }
+            }
+        }
         Ok(Self {
-            claude: agent_home("claude", home, var)?.join("projects"),
+            claude,
             codex: agent_home("codex", home, var)?.join("sessions"),
             copilot: agent_home("copilot", home, var)?.join("session-state"),
         })
@@ -67,6 +84,10 @@ pub(crate) struct SessionData {
     /// The run ids the log names.
     pub(crate) mentions: HashSet<String>,
     pub(crate) entries: Vec<Entry>,
+    /// Pause markers in the log: what and when, never text. Claude Code only.
+    pub(crate) pauses: Vec<(PauseKind, u64)>,
+    /// When the log shows the agent or the user working, sorted. Claude Code only.
+    pub(crate) activity: Vec<u64>,
 }
 
 /// Something that limits what a session's usage covers.
@@ -234,6 +255,8 @@ struct Parsed {
     unusable: usize,
     /// Entries that carry no response id, so a repeat of them cannot be told from a new call.
     unidentified: usize,
+    pauses: Vec<(PauseKind, u64)>,
+    activity: Vec<u64>,
 }
 
 impl Parsed {
@@ -254,6 +277,8 @@ impl Parsed {
         self.unusable += other.unusable;
         self.unidentified += other.unidentified;
         self.entries.extend(other.entries);
+        self.pauses.extend(other.pauses);
+        self.activity.extend(other.activity);
     }
 }
 
@@ -272,6 +297,10 @@ fn parse_claude(text: &str, session: &str, subagent_file: bool) -> Parsed {
             parsed.malformed += 1;
             continue;
         };
+        // A usage-limit message carries zero usage under a made-up model: not a response.
+        if data["isApiErrorMessage"].as_bool() == Some(true) {
+            continue;
+        }
         let message = &data["message"];
         let usage = &message["usage"];
         if !usage.is_object() {
@@ -318,6 +347,39 @@ fn parse_claude(text: &str, session: &str, subagent_file: bool) -> Parsed {
     parsed
 }
 
+/// The pause markers and the moments of activity in a Claude Code transcript; only timestamps are kept.
+/// A usage limit is an assistant line flagged `isApiErrorMessage` with error `rate_limit`; a compaction is
+/// a `compact_boundary` system line. Other lines of the user or the assistant are activity, except an
+/// error message and the summary a compaction writes.
+fn claude_pauses(text: &str, parsed: &mut Parsed) {
+    for line in text.lines().filter(|line| {
+        line.contains("\"type\":\"user\"")
+            || line.contains("\"type\":\"assistant\"")
+            || line.contains("compact_boundary")
+    }) {
+        let Ok(data) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(ts) = timestamp(data.get("timestamp")) else {
+            continue;
+        };
+        match data["type"].as_str() {
+            Some("system") if data["subtype"].as_str() == Some("compact_boundary") => {
+                parsed.pauses.push((PauseKind::Compaction, ts));
+            }
+            Some("assistant") if data["isApiErrorMessage"].as_bool() == Some(true) => {
+                if data["error"].as_str() == Some("rate_limit") {
+                    parsed.pauses.push((PauseKind::UsageLimit, ts));
+                }
+            }
+            Some("user" | "assistant") if data["isCompactSummary"].as_bool() != Some(true) => {
+                parsed.activity.push(ts);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn read_claude(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
     for slug in sub_dirs(root) {
         for file in files_in(&slug.path()) {
@@ -344,6 +406,7 @@ fn read_claude(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
                 continue;
             }
             let mut parsed = parse_claude(&text, &stem, false);
+            claude_pauses(&text, &mut parsed);
             drop(text);
             // The subagents of a session are in its own folder; the same response is never counted twice.
             for sub in files_in(&slug.path().join(&stem).join("subagents")) {
@@ -355,7 +418,9 @@ fn read_claude(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
                     break;
                 }
                 if let Some(sub_text) = ctx.load(&sub_path, &stem, out) {
-                    parsed.absorb(parse_claude(&sub_text, &stem, true));
+                    let mut sub = parse_claude(&sub_text, &stem, true);
+                    claude_pauses(&sub_text, &mut sub);
+                    parsed.absorb(sub);
                 }
             }
             ctx.add(&stem, mentions, parsed, "Claude Code", out);
@@ -664,6 +729,9 @@ fn read_copilot(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
 
 // --- reading ----------------------------------------------------------------------------------------
 
+/// A session's pause markers and moments of activity.
+type Markers = (Vec<(PauseKind, u64)>, Vec<u64>);
+
 /// What the readers share: which runs and sessions are of interest, and the limits.
 struct Ctx<'a> {
     ids: &'a HashSet<&'a str>,
@@ -677,6 +745,8 @@ struct Ctx<'a> {
     entries: BTreeMap<String, Entry>,
     /// Per session: the run ids it names.
     sessions: BTreeMap<String, HashSet<String>>,
+    /// Per session: its pause markers and moments of activity.
+    pauses: BTreeMap<String, Markers>,
 }
 
 impl Ctx<'_> {
@@ -780,6 +850,9 @@ impl Ctx<'_> {
                 }
             }
         }
+        let (pauses, activity) = self.pauses.entry(id.to_string()).or_default();
+        pauses.extend(parsed.pauses);
+        activity.extend(parsed.activity);
         self.sessions
             .entry(id.to_string())
             .or_default()
@@ -807,15 +880,20 @@ pub(crate) fn read_sessions(
         bytes: 0,
         entries: BTreeMap::new(),
         sessions: BTreeMap::new(),
+        pauses: BTreeMap::new(),
     };
-    for (root, read) in [
-        (
-            &roots.claude,
-            read_claude as fn(&Path, &mut Ctx, &mut ReadResult),
-        ),
-        (&roots.codex, read_codex),
-        (&roots.copilot, read_copilot),
-    ] {
+    let sources = roots
+        .claude
+        .iter()
+        .map(|root| (root, read_claude as fn(&Path, &mut Ctx, &mut ReadResult)))
+        .chain([
+            (
+                &roots.codex,
+                read_codex as fn(&Path, &mut Ctx, &mut ReadResult),
+            ),
+            (&roots.copilot, read_copilot),
+        ]);
+    for (root, read) in sources {
         // The log folder itself may be a link (a dotfiles setup); what is inside it is not followed.
         if !root.is_dir() {
             continue;
@@ -836,10 +914,16 @@ pub(crate) fn read_sessions(
     for (id, mentions) in ctx.sessions {
         let mut entries = by_session.remove(&id).unwrap_or_default();
         entries.sort_by_key(|entry| entry.ts);
+        let (mut pauses, mut activity) = ctx.pauses.remove(&id).unwrap_or_default();
+        pauses.sort_by_key(|(_, at)| *at);
+        activity.sort_unstable();
+        activity.dedup();
         out.sessions.push(SessionData {
             id,
             mentions,
             entries,
+            pauses,
+            activity,
         });
     }
     out

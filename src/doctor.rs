@@ -1,12 +1,12 @@
 //! `factory doctor`: a report on whether this project and this machine are ready for the factory.
 //! It only reads files, looks on `PATH` and asks `git` read-only questions, asks the pull request host's tool
-//! whether it is signed in (`gh auth status`, `az extension show`, `az account show`), and, when a
-//! model-routing policy exists, asks an agent for its `--version`. It never runs the project's own commands, calls a model,
+//! whether it is signed in (`gh auth status`, `az extension show`, `az account show`), asks `rustup target list --installed`
+//! in a Rust project on a non-Windows host (read-only), and, when a model-routing policy exists, asks an agent for its `--version`. It never runs the project's own commands, calls a model,
 //! installs anything or needs the dashboard. The one thing it writes is a starter model-routing policy, and
 //! only when `--create-model-routing` asks for it.
 
-use crate::install::{bundled_skill_files, skills_root};
-use crate::routing::{create_starter, policy_path_in, RoutingAgent};
+use crate::install::{bundled_skill_files, claude_config_dirs, skills_root};
+use crate::routing::{install_starter, policy_path_in, RoutingAgent, Starter};
 use serde::Serialize;
 use std::{
     ffi::OsString,
@@ -159,8 +159,12 @@ pub(crate) struct Machine<'a> {
     pub(crate) home: PathBuf,
     pub(crate) path: OsString,
     pub(crate) var: &'a dyn Fn(&str) -> Option<OsString>,
+    /// The `--config-dir` values: they replace the Claude config directory.
+    pub(crate) config_dirs: Vec<String>,
     /// What an agent's program prints for `--version`, if it can be asked.
     pub(crate) version: &'a dyn Fn(&Path) -> Option<String>,
+    /// What `rustup target list --installed` prints, if rustup can be asked.
+    pub(crate) rustup_targets: &'a dyn Fn(&OsString, &Path) -> Option<String>,
 }
 
 /// Checks the project at `project` and the listed agents (all of them when `agent` is `None`).
@@ -178,6 +182,14 @@ pub(crate) fn diagnose(
             )
         })?],
     };
+    if !machine.config_dirs.is_empty() && agent.is_some_and(|name| name != "claude") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--config-dir applies to the claude agent; use --agent claude or leave --agent out",
+        ));
+    }
+    // Resolved before any check runs, so a relative path fails the whole command.
+    claude_config_dirs(&machine.config_dirs, &machine.home, machine.var)?;
     let git = git_checks(project);
     // Later checks read from the work tree root, so they work from a subfolder or a linked worktree.
     let root = git_output(project, &["rev-parse", "--show-toplevel"])
@@ -185,13 +197,13 @@ pub(crate) fn diagnose(
     let mut project_checks = git;
     project_checks.push(setup_docs_check(&root));
     project_checks.push(verification_check(&root, &machine.path));
+    // A warning never blocks, so this check stays out of `shared_ok`.
+    let windows_lint = windows_lint_check(&root, machine);
     let agents: Vec<AgentReport> = agent_ids
         .into_iter()
         .map(|id| {
-            let checks = vec![
-                executable_check(id, &machine.path),
-                skills_check(id, machine),
-            ];
+            let mut checks = vec![executable_check(id, &machine.path)];
+            checks.extend(skills_checks(id, machine));
             AgentReport {
                 id,
                 usable: checks.iter().all(Check::passed),
@@ -200,6 +212,7 @@ pub(crate) fn diagnose(
         })
         .collect();
     let shared_ok = project_checks.iter().all(Check::passed);
+    project_checks.extend(windows_lint);
     let agents_ok = match agent {
         Some(_) => agents.iter().all(|a| a.usable),
         None => agents.iter().any(|a| a.usable),
@@ -312,7 +325,7 @@ fn read_doc(path: &Path) -> io::Result<String> {
 }
 
 fn setup_docs_check(root: &Path) -> Check {
-    const FIX: &str = "Run `/setup-matt-pocock-skills` once in the project and commit its output.";
+    const FIX: &str = "Run `/factory-setup` once in the project and commit its output.";
     let mut missing = Vec::new();
     if !root.join("docs/agents/issue-tracker.md").is_file() {
         missing.push("docs/agents/issue-tracker.md".to_string());
@@ -375,6 +388,28 @@ fn documented_commands(text: &str) -> Option<Vec<String>> {
         }
     }
     Some(commands)
+}
+
+/// For a Rust project on a non-Windows host: whether a Windows target is installed, so verification can lint Windows-only code.
+fn windows_lint_check(root: &Path, machine: &Machine) -> Option<Check> {
+    if cfg!(windows) || !root.join("Cargo.toml").is_file() {
+        return None;
+    }
+    let Some(targets) = (machine.rustup_targets)(&machine.path, &machine.home) else {
+        return Some(Check::skipped(
+            "windows-lint",
+            "rustup is not available, so Windows targets were not checked",
+        ));
+    };
+    Some(if targets.lines().any(|t| t.contains("-pc-windows-")) {
+        Check::pass("windows-lint", "a Windows target is installed")
+    } else {
+        Check::warning(
+            "windows-lint",
+            "no Windows target is installed, so Windows-only code is not linted locally",
+            "Run `rustup target add x86_64-pc-windows-gnu` so the project's verification can lint Windows-only code.",
+        )
+    })
 }
 
 fn verification_check(root: &Path, path: &OsString) -> Check {
@@ -491,17 +526,28 @@ fn executable_check(agent: &'static str, path: &OsString) -> Check {
     }
 }
 
-fn skills_check(agent: &'static str, machine: &Machine) -> Check {
-    let root = match skills_root(agent, &machine.home, machine.var) {
-        Ok(root) => root,
-        Err(error) => {
-            return Check::fail(
-                "skills",
-                error.to_string(),
-                "Use codex, claude, or copilot.",
-            )
-        }
+/// One skills check per skills folder: each Claude config directory has its own.
+fn skills_checks(agent: &'static str, machine: &Machine) -> Vec<Check> {
+    let roots = if agent == "claude" {
+        claude_config_dirs(&machine.config_dirs, &machine.home, machine.var)
+            .map(|dirs| dirs.into_iter().map(|dir| dir.join("skills")).collect())
+    } else {
+        skills_root(agent, &machine.home, machine.var).map(|root| vec![root])
     };
+    match roots {
+        Ok(roots) => roots
+            .iter()
+            .map(|root| skills_check(agent, root, !machine.config_dirs.is_empty()))
+            .collect(),
+        Err(error) => vec![Check::fail(
+            "skills",
+            error.to_string(),
+            "Use codex, claude, or copilot.",
+        )],
+    }
+}
+
+fn skills_check(agent: &'static str, root: &Path, explicit_dir: bool) -> Check {
     // A skill counts as installed only when every file `install` writes for it is there, so an
     // install from an older release that lacks newer files is reported too.
     let mut absent: Vec<&str> = bundled_skill_files()
@@ -522,7 +568,15 @@ fn skills_check(agent: &'static str, machine: &Machine) -> Check {
                 root.display(),
                 absent.join(", ")
             ),
-            format!("Run `factory install --agent {agent}`."),
+            if explicit_dir && agent == "claude" {
+                let dir = root.parent().unwrap_or(root);
+                format!(
+                    "Run `factory install --agent claude --config-dir {}`.",
+                    dir.display()
+                )
+            } else {
+                format!("Run `factory install --agent {agent}`.")
+            },
         )
     }
 }
@@ -592,17 +646,39 @@ fn agent_version(program: &Path) -> Option<String> {
     })
 }
 
+/// Asks rustup which targets are installed, looking for it on `path`. Read-only.
+/// It runs outside the project, in `home`, with auto-install off, so a `rust-toolchain.toml` cannot make it download.
+fn rustup_targets(path: &OsString, home: &Path) -> Option<String> {
+    let program = find_program("rustup", path)?;
+    if !program.is_absolute() {
+        return None;
+    }
+    let output = Command::new(program)
+        .args(["target", "list", "--installed"])
+        .current_dir(home)
+        .env("RUSTUP_AUTO_INSTALL", "0")
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// Runs the checks for the current folder and prints the report. Returns whether the factory is ready.
 pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
     let machine = Machine {
         home: crate::install::home_dir()?,
         path: std::env::var_os("PATH").unwrap_or_default(),
         var: &|name| std::env::var_os(name),
+        config_dirs: args.config_dirs.iter().map(|dir| dir.to_string()).collect(),
         version: &agent_version,
+        rustup_targets: &rustup_targets,
     };
     let Args {
         agent,
         json,
+        config_dirs: _,
         create_model_routing: create,
     } = args;
     if let Some(create_for) = create {
@@ -628,11 +704,14 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
 pub(crate) struct Args<'a> {
     pub(crate) agent: Option<&'a str>,
     pub(crate) json: bool,
+    /// The `--config-dir` values, in the order given.
+    pub(crate) config_dirs: Vec<&'a str>,
     /// Write a starter model-routing policy first, when none exists, with an entry for each of these agents.
     pub(crate) create_model_routing: Option<Vec<RoutingAgent>>,
 }
 
 /// Writes a starter model-routing policy for `agent` unless a file is already there, and says what it did.
+/// An old-format file is replaced.
 /// This is the one thing doctor writes, and only when asked.
 fn create_model_routing(agents: &[RoutingAgent], machine: &Machine) -> Result<String, String> {
     let path = policy_path_in(|name| (machine.var)(name)).ok_or(
@@ -643,31 +722,41 @@ fn create_model_routing(agents: &[RoutingAgent], machine: &Machine) -> Result<St
         },
     )?;
     let shown = printable(&path.display().to_string());
-    match create_starter(&path, agents) {
-        Ok(true) => Ok(format!(
-            "Created {shown}, a starter policy for {} that routes the check task to the strong role of each. \
-             It is switched on: edit the models and efforts, or set \"enabled\": false to switch it off.",
-            agents.iter().map(|agent| agent.name()).collect::<Vec<_>>().join(" and ")
-        )),
+    match install_starter(&path, agents) {
+        Ok(done @ (Starter::Created | Starter::Replaced(_))) => {
+            let about = format!(
+                "It is a starter policy for {} that routes every stage (define, build, check, finish) of each.",
+                agents.iter().map(|agent| agent.name()).collect::<Vec<_>>().join(" and ")
+            );
+            Ok(match done {
+                Starter::Replaced(off) => Starter::replaced_message(&shown, off, Some(&about)),
+                _ => Starter::created_message(&shown, Some(&about)),
+            })
+        }
         // A link that points nowhere is "there" for creating but not for reading, so say which it is.
-        Ok(false) if fs::metadata(&path).is_err() => Ok(format!(
+        Ok(Starter::Left) if fs::metadata(&path).is_err() => Ok(format!(
             "{shown} is a link that points nowhere, so no policy is read from it. It was left unchanged."
         )),
-        Ok(false) => Ok(format!("{shown} already exists and was left unchanged.")),
+        Ok(Starter::Left) => Ok(format!("{shown} already exists and was left unchanged.")),
         Err(error) => Err(format!(
             "cannot create {shown}: {error}. Check that the folder can be written, or create the file yourself with the example in the README (Model routing)."
         )),
     }
 }
 
-/// Reads `[--agent <name>] [--json] [--create-model-routing]` in any order.
+/// Reads `[--agent <name>] [--config-dir <path>]... [--json] [--create-model-routing]` in any order.
 pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
     let (mut agent, mut json, mut create) = (None, false, false);
+    let mut config_dirs = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match *arg {
             "--json" => json = true,
             "--create-model-routing" => create = true,
+            "--config-dir" => match args.next() {
+                Some(dir) => config_dirs.push(*dir),
+                None => return Err("--config-dir needs a path.".into()),
+            },
             "--agent" => match args.next() {
                 Some(name) if AGENTS.contains(name) && agent.is_none() => agent = Some(*name),
                 Some(name) if AGENTS.contains(name) => {
@@ -697,6 +786,7 @@ pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
     Ok(Args {
         agent,
         json,
+        config_dirs,
         create_model_routing,
     })
 }
@@ -716,6 +806,8 @@ mod tests {
         vars: HashMap<String, OsString>,
         /// What each agent's program prints for `--version`.
         versions: HashMap<String, String>,
+        /// What `rustup target list --installed` prints; `None` when rustup is not available.
+        rustup_targets: Option<String>,
     }
 
     fn git(dir: &Path, args: &[&str]) {
@@ -761,6 +853,7 @@ mod tests {
                 bin: tempfile::tempdir().unwrap(),
                 vars: HashMap::new(),
                 versions: HashMap::new(),
+                rustup_targets: None,
             };
             let dir = world.project.path();
             git(dir, &["init", "-q"]);
@@ -793,16 +886,22 @@ mod tests {
         }
 
         fn report(&self, agent: Option<&str>) -> Report {
+            self.report_in(agent, &[]).unwrap()
+        }
+
+        fn report_in(&self, agent: Option<&str>, config_dirs: &[&str]) -> io::Result<Report> {
             let machine = Machine {
                 home: self.home.path().to_path_buf(),
                 path: self.bin.path().into(),
                 var: &|name| self.vars.get(name).cloned(),
+                config_dirs: config_dirs.iter().map(|dir| dir.to_string()).collect(),
                 version: &|program| {
                     let name = program.file_stem()?.to_str()?;
                     self.versions.get(name).cloned()
                 },
+                rustup_targets: &|_, _| self.rustup_targets.clone(),
             };
-            diagnose(self.project.path(), agent, &machine).unwrap()
+            diagnose(self.project.path(), agent, &machine)
         }
     }
 
@@ -816,6 +915,54 @@ mod tests {
 
     fn agent<'a>(report: &'a Report, id: &str) -> &'a AgentReport {
         report.agents.iter().find(|a| a.id == id).unwrap()
+    }
+
+    #[test]
+    fn windows_lint_is_a_non_blocking_warning_without_a_windows_target() {
+        if cfg!(windows) {
+            return;
+        }
+        let mut world = World::ready().with_agent("claude");
+        fs::write(world.project.path().join("Cargo.toml"), "").unwrap();
+        world.rustup_targets = Some("x86_64-unknown-linux-gnu\n".into());
+        let report = world.report(None);
+        let check = project_check(&report, "windows-lint");
+        assert_eq!(check.status, Status::Warning);
+        assert!(check
+            .fix
+            .as_deref()
+            .unwrap()
+            .contains("rustup target add x86_64-pc-windows-gnu"));
+        assert!(report.ok, "{}", render(&report));
+    }
+
+    #[test]
+    fn windows_lint_passes_with_a_windows_target_and_skips_without_rustup() {
+        if cfg!(windows) {
+            return;
+        }
+        let mut world = World::ready().with_agent("claude");
+        fs::write(world.project.path().join("Cargo.toml"), "").unwrap();
+        world.rustup_targets = Some("x86_64-pc-windows-gnu\nx86_64-unknown-linux-gnu\n".into());
+        assert!(project_check(&world.report(None), "windows-lint").passed());
+        world.rustup_targets = None;
+        let report = world.report(None);
+        assert_eq!(
+            project_check(&report, "windows-lint").status,
+            Status::Skipped
+        );
+        assert!(report.ok);
+    }
+
+    #[test]
+    fn windows_lint_is_left_out_of_a_project_without_cargo_toml() {
+        let mut world = World::ready().with_agent("claude");
+        world.rustup_targets = Some(String::new());
+        let report = world.report(None);
+        assert!(report
+            .project
+            .iter()
+            .all(|check| check.id != "windows-lint"));
     }
 
     #[test]
@@ -937,7 +1084,9 @@ mod tests {
             home: world.home.path().into(),
             path: world.bin.path().into(),
             var: &|_| None,
+            config_dirs: Vec::new(),
             version: &|_| None,
+            rustup_targets: &|_, _| None,
         };
         let report = diagnose(empty.path(), Some("claude"), &machine).unwrap();
         assert!(!report.ok);
@@ -986,11 +1135,7 @@ mod tests {
         let docs = project_check(&report, "setup-docs");
         assert_eq!(docs.status, Status::Missing);
         assert!(docs.message.contains("issue-tracker.md") && docs.message.contains("Agent skills"));
-        assert!(docs
-            .fix
-            .as_ref()
-            .unwrap()
-            .contains("/setup-matt-pocock-skills"));
+        assert!(docs.fix.as_ref().unwrap().contains("/factory-setup"));
 
         // A command whose tool is absent is reported, and a script path is looked up in the project.
         fs::write(
@@ -1117,6 +1262,61 @@ mod tests {
     }
 
     #[test]
+    fn each_claude_config_dir_gets_its_own_skills_check() {
+        let world = World::ready();
+        program(world.bin.path(), "claude");
+        let home = world.home.path();
+        let (work, bare) = (home.join("work"), home.join("bare"));
+        install_skills(&work.join("skills"));
+        let dirs = [work.display().to_string(), bare.display().to_string()];
+        let dirs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+        let report = world.report_in(Some("claude"), &dirs).unwrap();
+        let claude = agent(&report, "claude");
+        let skills: Vec<&Check> = claude.checks.iter().filter(|c| c.id == "skills").collect();
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].status, Status::Pass);
+        assert!(skills[0].message.contains(&work.display().to_string()));
+        assert_eq!(skills[1].status, Status::Missing);
+        assert!(skills[1].message.contains(&bare.display().to_string()));
+        assert!(skills[1]
+            .fix
+            .as_deref()
+            .unwrap()
+            .contains(&format!("--config-dir {}", bare.display())));
+        assert!(!claude.usable && !report.ok);
+        // The default folder is not looked at once a directory is named.
+        assert!(!home.join(".claude").exists());
+        // Without the flag the report is unchanged: one check for the default folder.
+        let report = world.report(Some("claude"));
+        assert_eq!(
+            agent(&report, "claude")
+                .checks
+                .iter()
+                .filter(|c| c.id == "skills")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn config_dirs_must_be_absolute_and_need_the_claude_agent() {
+        let world = World::ready().with_agent("claude");
+        let relative = world.report_in(Some("claude"), &["rel"]).unwrap_err();
+        assert!(relative.to_string().contains("absolute"));
+        let x = crate::install::test_abs("x").display().to_string();
+        let codex = world.report_in(Some("codex"), &[&x]).unwrap_err();
+        assert!(codex.to_string().contains("claude"));
+        assert!(world.report_in(None, &[&x]).is_ok());
+        assert_eq!(
+            parse_args(&["--config-dir", "/a", "--json", "--config-dir", "~/b"])
+                .unwrap()
+                .config_dirs,
+            ["/a", "~/b"]
+        );
+        assert!(parse_args(&["--config-dir"]).is_err());
+    }
+
+    #[test]
     fn the_text_report_shows_status_and_fix_per_line() {
         let text = render(&World::ready().with_agent("claude").report(None));
         assert!(text.contains("pass     git:"));
@@ -1132,6 +1332,7 @@ mod tests {
             Ok(Args {
                 agent,
                 json,
+                config_dirs: Vec::new(),
                 create_model_routing,
             })
         };
@@ -1186,7 +1387,9 @@ mod tests {
                 home: self.home.path().to_path_buf(),
                 path: self.bin.path().into(),
                 var: &|name| self.vars.get(name).cloned(),
+                config_dirs: Vec::new(),
                 version: &|_| None,
+                rustup_targets: &|_, _| None,
             };
             create_model_routing(agents, &machine)
         }
@@ -1272,6 +1475,29 @@ mod tests {
     }
 
     #[test]
+    fn doctor_says_how_to_switch_on_a_starter_that_carries_a_switch_off() {
+        let world = World::ready()
+            .claude_ready()
+            .with_policy(r#"{"enabled":false,"agent":"claude"}"#);
+        let message = world.create_model_routing(&[RoutingAgent::Claude]).unwrap();
+        assert!(message.contains("switched off"), "{message}");
+        assert!(message.contains("to switch it on"), "{message}");
+        assert!(!message.contains("to switch it off"), "{message}");
+
+        let world = World::ready()
+            .claude_ready()
+            .with_policy(r#"{"agents":{"codex":{"enabled":false,"roles":{}}}}"#);
+        let message = world
+            .create_model_routing(&[RoutingAgent::Claude, RoutingAgent::Codex])
+            .unwrap();
+        assert!(
+            message.contains("entry for codex is switched off")
+                && message.contains("to switch it on"),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn doctor_leaves_an_existing_policy_alone_and_says_so() {
         let world = World::ready().claude_ready().with_policy(CLAUDE_POLICY);
         let path = world
@@ -1310,8 +1536,8 @@ mod tests {
 
     /// Claude and Codex in one file, with different models.
     const BOTH_POLICY: &str = r#"{"agents":{
-        "claude":{"roles":{"strong":{"model":"opus","effort":"high"}},"tasks":{"check":"strong"}},
-        "codex":{"roles":{"strong":{"model":"gpt-6-astra","effort":"high"}},"tasks":{"check":"strong"}}}}"#;
+        "claude":{"stages":{"check":{"model":"opus","effort":"high"}}},
+        "codex":{"stages":{"check":{"model":"gpt-6-astra","effort":"high"}}}}}"#;
 
     fn tagged<'a>(report: &'a Report, agent: &str) -> Vec<&'a Check> {
         report
@@ -1375,7 +1601,8 @@ mod tests {
 
     #[test]
     fn an_agent_without_an_entry_is_skipped_when_asked_for_and_left_out_otherwise() {
-        let only_claude = r#"{"agents":{"claude":{"roles":{"strong":{"model":"opus","effort":"high"}},"tasks":{"check":"strong"}}}}"#;
+        let only_claude =
+            r#"{"agents":{"claude":{"stages":{"check":{"model":"opus","effort":"high"}}}}}"#;
         let world = World::ready()
             .claude_ready()
             .with_agent("codex")
@@ -1396,8 +1623,8 @@ mod tests {
     #[test]
     fn a_switched_off_entry_is_skipped_and_an_invalid_one_fails_the_report() {
         let off = BOTH_POLICY.replace(
-            "\"codex\":{\"roles\"",
-            "\"codex\":{\"enabled\":false,\"roles\"",
+            "\"codex\":{\"stages\"",
+            "\"codex\":{\"enabled\":false,\"stages\"",
         );
         let world = World::ready()
             .claude_ready()
@@ -1411,7 +1638,7 @@ mod tests {
             assert!(codex[0].message.contains("switched off"));
             assert!(report.ok);
         }
-        let invalid = BOTH_POLICY.replace("\"check\":\"strong\"}}}}", "\"check\":\"coding\"}}}}");
+        let invalid = BOTH_POLICY.replace("gpt-6-astra", "gpt 6");
         let world = World::ready()
             .claude_ready()
             .with_agent("codex")
@@ -1426,12 +1653,11 @@ mod tests {
     }
 
     #[test]
-    fn a_single_agent_policy_is_checked_as_before_and_skipped_for_another_agent() {
+    fn a_policy_for_one_agent_is_checked_for_it_and_skipped_for_the_others() {
         let world = World::ready()
             .claude_ready()
             .with_agent("codex")
             .with_policy(CLAUDE_POLICY);
-        // Unchanged: the checks carry no agent tag, whichever way doctor is asked.
         for ask in [None, Some("claude")] {
             let report = world.report(ask);
             let ids: Vec<_> = report.model_routing.iter().map(|c| c.id).collect();
@@ -1440,23 +1666,26 @@ mod tests {
                 ["policy", "host", "model", "effort", "overrides"],
                 "{ask:?}"
             );
-            assert!(report.model_routing.iter().all(|c| c.agent.is_none()));
+            // Every check but the summary of the file says which agent it is about.
+            assert!(report.model_routing[1..]
+                .iter()
+                .all(|c| c.agent == Some("claude")));
         }
-        let json = serde_json::to_value(world.report(None)).unwrap();
-        assert!(json["model_routing"][0].get("agent").is_none());
         for other in ["codex", "copilot"] {
             let report = world.report(Some(other));
-            assert_eq!(report.model_routing.len(), 1, "{other}");
-            // Copilot CLI is never routed, whatever the file says; another agent is skipped.
+            // The summary of the file, then what the policy does for that agent.
+            assert_eq!(report.model_routing.len(), 2, "{other}");
+            let checks = &report.model_routing[1..];
+            // Copilot CLI is never routed, whatever the file says; an agent without an entry is skipped.
             let (status, text) = if other == "copilot" {
                 (Status::Pass, "not supported on Copilot")
             } else {
-                (Status::Skipped, "is for claude")
+                (Status::Skipped, "no entry for codex")
             };
-            assert_eq!(report.model_routing[0].status, status, "{other}");
-            assert!(report.model_routing[0].message.contains(text), "{other}");
+            assert_eq!(checks[0].status, status, "{other}");
+            assert!(checks[0].message.contains(text), "{other}");
             // Only a missing Copilot command, never the policy, can make that report not ready.
-            assert!(report.model_routing.iter().all(|c| !c.blocks()), "{other}");
+            assert!(checks.iter().all(|c| !c.blocks()), "{other}");
         }
     }
 
@@ -1472,16 +1701,20 @@ mod tests {
 
     // --- model routing -----------------------------------------------------------------------------
 
-    const CLAUDE_POLICY: &str = r#"{"agent":"claude",
-        "roles":{"strong":{"model":"opus","effort":"high"},"coding":{"model":"sonnet","effort":"medium"}},
-        "tasks":{"build":"coding","check":"strong"}}"#;
+    const CLAUDE_POLICY: &str = r#"{"agents":{"claude":{"stages":{
+        "build":{"model":"sonnet","effort":"medium"},
+        "check":{"model":"opus","effort":"high"}}}}}"#;
 
     impl World {
         /// Writes the user's model-routing policy where doctor looks for it, inside the fake home.
         fn with_policy(mut self, policy: &str) -> Self {
             let config = self.home.path().join("config");
             fs::create_dir_all(config.join("tds-factory")).unwrap();
-            fs::write(config.join("tds-factory/model-routing.json"), policy).unwrap();
+            fs::write(
+                config.join("tds-factory").join("model-routing.json"),
+                policy,
+            )
+            .unwrap();
             for name in ["XDG_CONFIG_HOME", "APPDATA"] {
                 self.vars.insert(name.into(), config.clone().into());
             }
@@ -1579,10 +1812,9 @@ mod tests {
     }
 
     #[test]
-    fn models_the_agent_tool_does_not_accept_are_named_per_role() {
-        let policy = r#"{"agent":"claude",
-            "roles":{"strong":{"model":"claude-opus-5-5","effort":"high"},"coding":{"model":"sonnet","effort":"low"}},
-            "tasks":{"build":"coding","check":"strong"}}"#;
+    fn models_the_agent_tool_does_not_accept_are_named_per_stage() {
+        let policy = r#"{"agents":{"claude":{"stages":{
+            "check":{"model":"claude-opus-5-5","effort":"high"},"build":{"model":"sonnet","effort":"low"}}}}}"#;
         let report = World::ready()
             .claude_ready()
             .with_policy(policy)
@@ -1590,11 +1822,11 @@ mod tests {
         let model = routing_check(&report, "model");
         assert_eq!(model.status, Status::Warning);
         assert!(
-            model.message.contains("strong: claude-opus-5-5"),
+            model.message.contains("check: claude-opus-5-5"),
             "{}",
             model.message
         );
-        assert!(!model.message.contains("coding"), "{}", model.message);
+        assert!(!model.message.contains("build"), "{}", model.message);
         // The effort is fine, so it is reported separately.
         assert_eq!(routing_check(&report, "effort").status, Status::Pass);
         assert!(report.ok);
@@ -1602,9 +1834,8 @@ mod tests {
 
     #[test]
     fn unsupported_and_missing_efforts_are_reported_apart_from_models() {
-        let policy = r#"{"agent":"claude",
-            "roles":{"strong":{"model":"opus","effort":"extreme"},"coding":{"model":"sonnet"},"routine":{"model":"haiku"}},
-            "tasks":{"build":"coding","check":"strong"}}"#;
+        let policy = r#"{"agents":{"claude":{"stages":{
+            "check":{"model":"opus","effort":"extreme"},"build":{"model":"sonnet"}}}}}"#;
         let report = World::ready()
             .claude_ready()
             .with_policy(policy)
@@ -1613,13 +1844,13 @@ mod tests {
         let effort = routing_check(&report, "effort");
         assert_eq!(effort.status, Status::Warning);
         assert!(
-            effort.message.contains("strong: extreme"),
+            effort.message.contains("check: extreme"),
             "{}",
             effort.message
         );
-        assert!(effort.message.contains("no effort set") && effort.message.contains("coding"));
-        // A role no task uses is not judged.
-        assert!(!effort.message.contains("routine"), "{}", effort.message);
+        assert!(effort.message.contains("no effort set") && effort.message.contains("build"));
+        // A stage left out of the policy is not judged.
+        assert!(!effort.message.contains("define"), "{}", effort.message);
     }
 
     #[test]
@@ -1707,7 +1938,7 @@ mod tests {
 
     #[test]
     fn a_codex_policy_reports_what_it_can_and_skips_the_rest() {
-        let policy = r#"{"agent":"codex","roles":{"coding":{"model":"gpt-6.1-sol","effort":"medium"}},"tasks":{"build":"coding"}}"#;
+        let policy = r#"{"agents":{"codex":{"stages":{"build":{"model":"gpt-6.1-sol","effort":"medium"}}}}}"#;
         let report = World::ready()
             .with_agent("codex")
             .with_version("codex", "codex-cli 0.99.1")
@@ -1730,13 +1961,12 @@ mod tests {
 
     #[test]
     fn a_copilot_policy_is_information_and_does_not_change_the_exit_status() {
-        let policy = r#"{"agent":"copilot"}"#;
         let ready = World::ready().claude_ready();
-        let without = ready.report(None).ok;
-        let report = ready.with_policy(policy).report(None);
+        let without = ready.report(Some("copilot")).ok;
+        let report = ready.with_policy(CLAUDE_POLICY).report(Some("copilot"));
         assert_eq!(report.ok, without);
-        assert_eq!(report.model_routing.len(), 1);
-        let check = routing_check(&report, "policy");
+        assert_eq!(report.model_routing.len(), 2);
+        let check = &report.model_routing[1];
         assert_eq!(check.status, Status::Pass);
         assert!(
             check.message.contains("not supported") && check.message.contains("session"),
@@ -1753,7 +1983,7 @@ mod tests {
 
     #[test]
     fn a_policy_file_that_stops_run_start_makes_the_report_not_ready() {
-        let policy = r#"{"agent":"claude","roles":{},"tasks":{"check":"strong"}}"#;
+        let policy = r#"{"agents":{"claude":{"stages":{"check":{"model":"a b"}}}}}"#;
         let report = World::ready()
             .claude_ready()
             .with_policy(policy)
@@ -1762,8 +1992,22 @@ mod tests {
         assert_eq!(report.model_routing.len(), 1);
         let check = routing_check(&report, "policy");
         assert_eq!(check.status, Status::Fail);
-        assert!(check.message.contains("model-routing.json") && check.message.contains("strong"));
+        assert!(check.message.contains("model-routing.json") && check.message.contains("Model"));
         assert!(check.fix.as_deref().unwrap().contains("enabled"));
+    }
+
+    #[test]
+    fn an_old_format_policy_fails_the_report_and_says_how_to_replace_it() {
+        let old = r#"{"agents":{"claude":{"roles":{"strong":{"model":"opus"}},"tasks":{"check":"strong"}}}}"#;
+        let report = World::ready().claude_ready().with_policy(old).report(None);
+        assert!(!report.ok);
+        let check = routing_check(&report, "policy");
+        assert_eq!(check.status, Status::Fail);
+        assert!(
+            check.message.contains("old format") && check.message.contains("factory install"),
+            "{}",
+            check.message
+        );
     }
 
     #[test]
@@ -1776,7 +2020,7 @@ mod tests {
         let text = render(&report);
         let section = text.split("Model routing\n").nth(1).expect(&text);
         assert!(section.contains("  pass     policy:"), "{text}");
-        assert!(section.contains("  warning  host:"), "{text}");
+        assert!(section.contains("  warning  host [claude]:"), "{text}");
         assert!(
             section.contains("Fix: Update claude to 2.1.292 or later."),
             "{text}"
@@ -1833,9 +2077,8 @@ mod tests {
     }
 
     #[test]
-    fn a_role_without_a_model_is_a_policy_failure() {
-        let policy =
-            r#"{"agent":"claude","roles":{"coding":{"effort":"low"}},"tasks":{"build":"coding"}}"#;
+    fn a_stage_without_a_model_is_a_policy_failure() {
+        let policy = r#"{"agents":{"claude":{"stages":{"build":{"effort":"low"}}}}}"#;
         let report = World::ready()
             .claude_ready()
             .with_policy(policy)
@@ -2040,7 +2283,7 @@ mod tests {
         let world = World::ready().claude_ready();
         git(
             world.project.path(),
-            &["config", "factory.prProvider", "gitlab"],
+            &["config", "factory.prProvider", "example"],
         );
         let report = world.report(None);
         assert!(report.ok, "{}", render(&report));

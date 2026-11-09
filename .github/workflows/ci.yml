@@ -33,23 +33,36 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/develop' }}
-      # Keep these three checks in sync with scripts/verify.sh.
+      # Keep these checks in sync with scripts/verify.sh.
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
+      # Clippy runs on Linux only: the code is shared, and Windows-only lint gaps are accepted to save time.
+      - name: Clippy
+        if: runner.os == 'Linux'
+        run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      # Uses the Chrome or Chromium preinstalled on ubuntu-latest; the tests look it up on PATH.
+      # Runs every tests/dashboard-*.py in name order, as scripts/verify.sh does.
+      - name: Test the dashboard in a browser
+        if: runner.os == 'Linux'
+        run: |
+          for test in tests/dashboard-*.py; do
+            python3 "$test"
+          done
+      # The Windows release build and installer tests run on pushes to develop and master, not on pull requests.
+      # release.yml also builds and smoke-tests the release on master.
       - name: Build and inspect Windows release
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
         shell: pwsh
         run: |
           ./scripts/build-windows-release.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./scripts/check-windows-release.ps1 -Executable './target/x86_64-pc-windows-msvc/release/factory.exe'
       - name: Test Windows installer in Windows PowerShell 5.1
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
         shell: powershell
         run: ./tests/windows-installer-integration.ps1 -Executable './target/x86_64-pc-windows-msvc/release/factory.exe'
       - name: Test Windows installer in PowerShell 7
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
         shell: pwsh
         run: ./tests/windows-installer-integration.ps1 -Executable './target/x86_64-pc-windows-msvc/release/factory.exe'
       - name: Test Windows installer failures on Linux

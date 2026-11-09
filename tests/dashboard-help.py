@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
-"""Browser behavior test; run with python3 tests/dashboard-help.py (requires Chromium)."""
-import http.server
-import json
-import pathlib
-import queue
-import subprocess
-import tempfile
-import threading
+"""Browser behavior test; run with python3 tests/dashboard-help.py (requires Chromium or Chrome; set CHROMIUM to pick one)."""
 import unittest
 
-ROOT = pathlib.Path(__file__).resolve().parents[1] / "dashboard"
-RESULTS = queue.Queue()
+from dashboard_browser import run_dashboard
+
 RUNS = [{"id": "1", "title": "A run", "project": "/work/alpha", "stage": "build", "status": "running", "updated_at": 300}]
 TABS = ["Overview", "Stages", "Workflows", "Skills", "Dashboard", "Commands", "Model routing"]
 # Drives the Help like a person with a keyboard and reports what it saw.
@@ -19,7 +12,7 @@ CHECK = """
 // Gives up after ten seconds and says which step was waiting, so a hang is not just a timeout.
 const wait = (ok, what = ok.toString().slice(0, 80)) => new Promise((resolve, reject) => {
   const started = Date.now();
-  const t = setInterval(() => { const v = ok(); if (v) { clearInterval(t); resolve(v); } else if (Date.now() - started > 10000) { clearInterval(t); reject(new Error('timed out waiting for ' + what)); } }, 20);
+  const t = setInterval(() => { const v = ok(); if (v) { clearInterval(t); resolve(v); } else if (Date.now() - started > PAGE_WAIT_MS) { clearInterval(t); reject(new Error('timed out waiting for ' + what)); } }, 20);
 });
 const key = (el, k) => el.dispatchEvent(new KeyboardEvent('keydown', {key: k, bubbles: true, cancelable: true}));
 const state = () => {
@@ -76,63 +69,9 @@ const state = () => {
 </script>
 """
 
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_POST(self):
-        if self.path != "/result":
-            self.send_error(404)
-            return
-        data = self.rfile.read(int(self.headers["Content-Length"]))
-        RESULTS.put(json.loads(data))
-        self.send_response(204)
-        self.end_headers()
-
-    def do_GET(self):
-        if self.path == "/api/runs":
-            data, kind = json.dumps(RUNS).encode(), "application/json"
-        elif self.path == "/":
-            data, kind = (ROOT / "index.html").read_bytes() + CHECK.encode(), "text/html"
-        elif self.path.startswith("/assets/"):
-            path = ROOT / self.path.removeprefix("/assets/")
-            if not path.is_file():
-                self.send_error(404)
-                return
-            data = path.read_bytes()
-            kind = "text/javascript" if path.suffix == ".js" else "text/css"
-        else:
-            self.send_error(404)
-            return
-        self.send_response(200)
-        self.send_header("Content-Type", kind)
-        self.end_headers()
-        self.wfile.write(data)
-
-    def log_message(self, *args):
-        pass
-
-def run_browser(width, height):
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever)
-    thread.start()
-    try:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile:
-            process = subprocess.Popen(
-                ["chromium", "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
-                 f"--window-size={width},{height}", "--user-data-dir=" + profile, f"http://127.0.0.1:{server.server_port}/"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            try:
-                return RESULTS.get(timeout=60)
-            finally:
-                process.terminate()
-                process.wait(timeout=10)
-    finally:
-        server.shutdown()
-        thread.join()
-        server.server_close()
-
 class HelpTest(unittest.TestCase):
     def check(self, width, height):
-        result = run_browser(width, height)
+        result = run_dashboard(RUNS, CHECK, (width, height))
         self.assertNotIn("error", result, result)
         return result
 
@@ -167,12 +106,12 @@ class HelpTest(unittest.TestCase):
             self.assertTrue(result["every"][tab]["scrolls"], tab)
         # The Stages tab covers each Stage, Rework and Needs you; the Skills tab names each skill the flow uses.
         stages = result["every"]["Stages"]["headings"]
-        for heading in ["Define", "Build", "Check", "Rework", "Finish", "Done", "Needs you"]:
+        for heading in ["Define", "Build", "Check", "Rework", "Finish", "Shipped", "Needs you"]:
             self.assertIn(heading, stages)
         skills = result["every"]["Skills"]["terms"]
-        for name in ["/factory", "/factory-full", "/factory-balanced", "/factory-fast", "factory-procedures", "grill-with-docs",
-                     "to-spec", "to-tickets", "implement-spec", "implement-spec-balanced", "implement-spec-fast", "tdd",
-                     "code-review", "security-review", "pr", "humanizer", "setup-matt-pocock-skills"]:
+        for name in ["/factory", "/factory-full", "/factory-balanced", "/factory-fast", "factory-procedures", "factory-grill-with-docs",
+                     "factory-to-spec", "factory-to-tickets", "factory-implement", "factory-implement-balanced", "factory-implement-fast", "factory-tdd",
+                     "factory-code-review", "factory-security-review", "factory-pr", "factory-setup"]:
             self.assertIn(name, skills)
         self.assertTrue(result["focusBack"])
 

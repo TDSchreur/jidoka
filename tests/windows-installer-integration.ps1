@@ -27,6 +27,18 @@ try {
     Remove-Item Env:FACTORY_AGENT
     . (Join-Path $root 'scripts/install.ps1')
     if (-not (Get-ChildItem -LiteralPath (Join-Path $env:CLAUDE_CONFIG_DIR 'skills'))) { throw 'Interactive selection did not install Claude skills' }
+
+    $first = Join-Path $tempRoot 'claude work'
+    $second = Join-Path $tempRoot 'claude-other'
+    $default = Join-Path $tempRoot 'claude-default'
+    $env:CLAUDE_CONFIG_DIR = $default
+    $env:FACTORY_AGENT = 'claude'
+    $env:FACTORY_CLAUDE_CONFIG_DIRS = "$first;;$second;"
+    . (Join-Path $root 'scripts/install.ps1')
+    foreach ($dir in @($first, $second)) {
+        if (-not (Get-ChildItem -LiteralPath (Join-Path $dir 'skills'))) { throw "Skills were not installed in $dir" }
+    }
+    if (Test-Path -LiteralPath $default) { throw 'FACTORY_CLAUDE_CONFIG_DIRS must replace the default Claude folder' }
 }
 finally {
     [Environment]::SetEnvironmentVariable('Path', $oldUserPath, 'User')

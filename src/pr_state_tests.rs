@@ -102,13 +102,13 @@ fn problems_say_what_to_do() {
         stderr: String::new(),
     })]);
     assert!(read(&not_json, PR).unwrap_err().0.contains("not JSON"));
-    // Another host, such as GitLab, has no pull request state here, and no tool is asked.
-    let gitlab = ScriptedGh::new(vec![view("OPEN", false)]);
-    let problem = read(&gitlab, "https://gitlab.com/o/r/-/merge_requests/3")
+    // Another host has no pull request state here, and no tool is asked.
+    let other = ScriptedGh::new(vec![view("OPEN", false)]);
+    let problem = read(&other, "https://git.example.com/o/r/pulls/3")
         .unwrap_err()
         .0;
     assert!(problem.contains("GitHub and Azure Repos"), "{problem}");
-    assert!(gitlab.calls().is_empty());
+    assert!(other.calls().is_empty());
     // A GitHub Enterprise pull request has the same shape, so gh is asked.
     let enterprise = ScriptedGh::new(vec![view("MERGED", false)]);
     assert_eq!(
@@ -318,4 +318,54 @@ fn azure_problems_say_what_to_do() {
     // Azure output is never echoed: it can hold credentials.
     let secret = ScriptedGh::new(vec![failed(1, "token=abc123 rejected")]);
     assert!(!read(&secret, AZURE_PR).unwrap_err().0.contains("abc123"));
+}
+
+#[test]
+fn states_have_a_plain_label() {
+    let labels = [
+        (PrState::Open, "open"),
+        (PrState::Draft, "a draft"),
+        (PrState::Merged, "merged"),
+        (PrState::Closed, "closed"),
+        (PrState::Unknown, "unknown"),
+    ];
+    for (state, label) in labels {
+        assert_eq!(state.label(), label);
+    }
+}
+
+#[test]
+fn the_head_of_a_pull_request_is_its_commit_and_branch() {
+    let gh = ScriptedGh::new(vec![Ok(GhOutput {
+        code: Some(0),
+        stdout: r#"{"headRefOid":"ABCD1234","headRefName":"feature/x"}"#.into(),
+        stderr: String::new(),
+    })]);
+    let head = super::head(&gh, "https://github.com/o/r/pull/7").unwrap();
+    assert_eq!(
+        (head.commit.as_str(), head.branch.as_str()),
+        ("abcd1234", "feature/x")
+    );
+    assert!(gh.calls()[0].contains("headRefOid,headRefName"));
+
+    let az = ScriptedGh::new(vec![Ok(GhOutput {
+        code: Some(0),
+        stdout: r#"{"pullRequestId":535,"repository":{"name":"Repo","project":{"name":"Proj"}},"sourceRefName":"refs/heads/feature/x","lastMergeSourceCommit":{"commitId":"abcd1234"}}"#.into(),
+        stderr: String::new(),
+    })]);
+    let head = super::head(&az, AZURE_PR).unwrap();
+    assert_eq!(
+        (head.commit.as_str(), head.branch.as_str()),
+        ("abcd1234", "feature/x")
+    );
+}
+
+#[test]
+fn a_head_without_a_branch_is_an_error() {
+    let gh = ScriptedGh::new(vec![Ok(GhOutput {
+        code: Some(0),
+        stdout: r#"{"headRefOid":"abcd1234"}"#.into(),
+        stderr: String::new(),
+    })]);
+    assert!(super::head(&gh, "https://github.com/o/r/pull/7").is_err());
 }

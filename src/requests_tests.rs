@@ -39,7 +39,7 @@ impl World {
     fn roots(&self) -> Roots {
         let home = self.dir.path();
         Roots {
-            claude: home.join("claude/projects"),
+            claude: vec![home.join("claude/projects")],
             codex: home.join("codex/sessions"),
             copilot: home.join("copilot/session-state"),
         }
@@ -1249,7 +1249,7 @@ fn read_only_git_and_gh_forms_are_helpers_too() {
         "H=$(git -C ../wt rev-parse HEAD) && factory run update 1 build running",
         "B=$(git branch --show-current) && factory run update 1 build running",
         "S=$(git status --short | head -3) && factory run update 1 build running",
-        "factory run update 1 finish done --activity \"Opened $(gh pr view --json url -q .url)\"",
+        "factory run update 1 finish done --summary finish=Shipped --activity \"Opened $(gh pr view --json url -q .url)\"",
         "L=$(git log -1 --format=%s) && factory run update 1 build running",
     ] {
         assert_eq!(
@@ -1680,4 +1680,28 @@ fn javascript_comments_inside_a_call_do_not_hide_it_or_the_calls_after_it() {
     ] {
         assert_eq!(codex_category_of(snippet), expected, "{snippet}");
     }
+}
+
+#[test]
+fn absorbing_a_root_merges_notes_once_ors_the_flags_and_says_when_to_stop() {
+    let note = |text: &str| text.to_string();
+    let mut all = RequestRead {
+        notes: vec![note("a")],
+        root_found: false,
+        ..RequestRead::default()
+    };
+    let first = RequestRead {
+        notes: vec![note("a"), note("b")],
+        root_found: true,
+        ..RequestRead::default()
+    };
+    assert!(!all.absorb(first));
+    assert_eq!(all.notes, ["a", "b"]);
+    assert!(all.root_found && !all.timed_out && !all.truncated);
+    let second = RequestRead {
+        truncated: true,
+        ..RequestRead::default()
+    };
+    assert!(all.absorb(second));
+    assert!(all.root_found && all.truncated);
 }

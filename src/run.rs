@@ -1,6 +1,6 @@
 use crate::pr_state::PrStatus;
-use crate::routing::{ModelRouting, Role, Task};
-use crate::usage::{Collection, Mark, Usage};
+use crate::routing::{ModelChoice, ModelRouting};
+use crate::usage::{Collection, Mark, Pause, PauseKind, Usage};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -10,7 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory-full|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <build|check|finish>=<strong|coding|routine> (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
+pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory-full|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `finish done` needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
 const MAX_TICKETS: usize = 100;
@@ -18,6 +18,8 @@ const MAX_SESSIONS: usize = 20;
 /// Sessions kept per run, and marks kept on its timeline.
 const KEEP_SESSIONS: usize = 100;
 pub(crate) const MAX_MARKS: usize = 1000;
+/// Blocked and resumed events kept per run.
+pub(crate) const MAX_EVENTS: usize = 1000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Run {
@@ -38,6 +40,11 @@ pub(crate) struct Run {
     pub(crate) rework: Option<u32>,
     #[serde(default)]
     pub(crate) updated_at: Option<u64>,
+    /// When the agent last updated the run. Unlike `updated_at`, the dashboard's own pause blocks and
+    /// resumes leave it alone, so a pause logged after the agent's last update is never mistaken for
+    /// older. Records from before it existed fall back to `updated_at`.
+    #[serde(default)]
+    pub(crate) agent_updated_at: Option<u64>,
     // Run context. Records from before it existed have none of it: it stays unknown, never guessed.
     /// The canonical repository (main checkout), the same for every linked worktree of it.
     #[serde(default)]
@@ -67,6 +74,9 @@ pub(crate) struct Run {
     /// When the stage, rework or active ticket changed, oldest first: how log entries are attributed.
     #[serde(default)]
     pub(crate) timeline: Vec<Mark>,
+    /// When the run was blocked and resumed, oldest first. Separate from the timeline, so passes and usage are unaffected.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) events: Vec<RunEvent>,
     /// When the run was marked done; usage after that is not the run's.
     #[serde(default)]
     pub(crate) finished_at: Option<u64>,
@@ -78,9 +88,33 @@ pub(crate) struct Run {
     /// The state of the pull request, read from its host by the dashboard server. Callers cannot set it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) pr_status: Option<PrStatus>,
-    /// The model-routing selection resolved when the run started; absent when none applied.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The model-routing selection resolved when the run started; absent when none applied. A selection
+    /// recorded in an earlier shape reads as absent.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "routing_or_none"
+    )]
     pub(crate) model_routing: Option<ModelRouting>,
+}
+
+/// Reads a stored selection, treating only the earlier shape (an object with `roles` or `tasks`) as absent.
+/// Any other invalid value is an error.
+fn routing_or_none<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ModelRouting>, D::Error> {
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    if value
+        .as_object()
+        .is_some_and(|object| object.contains_key("roles") || object.contains_key("tasks"))
+    {
+        return Ok(None);
+    }
+    serde_json::from_value(value)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
@@ -92,7 +126,20 @@ pub(crate) enum Stage {
     Finish,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+impl Stage {
+    pub(crate) const ALL: [Stage; 4] = [Stage::Define, Stage::Build, Stage::Check, Stage::Finish];
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Define => "define",
+            Self::Build => "build",
+            Self::Check => "check",
+            Self::Finish => "finish",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum RunStatus {
     Running,
@@ -139,6 +186,23 @@ pub(crate) enum ReportKind {
 pub(crate) struct NewRunReport {
     pub(crate) kind: ReportKind,
     pub(crate) text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum RunEventKind {
+    Blocked,
+    Resumed,
+}
+
+/// A moment the run became blocked or resumed, with the stage it was in and, when blocked, why.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct RunEvent {
+    pub(crate) at: u64,
+    pub(crate) kind: RunEventKind,
+    pub(crate) stage: Stage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -265,7 +329,7 @@ pub(crate) struct UpdateRun {
     pub(crate) sessions: Vec<String>,
     /// The run's whole set of model-routing overrides; null removes them.
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
-    pub(crate) model_routing: FieldUpdate<BTreeMap<Task, Role>>,
+    pub(crate) model_routing: FieldUpdate<BTreeMap<Stage, ModelChoice>>,
 }
 
 // Missing fields preserve stored values; null clears them; values replace them.
@@ -577,7 +641,7 @@ pub(crate) fn parse_update(
         serde_json::from_value(status.into())?,
     );
     let mut tickets: Vec<NewTicket> = Vec::new();
-    let mut overrides: BTreeMap<Task, Role> = BTreeMap::new();
+    let mut overrides: BTreeMap<Stage, ModelChoice> = BTreeMap::new();
     let mut args = options.iter();
     while let Some(flag) = args.next() {
         let mut next_value = || {
@@ -645,17 +709,14 @@ pub(crate) fn parse_update(
                     return Err(repeated().into());
                 }
                 let value = next_value()?;
-                let (task, role) = split_pair(flag, value)?;
-                let task: Task = serde_json::from_value(task.into()).map_err(|_| {
-                    format!("Unknown task {task:?} for --model-routing; use build, check or finish")
+                let (name, choice) = split_pair(flag, value)?;
+                let stage: Stage = serde_json::from_value(name.into()).map_err(|_| {
+                    format!("Unknown stage {name:?} for --model-routing; use define, build, check or finish")
                 })?;
-                let role: Role = serde_json::from_value(role.into()).map_err(|_| {
-                    format!(
-                        "Unknown role {role:?} for --model-routing; use strong, coding or routine"
-                    )
-                })?;
-                if overrides.insert(task, role).is_some() {
-                    return Err(format!("Role for {} given twice", task.name()).into());
+                let choice = ModelChoice::parse(choice)
+                    .map_err(|problem| format!("Invalid --model-routing for {name}: {problem}"))?;
+                if overrides.insert(stage, choice).is_some() {
+                    return Err(format!("Model for {name} given twice").into());
                 }
                 continue;
             }
@@ -786,7 +847,6 @@ struct Shared {
 #[derive(Debug)]
 pub(crate) struct UpdateOutcome {
     pub(crate) run: Run,
-    pub(crate) collect_usage: bool,
 }
 
 impl RunStore {
@@ -829,6 +889,7 @@ impl RunStore {
         while runs.iter().any(|run| run.id == id.to_string()) {
             id += 1;
         }
+        let created = updated_now()?;
         let run = Run {
             id: id.to_string(),
             title: new.title,
@@ -839,7 +900,8 @@ impl RunStore {
             current_ticket: None,
             blocking_reason: None,
             rework: None,
-            updated_at: Some(updated_now()?),
+            updated_at: Some(created),
+            agent_updated_at: Some(created),
             repository: new.repository,
             worktree: None,
             branch: None,
@@ -852,6 +914,7 @@ impl RunStore {
             run_reports: Vec::new(),
             summaries: BTreeMap::new(),
             timeline: Vec::new(),
+            events: Vec::new(),
             finished_at: None,
             sessions: new.session.into_iter().collect(),
             usage: None,
@@ -860,7 +923,7 @@ impl RunStore {
         };
         let mut run = run;
         let created = run.updated_at.unwrap_or(0);
-        mark(&mut run, created);
+        mark(&mut run, created, None);
         runs.push(run.clone());
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs.pop();
@@ -879,8 +942,14 @@ impl RunStore {
         };
         let updated_at = updated_now()?;
         let mut next = runs[index].clone();
+        let was_blocked = matches!(next.status, RunStatus::Blocked);
+        let was_finished = next.stage == Stage::Finish && next.status == RunStatus::Done;
         next.stage = update.stage;
         next.status = update.status;
+        let started_with = match &update.activity {
+            FieldUpdate::Set(text) => Some(text.clone()),
+            _ => None,
+        };
         update.activity.apply(&mut next.activity);
         update.current_ticket.apply(&mut next.current_ticket);
         update.blocking_reason.apply(&mut next.blocking_reason);
@@ -988,6 +1057,19 @@ impl RunStore {
                 }
             }
         }
+        // Only moving into finish done needs the summary; a run already stored as finished (before this rule) keeps updating.
+        if !was_finished
+            && update.stage == Stage::Finish
+            && update.status == RunStatus::Done
+            && next
+                .summaries
+                .get(&Stage::Finish)
+                .is_none_or(|text| text.trim().is_empty())
+        {
+            return Err(io_invalid(
+                "Finish cannot be marked done without a Finish summary; add --summary finish=<what shipped>",
+            ));
+        }
         for session in update.sessions {
             if !next.sessions.contains(&session) {
                 next.sessions.push(session);
@@ -997,17 +1079,31 @@ impl RunStore {
             next.sessions.drain(..next.sessions.len() - KEEP_SESSIONS);
         }
         next.updated_at = Some(updated_at);
+        next.agent_updated_at = Some(updated_at);
+        let is_blocked = matches!(next.status, RunStatus::Blocked);
+        if was_blocked != is_blocked && next.events.len() < MAX_EVENTS {
+            next.events.push(RunEvent {
+                at: updated_at,
+                kind: if is_blocked {
+                    RunEventKind::Blocked
+                } else {
+                    RunEventKind::Resumed
+                },
+                stage: next.stage,
+                reason: if is_blocked {
+                    next.blocking_reason.clone()
+                } else {
+                    None
+                },
+            });
+        }
         // Where the work is now, for attributing token usage; and when it ended.
-        mark(&mut next, updated_at);
+        mark(&mut next, updated_at, started_with);
         next.finished_at = match (next.status, next.finished_at) {
             (RunStatus::Done, None) => Some(updated_at),
             (RunStatus::Done, kept) => kept,
             _ => None,
         };
-        let previous = &runs[index];
-        let collect_usage = previous.timeline.len() != next.timeline.len()
-            || previous.sessions != next.sessions
-            || (previous.finished_at.is_none() && next.finished_at.is_some());
         let old = std::mem::replace(&mut runs[index], next);
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs[index] = old;
@@ -1015,8 +1111,81 @@ impl RunStore {
         }
         Ok(Some(UpdateOutcome {
             run: runs[index].clone(),
-            collect_usage,
         }))
+    }
+
+    /// Brings the run in line with the latest pause its log shows (`None` when it shows none). A running
+    /// run is blocked for an unresumed pause; a run this method blocked takes the reason of the current
+    /// pause, and is set running again once the log shows later activity or no pause at all. Only a state
+    /// the dashboard itself set is changed: never a block or reason the agent set, a done run, or a run the
+    /// agent updated after the pause began.
+    pub(crate) fn apply_pause(&self, id: &str, latest: Option<&Pause>) -> io::Result<()> {
+        let mut runs = self.shared.runs.lock().map_err(lock_error)?;
+        let Some(index) = runs.iter().position(|run| run.id == id) else {
+            return Ok(());
+        };
+        let mut next = runs[index].clone();
+        let agent_at = next.agent_updated_at.or(next.updated_at);
+        let automatic = is_automatic_reason(next.status, next.blocking_reason.as_deref());
+        let now = updated_now()?;
+        let (kind, at) = match (next.status, latest) {
+            (
+                RunStatus::Running,
+                Some(
+                    pause @ Pause {
+                        resumed_at: None, ..
+                    },
+                ),
+            ) if Some(pause.at) >= agent_at => {
+                next.status = RunStatus::Blocked;
+                next.blocking_reason = Some(pause.kind.reason().to_string());
+                (RunEventKind::Blocked, pause.at)
+            }
+            (
+                RunStatus::Blocked,
+                Some(
+                    pause @ Pause {
+                        resumed_at: None, ..
+                    },
+                ),
+            ) if automatic && next.blocking_reason.as_deref() != Some(pause.kind.reason()) => {
+                next.blocking_reason = Some(pause.kind.reason().to_string());
+                (RunEventKind::Blocked, pause.at)
+            }
+            (
+                RunStatus::Blocked,
+                Some(Pause {
+                    resumed_at: Some(resumed),
+                    ..
+                }),
+            ) if automatic => {
+                next.status = RunStatus::Running;
+                next.blocking_reason = None;
+                (RunEventKind::Resumed, *resumed)
+            }
+            (RunStatus::Blocked, None) if automatic => {
+                next.status = RunStatus::Running;
+                next.blocking_reason = None;
+                (RunEventKind::Resumed, now)
+            }
+            _ => return Ok(()),
+        };
+        if next.events.len() < MAX_EVENTS {
+            next.events.push(RunEvent {
+                at,
+                kind,
+                stage: next.stage,
+                reason: next.blocking_reason.clone(),
+            });
+        }
+        next.agent_updated_at = agent_at;
+        next.updated_at = Some(now);
+        let old = std::mem::replace(&mut runs[index], next);
+        if let Err(error) = save_runs(&self.shared.path, &runs) {
+            runs[index] = old;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Replaces the usage of a run. A failed save leaves the stored usage as it was.
@@ -1080,8 +1249,15 @@ impl FieldUpdate {
     }
 }
 
-/// Appends a mark when the stage, rework or ticket in progress differs from the last one.
-fn mark(run: &mut Run, at: u64) {
+/// Whether a run is blocked for a reason the dashboard sets for a pause, not one the agent gave.
+pub(crate) fn is_automatic_reason(status: RunStatus, reason: Option<&str>) -> bool {
+    status == RunStatus::Blocked
+        && reason.is_some_and(|reason| PauseKind::from_reason(reason).is_some())
+}
+
+/// Appends a mark when the stage, rework or ticket in progress differs from the last one. The mark keeps
+/// the activity given with the update that created it.
+fn mark(run: &mut Run, at: u64, activity: Option<String>) {
     let stage = run.stage;
     let building = matches!(stage, Stage::Build);
     let current = Mark {
@@ -1096,6 +1272,7 @@ fn mark(run: &mut Run, at: u64) {
         } else {
             None
         },
+        activity,
     };
     let changed = run.timeline.last().is_none_or(|last| {
         (last.stage, last.rework, &last.ticket) != (current.stage, current.rework, &current.ticket)
@@ -1139,8 +1316,74 @@ mod tests {
     use super::*;
     use crate::test_support::TestDir;
 
+    const FINISH_SUMMARY: [&str; 2] = ["--summary", "finish=Shipped"];
+
     #[test]
-    fn collection_decision_follows_persisted_transition() {
+    fn a_legacy_finished_run_without_a_summary_accepts_further_finish_done_updates() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let run = new_run(&store, "task");
+        let mut stored = serde_json::to_value(store.list().unwrap()).unwrap();
+        stored[0]["stage"] = "finish".into();
+        stored[0]["status"] = "done".into();
+        stored[0]["finished_at"] = 1.into();
+        stored[0]["summaries"] = serde_json::json!({});
+        std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+        let store = RunStore::open(&path).unwrap();
+        let before = store.get(&run.id).unwrap().unwrap();
+        assert!(before.summaries.is_empty());
+
+        let updated = store
+            .update(
+                &run.id,
+                parse_update("finish", "done", &["--activity", "Synced the pull request"]).unwrap(),
+            )
+            .unwrap()
+            .unwrap()
+            .run;
+        assert_eq!(updated.status, RunStatus::Done);
+        assert_eq!(updated.activity.as_deref(), Some("Synced the pull request"));
+    }
+
+    #[test]
+    fn finish_done_needs_a_finish_summary() {
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let run = new_run(&store, "task");
+        let before = store.get(&run.id).unwrap().unwrap();
+        let error = store
+            .update(&run.id, parse_update("finish", "done", &[]).unwrap())
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("--summary finish="));
+        let after = store.get(&run.id).unwrap().unwrap();
+        assert_eq!(after.stage, before.stage);
+        assert_eq!(after.status, before.status);
+        assert!(after.finished_at.is_none() && after.summaries.is_empty());
+
+        // Other stages are not affected; a summary in the same update is enough.
+        store
+            .update(&run.id, parse_update("check", "done", &[]).unwrap())
+            .unwrap();
+        let done = store
+            .update(
+                &run.id,
+                parse_update("finish", "done", &FINISH_SUMMARY).unwrap(),
+            )
+            .unwrap()
+            .unwrap()
+            .run;
+        assert!(matches!(done.status, RunStatus::Done));
+        // A summary recorded earlier counts.
+        let again = store
+            .update(&run.id, parse_update("finish", "done", &[]).unwrap())
+            .unwrap();
+        assert!(again.is_some());
+    }
+
+    #[test]
+    fn failed_updates_leave_the_store_unchanged() {
         let dir = TestDir::new();
         let path = dir.0.path().join("runs.json");
         let store = RunStore::open(&path).unwrap();
@@ -1159,12 +1402,15 @@ mod tests {
                 .unwrap()
                 .unwrap()
         };
-        assert!(!apply("define", "running", &["--activity", "working"]).collect_usage);
-        assert!(apply("build", "running", &[]).collect_usage);
-        assert!(apply("build", "running", &["--session", "11111111-aaaa"]).collect_usage);
-        assert!(!apply("build", "running", &["--session", "11111111-aaaa"]).collect_usage);
-        assert!(apply("build", "done", &[]).collect_usage);
-        assert!(!apply("build", "done", &[]).collect_usage);
+        let session = ["--session", "11111111-aaaa"];
+        apply("define", "running", &["--activity", "working"]);
+        apply("build", "running", &[]);
+        apply("build", "running", &session);
+        apply("build", "running", &session);
+        apply("build", "done", &[]);
+        apply("build", "done", &[]);
+        apply("finish", "done", &FINISH_SUMMARY);
+        apply("finish", "done", &FINISH_SUMMARY);
         assert!(store
             .update("999999", UpdateRun::new(Stage::Build, RunStatus::Running))
             .unwrap()
@@ -1438,11 +1684,10 @@ mod tests {
     fn selection() -> crate::routing::ModelRouting {
         serde_json::from_value(serde_json::json!({
             "agent": "claude",
-            "roles": {
-                "strong": {"model": "opus", "effort": "high"},
-                "coding": {"model": "sonnet", "effort": "medium"}
-            },
-            "tasks": {"build": "coding", "check": "strong"}
+            "stages": {
+                "build": {"model": "sonnet", "effort": "medium"},
+                "check": {"model": "opus", "effort": "high"}
+            }
         }))
         .unwrap()
     }
@@ -1461,71 +1706,116 @@ mod tests {
         (store, run)
     }
 
+    fn choice(routing: &ModelRouting, stage: Stage) -> (String, Option<String>) {
+        let choice = routing.choice_for(stage).expect("a routed stage");
+        (choice.model.clone(), choice.effort.clone())
+    }
+
+    fn pair(model: &str, effort: Option<&str>) -> (String, Option<String>) {
+        (model.to_string(), effort.map(str::to_string))
+    }
+
     #[test]
-    fn a_task_override_beats_the_policy_replaces_earlier_ones_clears_and_survives_a_restart() {
-        use crate::routing::{Role, Task};
+    fn a_stage_override_beats_the_policy_replaces_earlier_ones_clears_and_survives_a_restart() {
         let dir = TestDir::new();
         let (store, run) = routed_store(&dir);
         let routing =
             |store: &RunStore| store.get(&run.id).unwrap().unwrap().model_routing.unwrap();
-        assert_eq!(routing(&store).role_for(Task::Check), Some(Role::Strong));
+        assert_eq!(
+            choice(&routing(&store), Stage::Check),
+            pair("opus", Some("high"))
+        );
 
+        // An override with an effort, and one without that drops the policy's effort.
         store
-            .update(&run.id, update(&["--model-routing", "check=coding"]))
+            .update(
+                &run.id,
+                update(&[
+                    "--model-routing",
+                    "check=sonnet:low",
+                    "--model-routing",
+                    "define=haiku",
+                ]),
+            )
             .unwrap();
-        assert_eq!(routing(&store).role_for(Task::Check), Some(Role::Coding));
-        assert_eq!(routing(&store).role_for(Task::Build), Some(Role::Coding));
-        // The policy's own mapping is untouched.
-        assert_eq!(routing(&store).tasks[&Task::Check], Role::Strong);
+        assert_eq!(
+            choice(&routing(&store), Stage::Check),
+            pair("sonnet", Some("low"))
+        );
+        assert_eq!(choice(&routing(&store), Stage::Define), pair("haiku", None));
+        assert_eq!(
+            choice(&routing(&store), Stage::Build),
+            pair("sonnet", Some("medium"))
+        );
+        // The policy's own stages are untouched.
+        assert_eq!(routing(&store).stages[&Stage::Check].model, "opus");
 
         // A new set of overrides replaces the old one, and an unrelated update keeps it.
         store
-            .update(&run.id, update(&["--model-routing", "build=strong"]))
+            .update(&run.id, update(&["--model-routing", "build=opus"]))
             .unwrap();
-        assert_eq!(routing(&store).role_for(Task::Check), Some(Role::Strong));
-        assert_eq!(routing(&store).role_for(Task::Build), Some(Role::Strong));
+        assert_eq!(
+            choice(&routing(&store), Stage::Check),
+            pair("opus", Some("high"))
+        );
+        assert_eq!(choice(&routing(&store), Stage::Build), pair("opus", None));
         store
             .update(&run.id, update(&["--activity", "later"]))
             .unwrap();
-        assert_eq!(routing(&store).role_for(Task::Build), Some(Role::Strong));
+        assert_eq!(choice(&routing(&store), Stage::Build), pair("opus", None));
 
         let reopened = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        assert_eq!(routing(&reopened).role_for(Task::Build), Some(Role::Strong));
+        assert_eq!(
+            choice(&routing(&reopened), Stage::Build),
+            pair("opus", None)
+        );
 
         store
             .update(&run.id, update(&["--clear-model-routing"]))
             .unwrap();
-        assert_eq!(routing(&store).role_for(Task::Build), Some(Role::Coding));
+        assert_eq!(
+            choice(&routing(&store), Stage::Build),
+            pair("sonnet", Some("medium"))
+        );
         assert!(routing(&store).overrides.is_empty());
     }
 
     #[test]
-    fn bad_task_overrides_are_refused_and_change_nothing() {
+    fn bad_stage_overrides_are_refused_and_change_nothing() {
         let dir = TestDir::new();
         let (store, run) = routed_store(&dir);
-        // The command line refuses what cannot be a task or a role.
+        let long = "m".repeat(65);
+        let long_model = format!("check={long}");
+        let long_effort = format!("check=sonnet:{long}");
         for options in [
-            &["--model-routing", "deploy=coding"][..],
-            &["--model-routing", "check=boss"],
+            &["--model-routing", "deploy=sonnet"][..],
             &["--model-routing", "check"],
+            &["--model-routing", "check="],
+            &["--model-routing", "check=son net"],
+            &["--model-routing", "check=sonnet:"],
+            &["--model-routing", "check=sonnet:hi gh"],
+            &["--model-routing", long_model.as_str()],
+            &["--model-routing", long_effort.as_str()],
             &[
                 "--model-routing",
-                "check=coding",
+                "check=sonnet",
                 "--model-routing",
-                "check=strong",
+                "check=opus",
             ],
-            &["--model-routing", "check=coding", "--clear-model-routing"],
+            &["--model-routing", "check=sonnet", "--clear-model-routing"],
         ] {
             assert!(
                 parse_update("build", "running", options).is_err(),
                 "{options:?}"
             );
         }
-        // The run refuses a role it does not have, such as routine here.
-        let error = store
-            .update(&run.id, update(&["--model-routing", "finish=routine"]))
-            .unwrap_err();
-        assert!(error.to_string().contains("routine"), "{error}");
+        // An unknown stage names the valid ones.
+        let error = parse_update("build", "running", &["--model-routing", "deploy=sonnet"])
+            .unwrap_err()
+            .to_string();
+        for stage in ["define", "build", "check", "finish"] {
+            assert!(error.contains(stage), "{error}");
+        }
         assert!(store
             .get(&run.id)
             .unwrap()
@@ -1537,13 +1827,77 @@ mod tests {
         // A run that has no selection has nothing to override.
         let plain = new_run(&store, "plain");
         let error = store
-            .update(&plain.id, update(&["--model-routing", "check=coding"]))
+            .update(&plain.id, update(&["--model-routing", "check=sonnet"]))
             .unwrap_err();
         assert!(error.to_string().contains("model routing"), "{error}");
         // Clearing where there is nothing to clear is harmless.
         store
             .update(&plain.id, update(&["--clear-model-routing"]))
             .unwrap();
+    }
+
+    #[test]
+    fn a_stored_run_with_the_old_roles_and_tasks_shape_reads_as_not_routed_and_is_not_rewritten() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let run = store
+            .create(NewRun {
+                title: "old".into(),
+                project: "/work/repo".into(),
+                repository: None,
+                session: None,
+                model_routing: Some(selection()),
+            })
+            .unwrap();
+        drop(store);
+        let text = fs::read_to_string(&path).unwrap();
+        let current = serde_json::to_string(&selection()).unwrap();
+        let old =
+            r#"{"agent":"claude","roles":{"strong":{"model":"opus"}},"tasks":{"check":"strong"}}"#;
+        let replaced = text.replacen(&current, old, 1);
+        assert_ne!(text, replaced, "the fixture must carry the old shape");
+        fs::write(&path, &replaced).unwrap();
+
+        let reopened = RunStore::open(&path).unwrap();
+        let read = reopened.get(&run.id).unwrap().unwrap();
+        assert!(read.model_routing.is_none());
+        // Reading rewrote nothing, and the run can still be updated.
+        assert_eq!(fs::read_to_string(&path).unwrap(), replaced);
+        reopened
+            .update(&run.id, update(&["--activity", "later"]))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_stored_selection_that_is_neither_current_nor_the_old_shape_is_an_error() {
+        for bad in [
+            r#"{"agent":"claude","stages":{"define":{"model":5}}}"#,
+            r#"{"agent":"claude","stages":{},"extra":1}"#,
+            r#"{"agent":"nobody","stages":{}}"#,
+            r#"5"#,
+            r#""roles""#,
+        ] {
+            let dir = TestDir::new();
+            let path = dir.0.path().join("runs.json");
+            let store = RunStore::open(&path).unwrap();
+            store
+                .create(NewRun {
+                    title: "bad".into(),
+                    project: "/work/repo".into(),
+                    repository: None,
+                    session: None,
+                    model_routing: Some(selection()),
+                })
+                .unwrap();
+            drop(store);
+            let text = fs::read_to_string(&path).unwrap();
+            let current = serde_json::to_string(&selection()).unwrap();
+            let replaced = text.replacen(&current, bad, 1);
+            assert_ne!(text, replaced, "the fixture must carry the bad value");
+            fs::write(&path, &replaced).unwrap();
+            assert!(load_runs(&path).is_err(), "{bad} was accepted");
+        }
     }
 
     #[test]
@@ -2184,12 +2538,71 @@ mod tests {
     }
 
     #[test]
+    fn a_mark_records_the_activity_of_the_update_that_created_it() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let store = RunStore::open(&path).unwrap();
+        let run = new_run(&store, "task");
+        let after = |options: &[&str], stage: &str| {
+            store
+                .update(&run.id, parse_update(stage, "running", options).unwrap())
+                .unwrap()
+                .unwrap()
+                .run
+        };
+        assert_eq!(run.timeline[0].activity, None);
+        let building = after(&["--activity", "Writing the code"], "build");
+        assert_eq!(
+            building.timeline[1].activity.as_deref(),
+            Some("Writing the code")
+        );
+        // An update that adds no mark leaves the pass's activity alone.
+        let same = after(&["--activity", "Still going"], "build");
+        assert_eq!(same.timeline.len(), 2);
+        assert_eq!(
+            same.timeline[1].activity.as_deref(),
+            Some("Writing the code")
+        );
+        // A mark made by an update without an activity does not borrow the previous one.
+        let checking = after(&[], "check");
+        assert_eq!(checking.timeline[2].activity, None);
+
+        // The activity survives a reload from disk, and shows in the serialised run.
+        let reloaded = RunStore::open(&path)
+            .unwrap()
+            .get(&run.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reloaded.timeline[1].activity.as_deref(),
+            Some("Writing the code")
+        );
+        let json = serde_json::to_value(&reloaded).unwrap();
+        assert_eq!(json["timeline"][1]["activity"], "Writing the code");
+        assert!(json["timeline"][2].get("activity").is_none());
+    }
+
+    #[test]
+    fn marks_without_an_activity_load_from_old_json() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        fs::write(&path, r#"[{"id":"7","title":"old","project":"/p","stage":"build","status":"running","branch":"b","timeline":[{"at":5,"stage":"define"},{"at":9,"stage":"build","ticket":"t1"}]}]"#).unwrap();
+        let run = RunStore::open(&path).unwrap().get("7").unwrap().unwrap();
+        assert_eq!(run.timeline.len(), 2);
+        assert!(run.timeline.iter().all(|mark| mark.activity.is_none()));
+        assert_eq!(run.timeline[1].ticket.as_deref(), Some("t1"));
+    }
+
+    #[test]
     fn finishing_a_run_closes_its_window_and_reopening_clears_it() {
         let dir = TestDir::new();
         let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
         let run = new_run(&store, "task");
         let done = store
-            .update(&run.id, parse_update("finish", "done", &[]).unwrap())
+            .update(
+                &run.id,
+                parse_update("finish", "done", &FINISH_SUMMARY).unwrap(),
+            )
             .unwrap()
             .unwrap()
             .run;
@@ -2197,7 +2610,12 @@ mod tests {
         let again = store
             .update(
                 &run.id,
-                parse_update("finish", "done", &["--activity", "x"]).unwrap(),
+                parse_update(
+                    "finish",
+                    "done",
+                    &["--summary", "finish=Shipped", "--activity", "x"],
+                )
+                .unwrap(),
             )
             .unwrap()
             .unwrap()
@@ -2268,7 +2686,7 @@ mod tests {
         let update = parse_update(
             "build",
             "running",
-            &["--ticket-report", "t1", "skill", "tdd"],
+            &["--ticket-report", "t1", "skill", "factory-tdd"],
         )
         .unwrap();
         assert!(store.update(&created.id, update).is_err());
@@ -2298,10 +2716,10 @@ mod tests {
         .is_err());
         let mut args = Vec::new();
         for _ in 0..100 {
-            args.extend(["--ticket-report", "t1", "skill", "tdd"]);
+            args.extend(["--ticket-report", "t1", "skill", "factory-tdd"]);
         }
         assert!(parse_update("build", "running", &args).is_ok());
-        args.extend(["--ticket-report", "t1", "skill", "tdd"]);
+        args.extend(["--ticket-report", "t1", "skill", "factory-tdd"]);
         assert!(parse_update("build", "running", &args).is_err());
     }
 
@@ -2318,7 +2736,7 @@ mod tests {
             .unwrap();
         let mut args = Vec::new();
         for _ in 0..100 {
-            args.extend(["--ticket-report", "t1", "skill", "tdd"]);
+            args.extend(["--ticket-report", "t1", "skill", "factory-tdd"]);
         }
         for _ in 0..10 {
             store
@@ -2328,7 +2746,7 @@ mod tests {
         let extra = parse_update(
             "build",
             "running",
-            &["--ticket-report", "t1", "skill", "tdd"],
+            &["--ticket-report", "t1", "skill", "factory-tdd"],
         )
         .unwrap();
         assert!(store.update(&run.id, extra).is_err());
@@ -2380,7 +2798,7 @@ mod tests {
                         "--ticket-report",
                         "t1",
                         "skill",
-                        "tdd",
+                        "factory-tdd",
                     ],
                 )
                 .unwrap(),
@@ -2404,7 +2822,7 @@ mod tests {
         let json = serde_json::to_value(saved).unwrap();
         assert_eq!(json["ticket_reports"][0]["ticket"], "t1");
         assert_eq!(json["ticket_reports"][0]["kind"], "skill");
-        assert_eq!(json["ticket_reports"][0]["text"], "tdd");
+        assert_eq!(json["ticket_reports"][0]["text"], "factory-tdd");
         assert_eq!(json["ticket_reports"][1]["text"], "Tests passed");
         assert_eq!(json["ticket_reports"][1]["stage"], "build");
         assert!(json["ticket_reports"][1]["at"].as_u64().is_some());
@@ -2526,5 +2944,94 @@ mod tests {
             .run;
         assert_eq!(run.timeline.len(), 1);
         assert_eq!(run.timeline[0].at, run.updated_at.unwrap());
+    }
+
+    #[test]
+    fn records_without_events_load_and_serialize_without_them() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        fs::write(&path, r#"[{"id":"7","title":"old","project":"/p","stage":"build","status":"running","run_reports":[{"kind":"activity","text":"t","stage":"build","at":5}]}]"#).unwrap();
+        let store = RunStore::open(&path).unwrap();
+        let run = store.get("7").unwrap().unwrap();
+        assert!(run.events.is_empty());
+        assert!(serde_json::to_value(&run).unwrap().get("events").is_none());
+    }
+
+    fn event_store() -> (TestDir, RunStore, String) {
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let run = store
+            .create(NewRun {
+                title: "task".into(),
+                project: "/work".into(),
+                repository: None,
+                session: None,
+                model_routing: None,
+            })
+            .unwrap();
+        (dir, store, run.id)
+    }
+
+    #[test]
+    fn blocking_and_resuming_record_events_without_touching_the_timeline() {
+        let (_dir, store, id) = event_store();
+        let apply = |stage, status, args: &[&str]| {
+            store
+                .update(&id, parse_update(stage, status, args).unwrap())
+                .unwrap()
+                .unwrap()
+                .run
+        };
+        let running = apply("build", "running", &[]);
+        assert!(running.events.is_empty());
+        let blocked = apply("build", "blocked", &["--blocking-reason", "Need keys"]);
+        assert_eq!(blocked.events.len(), 1);
+        assert_eq!(blocked.events[0].kind, RunEventKind::Blocked);
+        assert_eq!(blocked.events[0].stage, Stage::Build);
+        assert_eq!(blocked.events[0].reason.as_deref(), Some("Need keys"));
+        assert_eq!(blocked.events[0].at, blocked.updated_at.unwrap());
+        // Blocked again, even with a new reason, adds nothing.
+        let again = apply(
+            "build",
+            "blocked",
+            &["--blocking-reason", "Still need keys"],
+        );
+        assert_eq!(again.events.len(), 1);
+        let resumed = apply("check", "running", &["--clear-blocking-reason"]);
+        assert_eq!(resumed.events.len(), 2);
+        assert_eq!(resumed.events[1].kind, RunEventKind::Resumed);
+        assert_eq!(resumed.events[1].stage, Stage::Check);
+        assert!(resumed.events[1].reason.is_none());
+        assert!(resumed.events[0].at <= resumed.events[1].at);
+        // Events are not marks: only the stage changes make marks.
+        let stages: Vec<_> = resumed.timeline.iter().map(|m| m.stage).collect();
+        assert_eq!(stages, [Stage::Define, Stage::Build, Stage::Check]);
+        let json = serde_json::to_value(&resumed).unwrap();
+        assert_eq!(json["events"][0]["kind"], "blocked");
+        assert_eq!(json["events"][1]["kind"], "resumed");
+    }
+
+    #[test]
+    fn events_are_capped() {
+        let (dir, store, id) = event_store();
+        // Seed the stored events one short of the cap instead of saving a thousand times.
+        let path = dir.0.path().join("runs.json");
+        let mut stored = serde_json::to_value(store.list().unwrap()).unwrap();
+        stored[0]["events"] = (0..MAX_EVENTS - 1)
+            .map(|at| serde_json::json!({"at": at, "kind": "blocked", "stage": "build"}))
+            .collect();
+        std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+        let store = RunStore::open(&path).unwrap();
+        for _ in 0..2 {
+            for (status, args) in [
+                ("blocked", &["--blocking-reason", "x"][..]),
+                ("running", &[][..]),
+            ] {
+                store
+                    .update(&id, parse_update("build", status, args).unwrap())
+                    .unwrap();
+            }
+        }
+        assert_eq!(store.get(&id).unwrap().unwrap().events.len(), MAX_EVENTS);
     }
 }

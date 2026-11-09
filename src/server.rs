@@ -198,14 +198,37 @@ fn info(request: Security) -> Result<Json<Info>, HttpStatus> {
 }
 
 #[rocket::get("/api/runs")]
-fn list_runs(request: Security, store: &State<RunStore>) -> Result<Json<Vec<Run>>, HttpStatus> {
+fn list_runs(
+    request: Security,
+    store: &State<RunStore>,
+) -> Result<Json<Vec<serde_json::Value>>, HttpStatus> {
     if !request.local {
         return Err(HttpStatus::BadRequest);
     }
-    store.list().map(Json).map_err(|error| {
-        eprintln!("Run storage error: {error}");
-        HttpStatus::InternalServerError
-    })
+    store
+        .list()
+        .map_err(|error| {
+            eprintln!("Run storage error: {error}");
+            HttpStatus::InternalServerError
+        })?
+        .iter()
+        .map(run_with_cost)
+        .collect::<Result<Vec<_>, _>>()
+        .map(Json)
+        .map_err(|error| {
+            eprintln!("Run cost serialization error: {error}");
+            HttpStatus::InternalServerError
+        })
+}
+
+/// A run as the API shows it: the stored record plus the estimated cost of its usage, from the price
+/// table as it is now. The cost is never stored.
+fn run_with_cost(run: &Run) -> serde_json::Result<serde_json::Value> {
+    let mut value = serde_json::to_value(run)?;
+    if let Some(usage) = &run.usage {
+        value["usage"] = crate::cost::usage_json(usage, crate::cost::PRICES)?;
+    }
+    Ok(value)
 }
 
 #[rocket::post("/api/runs", data = "<new>")]
@@ -258,14 +281,16 @@ fn update_run(
             }
         })?
         .ok_or((HttpStatus::NotFound, "Not found".into()))?;
-    if updated.collect_usage {
-        collector.after_update(store, &updated.run.id);
-    }
+    collector.after_update(store, &updated.run.id);
     Ok(Json(updated.run))
 }
 
 #[rocket::get("/api/runs/<id>")]
-fn get_run(request: Security, id: &str, store: &State<RunStore>) -> Result<Json<Run>, HttpStatus> {
+fn get_run(
+    request: Security,
+    id: &str,
+    store: &State<RunStore>,
+) -> Result<Json<serde_json::Value>, HttpStatus> {
     if !request.local {
         return Err(HttpStatus::BadRequest);
     }
@@ -278,8 +303,13 @@ fn get_run(request: Security, id: &str, store: &State<RunStore>) -> Result<Json<
             eprintln!("Run storage error: {error}");
             HttpStatus::InternalServerError
         })?
-        .map(Json)
         .ok_or(HttpStatus::NotFound)
+        .and_then(|run| {
+            run_with_cost(&run).map(Json).map_err(|error| {
+                eprintln!("Run cost serialization error: {error}");
+                HttpStatus::InternalServerError
+            })
+        })
 }
 
 /// Deletes the Run record only; nothing the Run created (worktree, branch, pull request) is touched.
@@ -479,6 +509,35 @@ fn watch_pr_states(
     })
 }
 
+/// How often the dashboard server looks in the logs of working runs for a usage limit or compaction.
+const PAUSE_PASS: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Collects the runs that are working or paused on their own every `pass`, on a blocking thread, so a
+/// pause is seen and cleared without an agent update. One pass is bounded by the collection budget per run.
+fn watch_pauses(
+    store: RunStore,
+    settings: UsageSettings,
+    pass: std::time::Duration,
+) -> rocket::tokio::task::JoinHandle<()> {
+    rocket::tokio::spawn(async move {
+        loop {
+            rocket::tokio::time::sleep(pass).await;
+            let (store, settings) = (store.clone(), settings.clone());
+            let joined = rocket::tokio::task::spawn_blocking(move || {
+                let result = crate::run::updated_now()
+                    .and_then(|now| crate::usage::collect_active(&store, &settings, now));
+                if let Err(error) = result {
+                    eprintln!("Pauses were not checked: {error}");
+                }
+            })
+            .await;
+            if let Err(error) = joined {
+                eprintln!("Pauses were not checked: the check stopped: {error}");
+            }
+        }
+    })
+}
+
 pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> io::Result<()> {
     let runtime = rocket::tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -486,6 +545,7 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
         .map_err(io::Error::other)?;
     println!("Dashboard: {url} (press Ctrl+C to stop)");
     runtime.block_on(async {
+        let pause_settings = usage.clone();
         build_rocket_with(path, port, Collector::new(Some(usage)))
             .map_err(|error| {
                 io::Error::new(error.kind(), format!("could not open run storage: {error}"))
@@ -495,6 +555,7 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
                 |rocket| {
                     Box::pin(async move {
                         if let Some(store) = rocket.state::<RunStore>() {
+                            watch_pauses(store.clone(), pause_settings, PAUSE_PASS);
                             watch_pr_states(
                                 store.clone(),
                                 std::sync::Arc::new(RealGh),
@@ -838,33 +899,23 @@ mod tests {
         assert!(script.contains("showModal()"));
         assert!(script.contains("aria-labelledby=\"detail-title\""));
         assert!(script.contains("id=\"detail-title\""));
-        // Every field of the Run is listed; an empty one says so.
-        for label in [
-            "Project",
-            "Stage",
-            "Status",
-            "Activity",
-            "Mode",
-            "Branch",
-            "Worktree",
-            "Repository",
-            "Base commit",
-            "Spec",
-            "Pull request",
-            "Stage summaries",
-            "Rework",
-            "Updated",
-            "Run id",
+        // The sheet is a route card: a status row, the four stations, token usage and a footer with the ids.
+        for part in [
+            "<ol class=\"route\" aria-label=\"Route\">",
+            "<div class=${blocked ? 'status-row blocked' : 'status-row'}>",
+            "<details class=\"usage\"",
+            "<div class=\"detail-foot\">",
+            "<${CopyButton} value=${run.branch} what=\"branch\" />",
+            "<${CopyButton} value=${run.repository} what=\"repository\" />",
+            "<${CopyButton} value=${String(run.id)} what=\"run id\" />",
+            "Skills and activity are reported by the agent and may be incomplete.",
         ] {
-            assert!(
-                script.contains(&format!("<${{Field}} label=\"{label}\"")),
-                "missing field {label}"
-            );
+            assert!(script.contains(part), "missing {part}");
         }
-        assert!(script.contains("Not set"));
-        // Context a Run never recorded reads "Not recorded", not an empty or invented value.
-        assert!(script.contains("missing=\"Unknown\""));
-        assert!(script.contains("None recorded"));
+        // A field the Run never recorded is left out, not shown as unknown.
+        assert!(!script.contains("Unknown\""));
+        assert!(!script.contains("Not set"));
+        assert!(!script.contains("Worktree") && !script.contains("base_commit"));
     }
 
     #[rocket::async_test]
@@ -928,8 +979,7 @@ mod tests {
             !script.contains("<p class=\"project\"><${ProjectName} path=${projectOf(run)} /></p>")
         );
         assert!(script.contains("><${ProjectName} path=${project} />"));
-        assert!(script
-            .contains("<${Field} label=\"Project\"><${ProjectName} path=${projectOf(run)} /><//>"));
+        assert!(script.contains("<span><${ProjectName} path=${projectOf(run)} /></span>"));
     }
 
     #[rocket::async_test]
@@ -998,7 +1048,7 @@ mod tests {
     /// A dashboard whose usage collection reads fixture logs under `home` instead of a user's own.
     async fn client_collecting(dir: &TestDir, home: &Path, enabled: bool) -> Client {
         let roots = crate::usage_logs::Roots {
-            claude: home.join("claude/projects"),
+            claude: vec![home.join("claude/projects")],
             codex: home.join("codex/sessions"),
             copilot: home.join("copilot/session-state"),
         };
@@ -1060,7 +1110,7 @@ mod tests {
         );
         let collector = api.rocket().state::<Collector>().unwrap();
 
-        // An update that changes neither the stage nor the ticket collects nothing.
+        // Every update collects, even one that changes neither the stage nor the ticket.
         assert_eq!(
             report(
                 &api,
@@ -1072,7 +1122,11 @@ mod tests {
             HttpStatus::Ok
         );
         collector.wait_idle().await;
-        assert!(fetch(&api, &run.id).await.1.unwrap().usage.is_none());
+        let usage = fetch(&api, &run.id).await.1.unwrap().usage;
+        assert_eq!(
+            usage.expect("a plain update collects").sessions,
+            ["session-one"]
+        );
 
         // Moving to Build collects, without delaying the answer, and records what it found.
         let store = api.rocket().state::<RunStore>().unwrap().clone();
@@ -1117,7 +1171,12 @@ mod tests {
         assert_eq!(usage.rows[0].tokens.input, Some(42));
 
         // Collecting again after finishing gives the same numbers, not double.
-        report(&api, &run.id, r#"{"stage":"finish","status":"done"}"#).await;
+        report(
+            &api,
+            &run.id,
+            r#"{"stage":"finish","status":"done","summaries":{"finish":"Shipped"}}"#,
+        )
+        .await;
         collector.wait_idle().await;
         let usage = fetch(&api, &run.id).await.1.unwrap().usage.unwrap();
         assert_eq!(
@@ -1131,11 +1190,27 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn finish_done_without_a_summary_is_a_bad_request() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
+        let response = report(&api, &run.id, r#"{"stage":"finish","status":"done"}"#).await;
+        assert_eq!(response.status(), HttpStatus::BadRequest);
+        assert!(response
+            .into_string()
+            .await
+            .unwrap()
+            .contains("--summary finish="));
+        let stored = fetch(&api, &run.id).await.1.unwrap();
+        assert!(stored.finished_at.is_none());
+    }
+
+    #[rocket::async_test]
     async fn a_late_pass_picks_up_what_the_agent_wrote_after_the_update() {
         let dir = TestDir::new();
         let home = tempfile::tempdir().unwrap();
         let roots = crate::usage_logs::Roots {
-            claude: home.path().join("claude/projects"),
+            claude: vec![home.path().join("claude/projects")],
             codex: home.path().join("codex/sessions"),
             copilot: home.path().join("copilot/session-state"),
         };
@@ -1231,7 +1306,7 @@ mod tests {
         let settings = UsageSettings {
             enabled: true,
             roots: crate::usage_logs::Roots {
-                claude: home.path().join("claude/projects"),
+                claude: vec![home.path().join("claude/projects")],
                 codex: home.path().join("codex/sessions"),
                 copilot: home.path().join("copilot/session-state"),
             },
@@ -1352,9 +1427,9 @@ mod tests {
         // Cards: a ticket-progress chip and http(s)-only links to the pull request and spec.
         assert!(script.contains("Tickets${' '}${progress.done}/${progress.total}"));
         assert!(script.contains("url.protocol === 'http:' || url.protocol === 'https:'"));
-        assert!(script.contains("label=\"Pull request\""));
+        assert!(script.contains("named('Pull request')"));
         // Detail lists the tickets in order with their status, and the summaries per Stage.
-        assert!(script.contains("run.tickets.map("));
+        assert!(script.contains("tickets.map((ticket) =>"));
         assert!(script.contains("run.summaries?.[id]"));
     }
 
@@ -1402,17 +1477,17 @@ mod tests {
         };
         let long = "m".repeat(65);
         for routing in [
-            // A task names a role the selection does not have.
-            r#"{"agent":"claude","roles":{"coding":{"model":"sonnet"}},"tasks":{"check":"strong"}}"#.to_string(),
+            // The earlier shape, with roles and tasks.
+            r#"{"agent":"claude","roles":{"strong":{"model":"sonnet"}},"tasks":{"check":"strong"}}"#.to_string(),
             // Empty, oversized and unsafe text.
-            r#"{"agent":"claude","roles":{"coding":{"model":""}},"tasks":{}}"#.to_string(),
-            format!(r#"{{"agent":"claude","roles":{{"coding":{{"model":"{long}"}}}},"tasks":{{}}}}"#),
-            r#"{"agent":"claude","roles":{"coding":{"model":"son net"}},"tasks":{}}"#.to_string(),
-            r#"{"agent":"claude","roles":{"coding":{"model":"sonnet","effort":"hi\u001b[2Jgh"}},"tasks":{}}"#.to_string(),
-            // Unknown field, unknown task, unknown agent (Copilot records no selection).
-            r#"{"agent":"claude","roles":{},"tasks":{},"extra":1}"#.to_string(),
-            r#"{"agent":"claude","roles":{"coding":{"model":"sonnet"}},"tasks":{"deploy":"coding"}}"#.to_string(),
-            r#"{"agent":"copilot","roles":{},"tasks":{}}"#.to_string(),
+            r#"{"agent":"claude","stages":{"check":{"model":""}}}"#.to_string(),
+            format!(r#"{{"agent":"claude","stages":{{"check":{{"model":"{long}"}}}}}}"#),
+            r#"{"agent":"claude","stages":{"check":{"model":"son net"}}}"#.to_string(),
+            r#"{"agent":"claude","stages":{"check":{"model":"sonnet","effort":"hi\u001b[2Jgh"}}}"#.to_string(),
+            // Unknown field, unknown stage, unknown agent (Copilot records no selection).
+            r#"{"agent":"claude","stages":{},"extra":1}"#.to_string(),
+            r#"{"agent":"claude","stages":{"deploy":{"model":"sonnet"}}}"#.to_string(),
+            r#"{"agent":"copilot","stages":{}}"#.to_string(),
         ] {
             let response = api
                 .post("/api/runs")
@@ -1432,11 +1507,13 @@ mod tests {
             .is_empty());
         let run = start(
             &api,
-            &with(r#"{"agent":"codex","roles":{"strong":{"model":"gpt-6-astra","effort":"high"}},"tasks":{"check":"strong"}}"#),
+            &with(
+                r#"{"agent":"codex","stages":{"check":{"model":"gpt-6-astra","effort":"high"}}}"#,
+            ),
         )
         .await;
         let routing = run.model_routing.unwrap();
-        assert_eq!(routing.roles.len(), 1);
+        assert_eq!(routing.stages.len(), 1);
     }
 
     #[rocket::async_test]
@@ -1504,16 +1581,15 @@ mod tests {
             script.contains("aria-label=\"Token usage by stage, model and ticket\" tabindex=\"0\"")
         );
         assert!(script.contains("n === undefined || n === null ? 'n/a'"));
-        assert!(script.contains("<${Field} label=\"Token usage\" missing=\"Not tracked\" wide>"));
+        assert!(script.contains("<details class=\"usage\" open=${active}>"));
         assert!(script.contains(
             "Fresh tokens are input excluding cache reads, plus cache writes and output."
         ));
         assert!(script.contains("No data for:"));
         assert!(css.contains(".usage-table {") && css.contains(".table-scroll:focus-visible"));
-        assert!(
-            !script.contains("price") && !script.contains("cost"),
-            "tokens only, no money"
-        );
+        // The cost comes from the server; the dashboard holds no prices of its own.
+        assert!(script.contains("usd === null || usd === undefined) return 'unknown'"));
+        assert!(!script.contains("claude-opus") && !script.contains("per million"));
     }
 
     #[rocket::async_test]
@@ -1569,8 +1645,7 @@ mod tests {
         let dir = TestDir::new();
         let api = client(&dir).await;
         let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
-        let body =
-            r#"{"stage":"build","status":"running","run_reports":[{"kind":"skill","text":"tdd"}]}"#;
+        let body = r#"{"stage":"build","status":"running","run_reports":[{"kind":"skill","text":"factory-tdd"}]}"#;
         assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
         let bad =
             r#"{"stage":"build","status":"running","run_reports":[{"kind":"skill","text":""}]}"#;
@@ -1580,7 +1655,7 @@ mod tests {
         );
         let saved = fetch(&api, &run.id).await.1.unwrap();
         assert_eq!(saved.run_reports.len(), 1);
-        assert_eq!(saved.run_reports[0].text, "tdd");
+        assert_eq!(saved.run_reports[0].text, "factory-tdd");
     }
 
     #[rocket::async_test]
@@ -1588,7 +1663,7 @@ mod tests {
         let dir = TestDir::new();
         let api = client(&dir).await;
         let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
-        let body = r#"{"stage":"build","status":"running","tickets":[{"reference":"local=42","title":"One"}],"ticket_reports":[{"ticket":"local=42","kind":"skill","text":"tdd"}]}"#;
+        let body = r#"{"stage":"build","status":"running","tickets":[{"reference":"local=42","title":"One"}],"ticket_reports":[{"ticket":"local=42","kind":"skill","text":"factory-tdd"}]}"#;
         assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
         let bad = r#"{"stage":"build","status":"running","ticket_reports":[{"ticket":"missing","kind":"activity","text":"oops"}]}"#;
         assert_eq!(
@@ -1597,7 +1672,7 @@ mod tests {
         );
         let saved = fetch(&api, &run.id).await.1.unwrap();
         assert_eq!(saved.ticket_reports.len(), 1);
-        assert_eq!(saved.ticket_reports[0].text, "tdd");
+        assert_eq!(saved.ticket_reports[0].text, "factory-tdd");
     }
 
     #[rocket::async_test]
@@ -1864,7 +1939,7 @@ mod tests {
             .split("@media (max-width: 30rem)")
             .nth(1)
             .expect("a very narrow layout");
-        assert!(narrow.contains(".fields { grid-template-columns: minmax(0, 1fr); }"));
+        assert!(narrow.contains(".reports li { grid-template-columns: minmax(0, 1fr);"));
     }
 
     #[rocket::async_test]
@@ -2220,13 +2295,11 @@ mod tests {
 
     #[rocket::async_test]
     async fn the_token_table_gets_the_full_width_of_the_detail() {
-        // The breakdown has ten columns: beside the field labels it overflowed and scrolled, cutting off the first.
+        // The breakdown has ten columns, so it sits in a disclosure that spans the sheet, open while the Run is active.
         let script = asset("/assets/app.js").await;
-        assert!(script.contains("<${Field} label=\"Token usage\" missing=\"Not tracked\" wide>"));
-        assert!(script
-            .contains("function Field({ label, children, missing = 'Not set', wide = false }) {"));
+        assert!(script.contains("<details class=\"usage\" open=${active}>"));
         let css = stylesheet().await;
-        assert!(css.contains(".fields .wide { grid-column: 1 / -1; }"));
+        assert!(css.contains(".usage { margin:"));
         // The table fills its row and its numbers line up.
         let table = css
             .lines()
@@ -2255,9 +2328,6 @@ mod tests {
         assert!(css.contains(
             ".usage-table td:nth-child(2), .usage-table td:nth-child(3) { white-space: normal; overflow-wrap: anywhere; }"
         ));
-        // One doc comment on Field, and the token usage label keeps the same gap as the others.
-        assert!(!script.contains("reads \"Not set\". */\n/**"));
-        assert!(!css.contains(".fields dd.wide"));
     }
 
     #[rocket::async_test]
@@ -2272,11 +2342,7 @@ mod tests {
             1,
             "the protocol check lives only in httpUrl"
         );
-        for component in [
-            "function TicketLink(",
-            "function RefLink(",
-            "function TicketRef(",
-        ] {
+        for component in ["function RefLink(", "function TicketRef("] {
             let body = script
                 .split(component)
                 .nth(1)
@@ -2312,7 +2378,7 @@ mod tests {
             .update(
                 &run.id,
                 serde_json::from_str(&format!(
-                    r#"{{"stage":"finish","status":"done","pr":"{pr}"}}"#
+                    r#"{{"stage":"finish","status":"done","pr":"{pr}","summaries":{{"finish":"Shipped"}}}}"#
                 ))
                 .unwrap(),
             )
@@ -2349,7 +2415,7 @@ mod tests {
             .post(format!("/api/runs/{}", run.id))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
-            .body(r#"{"stage":"finish","status":"done","pr_status":{"state":"open"}}"#)
+            .body(r#"{"stage":"finish","status":"done","summaries":{"finish":"Shipped"},"pr_status":{"state":"open"}}"#)
             .dispatch()
             .await;
         assert_ne!(response.status(), HttpStatus::Ok);
@@ -2386,7 +2452,7 @@ mod tests {
             .update(
                 &run.id,
                 serde_json::from_str(
-                    r#"{"stage":"finish","status":"done","pr":"https://github.com/o/r/pull/7"}"#,
+                    r#"{"stage":"finish","status":"done","summaries":{"finish":"Shipped"},"pr":"https://github.com/o/r/pull/7"}"#,
                 )
                 .unwrap(),
             )
@@ -2425,17 +2491,16 @@ mod tests {
         assert!(label.contains("status.url !== run.pr"));
         assert!(label.contains("!PR_STATE[status.state]"));
         assert!(label.contains("<span class=${`pr-state ${status.state}`}>"));
-        // Beside the link on the line and in the Shipped log, and as a field in the detail.
+        // Beside the link on the line and in the Shipped log, and in words next to the link in the detail.
         assert!(script.contains("<${ContextLinks} run=${run} /><${PrStateLabel} run=${run} />"));
         assert!(script.contains("<${PrStateLabel} run=${run} /></td>"));
-        assert!(script.contains("<${Field} label=\"Pull request state\""));
         let detail = script
-            .split("function PrStateDetail(")
+            .split("function PrLink(")
             .nth(1)
             .and_then(|rest| rest.split("\n}\n").next())
-            .expect("a PrStateDetail component");
+            .expect("a PrLink component");
         assert!(detail.contains("status.reason"));
-        assert!(detail.contains("checked ${ago(now - status.checked_at)}"));
+        assert!(detail.contains("PR_STATE[status.state]"));
         let css = stylesheet().await;
         for state in ["open", "draft", "merged", "closed"] {
             assert!(css.contains(&format!(".pr-state.{state} {{")), "{state}");
@@ -2443,16 +2508,14 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn the_detail_shows_the_current_ticket_and_status_reason_only_while_set() {
-        // Both are cleared by the workflows when the ticket ends and when work resumes, so a shipped Run has neither.
+    async fn the_detail_shows_the_status_reason_only_while_blocked_and_the_activity_only_while_active(
+    ) {
+        // The workflows clear the reason when work resumes; a Run that is not blocked shows none, and a shipped Run no activity.
         let script = asset("/assets/app.js").await;
         assert!(script.contains(
-            "${run.current_ticket\n          ? html`<${Field} label=\"Current ticket\"><${TicketLink} value=${String(run.current_ticket)} /><//>`\n          : null}"
+            "${blocked && run.blocking_reason ? html`<p class=\"status-reason\">${run.blocking_reason}</p>` : null}"
         ));
-        assert!(script.contains(
-            "${run.blocking_reason ? html`<${Field} label=\"Status reason\">${run.blocking_reason}<//>` : null}"
-        ));
-        assert!(!script.contains("<${Field} label=\"Ticket\">"));
+        assert!(script.contains("${active && run.activity ?"));
     }
 
     #[rocket::async_test]
@@ -2879,7 +2942,7 @@ mod tests {
                     })
                     .unwrap();
                 let update: UpdateRun =
-                    serde_json::from_value(serde_json::json!({ "stage": stage, "status": status }))
+                    serde_json::from_value(serde_json::json!({ "stage": stage, "status": status, "summaries": { "finish": "Shipped" } }))
                         .unwrap();
                 store.update(&run.id, update).unwrap();
                 let response = delete(&api, &run.id, &headers).await;
@@ -3098,7 +3161,7 @@ mod tests {
         let response = report(
             &restarted,
             "42",
-            r#"{"stage":"finish","status":"done","activity":null,"current_ticket":null}"#,
+            r#"{"stage":"finish","status":"done","summaries":{"finish":"Shipped"},"activity":null,"current_ticket":null}"#,
         )
         .await;
         assert_eq!(response.status(), HttpStatus::Ok);
@@ -3159,7 +3222,7 @@ mod tests {
         report(
             &restarted,
             &run.id,
-            r#"{"stage":"finish","status":"done","rework":null}"#,
+            r#"{"stage":"finish","status":"done","summaries":{"finish":"Shipped"},"rework":null}"#,
         )
         .await;
         assert!(load_runs(&path).unwrap()[0].rework.is_none());

@@ -1,20 +1,11 @@
 //! The readable form of a run, for `factory run inspect`: everything a new session needs to continue it.
 
-use crate::routing::{model_matches, ModelRouting, RoleChoice, Task};
-use crate::run::{Mode, Run, RunStatus, Stage, TicketStatus};
-use crate::usage::{Usage, UsageStatus};
+use crate::routing::{model_matches, ModelChoice, ModelRouting};
+use crate::run::{Mode, Run, RunEventKind, RunStatus, Stage, TicketStatus};
+use crate::usage::{format_timestamp, Usage, UsageStatus};
 use std::collections::BTreeSet;
 
 const UNKNOWN: &str = "unknown (not recorded)";
-
-fn stage_name(stage: Stage) -> &'static str {
-    match stage {
-        Stage::Define => "define",
-        Stage::Build => "build",
-        Stage::Check => "check",
-        Stage::Finish => "finish",
-    }
-}
 
 fn mode_name(mode: Mode) -> &'static str {
     match mode {
@@ -63,47 +54,35 @@ fn field(label: &str, value: Option<&str>) -> String {
     )
 }
 
-/// The model each task is routed to; a task the selection does not map is not routed.
+/// The model each Stage is routed to; a Stage the selection does not map is not routed.
 fn routing_section(routing: &ModelRouting, usage: Option<&Usage>) -> String {
     let mut out = format!("Model routing {}\n", routing.agent.name());
-    for task in Task::ALL {
-        let line = match routing.role_for(task) {
-            Some(role) => {
-                let choice = routing.roles.get(&role);
-                let model = choice.map_or_else(|| UNKNOWN.to_string(), |c| shown(&c.model));
+    for stage in Stage::ALL {
+        let choice = routing.choice_for(stage);
+        let line = match choice {
+            Some(choice) => {
                 let effort = choice
-                    .and_then(|c| c.effort.as_deref())
+                    .effort
+                    .as_deref()
                     .map_or(String::new(), |e| format!(", effort {}", shown(e)));
-                let overridden = if routing.overrides.contains_key(&task) {
+                let overridden = if routing.overrides.contains_key(&stage) {
                     " (override)"
                 } else {
                     ""
                 };
-                format!("{:<7} {model}{effort}{overridden}", role.name())
+                format!("{}{effort}{overridden}", shown(&choice.model))
             }
             None => "not routed".to_string(),
         };
-        out.push_str(&format!("  {:<6}  {line}\n", task.name()));
-        if let Some(requested) = routing
-            .role_for(task)
-            .and_then(|role| routing.roles.get(&role))
-        {
+        out.push_str(&format!("  {:<6}  {line}\n", stage.name()));
+        if let Some(requested) = choice {
             out.push_str(&format!(
                 "          {}\n",
-                observed_line(requested, stage_of(task), usage)
+                observed_line(requested, stage, usage)
             ));
         }
     }
     out
-}
-
-/// A task runs in the stage of the same name.
-fn stage_of(task: Task) -> Stage {
-    match task {
-        Task::Build => Stage::Build,
-        Task::Check => Stage::Check,
-        Task::Finish => Stage::Finish,
-    }
 }
 
 /// What the run's usage shows for one model in one stage.
@@ -116,7 +95,7 @@ struct Seen<'a> {
 /// The models the run's usage shows for `stage`, next to whether the request is met. The request is an
 /// alias or an id and the log has an id, so both are shown and only a missing request counts. When an
 /// effort was requested, it is compared with the efforts the logs recorded for the models that match.
-fn observed_line(requested: &RoleChoice, stage: Stage, usage: Option<&Usage>) -> String {
+fn observed_line(requested: &ModelChoice, stage: Stage, usage: Option<&Usage>) -> String {
     let Some(usage) = usage else {
         return "observed: not tracked: usage has not been collected for this run yet".into();
     };
@@ -179,7 +158,7 @@ fn observed_line(requested: &RoleChoice, stage: Stage, usage: Option<&Usage>) ->
 }
 
 /// Whether the request is met by what was observed.
-fn verdict(requested: &RoleChoice, seen: &[Seen], partial: bool) -> String {
+fn verdict(requested: &ModelChoice, seen: &[Seen], partial: bool) -> String {
     let matching: Vec<&Seen> = seen
         .iter()
         .filter(|s| model_matches(&requested.model, s.model))
@@ -229,7 +208,7 @@ pub(crate) fn render(run: &Run) -> String {
     out.push_str(&format!(
         "{:<14}{} ({}){}\n",
         "Stage",
-        stage_name(run.stage),
+        run.stage.name(),
         status_name(run.status),
         run.rework
             .map_or(String::new(), |n| format!(", rework {n}"))
@@ -280,10 +259,61 @@ pub(crate) fn render(run: &Run) -> String {
     } else {
         out.push_str("Summaries\n");
         for (stage, text) in &run.summaries {
-            out.push_str(&format!("  {}: {}\n", stage_name(*stage), shown(text)));
+            out.push_str(&format!("  {}: {}\n", stage.name(), shown(text)));
+        }
+    }
+    if !run.events.is_empty() {
+        out.push_str("Events\n");
+        for event in &run.events {
+            let kind = match event.kind {
+                RunEventKind::Blocked => "blocked",
+                RunEventKind::Resumed => "resumed",
+            };
+            let reason = event
+                .reason
+                .as_deref()
+                .map_or_else(String::new, |reason| format!(": {}", shown(reason)));
+            out.push_str(&format!(
+                "  {}  {kind}  {}{reason}\n",
+                format_timestamp(event.at),
+                event.stage.name()
+            ));
+        }
+    }
+    if let Some(usage) = &run.usage {
+        if !usage.pauses.is_empty() || !usage.idle.is_empty() {
+            out.push_str("Pauses\n");
+        }
+        for pause in &usage.pauses {
+            let resumed = pause.resumed_at.map_or_else(
+                || "not resumed".to_string(),
+                |at| format!("resumed after {}", duration(at.saturating_sub(pause.at))),
+            );
+            out.push_str(&format!(
+                "  {}  {}, {resumed}\n",
+                format_timestamp(pause.at),
+                pause.kind.reason().to_lowercase()
+            ));
+        }
+        for gap in &usage.idle {
+            out.push_str(&format!(
+                "  {}  idle {}\n",
+                format_timestamp(gap.from),
+                duration(gap.to.saturating_sub(gap.from))
+            ));
         }
     }
     out
+}
+
+/// A span of milliseconds as minutes, or hours and minutes.
+fn duration(ms: u64) -> String {
+    let minutes = ms / 60_000;
+    if minutes < 60 {
+        format!("{minutes} min")
+    } else {
+        format!("{} h {} min", minutes / 60, minutes % 60)
+    }
 }
 
 #[cfg(test)]
@@ -298,36 +328,64 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn pauses_and_idle_gaps_are_listed() {
+        let mut run = run_with_summary("x");
+        run.usage = Some(
+            serde_json::from_value(serde_json::json!({
+                "status": "tracked", "collected_at": 1,
+                "pauses": [
+                    {"kind": "usage_limit", "at": 1_793_872_800_000_u64, "resumed_at": 1_793_883_600_000_u64},
+                    {"kind": "compaction", "at": 1_793_890_000_000_u64}
+                ],
+                "idle": [{"from": 1_793_872_800_000_u64, "to": 1_793_873_820_000_u64}]
+            }))
+            .unwrap(),
+        );
+        let text = render(&run);
+        assert!(text.contains("Pauses\n"), "{text}");
+        assert!(
+            text.contains("usage limit reached, resumed after 3 h 0 min"),
+            "{text}"
+        );
+        assert!(
+            text.contains("context compaction in progress, not resumed"),
+            "{text}"
+        );
+        assert!(text.contains("idle 17 min"), "{text}");
+        assert!(!render(&run_with_summary("x")).contains("Pauses"));
+    }
+
     fn routed_run() -> Run {
         serde_json::from_value(serde_json::json!({
             "id": "1", "title": "t", "project": "/p", "stage": "build", "status": "running",
             "model_routing": {
                 "agent": "claude",
-                "roles": {
-                    "strong": {"model": "opus", "effort": "high"},
-                    "coding": {"model": "sonnet"}
-                },
-                "tasks": {"build": "coding", "check": "strong"}
+                "stages": {
+                    "build": {"model": "sonnet"},
+                    "check": {"model": "opus", "effort": "high"}
+                }
             }
         }))
         .unwrap()
     }
 
     #[test]
-    fn model_routing_is_shown_per_task_only_when_a_selection_exists() {
+    fn model_routing_is_shown_per_stage_only_when_a_selection_exists() {
         let text = render(&routed_run());
         let lines: Vec<_> = text
             .lines()
             .skip_while(|line| !line.starts_with("Model routing"))
-            .take(4)
+            .take(5)
             .collect();
         assert_eq!(
             lines,
             [
                 "Model routing claude",
-                "  build   coding  sonnet",
+                "  define  not routed",
+                "  build   sonnet",
                 "          observed: not tracked: usage has not been collected for this run yet",
-                "  check   strong  opus, effort high",
+                "  check   opus, effort high",
             ],
             "{text}"
         );
@@ -336,8 +394,7 @@ mod tests {
         assert!(!render(&run_with_summary("s")).contains("Model routing"));
         // The machine-readable form is the whole run, so skills can read the selection from it.
         let json = serde_json::to_value(routed_run()).unwrap();
-        assert_eq!(json["model_routing"]["tasks"]["check"], "strong");
-        assert_eq!(json["model_routing"]["roles"]["strong"]["model"], "opus");
+        assert_eq!(json["model_routing"]["stages"]["check"]["model"], "opus");
     }
 
     /// The routed run, with usage rows `(stage, model, used by subagents)` and a coverage status.
@@ -475,10 +532,7 @@ mod tests {
         );
         assert!(!text.contains("MISMATCH"), "{text}");
         assert!(!text.contains("Effort observed"), "{text}");
-        assert!(
-            text.contains("  check   strong  opus, effort high\n"),
-            "{text}"
-        );
+        assert!(text.contains("  check   opus, effort high\n"), "{text}");
     }
 
     #[test]
@@ -572,9 +626,9 @@ mod tests {
     }
 
     #[test]
-    fn a_selection_that_routes_no_task_has_no_observed_lines() {
+    fn a_selection_that_routes_no_stage_has_no_observed_lines() {
         let mut run = routed_run();
-        run.model_routing.as_mut().unwrap().tasks.clear();
+        run.model_routing.as_mut().unwrap().stages.clear();
         let text = render(&run);
         assert!(text.contains("Model routing claude"), "{text}");
         assert!(!text.contains("observed:"), "{text}");
@@ -599,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn a_task_that_is_not_routed_has_no_observed_line() {
+    fn a_stage_that_is_not_routed_has_no_observed_line() {
         let text = render(&with_usage(
             "tracked",
             &[("finish", "claude-haiku-5-5", false)],
@@ -617,13 +671,13 @@ mod tests {
     }
 
     #[test]
-    fn an_override_is_compared_with_the_role_it_chose() {
+    fn an_override_is_compared_with_the_model_it_chose() {
         let mut run = with_usage("tracked", &[("check", "claude-sonnet-5-5", false)]);
         run.model_routing
             .as_mut()
             .unwrap()
             .overrides
-            .insert(Task::Check, crate::routing::Role::Coding);
+            .insert(Stage::Check, ModelChoice::parse("sonnet").unwrap());
         let text = render(&run);
         assert!(
             observed(&text, "check").ends_with("matches the request"),
@@ -632,19 +686,32 @@ mod tests {
     }
 
     #[test]
-    fn an_overridden_task_shows_its_role_and_is_marked() {
+    fn an_overridden_stage_shows_its_model_and_is_marked() {
         let mut run = routed_run();
         run.model_routing
             .as_mut()
             .unwrap()
             .overrides
-            .insert(Task::Check, crate::routing::Role::Coding);
+            .insert(Stage::Check, ModelChoice::parse("sonnet").unwrap());
+        let text = render(&run);
+        assert!(text.contains("  check   sonnet (override)\n"), "{text}");
+        assert!(text.contains("  build   sonnet\n"), "{text}");
+    }
+
+    #[test]
+    fn blocked_and_resumed_events_are_listed_with_time_stage_and_reason() {
+        let mut run = run_with_summary("x");
+        assert!(!render(&run).contains("Events"));
+        run.events = serde_json::from_value(serde_json::json!([
+            {"at": 1_762_636_800_000_u64, "kind": "blocked", "stage": "build", "reason": "Needs\nan answer"},
+            {"at": 1_762_640_400_000_u64, "kind": "resumed", "stage": "build"}
+        ]))
+        .unwrap();
         let text = render(&run);
         assert!(
-            text.contains("  check   coding  sonnet (override)\n"),
+            text.contains("Events\n  2025-11-08 21:20 UTC  blocked  build: Needs an answer\n  2025-11-08 22:20 UTC  resumed  build\n"),
             "{text}"
         );
-        assert!(text.contains("  build   coding  sonnet\n"), "{text}");
     }
 
     #[test]

@@ -75,7 +75,7 @@ function Overview({ reworkCap }) {
       <ol>
         <li>Install the command and the skills for your agent. The README lists the steps for each system.</li>
         <li>
-          Once per repository, ask your agent to run <${Code}>/setup-matt-pocock-skills<//>. It records the issue
+          Once per repository, ask your agent to run <${Code}>/factory-setup<//>. It records the issue
           tracker, the triage labels and where the domain docs live. <${Code}>/factory-full<//> needs it; the other
           workflows need it only when they read or publish specs or tickets in the tracker.
         </li>
@@ -110,8 +110,8 @@ function Stages({ reworkCap }) {
       </p>
       <ul>
         <li>
-          <strong>Full</strong> always interviews you (<${Code}>grill-with-docs<//>), records domain decisions, writes a
-          spec (<${Code}>to-spec<//>) and breaks it into tickets (<${Code}>to-tickets<//>) in the issue tracker.
+          <strong>Full</strong> always interviews you (<${Code}>factory-grill-with-docs<//>), records domain decisions, writes a
+          spec (<${Code}>factory-to-spec<//>) and breaks it into tickets (<${Code}>factory-to-tickets<//>) in the issue tracker.
         </li>
         <li>
           <strong>Balanced</strong> uses a clear request as the spec and always writes acceptance criteria. It writes a
@@ -130,23 +130,23 @@ function Stages({ reworkCap }) {
     <//>
     <${Topic} title="Build">
       <p>
-        Implement the spec on the Run’s feature branch, in its worktree, one ticket at a time and without subagents.
+        Implement the spec on the Run’s feature branch, in its worktree, one ticket at a time. When model routing routes Build, each ticket runs in a fresh agent on Build’s model.
         The agent runs the project’s relevant checks as it goes. Before the work leaves Build, it runs the
         project’s full verification: every command the project’s instructions say to run before merging, which
         should match its CI. A missing tool or a failing check blocks the Run until it is fixed.
       </p>
       <ul>
         <li>
-          <strong>Full</strong> builds each ticket test-first with red-green cycles (<${Code}>implement-spec<//> and${' '}
-          <${Code}>tdd<//>) and runs the full verification after each ticket.
+          <strong>Full</strong> builds each ticket test-first with red-green cycles (<${Code}>factory-implement<//> and${' '}
+          <${Code}>factory-tdd<//>) and runs the full verification after each ticket.
         </li>
         <li>
           <strong>Balanced</strong> implements each ticket, then adds behavior tests through public interfaces
-          (<${Code}>implement-spec-balanced<//>), and runs the full verification once on the finished work.
+          (<${Code}>factory-implement-balanced<//>), and runs the full verification once on the finished work.
         </li>
         <li>
           <strong>Fast</strong> implements directly and writes tests only where they help
-          (<${Code}>implement-spec-fast<//>), with the full verification once at the end.
+          (<${Code}>factory-implement-fast<//>), with the full verification once at the end.
         </li>
       </ul>
     <//>
@@ -157,12 +157,12 @@ function Stages({ reworkCap }) {
       </p>
       <ul>
         <li>
-          <${Code}>code-review<//> compares everything since the Run’s base commit with two questions, answered by
+          <${Code}>factory-code-review<//> compares everything since the Run’s base commit with two questions, answered by
           two reviewers in parallel: does the code follow the project’s standards, and does it do what the spec
           asked.
         </li>
         <li>
-          <${Code}>security-review<//> looks for vulnerabilities by following the data. Full always runs it. Balanced
+          <${Code}>factory-security-review<//> looks for vulnerabilities by following the data. Full always runs it. Balanced
           runs it only when the change touches input parsing, authentication or secrets, network access, file or process
           handling, or dependencies.
         </li>
@@ -170,7 +170,7 @@ function Stages({ reworkCap }) {
           With no actionable findings the Run moves to Finish. Otherwise it goes back to Build for a Rework.
         </li>
         <li>
-          If the Run has a model routing policy for Check, the review agents use the model and effort it names. A security review the agent runs itself stays on the
+          When model routing routes Check, the review agents use the model and effort it names. A security review the agent runs itself stays on the
           agent’s own model. The Model routing tab explains how.
         </li>
       </ul>
@@ -180,14 +180,16 @@ function Stages({ reworkCap }) {
         A <strong>Rework</strong> is a return from Check to Build to fix findings, followed by another Check that covers
         only the fixes. A Run gets at most ${reworkCap} Reworks; its row shows the current one as${' '}
         <em>Rework 1/${reworkCap}</em>. Findings alone never block a Run: the agent fixes them within the
-        ${reworkCap} Reworks. When findings remain after the last Rework, or one cannot be resolved, the Run shows${' '}
+        ${reworkCap} Reworks. After the second Rework, findings that only change wording or documentation are fixed
+        without asking, and the Run shows <em>Needs you</em> only for findings that would change behaviour. When
+        findings remain after the last Rework, or one cannot be resolved, the Run shows${' '}
         <em>Needs you</em> and waits for you to choose: one more Rework, finish with the findings listed in the pull
         request, or stop.
       </p>
     <//>
     <${Topic} title="Finish">
       <p>
-        The agent writes the pull request description (<${Code}>pr<//>), verifies the final commit (reusing the latest
+        The agent writes the pull request description (<${Code}>factory-pr<//>), verifies the final commit (reusing the latest
         passing verification when nothing has changed), pushes the branch and opens the pull request against the base
         branch it chose at the start. Then it watches the pull request’s CI until every check has finished. When a
         check fails it reads the log, fixes the cause in a new commit, verifies again and pushes. When another pull
@@ -214,7 +216,7 @@ function Stages({ reworkCap }) {
         and its row on the line comes first, marked amber. Typical reasons:
       </p>
       <ul>
-        <li>The issue tracker is not set up yet. Run <${Code}>/setup-matt-pocock-skills<//> and start again.</li>
+        <li>The issue tracker is not set up yet. Run <${Code}>/factory-setup<//> and start again.</li>
         <li>Check findings remain after the last Rework and the agent needs your decision.</li>
         <li>A tool, a permission or a check the agent cannot fix by itself, such as a failing CI check caused by infrastructure.</li>
         <li>An answer or a decision only you can give.</li>
@@ -321,12 +323,11 @@ function Workflows({ reworkCap }) {
     <${Topic} title="What they share">
       <ul>
         <li>A fresh worktree and branch for every Run, and progress reported to this dashboard.</li>
-        <li>Build runs one ticket at a time in one worktree, without subagents.</li>
+        <li>Build runs one ticket at a time in one worktree; with model routing, each ticket in a fresh agent.</li>
         <li>
           The project’s own verification, taken from its agent instructions, contributing docs or build files. A
           missing tool or a failing check blocks the Run; it is never skipped.
         </li>
-        <li>Prose for people (specs, tickets, summaries, commit messages, pull request text) goes through <${Code}>humanizer<//>.</li>
         <li>A pull request against the base branch, and a CI watch until it is green.</li>
       </ul>
     <//>
@@ -398,17 +399,17 @@ function Skills() {
       title="Define"
       skills=${[
         [
-          'grill-with-docs',
-          'An interview that sharpens a plan or design one question at a time, and records the domain terms and decisions it settles in the glossary and in decision records. Builds on grilling and domain-modeling.',
+          'factory-grill-with-docs',
+          'An interview that sharpens a plan or design one question at a time, and records the domain terms and decisions it settles in the glossary and in decision records. Builds on factory-grilling and factory-domain-modeling.',
           'Full always; Balanced and Fast only when unclear requirements would get in the way of the work',
         ],
         [
-          'to-spec',
+          'factory-to-spec',
           'Turns what has been discussed into a spec and publishes it as an issue in the project’s tracker, labelled ready for an agent. It does not interview you.',
           'Full always; Balanced when the request needs a written spec; Fast when the task needs a lasting one',
         ],
         [
-          'to-tickets',
+          'factory-to-tickets',
           'Breaks a spec into small, vertical tickets that each name the tickets blocking them, and publishes them to the tracker with native blocking links where the tracker has them.',
           'Full always; Balanced and Fast for work with several dependent pieces',
         ],
@@ -418,18 +419,18 @@ function Skills() {
       title="Build"
       skills=${[
         [
-          'implement-spec',
-          'Implements the spec and its tickets on the feature branch, each ticket test-first with tdd, and runs the project’s verification after each ticket.',
+          'factory-implement',
+          'Implements the spec and its tickets on the feature branch, each ticket test-first with factory-tdd, and runs the project’s verification after each ticket.',
           'Full',
         ],
         [
-          'implement-spec-balanced',
+          'factory-implement-balanced',
           'Implements each ticket, then covers it with behavior tests through public interfaces, without red-green cycles.',
           'Balanced',
         ],
-        ['implement-spec-fast', 'Implements the spec directly, with tests only where they help.', 'Fast'],
+        ['factory-implement-fast', 'Implements the spec directly, with tests only where they help.', 'Fast'],
         [
-          'tdd',
+          'factory-tdd',
           'Test-driven development: write a failing test, make it pass, repeat, with rules for what a good test is and where tests belong.',
           'Full always; Balanced borrows its test-quality rules',
         ],
@@ -439,12 +440,12 @@ function Skills() {
       title="Check"
       skills=${[
         [
-          'code-review',
+          'factory-code-review',
           'Reviews the changes since a fixed commit along two axes, standards and spec, with two reviewers in parallel, and reports them side by side. Takes the model and effort a routing policy names.',
           'Full and Balanced',
         ],
         [
-          'security-review',
+          'factory-security-review',
           'Reads the code the way a security researcher would: it follows data flows, checks for exposed secrets and unsafe dependencies, double-checks its own findings and rates them by severity.',
           'Full always; Balanced for sensitive changes',
         ],
@@ -454,7 +455,7 @@ function Skills() {
       title="Finish"
       skills=${[
         [
-          'pr',
+          'factory-pr',
           'Writes the pull request description: a summary, the evidence that it works, and how risky the merge is.',
           'all workflows',
         ],
@@ -464,20 +465,14 @@ function Skills() {
       title="Everywhere"
       skills=${[
         [
-          'humanizer',
-          'Rewrites prose that reads like machine text so it reads like a person, without changing facts, code or links. It edits the specs, tickets, summaries, commit messages and pull request descriptions the flow writes.',
-          'all workflows',
-        ],
-        [
-          'setup-matt-pocock-skills',
+          'factory-setup',
           'Run once per repository, in your normal checkout. Records which issue tracker the repository uses, its triage labels and where the domain docs live, and adds a short section to the agent instructions. Later Runs pick the output up.',
           'before the first Run',
         ],
       ]}
     />
     <p>
-      Most skills come from <${Code}>mattpocock/skills<//>, <${Code}>github/awesome-copilot<//> and${' '}
-      <${Code}>blader/humanizer<//>; the workflow skills are the factory’s own. <${Code}>skills/README.md<//> in the TDS Factory repository lists where each one started.
+      Most skills come from <${Code}>mattpocock/skills<//> and <${Code}>github/awesome-copilot<//>; the workflow skills are the factory’s own. <${Code}>skills/README.md<//> in the TDS Factory repository lists where each one started.
     </p>
   `;
 }
@@ -493,6 +488,11 @@ function Dashboard({ reworkCap }) {
         seconds. The toolbar, the andon strip and the line stay at the top while you scroll the Shipped list; on a narrow
         screen the toolbar scrolls away and the strip and the line stay. They take at most 60% of the window: with many
         Runs, the line and the list of waiting Runs scroll on their own.
+      </p>
+      <p>
+        Open a Run to see its route: one entry for every pass through a stage, so a Run with Reworks lists each Build
+        and Check in order. Each entry shows when it started, how long it ran and the activity it started with. A Check
+        that led to a Rework is marked sent back.
       </p>
       <p>
         Projects in the toolbar lists every project. Hide removes a project's Runs from the board in this browser, and
@@ -546,11 +546,13 @@ function Dashboard({ reworkCap }) {
     <//>
     <${Topic} title="The Run detail">
       <p>
-        A panel on the right with everything the Run has recorded. <${Code}>factory run inspect<//> prints most of the same fields, and a new session reads it to continue the Run. The detail shows:
-        its project, Stage, status, the current ticket while one is in progress and the status reason while the Run is
-        blocked, the workflow mode, branch, worktree, repository and
-        base commit, links to the spec and the pull request, every ticket with its progress, a summary per Stage, the
-        token usage, the Rework and the Run id. A field the agent never recorded says so. It is never guessed.
+        A panel on the right that follows the Run along its route. <${Code}>factory run inspect<//> prints the full record, including the worktree and base commit, and a new session reads it to continue the Run. The header shows the title, project, workflow mode and branch, then one status row: the status, the pull request and its state, the spec, the Rework count when there is any, and when the Run was last updated. A blocked Run turns that row amber and shows the full status reason.
+      </p>
+      <p>
+        Below it, the route shows one entry per stage pass from the Run's timeline. Each Rework gets its own Build entry labelled <em>Build · Rework N</em>, and a Check that sent work back says so. Each entry shows when it started, how long it took, the activity it started with, when the Run was blocked or resumed during it, and the reports filed under its stage: a report goes in the last pass of its stage that had started by then, or in the nearest pass of that stage. Reports from older Runs that name no stage go in the pass that was running when they came in. Stage summaries sit on the last pass of their stage. Tokens are not shown per pass; the Token usage table has them per stage. The first ordinary Build pass (not a Rework) lists the tickets it started and every ticket no pass has started yet, with their own reports, and the current ticket is marked In progress. A Rework Build pass lists only the tickets it started. Tickets that have not started appear in a Tickets group when the Run has no ordinary Build pass, even if it has Rework Build passes. Other reports holds reports outside every pass, reports for tickets that are not listed and summaries of stages without a pass.
+      </p>
+      <p>
+        Older Runs without a timeline still show the four stations, Define, Build, Check and Finish, each with its summary, skills, activity and the fresh tokens spent there. Token usage is a section with the full table, open while the Run is active. The footer has the repository and Run id with copy buttons, and <em>Delete run…</em>. The sheet does not show the worktree path, the base commit or how long ago the pull request state was checked. Fields the agent never recorded are left out, never guessed.
       </p>
     <//>
     <${Topic} title="Token usage">
@@ -621,20 +623,21 @@ function ModelRouting() {
   return html`
     <${Topic} title="What it does">
       <p>
-        Model routing lets you say which model and effort each kind of task should use, apart from the workflow. When a
+        Model routing lets you say which model and effort each Stage should use, apart from the workflow. When a
         Run starts, the factory reads your policy once and records the choice on the Run, so editing the file later does
-        not change a Run in progress. For now the role mapped to <${Code}>check<//> sets the model and effort of the
-        review agents in Check. Build and Finish still run on the session’s model, and a Run without a policy runs
-        as it always did.
+        not change a Run in progress. Every Stage can be routed: your own session keeps its model and talks to you, and
+        each routed Stage’s work is handed to fresh agents on that Stage’s model and effort. A Stage you leave out, and
+        a Run without a policy, run as they always did.
       </p>
     <//>
     <${Topic} title="The policy file">
       <p>
         One file, <${Code}>model-routing.json<//>, in the factory’s config folder: <${Code}>$XDG_CONFIG_HOME/tds-factory/<//>
         ${' '}(or <${Code}>~/.config/tds-factory/<//>) on Linux, and <${Code}>%APPDATA%\\tds-factory\\<//> on Windows. It has an
-        entry for each agent under <${Code}>agents<//> (<${Code}>claude<//> and <${Code}>codex<//>), and each entry has up to
-        three roles (<${Code}>strong<//>, <${Code}>coding<//>, <${Code}>routine<//>) with a model and an effort, and says
-        which role handles <${Code}>build<//>, <${Code}>check<//> and <${Code}>finish<//>. A run records only the entry of
+        entry for each agent under <${Code}>agents<//> (<${Code}>claude<//> and <${Code}>codex<//>), and each entry has${' '}
+        <${Code}>stages<//> that map <${Code}>define<//>, <${Code}>build<//>, <${Code}>check<//> and${' '}
+        <${Code}>finish<//> to a model and an optional effort. A file in the earlier format (roles and tasks) stops a Run from starting
+        until <${Code}>factory install<//> replaces it. A run records only the entry of
         the agent it started in, which the workflow names with <${Code}>factory run start --agent<//>. Set${' '}
         <${Code}>"enabled": false<//> at the top, or inside an entry, to switch routing off without deleting anything.
       </p>
@@ -642,18 +645,26 @@ function ModelRouting() {
   "enabled": true,
   "agents": {
     "claude": {
-      "roles": { "strong": { "model": "opus", "effort": "high" } },
-      "tasks": { "check": "strong" }
+      "stages": {
+        "define": { "model": "sonnet", "effort": "low" },
+        "build": { "model": "sonnet", "effort": "low" },
+        "check": { "model": "sonnet", "effort": "medium" },
+        "finish": { "model": "haiku", "effort": "low" }
+      }
     },
     "codex": {
-      "roles": { "strong": { "model": "gpt-6-astra", "effort": "high" } },
-      "tasks": { "check": "strong" }
+      "stages": {
+        "define": { "model": "gpt-6.1-terra", "effort": "low" },
+        "build": { "model": "gpt-6.1-terra", "effort": "low" },
+        "check": { "model": "gpt-6.1-terra", "effort": "medium" },
+        "finish": { "model": "gpt-6-luna", "effort": "low" }
+      }
     }
   }
 }</code></pre>
       <p>
-        <${Code}>factory doctor --agent claude --create-model-routing<//> writes a starter like this with an entry for each agent (add${' '}
-        <${Code}>--agent claude<//> or <${Code}>--agent codex<//> for one). It never overwrites a file that is already there.
+        <${Code}>factory doctor --agent claude --create-model-routing<//> writes this starter with an entry for each agent (add${' '}
+        <${Code}>--agent claude<//> or <${Code}>--agent codex<//> for one). It replaces only a file in the earlier format, keeping a switched-off policy or agent switched off (install, update and doctor name what is off, and that removing its <${Code}>"enabled": false<//> switches it on), and never overwrites any other file.
       </p>
     <//>
     <${Topic} title="Checking that it works">
@@ -665,12 +676,13 @@ function ModelRouting() {
           appears only when a policy file exists and is switched on.
         </li>
         <li>
-          <${Code}>factory run inspect ${'<id>'}<//> shows, per task, the requested model and effort next to the models and
+          <${Code}>factory run inspect ${'<id>'}<//> shows, per Stage, the requested model and effort next to the models and
           efforts the Run’s logs show. When usage is fully tracked, a model that was never observed reads <${Code}>MISMATCH<//>, and so does an effort that differs from the one requested. With partial usage it reads "not observed", because the data may be missing, and a log that records no effort reads "effort not recorded".
         </li>
         <li>
-          To give one task another role for one Run, use${' '}
-          <${Code}>factory run update ${'<id>'} ${'<stage>'} ${'<status>'} --model-routing check=coding<//>.
+          To give one Stage another model for one Run, use${' '}
+          <${Code}>factory run update ${'<id>'} ${'<stage>'} ${'<status>'} --model-routing check=sonnet:medium<//>
+          (<${Code}>${'<stage>'}=${'<model>'}[:${'<effort>'}]<//>).
         </li>
       </ul>
     <//>
@@ -679,21 +691,21 @@ function ModelRouting() {
         items=${[
           [
             'Claude Code',
-            'The review agents start as fresh subagents with the model and effort from the policy. The model must be one of the aliases opus, sonnet, haiku or fable, and the effort option needs a recent Claude Code.',
+            'Each Stage’s agents start as fresh subagents with the model and effort from the policy. The model must be one of the aliases opus, sonnet, haiku or fable, and the effort option needs a recent Claude Code.',
           ],
           [
             'Codex',
-            'The review agents start through Codex’s own subagent settings with the model and reasoning effort from the policy.',
+            'Each Stage’s agents start through Codex’s own subagent settings with the model and reasoning effort from the policy.',
           ],
           [
             'Copilot CLI',
-            'Not supported. Copilot picks a subagent’s model from its own settings per agent name and offers no choice per call, so every stage there keeps the session’s model. A policy that names copilot records nothing.',
+            'Not supported. Copilot picks a subagent’s model from its own settings per agent name and offers no choice per call, so every Stage keeps the session’s model there.',
           ],
         ]}
       />
       <p>
-        A coordinator and its review agents on the same model at different efforts share one usage row, so${' '}
-        <${Code}>inspect<//> cannot tell their efforts apart. When the policy cannot be applied, the Check summary says
+        A coordinator and its agents on the same model at different efforts share one usage row, so${' '}
+        <${Code}>inspect<//> cannot tell their efforts apart. When the policy cannot be applied, the Stage summary says
         why.
       </p>
     <//>

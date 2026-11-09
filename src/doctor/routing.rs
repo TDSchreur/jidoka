@@ -8,7 +8,7 @@ use crate::routing::{
     policy_path_in, read, Coverage, Host, ModelRouting, NotRouted, Policy, RoutingAgent,
     COPILOT_NOTICE,
 };
-use std::{collections::BTreeSet, path::Path};
+use std::path::Path;
 
 /// The Agent tool's `effort` option first appeared in this Claude Code release.
 const CLAUDE_MIN_VERSION: (u32, u32, u32) = (2, 1, 292);
@@ -38,32 +38,23 @@ pub(super) fn checks(root: &Path, machine: &Machine, agent: Option<&str>) -> Vec
     let hosts: Vec<Host> = match (agent.and_then(Host::parse), &policy) {
         (_, Policy::Off) => return Vec::new(),
         (Some(host), _) => vec![host],
-        (None, Policy::CopilotOnly) => vec![Host::Copilot],
-        (None, Policy::Single { agent, .. }) => vec![Host::from(*agent)],
         (None, Policy::Multi { .. }) => policy
             .configured()
             .into_iter()
             .filter_map(Host::parse)
             .collect(),
     };
-    // With an entry per agent, every check says which agent it is about.
-    let tagged = matches!(policy, Policy::Multi { .. });
-    let mut checks = Vec::new();
-    if tagged {
-        checks.push(Check::pass(
-            "policy",
-            format!("{shown} configures {}", policy.configured().join(", ")),
-        ));
-    }
+    // Every check says which agent it is about.
+    let mut checks = vec![Check::pass(
+        "policy",
+        format!("{shown} configures {}", policy.configured().join(", ")),
+    )];
     for host in hosts {
         let name = host.name();
-        let tag = |check: Check| if tagged { check.for_agent(name) } else { check };
+        let tag = |check: Check| check.for_agent(name);
         match policy.coverage(host) {
             None => {}
             Some(Coverage::Routed(selection)) => {
-                if !tagged {
-                    checks.push(Check::pass("policy", format!("{shown} routes {name}")));
-                }
                 checks.extend(agent_checks(&selection, root, machine).into_iter().map(tag));
             }
             // Information, never a problem.
@@ -96,11 +87,6 @@ pub(super) fn parse_version(output: &str) -> Option<(u32, u32, u32)> {
 
 fn version_text((major, minor, patch): (u32, u32, u32)) -> String {
     format!("{major}.{minor}.{patch}")
-}
-
-/// The roles some task uses, which are the only ones a run can route to.
-fn routed_roles(selection: &ModelRouting) -> BTreeSet<crate::routing::Role> {
-    selection.tasks.values().copied().collect()
 }
 
 fn host_check(agent: &'static str, machine: &Machine, minimum: Option<(u32, u32, u32)>) -> Check {
@@ -161,17 +147,18 @@ fn claude_checks(selection: &ModelRouting, root: &Path, machine: &Machine) -> Ve
 }
 
 fn claude_model_check(selection: &ModelRouting) -> Check {
-    let wrong: Vec<String> = routed_roles(selection)
-        .into_iter()
-        .filter_map(|role| {
-            let model = &selection.roles[&role].model;
-            (!CLAUDE_MODELS.contains(&model.as_str())).then(|| format!("{}: {model}", role.name()))
+    let wrong: Vec<String> = selection
+        .stages
+        .iter()
+        .filter_map(|(stage, choice)| {
+            let model = &choice.model;
+            (!CLAUDE_MODELS.contains(&model.as_str())).then(|| format!("{}: {model}", stage.name()))
         })
         .collect();
     if wrong.is_empty() {
         return Check::pass(
             "model",
-            "every routed role uses a model the Agent tool accepts",
+            "every routed stage uses a model the Agent tool accepts",
         );
     }
     Check::warning(
@@ -181,17 +168,17 @@ fn claude_model_check(selection: &ModelRouting) -> Check {
             CLAUDE_MODELS.join(", "),
             wrong.join(", ")
         ),
-        "Use opus, sonnet, haiku or fable for these roles.",
+        "Use opus, sonnet, haiku or fable for these stages.",
     )
 }
 
 fn claude_effort_check(selection: &ModelRouting) -> Check {
     let (mut unsupported, mut unset) = (Vec::new(), Vec::new());
-    for role in routed_roles(selection) {
-        match selection.roles[&role].effort.as_deref() {
-            None => unset.push(role.name().to_string()),
+    for (stage, choice) in &selection.stages {
+        match choice.effort.as_deref() {
+            None => unset.push(stage.name().to_string()),
             Some(effort) if !CLAUDE_EFFORTS.contains(&effort) => {
-                unsupported.push(format!("{}: {effort}", role.name()));
+                unsupported.push(format!("{}: {effort}", stage.name()));
             }
             Some(_) => {}
         }
@@ -213,13 +200,13 @@ fn claude_effort_check(selection: &ModelRouting) -> Check {
     if problems.is_empty() {
         return Check::pass(
             "effort",
-            "every routed role has an effort Claude Code accepts; which levels a model offers is not checked",
+            "every routed stage has an effort Claude Code accepts; which levels a model offers is not checked",
         );
     }
     Check::warning(
         "effort",
         problems.join("; "),
-        "Set effort to low, medium, high, xhigh or max for each routed role.",
+        "Set effort to low, medium, high, xhigh or max for each routed stage.",
     )
 }
 

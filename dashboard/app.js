@@ -17,7 +17,7 @@ const STATUS_LABEL = { running: 'Running', blocked: 'Blocked', done: 'Shipped' }
 /** The status in sentence case; an unknown status shows as recorded. */
 const statusLabel = (status) => STATUS_LABEL[status] ?? String(status);
 const TICKET_STATUS = { pending: 'Pending', 'in-progress': 'In progress', done: 'Done' };
-const REWORK_CAP = 2;
+const REWORK_CAP = 3;
 const POLL_MS = 3000;
 const NOW_MS = 30000;
 const THEMES = [
@@ -149,12 +149,6 @@ function httpUrl(value) {
   }
 }
 
-/** The ticket as a link when it is an http(s) URL, else as plain text. */
-function TicketLink({ value }) {
-  const url = httpUrl(value);
-  return url ? html`<a href=${url.href} target="_blank" rel="noopener noreferrer">${value}</a>` : value;
-}
-
 /** The tickets listed on a Run, with how many are done; null when none are recorded. */
 const ticketProgress = (run) => {
   const tickets = Array.isArray(run.tickets) ? run.tickets : [];
@@ -176,6 +170,19 @@ function usageTotal(run) {
   if (!usage || usage.status === 'not-tracked' || !Array.isArray(usage.rows)) return null;
   const counts = usage.rows.map(freshTokens).filter((n) => n !== null);
   return counts.length ? counts.reduce((a, b) => a + b, 0) : null;
+}
+
+/** Dollars as text: `$1.23`, `<$0.01`, or `unknown` (never $0) for null. */
+function usdText(usd) {
+  if (usd === null || usd === undefined) return 'unknown';
+  return usd > 0 && usd < 0.005 ? '<$0.01' : `$${usd.toFixed(2)}`;
+}
+
+/** An estimated cost from the server: `$1.23`, `unknown`, or `>= $1.23 (partial)`. For a total, `withModels` also names the unpriced models. */
+function costText(cost, withModels = false) {
+  const text = cost?.partial && cost.usd != null ? `>= ${usdText(cost.usd)} (partial)` : usdText(cost?.usd);
+  const models = withModels ? cost?.unpriced_models ?? [] : [];
+  return models.length ? `${text}, ${models.length} unpriced: ${models.join(', ')}` : text;
 }
 
 const compactTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
@@ -223,6 +230,16 @@ function UsageDetail({ usage }) {
   const total = rows.map(freshTokens).filter((n) => n !== null).reduce((a, b) => a + b, 0);
   const status =
     usage.status === 'tracked' ? 'Tracked' : usage.status === 'partial' ? 'Partial' : `Not tracked${usage.reason ? `: ${usage.reason}` : ''}`;
+  // Fresh tokens and cache reads per model; a count no row reported stays null (n/a).
+  const perModel = new Map();
+  for (const row of rows) {
+    const sum = perModel.get(row.model) ?? { fresh: null, cache_read: null };
+    const fresh = freshTokens(row);
+    if (fresh !== null) sum.fresh = (sum.fresh ?? 0) + fresh;
+    if (row.cache_read != null) sum.cache_read = (sum.cache_read ?? 0) + row.cache_read;
+    perModel.set(row.model, sum);
+  }
+  const models = [...perModel.entries()].sort(([a], [b]) => a.localeCompare(b));
   const noData = Array.isArray(usage.no_data) ? usage.no_data : [];
   const notes = Array.isArray(usage.notes) ? usage.notes : [];
   return html`<p>${status}</p>
@@ -242,6 +259,7 @@ function UsageDetail({ usage }) {
                   <th scope="col">Output</th>
                   <th scope="col">Reasoning</th>
                   <th scope="col">Subagents</th>
+                  <th scope="col">Est. cost</th>
                 </tr>
               </thead>
               <tbody>
@@ -257,6 +275,7 @@ function UsageDetail({ usage }) {
                     <td>${tokenCount(row.output)}</td>
                     <td>${tokenCount(row.reasoning)}</td>
                     <td>${row.subagents ? tokenCount(freshTokens(row.subagents)) : '-'}</td>
+                    <td>${usdText(row.cost_usd)}</td>
                   </tr>`,
                 )}
               </tbody>
@@ -264,14 +283,42 @@ function UsageDetail({ usage }) {
                 <tr>
                   <th scope="row" colspan="3">Total fresh</th>
                   <td>${tokenCount(total)}</td>
-                  <td colspan="6"></td>
+                  <td colspan="5"></td>
+                  <td>${costText(usage.cost, true)}</td>
                 </tr>
               </tfoot>
             </table>
           </div>
+          ${models.length
+            ? html`<div class="table-scroll" role="region" aria-label="Token usage and estimated cost per model" tabindex="0">
+                <table class="usage-table model-table">
+                  <caption class="visually-hidden">Token usage and estimated cost per model</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Model</th>
+                      <th scope="col">Fresh</th>
+                      <th scope="col">Cache read</th>
+                      <th scope="col">Est. cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${models.map(
+                      ([model, tokens]) => html`<tr key=${model}>
+                        <td>${model}</td>
+                        <td>${tokenCount(tokens.fresh)}</td>
+                        <td>${tokenCount(tokens.cache_read)}</td>
+                        <td>${costText(usage.cost?.by_model?.[model])}</td>
+                      </tr>`,
+                    )}
+                  </tbody>
+                </table>
+              </div>`
+            : null}
           <p class="usage-note">
             Fresh tokens are input excluding cache reads, plus cache writes and output. Cache reads are shown beside
-            them, not inside. Reasoning is part of output. n/a means the log did not report it; it is not zero.
+            them, not inside. Reasoning is part of output. n/a means the log did not report it; it is not zero. Est. cost is an estimate
+            from the factory's price table; a model without a price is unknown, never zero, and a total that includes
+            one is marked partial.
           </p>`
       : null}
     ${noData.length ? html`<p>No data for: ${noData.map(stageName).join(', ')}</p>` : null}
@@ -285,15 +332,6 @@ function PrStateLabel({ run }) {
   const status = run.pr_status;
   if (!status || status.url !== run.pr || !PR_STATE[status.state]) return null;
   return html`<span class=${`pr-state ${status.state}`}>${PR_STATE[status.state]}</span>`;
-}
-
-/** The pull request state for the detail: the state and when it was read, or why it is not known. */
-function PrStateDetail({ run, now }) {
-  const status = run.pr_status;
-  if (!run.pr) return null;
-  if (!status || status.url !== run.pr) return html`<span class="not-set">Not read yet</span>`;
-  if (status.state === 'unknown') return html`Unknown: ${status.reason ?? 'no reason given'}`;
-  return html`<${PrStateLabel} run=${run} />${' '}<span class="updated">checked ${ago(now - status.checked_at)}</span>`;
 }
 
 function ContextLinks({ run }) {
@@ -366,17 +404,367 @@ function LineRow({ run, now, onOpen }) {
 }
 
 /**
- * One labelled value of the Run detail; an empty value reads "Not set". `wide` puts the label above the value and
- * gives the value the whole width, for the token table.
+ * A time in the Run sheet: "09:22" for today, "Yesterday 16:40", otherwise weekday, day, month and time, such as
+ * "Fri 6 Nov 14:02". Day and month names follow the browser's locale; `now` is passed in so the result is repeatable.
  */
-function Field({ label, children, missing = 'Not set', wide = false }) {
-  const empty = children === null || children === undefined || children === '';
-  const classes = [wide ? 'wide' : null, empty ? 'not-set' : null].filter(Boolean).join(' ') || null;
-  return html`<dt class=${wide ? 'wide' : null}>${label}</dt>
-    <dd class=${classes}>${empty ? missing : children}</dd>`;
+export function sheetTime(ms, now = Date.now()) {
+  const date = new Date(ms);
+  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  const startOfDay = (value) => new Date(value).setHours(0, 0, 0, 0);
+  const days = Math.round((startOfDay(now) - startOfDay(ms)) / 86400000);
+  if (days === 0) return time;
+  if (days === 1) return `Yesterday ${time}`;
+  const day = date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '');
+  return `${day} ${time}`;
 }
 
-/** Every field of a Run in a native modal dialog on the right. The browser handles focus containment and Escape. */
+/** A time as the sheet shows it, with the exact moment for machines. */
+function SheetTime({ at, now }) {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return null;
+  return html`<time datetime=${date.toISOString()}>${sheetTime(at, now)}</time>`;
+}
+
+/** A small text button that copies `value`, then says so for a moment, and for screen readers in a live region. */
+function CopyButton({ value, what }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return undefined;
+    const timer = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  const copy = async () => {
+    let done = false;
+    try {
+      await navigator.clipboard.writeText(value);
+      done = true;
+    } catch {
+      /* no clipboard permission: fall back to selecting a throwaway field */
+    }
+    if (!done) {
+      const field = document.createElement('textarea');
+      field.value = value;
+      field.setAttribute('readonly', '');
+      field.style.position = 'fixed';
+      field.style.opacity = '0';
+      document.body.append(field);
+      field.select();
+      try {
+        done = document.execCommand('copy');
+      } catch {
+        done = false;
+      }
+      field.remove();
+    }
+    if (done) setCopied(true);
+  };
+  return html`<span class="copy"
+    ><button type="button" class="text-button" onClick=${copy}>
+      ${copied ? 'Copied' : 'Copy'}<span class="visually-hidden">${` ${what}`}</span>
+    </button>
+    <span class="visually-hidden" role="status">${copied ? `Copied ${what}` : ''}</span></span
+  >`;
+}
+
+/** The skills a stage used: quiet word chips, one per distinct skill. */
+function SkillChips({ reports }) {
+  const skills = [...new Set(reports.filter((r) => r.kind === 'skill').map((r) => r.text))];
+  return skills.length
+    ? html`<ul class="skills" aria-label="Skills used">${skills.map((skill) => html`<li key=${skill} class="skill">${skill}</li>`)}</ul>`
+    : null;
+}
+
+/** Activity reports as a list of when and what. */
+function ReportList({ reports, now, showTicket = false }) {
+  const activity = reports.filter((r) => r.kind !== 'skill');
+  return activity.length
+    ? html`<ul class="reports">
+        ${activity.map(
+          (report, index) => html`<li key=${index}>
+            <${SheetTime} at=${report.at} now=${now} /><span>${showTicket && report.ticket != null ? html`<${TicketRef} value=${String(report.ticket)} />${' '}` : null}${report.text}</span>
+          </li>`,
+        )}
+      </ul>`
+    : null;
+}
+
+/** Fresh tokens spent in one stage, or null when the usage has no row for it. */
+function stageTokens(run, id) {
+  const rows = Array.isArray(run.usage?.rows) ? run.usage.rows.filter((row) => row.stage === id) : [];
+  const counts = rows.map(freshTokens).filter((n) => n !== null);
+  return counts.length ? counts.reduce((a, b) => a + b, 0) : null;
+}
+
+const STATION_NAME = Object.fromEntries(GROUPS);
+const STATION_STATE = { done: 'done', current: 'current', blocked: 'current, blocked', ahead: 'not reached' };
+
+/** Where a station stands for a Run: done, current, blocked while it is the current one of a blocked Run, or ahead. */
+function stationState(run, at) {
+  if (run.status === 'done') return 'done';
+  const current = STATIONS.indexOf(run.stage);
+  if (at < current) return 'done';
+  if (at === current) return run.status === 'blocked' ? 'blocked' : 'current';
+  return 'ahead';
+}
+
+/** `value` when it is an array, else an empty one: stored runs may lack a list or hold something else. */
+const listOf = (value) => (Array.isArray(value) ? value : []);
+
+/** Where each report belongs: a run report by its stage, a ticket report by its listed ticket, anything else in `other`. */
+function placeReports(run) {
+  const runReports = listOf(run.run_reports);
+  const ticketReports = listOf(run.ticket_reports);
+  const tickets = listOf(run.tickets);
+  const listed = (r) => tickets.some((t) => t.reference === r.ticket);
+  return {
+    byStage: (id) => runReports.filter((r) => r.stage === id),
+    byTicket: (reference) => ticketReports.filter((r) => r.ticket === reference),
+    other: [...runReports.filter((r) => !STATIONS.includes(r.stage)), ...ticketReports.filter((r) => !listed(r))],
+  };
+}
+
+/** A duration in plain words: "under 1 min", "12 min", "1 h 5 min". */
+export function durationWords(ms) {
+  const minutes = Math.floor(ms / 60000);
+  if (!(minutes >= 1)) return 'under 1 min';
+  if (minutes < 60) return `${minutes} min`;
+  const rest = minutes % 60;
+  return rest ? `${Math.floor(minutes / 60)} h ${rest} min` : `${Math.floor(minutes / 60)} h`;
+}
+
+/**
+ * The passes through the stages that the run's timeline records, oldest first: consecutive Build marks that differ
+ * only by ticket form one pass that lists those tickets. `unstartedTickets` are tickets no Build pass started and
+ * that have no first Build pass to wait in. `now` ends the last pass of a run that is not finished.
+ */
+export function timelinePasses(run, now) {
+  const marks = listOf(run.timeline)
+    .filter((mark) => mark && Number.isFinite(mark.at) && STATIONS.includes(mark.stage))
+    .sort((a, b) => a.at - b.at);
+  const allTickets = listOf(run.tickets);
+  const passes = [];
+  for (const mark of marks) {
+    const rework = Number.isInteger(mark.rework) && mark.rework > 0 ? mark.rework : null;
+    const activity = typeof mark.activity === 'string' && mark.activity ? mark.activity : null;
+    const previous = passes[passes.length - 1];
+    if (previous && mark.stage === 'build' && previous.stage === 'build' && previous.rework === rework) {
+      previous.refs.push(mark.ticket);
+      if (activity && !previous.activities.includes(activity)) previous.activities.push(activity);
+      continue;
+    }
+    passes.push({ stage: mark.stage, rework, start: mark.at, activities: activity ? [activity] : [], refs: [mark.ticket] });
+  }
+  if (!passes.length) return { passes, unstartedTickets: [] };
+  const finished = run.status === 'done' ? (Number.isFinite(run.finished_at) ? run.finished_at : timestamp(run)) : now;
+  const used = new Set(passes.flatMap((pass) => pass.refs).filter((ref) => ref != null));
+  // Tickets no Build pass has started yet are still pending work of the first Build pass, or stand apart without one.
+  const notStarted = allTickets.filter((ticket) => !used.has(ticket.reference));
+  const firstBuildPass = passes.find((pass) => pass.stage === 'build' && pass.rework === null);
+  passes.forEach((pass, index) => {
+    const next = passes[index + 1];
+    const end = next ? next.start : finished;
+    pass.duration = Number.isFinite(end) ? Math.max(0, end - pass.start) : null;
+    pass.end = next ? next.start : Infinity;
+    pass.tickets = allTickets.filter((ticket) => pass.refs.includes(ticket.reference) || (pass === firstBuildPass && notStarted.includes(ticket)));
+    pass.sentBack = pass.stage === 'check' && next?.stage === 'build' && next.rework !== null;
+    pass.lastOfStage = !passes.slice(index + 1).some((later) => later.stage === pass.stage);
+    pass.state = next ? 'done' : run.status === 'done' ? 'done' : run.status === 'blocked' ? 'blocked' : 'current';
+  });
+  return { passes, unstartedTickets: firstBuildPass ? [] : notStarted };
+}
+
+const PAUSE_WORDS = { usage_limit: 'Usage limit reached', compaction: 'Context compaction' };
+
+/**
+ * The run's moments that carry a time and are shown as lines on the timeline: blocked and resumed events, pauses the
+ * agent's log shows (a usage limit or a compaction), and idle gaps. Pauses and idle gaps become `pause` and `idle` items.
+ */
+function validEvents(run) {
+  const events = listOf(run.events).filter((event) => event && Number.isFinite(event.at));
+  const usage = run.usage ?? {};
+  const pauses = listOf(usage.pauses)
+    .filter((pause) => pause && Number.isFinite(pause.at))
+    .map((pause) => ({ kind: 'pause', at: pause.at, resumedAt: Number.isFinite(pause.resumed_at) ? pause.resumed_at : null, name: PAUSE_WORDS[pause.kind] ?? 'Paused' }));
+  const idle = listOf(usage.idle)
+    .filter((gap) => gap && Number.isFinite(gap.from) && Number.isFinite(gap.to) && gap.to > gap.from)
+    .map((gap) => ({ kind: 'idle', at: gap.from, to: gap.to }));
+  return [...events, ...pauses, ...idle].sort((a, b) => a.at - b.at);
+}
+
+/** A blocked or resumed moment, a pause or an idle gap as one line with its time. */
+function EventLine({ event, now }) {
+  if (event.kind === 'pause' || event.kind === 'idle') {
+    const text = event.kind === 'idle'
+      ? `Idle ${durationWords(event.to - event.at)}`
+      : `${event.name} · ${event.resumedAt !== null ? `resumed after ${durationWords(event.resumedAt - event.at)}` : 'not resumed yet'}`;
+    return html`<p class=${`pass-event ${event.kind}`}>${text}${' · '}<${SheetTime} at=${event.at} now=${now} /></p>`;
+  }
+  return html`<p class=${`pass-event ${event.kind === 'blocked' ? 'blocked' : 'resumed'}`}>
+    ${event.kind === 'blocked' ? (event.reason ? `Blocked: ${event.reason}` : 'Blocked') : 'Resumed'}${' · '}<${SheetTime} at=${event.at} now=${now} />
+  </p>`;
+}
+
+/** Appends `item` to the list stored under `key`. */
+function push(map, key, item) {
+  map.set(key, [...(map.get(key) ?? []), item]);
+}
+
+/**
+ * Where each report and event belongs on a timeline. A report with a stage goes in the last pass of that stage that
+ * started at or before its `at`, else the nearest pass of that stage; one without a stage (older data) goes in the
+ * pass whose time window holds its `at`. The rest are in `other`. An event goes in the pass whose window holds it, else the nearest pass of its stage, else in `otherEvents`.
+ */
+function placeByTime(run, passes, unstartedTickets) {
+  const tickets = listOf(run.tickets);
+  const placed = passes.map(() => ({ reports: [], byTicket: new Map(), events: [] }));
+  const unstarted = new Map();
+  const other = [];
+  const windowIndex = (item) => passes.findIndex((pass) => Number.isFinite(item.at) && item.at >= pass.start && item.at < pass.end);
+  // The last pass of the item's stage that started at or before it, else the first pass of that stage.
+  const stageIndex = (item) => {
+    let first = -1;
+    let lastBefore = -1;
+    passes.forEach((pass, index) => {
+      if (pass.stage !== item.stage) return;
+      if (first === -1) first = index;
+      if (!(pass.start > item.at)) lastBefore = index;
+    });
+    return lastBefore !== -1 ? lastBefore : first;
+  };
+  const hasStage = (report) => STATIONS.includes(report.stage);
+  const passIndex = (report) => (hasStage(report) ? stageIndex(report) : windowIndex(report));
+  for (const report of listOf(run.run_reports)) {
+    const at = passIndex(report);
+    (at === -1 ? other : placed[at].reports).push(report);
+  }
+  for (const report of listOf(run.ticket_reports)) {
+    const at = passIndex(report);
+    const listed = tickets.find((ticket) => ticket.reference === report.ticket);
+    const waiting = listed && unstartedTickets.includes(listed) && (at === -1 || !hasStage(report));
+    if (!listed) other.push(report);
+    else if (waiting) push(unstarted, listed.reference, report);
+    else if (at === -1) other.push(report);
+    else if (passes[at].tickets.includes(listed)) push(placed[at].byTicket, listed.reference, report);
+    else placed[at].reports.push(report);
+  }
+  const otherEvents = [];
+  for (const event of validEvents(run)) {
+    const inWindow = windowIndex(event);
+    const at = inWindow !== -1 ? inWindow : stageIndex(event);
+    (at === -1 ? otherEvents : placed[at].events).push(event);
+  }
+  return { placed, other, otherEvents, unstarted };
+}
+
+function TicketList({ run, tickets, byTicket, now }) {
+  return html`<ol class="ticket-list">
+    ${tickets.map((ticket) => {
+      const own = byTicket(ticket.reference);
+      const current = ticket.status !== 'done' && run.current_ticket != null && run.current_ticket === ticket.reference;
+      return html`<li key=${ticket.reference} class=${ticket.status === 'done' ? 'ticket done' : 'ticket'}>
+        <p class="ticket-line">
+          <span class="ticket-status">${current ? TICKET_STATUS['in-progress'] : (TICKET_STATUS[ticket.status] ?? String(ticket.status))}</span>
+          <span class="ticket-name"><${TicketRef} value=${String(ticket.reference)} />${' '}${ticket.title}</span>
+        </p>
+        <${SkillChips} reports=${own} />
+        <${ReportList} reports=${own} now=${now} />
+      </li>`;
+    })}
+  </ol>`;
+}
+
+/** One pass through a stage on the route: when it started and how long it ran, what it started with, then what was recorded in it. */
+function Pass({ run, pass, placed, now }) {
+  const label = pass.rework === null ? STATION_NAME[pass.stage] : `${STATION_NAME[pass.stage]} · Rework ${pass.rework <= REWORK_CAP ? pass.rework : `${pass.rework} (past the cap of ${REWORK_CAP})`}`;
+  const summary = pass.lastOfStage ? run.summaries?.[pass.stage] : null;
+  const progress = pass.tickets.length ? { done: pass.tickets.filter((t) => t.status === 'done').length, total: pass.tickets.length } : null;
+  const classes = ['stop', pass.state, pass.rework !== null ? 'rework-pass' : '', pass.sentBack ? 'sent-back' : ''].filter(Boolean).join(' ');
+  return html`<li class=${classes}>
+    <span class="mark" aria-hidden="true"></span>
+    <div class="stop-head">
+      <h3>${label}<span class="visually-hidden">${`, ${STATION_STATE[pass.state]}`}</span></h3>
+      ${progress ? html`<span class="stop-meta"><span class="ticket-count">${progress.done} of ${progress.total} tickets done</span></span>` : null}
+    </div>
+    <p class="pass-when">
+      <${SheetTime} at=${pass.start} now=${now} />${pass.duration !== null ? html`${' · '}<span class="pass-duration">${durationWords(pass.duration)}</span>` : null}
+    </p>
+    ${pass.activities.map((activity) => html`<p key=${activity} class="pass-activity">${activity}</p>`)}
+    ${placed.events.map((event, index) => html`<${EventLine} key=${index} event=${event} now=${now} />`)}
+    ${summary ? html`<p class="stop-summary">${summary}</p>` : null}
+    <${SkillChips} reports=${placed.reports} />
+    <${ReportList} reports=${placed.reports} now=${now} showTicket=${true} />
+    ${pass.tickets.length ? html`<${TicketList} run=${run} tickets=${pass.tickets} byTicket=${(ref) => placed.byTicket.get(ref) ?? []} now=${now} />` : null}
+    ${pass.sentBack ? html`<p class="sent-back-note">sent back</p>` : null}
+  </li>`;
+}
+
+/** One station of the route: its mark, name and tokens, then what the Run recorded there; a bare name when nothing. */
+function Station({ run, id, name, at, now }) {
+  const state = stationState(run, at);
+  const placed = placeReports(run);
+  const reports = placed.byStage(id);
+  const tickets = id === 'build' ? listOf(run.tickets) : [];
+  const progress = id === 'build' ? ticketProgress(run) : null;
+  const rework = id === 'check' && Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
+  const summary = run.summaries?.[id];
+  const tokens = stageTokens(run, id);
+  const stageCost = run.usage?.cost?.by_stage?.[id];
+  return html`<li class=${`stop ${state}`}>
+    <span class="mark" aria-hidden="true"></span>
+    <div class="stop-head">
+      <h3>${name}<span class="visually-hidden">${`, ${STATION_STATE[state]}`}</span></h3>
+      ${progress || tokens !== null || stageCost
+        ? html`<span class="stop-meta">
+            ${progress ? html`<span class="ticket-count">${progress.done} of ${progress.total} tickets done</span>` : null}
+            ${tokens !== null ? html`<span class="stop-tokens">${compactTokens(tokens)}<span class="visually-hidden">${' fresh tokens'}</span></span>` : null}
+            ${stageCost ? html`<span class="stop-cost"><span class="visually-hidden">Estimated cost </span>${costText(stageCost, true)}</span>` : null}
+          </span>`
+        : null}
+    </div>
+    ${summary ? html`<p class="stop-summary">${summary}</p>` : null}
+    ${rework !== null ? html`<p class="rework"><span class="chip">Rework${' '}${reworkLabel(rework)}</span></p>` : null}
+    <${SkillChips} reports=${reports} />
+    <${ReportList} reports=${reports} now=${now} />
+    ${tickets.length ? html`<${TicketList} run=${run} tickets=${tickets} byTicket=${placed.byTicket} now=${now} />` : null}
+  </li>`;
+}
+
+/** Reports that belong to no station, no pass or no listed ticket, and summaries of stages with no pass, so nothing is dropped silently. */
+function OtherReports({ reports, events, summaries, now }) {
+  if (!reports.length && !events.length && !summaries.length) return null;
+  return html`<section class="other-reports" aria-labelledby="other-reports-title">
+    <h3 id="other-reports-title">Other reports</h3>
+    ${summaries.map(([name, text]) => html`<p key=${name} class="other-summary">${name}: ${text}</p>`)}
+    ${events.map((event, index) => html`<${EventLine} key=${index} event=${event} now=${now} />`)}
+    <${SkillChips} reports=${reports} />
+    <${ReportList} reports=${reports} now=${now} showTicket=${true} />
+  </section>`;
+}
+
+/** Tickets no pass started, when the timeline has no first Build pass to list them under. */
+function UnstartedTickets({ run, tickets, byTicket, now }) {
+  if (!tickets.length) return null;
+  return html`<section class="unstarted-tickets" aria-labelledby="unstarted-title">
+    <h3 id="unstarted-title">Tickets</h3>
+    <${TicketList} run=${run} tickets=${tickets} byTicket=${(ref) => byTicket.get(ref) ?? []} now=${now} />
+  </section>`;
+}
+
+/** The pull request as a link with its state in words, once the server has read that pull request. */
+function PrLink({ run }) {
+  if (!run.pr) return null;
+  const url = httpUrl(run.pr);
+  const status = run.pr_status;
+  const known = status && status.url === run.pr;
+  const state = known ? (PR_STATE[status.state] ? PR_STATE[status.state].toLowerCase() : 'state unknown') : null;
+  return html`<span class="status-item">
+    ${url ? html`<a href=${url.href} target="_blank" rel="noopener noreferrer">PR ${shortRef(url)}</a>` : `PR ${run.pr}`}
+    ${state ? html`${' '}<span class=${`pr-word ${known && status.state}`} title=${status.state === 'unknown' ? status.reason : null}>${state}</span>` : null}
+    ${known && status.state === 'unknown' && status.reason ? html`:${' '}<span class="pr-reason">${status.reason}</span>` : null}
+  </span>`;
+}
+
+/** The Run's route card in a native modal dialog on the right. The browser handles focus containment and Escape. */
 function Detail({ run, now, onClose, onDelete }) {
   const dialog = useRef(null);
   // The listener below is added once; it calls whatever `onClose` is current.
@@ -398,10 +786,20 @@ function Detail({ run, now, onClose, onDelete }) {
     closing.current();
   };
   const ts = timestamp(run);
-  const progress = ticketProgress(run);
-  const summaries = GROUPS.filter(([id]) => run.summaries?.[id]);
-  const stage = GROUPS.find(([id]) => id === run.stage);
+  const active = run.status !== 'done';
+  const blocked = run.status === 'blocked';
+  const spec = run.spec ? httpUrl(run.spec) : null;
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
+  const total = usageTotal(run);
+  const listed = Array.isArray(run.tickets) && run.tickets.some((t) => t.reference === run.current_ticket);
+  const { passes, unstartedTickets } = timelinePasses(run, now);
+  const placed = passes.length ? placeByTime(run, passes, unstartedTickets) : null;
+  const otherReports = placed ? placed.other : placeReports(run).other;
+  const otherEvents = placed ? placed.otherEvents : validEvents(run);
+  // A summary is kept per stage; one whose stage has no pass in the timeline (it may have been cut short) shows here.
+  const orphanSummaries = placed
+    ? GROUPS.filter(([id]) => run.summaries?.[id] && !passes.some((pass) => pass.stage === id)).map(([id, name]) => [name, run.summaries[id]])
+    : [];
   return html`<dialog
     ref=${dialog}
     class="detail"
@@ -417,89 +815,57 @@ function Detail({ run, now, onClose, onDelete }) {
   >
     <div class="detail-body">
       <div class="detail-bar">
-        <button type="button" class="text-button detail-delete" onClick=${() => onDelete(run)}>
-          Delete run<span class="visually-hidden">${` ${run.title}`}</span>
-        </button>
         <button type="button" class="toggle detail-close" onClick=${dismiss}>
           <span class="detail-close-wide">Close</span><span class="detail-close-compact">Back</span>
         </button>
       </div>
       <h2 id="detail-title">${run.title}</h2>
-      <dl class="fields">
-        <${Field} label="Project"><${ProjectName} path=${projectOf(run)} /><//>
-        <${Field} label="Stage">${stage ? stage[1] : String(run.stage)}<//>
-        <${Field} label="Status">
-          <span class=${STATUSES.includes(run.status) ? `badge ${run.status}` : 'badge'}
-            >${statusLabel(run.status)}</span
-          >
-        <//>
-        <${Field} label="Activity">${run.activity}<//>
-        ${run.current_ticket
-          ? html`<${Field} label="Current ticket"><${TicketLink} value=${String(run.current_ticket)} /><//>`
-          : null}
-        ${run.blocking_reason ? html`<${Field} label="Status reason">${run.blocking_reason}<//>` : null}
-        <${Field} label="Mode" missing="Unknown">${run.mode}<//>
-        <${Field} label="Branch" missing="Unknown">${run.branch}<//>
-        <${Field} label="Worktree" missing="Unknown">${run.worktree}<//>
-        <${Field} label="Repository" missing="Unknown">${run.repository}<//>
-        <${Field} label="Base commit" missing="Unknown">${run.base_commit}<//>
-        <${Field} label="Spec" missing="Unknown">
-          ${run.spec ? html`<${TicketLink} value=${String(run.spec)} />` : null}
-        <//>
-        <${Field} label="Pull request" missing="Unknown">
-          ${run.pr ? html`<${TicketLink} value=${String(run.pr)} />` : null}
-        <//>
-        <${Field} label="Pull request state" missing="No pull request">
-          ${run.pr ? html`<${PrStateDetail} run=${run} now=${now} />` : null}
-        <//>
-        <${Field} label=${progress ? `Tickets (${progress.done} of ${progress.total} done)` : 'Tickets'} missing="None recorded">
-          ${progress
-            ? html`<ol class="ticket-list">
-                ${run.tickets.map(
-                  (ticket) => html`<li key=${ticket.reference}>
-                    <span class="ticket-status">${TICKET_STATUS[ticket.status] ?? String(ticket.status)}</span>${' '}
-                    <${TicketLink} value=${String(ticket.reference)} />${' '}${ticket.title}
-                    <p>Agent-reported; entries may be incomplete.</p>
-                    ${Array.isArray(run.ticket_reports) && run.ticket_reports.some((report) => report.ticket === ticket.reference)
-                      ? html`<ul>${run.ticket_reports.filter((report) => report.ticket === ticket.reference).map((report) => html`<li>
-                          <strong>${report.kind === 'skill' ? 'Skill' : 'Activity'}:</strong>${' '}${report.text}${' '}
-                          (${report.stage}, <time datetime=${new Date(report.at).toISOString()}>${new Date(report.at).toLocaleString()}</time>)
-                        </li>`)}</ul>`
-                      : html`<p>No reports recorded.</p>`}
-                  </li>`,
-                )}
-              </ol>`
+      <p class="detail-sub">
+        <span><${ProjectName} path=${projectOf(run)} /></span>
+        ${run.mode ? html`<span>${run.mode}</span>` : null}
+        ${run.branch ? html`<span class="branch"><code>${run.branch}</code><${CopyButton} value=${run.branch} what="branch" /></span>` : null}
+      </p>
+      ${active && run.activity ? html`<p class="detail-activity">${run.activity}</p>` : null}
+      ${active && run.current_ticket && !listed ? html`<p class="detail-ticket">Current ticket: ${run.current_ticket}</p>` : null}
+      <div class=${blocked ? 'status-row blocked' : 'status-row'}>
+        <span class=${STATUSES.includes(run.status) ? `badge ${run.status}` : 'badge'}>${statusLabel(run.status)}</span>
+        <${PrLink} run=${run} />
+        ${spec ? html`<span class="status-item"><a href=${spec.href} target="_blank" rel="noopener noreferrer">Spec ${shortRef(spec)}</a></span>` : null}
+        ${rework !== null ? html`<span class="status-item">Rework${' '}${reworkLabel(rework)}</span>` : null}
+        ${ts !== null ? html`<span class="status-item status-updated">Updated${' '}<${SheetTime} at=${ts} now=${now} /></span>` : null}
+        ${blocked && run.blocking_reason ? html`<p class="status-reason">${run.blocking_reason}</p>` : null}
+      </div>
+      <ol class="route" aria-label="Route">
+        ${placed
+          ? passes.map((pass, index) => html`<${Pass} key=${index} run=${run} pass=${pass} placed=${placed.placed[index]} now=${now} />`)
+          : GROUPS.map(([id, name], at) => html`<${Station} key=${id} run=${run} id=${id} name=${name} at=${at} now=${now} />`)}
+      </ol>
+      ${placed ? html`<${UnstartedTickets} run=${run} tickets=${unstartedTickets} byTicket=${placed.unstarted} now=${now} />` : null}
+      <${OtherReports} reports=${otherReports} events=${otherEvents} summaries=${orphanSummaries} now=${now} />
+      ${run.usage
+        ? html`<details class="usage" open=${active}>
+            <summary>
+              Token usage${total !== null ? html`<span class="usage-total">${tokenCount(total)}${' fresh'}</span>` : null}${run.usage.cost
+                ? html`<span class="usage-total">${'Est. cost '}${costText(run.usage.cost, true)}</span>`
+                : null}
+            </summary>
+            <${UsageDetail} usage=${run.usage} />
+          </details>`
+        : null}
+      <div class="detail-foot">
+        <dl class="ids">
+          ${run.repository
+            ? html`<div><dt>Repository</dt><dd><code>${run.repository}</code><${CopyButton} value=${run.repository} what="repository" /></dd></div>`
             : null}
-        <//>
-        <${Field} label="Run reports" wide>
-          <p>Agent-reported; entries may be incomplete.</p>
-          ${Array.isArray(run.run_reports) && run.run_reports.length
-            ? html`<ul>${run.run_reports.map((report) => html`<li>
-                <strong>${report.kind === 'skill' ? 'Skill' : 'Activity'}:</strong>${' '}${report.text}${' '}
-                (${report.stage}, <time datetime=${new Date(report.at).toISOString()}>${new Date(report.at).toLocaleString()}</time>)
-              </li>`)}</ul>`
-            : html`<p>No reports recorded.</p>`}
-        <//>
-        <${Field} label="Token usage" missing="Not tracked" wide>
-          ${run.usage ? html`<${UsageDetail} usage=${run.usage} />` : null}
-        <//>
-        <${Field} label="Stage summaries" missing="None recorded">
-          ${summaries.length
-            ? html`<ul class="summaries">
-                ${summaries.map(([id, name]) => html`<li key=${id}><strong>${name}:</strong>${' '}${run.summaries[id]}</li>`)}
-              </ul>`
-            : null}
-        <//>
-        <${Field} label="Rework">${rework !== null ? reworkLabel(rework) : null}<//>
-        <${Field} label="Updated">
-          ${ts !== null
-            ? html`<time datetime=${new Date(ts).toISOString()}>${ago(now - ts)}</time>${' '}(${localDateTime(
-                new Date(ts),
-              )})`
-            : null}
-        <//>
-        <${Field} label="Run id"><code>${run.id}</code><//>
-      </dl>
+          <div><dt>Run id</dt><dd><code>${run.id}</code><${CopyButton} value=${String(run.id)} what="run id" /></dd></div>
+        </dl>
+        <div class="foot-line">
+          <p class="note">Skills and activity are reported by the agent and may be incomplete.</p>
+          <button type="button" class="text-button detail-delete" onClick=${() => onDelete(run)}>
+            Delete run…<span class="visually-hidden">${` ${run.title}`}</span>
+          </button>
+        </div>
+      </div>
     </div>
   </dialog>`;
 }

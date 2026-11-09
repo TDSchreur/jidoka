@@ -162,7 +162,7 @@ fn doctor_creates_the_model_routing_policy_once_and_keeps_json_output_valid() {
     );
 
     // A second run, even after an edit, leaves the file as it is.
-    std::fs::write(&policy, "{\"agent\":\"codex\",\"roles\":{},\"tasks\":{}}").unwrap();
+    std::fs::write(&policy, "{\"agents\":{\"codex\":{\"stages\":{}}}}").unwrap();
     let second = run();
     assert!(String::from_utf8_lossy(&second.stderr).contains("already exists"));
     assert!(std::fs::read_to_string(&policy).unwrap().contains("codex"));
@@ -271,5 +271,112 @@ fn doctor_will_not_create_a_policy_for_copilot() {
     assert!(
         !home.path().join(".config").exists(),
         "something was written"
+    );
+}
+
+const OLD_MULTI: &str =
+    r#"{"agents":{"claude":{"roles":{"fast":{"model":"haiku"}},"tasks":{"build":"fast"}}}}"#;
+const OLD_SINGLE: &str =
+    r#"{"agent":"claude","roles":{"fast":{"model":"haiku"}},"tasks":{"build":"fast"}}"#;
+
+fn create_over(existing: &str) -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let policy = home.path().join(".config/tds-factory/model-routing.json");
+    std::fs::create_dir_all(policy.parent().unwrap()).unwrap();
+    std::fs::write(&policy, existing).unwrap();
+    let output = factory(
+        &["doctor", "--create-model-routing"],
+        dir.path(),
+        home.path(),
+    );
+    (
+        std::fs::read_to_string(&policy).unwrap(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn doctor_replaces_an_old_format_policy_in_either_form_and_says_so() {
+    for old in [OLD_MULTI, OLD_SINGLE] {
+        let (text, stdout) = create_over(old);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(value["agents"]["claude"]["stages"]["build"].is_object());
+        assert!(value["agents"]["codex"]["stages"]["build"].is_object());
+        assert!(
+            stdout.contains("Replaced old-format model routing policy")
+                && stdout.contains("model-routing.json"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("pass     policy:"), "{stdout}");
+    }
+}
+
+#[test]
+fn doctor_replaces_a_switched_off_old_policy_and_keeps_the_switches_off() {
+    let (text, stdout) = create_over(r#"{"enabled":false,"agent":"claude","roles":{}}"#);
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(value["enabled"], false);
+    assert!(value["agents"]["claude"]["stages"]["build"].is_object());
+    assert!(stdout.contains("Replaced old-format"), "{stdout}");
+}
+
+#[test]
+fn doctor_leaves_a_current_format_or_unrecognised_policy_alone() {
+    for existing in [
+        r#"{"agents":{"codex":{"stages":{"build":{"model":"x"}}}}}"#,
+        "not json at all",
+        r#"{"something":"else"}"#,
+    ] {
+        let (text, stdout) = create_over(existing);
+        assert_eq!(text, existing);
+        assert!(!stdout.contains("Replaced"), "{stdout}");
+        assert!(stdout.contains("already exists"), "{stdout}");
+    }
+}
+
+#[test]
+fn doctor_offers_only_switching_off_when_nothing_was_off() {
+    let (_, stdout) = create_over(OLD_MULTI);
+    assert!(!stdout.contains("stays off"), "{stdout}");
+    assert!(!stdout.contains("is switched off"), "{stdout}");
+    assert!(
+        stdout.contains("starter policy for claude and codex"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("\"enabled\": false"), "{stdout}");
+}
+
+#[test]
+fn doctor_names_the_whole_policy_when_it_was_off() {
+    let (_, stdout) = create_over(r#"{"enabled":false,"agents":{"claude":{"roles":{}}}}"#);
+    assert!(stdout.contains("whole policy is switched off"), "{stdout}");
+    assert!(
+        stdout.contains("remove \"enabled\": false at the top"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("entry for"), "{stdout}");
+}
+
+#[test]
+fn doctor_names_the_agent_entry_that_was_off() {
+    let (_, stdout) =
+        create_over(r#"{"agents":{"codex":{"enabled":false,"roles":{}},"claude":{"roles":{}}}}"#);
+    assert!(
+        stdout.contains("entry for codex is switched off"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("remove its \"enabled\": false"), "{stdout}");
+    assert!(!stdout.contains("whole policy"), "{stdout}");
+}
+
+#[test]
+fn doctor_names_both_the_whole_policy_and_the_agent_when_both_were_off() {
+    let (_, stdout) =
+        create_over(r#"{"enabled":false,"agents":{"claude":{"enabled":false,"roles":{}}}}"#);
+    assert!(stdout.contains("whole policy is switched off"), "{stdout}");
+    assert!(
+        stdout.contains("entry for claude is switched off"),
+        "{stdout}"
     );
 }

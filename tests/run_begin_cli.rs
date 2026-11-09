@@ -52,8 +52,8 @@ fn begin_outside_a_repository_creates_no_run_and_says_why() {
 }
 
 const TWO_AGENT_POLICY: &str = r#"{"enabled": true, "agents": {
-  "claude": {"roles": {"strong": {"model": "opus", "effort": "high"}}, "tasks": {"check": "strong"}},
-  "codex": {"roles": {"strong": {"model": "gpt-6-astra"}}, "tasks": {"check": "strong"}}}}"#;
+  "claude": {"stages": {"check": {"model": "opus", "effort": "high"}}},
+  "codex": {"stages": {"check": {"model": "gpt-6-astra"}}}}}"#;
 
 #[test]
 fn a_new_run_needs_the_agent_when_the_policy_has_several_but_a_resume_does_not() {

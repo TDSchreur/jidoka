@@ -1,6 +1,8 @@
 mod client;
 mod codex_requests;
+mod cost;
 mod doctor;
+mod gitignore;
 mod inspect;
 mod install;
 mod pr_open;
@@ -15,6 +17,8 @@ mod routing;
 mod run;
 mod run_begin;
 mod run_check;
+mod run_cleanup;
+mod run_reinstall;
 mod server;
 mod stats;
 mod update;
@@ -26,7 +30,7 @@ use run::UPDATE_HELP;
 use server::{serve, ADDRESS, DEFAULT_PORT};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...]\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr sync <run-id> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]]\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing]\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run check <run-id> [--json]\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...] [--config-dir <path>]...\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr sync <run-id> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run check <run-id> [--json]\n  factory run cleanup <run-id> [--reinstall] [--config-dir <path>]...\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -69,17 +73,19 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
     {
         [] | ["--help" | "-h"] => println!("{HELP}\n\n{UPDATE_HELP}"),
         ["--version" | "-V"] => println!("factory {}", current_build()),
-        ["install", "--agent", agent] => install::install(agent)?,
+        ["install", options @ ..] => match install::parse_options(options) {
+            Ok((Some(agent), dirs)) => install::install(agent, &dirs)?,
+            Ok((None, _)) => return Err(format!("install needs --agent.\n{HELP}").into()),
+            Err(error) => return Err(format!("{error}\n{HELP}").into()),
+        },
         ["update", options @ ..] => {
-            let agents = match options {
-                [] => None,
-                ["--agent", agents] => Some(*agents),
-                _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
-            };
+            let (agents, dirs) =
+                install::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
             update::update(
                 env!("CARGO_PKG_VERSION"),
                 env!("FACTORY_BUILD_RELEASE") == "true",
                 agents,
+                &dirs,
             )?
         }
         ["check"] => update::check(
@@ -122,6 +128,9 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             let parsed = run_begin::parse_options(title, options)
                 .map_err(|error| format!("{error}\n{HELP}"))?;
             return run_begin_command(parsed);
+        }
+        ["run", "cleanup", id, options @ ..] if !id.starts_with('-') => {
+            return run_cleanup_command(id, options);
         }
         ["run", "check", id, options @ ..] if !id.starts_with('-') => {
             return run_check_command(id, options);
@@ -267,6 +276,82 @@ fn run_check_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::erro
     Ok(report.exit_code)
 }
 
+/// `factory run cleanup <run-id>`: removes the worktree and local branch of a run whose pull request merged,
+/// then clears them from the run. It refuses, removing nothing, when work could be lost.
+fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Invalid run id".into());
+    }
+    let mut reinstall = false;
+    let mut config_dirs: Vec<String> = Vec::new();
+    let mut rest = options.iter();
+    while let Some(option) = rest.next() {
+        match *option {
+            "--reinstall" => reinstall = true,
+            "--config-dir" => match rest.next() {
+                Some(dir) if !dir.starts_with('-') => config_dirs.push((*dir).to_string()),
+                _ => return Err(format!("--config-dir needs a path\n{HELP}").into()),
+            },
+            other => return Err(format!("Unknown option: {other}\n{HELP}").into()),
+        }
+    }
+    let run = fetch_run(ADDRESS, id)?;
+    let recorded = run_cleanup::Recorded {
+        id: id.to_string(),
+        repository: run.repository.clone(),
+        worktree: run.worktree.clone(),
+        branch: run.branch.clone(),
+        pr: run.pr.clone(),
+    };
+    let cwd = std::env::current_dir()?;
+    let cleaned = run_cleanup::cleanup(&recorded, &pr_wait::RealGh, &pr_sync::RealGit, &cwd)
+        .map_err(|problem| inspect::shown(&problem.0))?;
+    print!("{}", run_cleanup::render(&recorded, cleaned));
+    if cleaned.needs_update() {
+        let text = |value: serde_json::Value, fallback: &str| {
+            value.as_str().unwrap_or(fallback).to_string()
+        };
+        let stage = text(serde_json::to_value(run.stage)?, "finish");
+        let status = text(serde_json::to_value(run.status)?, "running");
+        report_run(
+            ADDRESS,
+            id,
+            &stage,
+            &status,
+            &[
+                "--clear-worktree",
+                "--clear-branch",
+                "--activity",
+                "Cleaned up worktree and branch",
+            ],
+        )?;
+    }
+    if let (Some(repository), Some(pr)) = (recorded.repository.as_deref(), recorded.pr.as_deref()) {
+        let home = install::home_dir()?;
+        let var = |name: &str| env::var_os(name);
+        let agents = update::installed_agents(&home, &config_dirs, var);
+        let claude_dirs = install::claude_config_dirs(&config_dirs, &home, var)?;
+        let input = run_reinstall::Inputs {
+            repository: std::path::Path::new(repository),
+            pr,
+            agents: &agents,
+            claude_dirs: &claude_dirs,
+            tty: std::io::IsTerminal::is_terminal(&std::io::stdin())
+                && std::io::IsTerminal::is_terminal(&std::io::stdout()),
+            reinstall,
+            windows: cfg!(windows),
+        };
+        run_reinstall::offer(
+            &input,
+            &pr_wait::RealGh,
+            &pr_sync::RealGit,
+            &mut run_reinstall::RealIo,
+        )
+        .map_err(|problem| inspect::shown(&problem.0))?;
+    }
+    Ok(0)
+}
+
 /// `factory pr sync <run-id>`: brings the run's branch up to date with its base. The exit status is the
 /// outcome's; 1 is a problem.
 fn pr_sync_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
@@ -388,6 +473,15 @@ impl run_begin::RunApi for ServerApi {
 
     fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
         report_run(ADDRESS, id, stage, status, options).map_err(|e| e.to_string())
+    }
+
+    fn runs_with_session(&self, session: &str) -> Result<Vec<(String, String)>, String> {
+        let runs = fetch_runs(ADDRESS).map_err(|e| e.to_string())?;
+        Ok(runs
+            .into_iter()
+            .filter(|run| run.sessions.iter().any(|known| known == session))
+            .map(|run| (run.id, run.title))
+            .collect())
     }
 }
 

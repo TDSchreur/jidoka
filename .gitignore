@@ -1,2 +1,4 @@
 /target/
 /.factory/
+__pycache__/
+/.scratch/

@@ -15,10 +15,6 @@ Day-to-day pull requests target `develop`. Release pull requests merge `develop`
 - Consult the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) when designing public APIs.
 - Follow existing conventions and keep changes proportional to the task. TDD is not required.
 
-## Writing
-
-Use the [Humanizer skill](skills/humanizer/SKILL.md) for new or edited prose that people will read: pull request descriptions, documentation, issues, specs, tickets, changelog entries, and substantial explanations, whether or not you are in a factory run. Apply it as an editing pass on the text you write or change, not to unrelated existing prose. Keep the meaning, evidence, required structure, and code, commands, paths and link targets unchanged.
-
 ## Shipped skills are project-agnostic
 
 The skills that `factory install` bundles (listed in `build.rs`) are used by anyone, on any kind of project. They must not name this repository's scripts, branches, tools or conventions, such as `scripts/verify.sh` or `develop`. Put those in `AGENTS.md`, the README or `.github/instructions/`, and word the skill generically, for example "the project's verification" or "the base branch chosen in Workspace". A test in `src/install.rs` fails when a bundled skill names this repository; search the skills you changed for this repository's names before opening a pull request.
@@ -28,7 +24,7 @@ The skills that `factory install` bundles (listed in `build.rs`) are used by any
 Read the relevant guide when working on these files or tasks:
 
 - [Reliable tests](.github/instructions/reliable-tests.instructions.md): tests involving time, shared state, files, ports, or processes.
-- [Skill authoring](.github/instructions/agent-skills.instructions.md): skills maintained in this project.
+- [Skill authoring](.github/instructions/agent-skills.instructions.md): skills maintained in this project, including how to check a skill change.
 - [Dashboard accessibility](.github/instructions/accessibility.instructions.md): dashboard HTML, CSS, and interactive behavior.
 - [Shell scripts](.github/instructions/shell.instructions.md): `*.sh` files, including the Linux installer.
 - [PowerShell scripts](.github/instructions/powershell.instructions.md): `*.ps1` files, including the Windows installer.
@@ -41,10 +37,11 @@ Read the relevant guide when working on these files or tasks:
 - Format: `cargo fmt --check`
 - Lint: `cargo clippy --all-targets -- -D warnings`
 - Test: `cargo test`
+- Dashboard browser tests: `python3 tests/dashboard-<name>.py` for every `tests/dashboard-*.py` (needs `python3` and Chromium or Google Chrome; they share `tests/dashboard_browser.py`, written for Linux and macOS and run on Linux only in CI)
 
 After a pull request merges, run `scripts/update-local.sh` from the main checkout to pull `develop`, rebuild, reinstall the `factory` command and the skills, and restart the dashboard, so local agents always use the latest factory.
 
-Run `scripts/verify.sh` before finishing any ticket and before opening a pull request. It runs the same checks as CI, in the same order. A missing tool (`rustfmt`, `clippy`) is a blocker to fix with `rustup component add rustfmt clippy`, not something to skip and leave to CI. These instructions are informed by [Awesome Copilot's Rust instructions](https://github.com/github/awesome-copilot/blob/main/instructions/rust.instructions.md).
+Run `scripts/verify.sh` before finishing any ticket and before opening a pull request. It runs the same checks as CI, in the same order. A missing tool (`rustfmt`, `clippy`, `python3`, Chromium) is a blocker to install (`rustup component add rustfmt clippy` for the Rust ones), not something to skip and leave to CI. These instructions are informed by [Awesome Copilot's Rust instructions](https://github.com/github/awesome-copilot/blob/main/instructions/rust.instructions.md).
 
 ## Agent skills
 

@@ -114,6 +114,10 @@ struct FakeApi {
     existing: RefCell<Option<RunSummary>>,
     /// Every update fails, as when the server cannot be reached.
     fail_updates: std::cell::Cell<bool>,
+    /// Runs that record the session: id and title.
+    session_runs: RefCell<Vec<(String, String)>>,
+    /// Listing runs fails.
+    fail_listing: std::cell::Cell<bool>,
 }
 
 impl RunApi for FakeApi {
@@ -136,6 +140,13 @@ impl RunApi for FakeApi {
             .borrow()
             .clone()
             .ok_or_else(|| format!("Run {id} was not found"))
+    }
+
+    fn runs_with_session(&self, _session: &str) -> Result<Vec<(String, String)>, String> {
+        if self.fail_listing.get() {
+            return Err("the server is not reachable".into());
+        }
+        Ok(self.session_runs.borrow().clone())
     }
 
     fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
@@ -219,6 +230,125 @@ fn a_fresh_run_gets_a_worktree_from_the_fetched_base_and_records_it() {
     let created = api.created.borrow();
     assert_eq!(created[0].0, "Add a thing");
     assert_eq!(created[0].2.as_deref(), project.repo.to_str());
+}
+
+fn gitignore_of(worktree: &str) -> Option<String> {
+    fs::read_to_string(Path::new(worktree).join(".gitignore")).ok()
+}
+
+#[test]
+fn begin_creates_a_gitignore_with_the_factory_and_scratch_folders() {
+    let project = Project::new();
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
+    assert_eq!(
+        gitignore_of(&begun.worktree).as_deref(),
+        Some(".factory/\n.scratch/\n")
+    );
+    // Only the new file differs from the base.
+    assert_eq!(
+        git(Path::new(&begun.worktree), &["status", "--porcelain"]),
+        "?? .gitignore"
+    );
+}
+
+#[test]
+fn begin_reports_the_added_ignore_entries() {
+    let project = Project::new();
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
+    assert_eq!(begun.gitignore_added, [".factory/", ".scratch/"]);
+    assert_eq!(begun.gitignore_warning, None);
+    assert!(render(&begun).contains("Added to .gitignore"));
+}
+
+#[test]
+fn an_unreadable_gitignore_is_a_warning_not_a_failed_begin() {
+    let project = Project::new();
+    fs::create_dir(project.repo.join(".gitignore")).unwrap();
+    fs::write(project.repo.join(".gitignore/keep"), "x").unwrap();
+    git(&project.repo, &["add", ".gitignore/keep"]);
+    git(&project.repo, &["commit", "-q", "-m", "dir"]);
+    git(&project.repo, &["push", "-q", "origin", "develop"]);
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
+    assert!(begun.gitignore_added.is_empty());
+    assert!(begun.gitignore_warning.is_some());
+    // Reading a directory fails with EISDIR; the "os error" suffix is not localised.
+    // The EISDIR code (21) is the Unix errno; Windows reports a different code, so only Unix checks it.
+    #[cfg(unix)]
+    assert!(
+        begun
+            .gitignore_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("(os error 21)")),
+        "{:?}",
+        begun.gitignore_warning
+    );
+}
+
+// Creating symlinks on Windows needs a privilege that CI and users often lack, so this runs on Unix only.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_gitignore_is_a_warning_and_its_target_is_untouched() {
+    let project = Project::new();
+    fs::write(project.repo.join("elsewhere"), "secret\n").unwrap();
+    std::os::unix::fs::symlink("elsewhere", project.repo.join(".gitignore")).unwrap();
+    git(&project.repo, &["add", "elsewhere", ".gitignore"]);
+    git(&project.repo, &["commit", "-q", "-m", "link"]);
+    git(&project.repo, &["push", "-q", "origin", "develop"]);
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
+    assert!(begun.gitignore_added.is_empty());
+    assert!(begun.gitignore_warning.unwrap().contains("symlink"));
+    let target = Path::new(&begun.worktree).join("elsewhere");
+    assert_eq!(fs::read_to_string(target).unwrap(), "secret\n");
+}
+
+#[test]
+fn begin_appends_to_a_tracked_gitignore_and_shows_only_that_change() {
+    let project = Project::new();
+    fs::write(project.repo.join(".gitignore"), "/target/").unwrap();
+    git(&project.repo, &["add", ".gitignore"]);
+    git(&project.repo, &["commit", "-q", "-m", "ignore"]);
+    git(&project.repo, &["push", "-q", "origin", "develop"]);
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
+    assert_eq!(
+        gitignore_of(&begun.worktree).as_deref(),
+        Some("/target/\n.factory/\n.scratch/\n")
+    );
+    assert_eq!(
+        git(Path::new(&begun.worktree), &["status", "--porcelain"]),
+        "M .gitignore"
+    );
+}
+
+#[test]
+fn a_blocked_begin_leaves_no_gitignore_and_the_retry_resumes() {
+    let project = Project::new();
+    let mut failing = options("Retry me");
+    failing.branch = Some("retry-me".into());
+    failing.base = Some("nope".into());
+    blocked(begin(
+        &project.repo,
+        &failing,
+        &FakeApi::default(),
+        None,
+        None,
+    ));
+    assert!(!project.worktrees.join("retry-me").exists());
+    assert!(!project.repo.join(".gitignore").exists());
+    let api = api_with_run("Retry me");
+    let begun = begin(
+        &project.repo,
+        &resuming("Retry me", "retry-me"),
+        &api,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(gitignore_of(&begun.worktree).is_some());
 }
 
 #[test]
@@ -427,6 +557,9 @@ fn the_output_has_the_run_first_and_the_same_fields_in_json() {
         branch: "x".into(),
         base: "develop".into(),
         base_commit: "abc123".into(),
+        gitignore_added: vec![".factory/".into()],
+        gitignore_warning: None,
+        session_warning: None,
     };
     let text = render(&begun);
     assert!(text.starts_with("Run: 100\n"), "{text}");
@@ -436,6 +569,7 @@ fn the_output_has_the_run_first_and_the_same_fields_in_json() {
     let json = serde_json::to_value(&begun).unwrap();
     assert_eq!(json["run"], "100");
     assert_eq!(json["base_commit"], "abc123");
+    assert_eq!(json["gitignore_added"][0], ".factory/");
 }
 
 #[test]
@@ -888,6 +1022,9 @@ fn the_text_output_is_printable_whatever_the_folder_is_called() {
         branch: "b".into(),
         base: "develop".into(),
         base_commit: "abc".into(),
+        gitignore_added: Vec::new(),
+        gitignore_warning: Some("bad \u{1b}[2J".into()),
+        session_warning: None,
     };
     assert!(!render(&begun).chars().any(|c| c.is_control() && c != '\n'));
 }
@@ -993,4 +1130,62 @@ fn a_name_that_is_taken_is_found_before_anything_else_can_fail() {
     let resume_api = api_with_run("B work");
     let begun = begin(&project.repo, &fixed, &resume_api, None, None).unwrap();
     assert_ne!(begun.worktree, a.worktree);
+}
+
+fn api_with_session_run(id: &str, title: &str) -> FakeApi {
+    let api = FakeApi::default();
+    api.session_runs
+        .borrow_mut()
+        .push((id.into(), title.into()));
+    api
+}
+
+#[test]
+fn a_session_already_on_another_run_gives_a_warning() {
+    let project = Project::new();
+    let api = api_with_session_run("7", "Earlier work");
+    let begun = begin(&project.repo, &options("New"), &api, Some("s".into()), None).unwrap();
+    let warning = begun.session_warning.clone().unwrap();
+    assert!(warning.contains("7 (Earlier work)"), "{warning}");
+    assert!(warning.contains("/clear"), "{warning}");
+    assert!(render(&begun).contains("Warning: This agent session"));
+    let json = serde_json::to_value(&begun).unwrap();
+    assert_eq!(json["session_warning"], warning);
+}
+
+#[test]
+fn no_session_id_or_no_other_run_gives_no_warning() {
+    let project = Project::new();
+    let api = api_with_session_run("7", "Earlier work");
+    let begun = begin(&project.repo, &options("A"), &api, None, None).unwrap();
+    assert_eq!(begun.session_warning, None);
+
+    let project = Project::new();
+    let api = FakeApi::default();
+    let begun = begin(&project.repo, &options("B"), &api, Some("s".into()), None).unwrap();
+    assert_eq!(begun.session_warning, None);
+}
+
+#[test]
+fn a_resumed_run_is_not_counted_against_itself() {
+    let project = Project::new();
+    let api = api_with_session_run("55", "Resumed");
+    *api.existing.borrow_mut() = Some(RunSummary {
+        title: "Resumed".into(),
+        finished: false,
+        worktree: None,
+    });
+    let mut opts = options("");
+    opts.run = Some("55".into());
+    let begun = begin(&project.repo, &opts, &api, Some("s".into()), None).unwrap();
+    assert_eq!(begun.session_warning, None);
+}
+
+#[test]
+fn a_list_failure_gives_no_warning_and_begin_succeeds() {
+    let project = Project::new();
+    let api = FakeApi::default();
+    api.fail_listing.set(true);
+    let begun = begin(&project.repo, &options("C"), &api, Some("s".into()), None).unwrap();
+    assert_eq!(begun.session_warning, None);
 }
