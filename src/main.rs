@@ -113,6 +113,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 "{}",
                 start_run(
                     ADDRESS,
+                    &cli_token_file()?,
                     title,
                     &dir.display().to_string(),
                     repository,
@@ -203,7 +204,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             if let Some(session) = session.as_deref() {
                 options.extend(["--session", session]);
             }
-            report_run(ADDRESS, id, stage, status, &options)?;
+            report_run(ADDRESS, &cli_token_file()?, id, stage, status, &options)?;
             println!("Updated run {id}");
         }
         ["pr", "wait", id, options @ ..] if !id.starts_with('-') => {
@@ -222,7 +223,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
 
 impl pr_open::RunApi for ServerApi {
     fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
-        report_run(ADDRESS, id, stage, status, options).map_err(|e| e.to_string())
+        report_to_dashboard(id, stage, status, options)
     }
 }
 
@@ -317,6 +318,7 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
         let status = text(serde_json::to_value(run.status)?, "running");
         report_run(
             ADDRESS,
+            &cli_token_file()?,
             id,
             &stage,
             &status,
@@ -403,7 +405,7 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     let mut reported_failure = false;
     let mut activity = |text: &str| {
         if running {
-            if let Err(error) = report_run(ADDRESS, id, &stage, "running", &["--activity", text]) {
+            if let Err(error) = report_to_dashboard(id, &stage, "running", &["--activity", text]) {
                 if !reported_failure {
                     reported_failure = true;
                     eprintln!("The run's activity could not be updated: {error}");
@@ -461,7 +463,11 @@ impl run_begin::RunApi for ServerApi {
         session: Option<String>,
         routing: Option<routing::ModelRouting>,
     ) -> Result<String, String> {
-        start_run(ADDRESS, title, project, repository, session, routing).map_err(|e| e.to_string())
+        let token = cli_token_file().map_err(|e| e.to_string())?;
+        start_run(
+            ADDRESS, &token, title, project, repository, session, routing,
+        )
+        .map_err(|e| e.to_string())
     }
 
     fn get(&self, id: &str) -> Result<run_begin::RunSummary, String> {
@@ -474,7 +480,7 @@ impl run_begin::RunApi for ServerApi {
     }
 
     fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
-        report_run(ADDRESS, id, stage, status, options).map_err(|e| e.to_string())
+        report_to_dashboard(id, stage, status, options)
     }
 
     fn runs_with_session(&self, session: &str) -> Result<Vec<(String, String)>, String> {
@@ -632,6 +638,22 @@ fn dashboard(port: u16, usage: bool) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+/// Reports a run update to the default dashboard, with the CLI token it wrote.
+fn report_to_dashboard(
+    id: &str,
+    stage: &str,
+    status: &str,
+    options: &[&str],
+) -> Result<(), String> {
+    let token_file = cli_token_file().map_err(|e| e.to_string())?;
+    report_run(ADDRESS, &token_file, id, stage, status, options).map_err(|e| e.to_string())
+}
+
+/// Where the default dashboard writes the CLI token that POSTs must send.
+fn cli_token_file() -> io::Result<PathBuf> {
+    Ok(server::token_path(&data_path(DEFAULT_PORT)?, DEFAULT_PORT))
 }
 
 /// The default dashboard keeps `runs.json`; one on another port keeps its own file and shares nothing.
