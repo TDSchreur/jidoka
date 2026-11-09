@@ -257,7 +257,7 @@ From Claude Code logs the dashboard also detects when work stopped: a usage limi
 
 **Opt out** with `factory dashboard --no-usage`, or by starting the dashboard with `FACTORY_USAGE=off`. Runs without counts then show `not tracked` and say why; counts already collected are kept.
 
-**What has been validated.** Claude Code and Codex logs were inspected on a real machine, and all three formats are covered by fixture tests that need no agent installed. Copilot's `session.usage_record` events could not be checked against real logs (the local sessions held none), so Copilot support is fixture-tested only. Codex's `cache_write_input_tokens` was zero in every sample, so whether it is part of Codex's input is unvalidated; it is treated as included, like Copilot's. Agent log formats are not a stable interface: if one changes, the affected logs show as `partial` or `not tracked` instead of wrong numbers.
+**What has been validated.** Claude Code and Codex logs were inspected on a real machine, and all three formats are covered by fixture tests that need no agent installed. Copilot's `session.usage_record` events were checked against a real Copilot CLI session, including a subagent running on another model: their fields, the `sub-agent` initiator, the effort of each call and the rule that cache reads and writes are counted inside the input all match what the reader expects. Codex's `cache_write_input_tokens` was zero in every sample, so whether it is part of Codex's input is unvalidated; it is treated as included, like Copilot's. Agent log formats are not a stable interface: if one changes, the affected logs show as `partial` or `not tracked` instead of wrong numbers.
 
 #### Starting a run with its workspace
 
@@ -431,7 +431,7 @@ Write one policy file, `model-routing.json`, in the factory's config folder: `$X
   - An alias such as `sonnet` and an observed id such as `claude-sonnet-5-5` differ in form, so both are shown. The request is met when it is a whole part of an observed id used by any session in that Stage, subagents included, so Opus review agents satisfy an `opus` request even if the coordinator ran Sonnet.
   - When usage is tracked and the requested model never appears, the line says `MISMATCH`. When usage is only partial it says the model was not observed, because it may be missing, and every observed line notes partial coverage.
   - A Stage with no usage rows, or a run whose usage is not tracked, says so.
-  - When an effort was requested, it is compared with the efforts recorded for the models that match the request. A different effort is a `MISMATCH` (or "not observed" when usage is partial), and a log that records none says `effort not recorded`. Claude Code and Codex record the effort of each call; Copilot's usage records do not.
+  - When an effort was requested, it is compared with the efforts recorded for the models that match the request. A different effort is a `MISMATCH` (or "not observed" when usage is partial), and a log that records none says `effort not recorded`. Claude Code, Codex and Copilot record the effort of each call.
   - The request counts as met when any one of the recorded efforts is the requested one. When the coordinator and the agents run the same model at different efforts, their efforts land in the same row, so the agents' effort cannot be told apart from the coordinator's. A row keeps at most eight distinct efforts.
   - Runs without a selection, or recorded in the earlier shape, show no Model routing section.
 

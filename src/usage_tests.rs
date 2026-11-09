@@ -247,7 +247,8 @@ fn copilot_usage(
 ) -> String {
     json!({"type": "session.usage_record", "timestamp": iso(at), "data": {"usage": {"model": model, "apiCallId": call,
         "inputTokens": input, "cacheReadTokens": read, "cacheWriteTokens": write, "outputTokens": output,
-        "reasoningTokens": 3, "initiator": if sub {"sub-agent"} else {"user"}}}})
+        "reasoningTokens": 3, "reasoningEffort": "medium", "cacheDetailsReported": true,
+        "initiator": if sub {"sub-agent"} else {"agent"}}}})
     .to_string()
 }
 
@@ -677,7 +678,7 @@ fn a_log_cannot_make_a_row_hold_more_than_a_handful_of_efforts() {
 }
 
 #[test]
-fn copilot_rows_have_no_effort_and_old_usage_records_load_without_the_field() {
+fn copilot_rows_carry_the_effort_of_each_call() {
     let world = World::new();
     let target = full_run(RUN_A);
     world.write(
@@ -688,15 +689,17 @@ fn copilot_rows_have_no_effort_and_old_usage_records_load_without_the_field() {
         ],
     );
     let usage = world.collect(&target, std::slice::from_ref(&target));
-    assert!(rows_of(&usage, Stage::Define)
-        .iter()
-        .all(|r| r.efforts.is_empty()));
-    // The stored form leaves the key out when there is nothing to say, and reads a record without it.
-    let json = serde_json::to_value(&usage.rows[0]).unwrap();
-    assert!(json.get("efforts").is_none(), "{json}");
+    let rows = rows_of(&usage, Stage::Define);
+    assert!(rows.iter().all(|r| r.efforts.contains("medium")));
+}
+
+#[test]
+fn usage_rows_leave_out_an_empty_effort_and_load_without_the_field() {
     let old: UsageRow =
         serde_json::from_value(json!({"stage": "build", "model": "m", "input": 1})).unwrap();
     assert!(old.efforts.is_empty());
+    let json = serde_json::to_value(&old).unwrap();
+    assert!(json.get("efforts").is_none(), "{json}");
     let new: UsageRow =
         serde_json::from_value(json!({"stage": "build", "model": "m", "efforts": ["high"]}))
             .unwrap();
