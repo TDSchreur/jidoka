@@ -82,6 +82,7 @@ const TOKEN_PLACEHOLDER: &str = "__TOKEN__";
 const PID_PLACEHOLDER: &str = "__PID__";
 /// The header the dashboard sends its session token in.
 const TOKEN_HEADER: &str = "X-Session-Token";
+const CLI_TOKEN_HEADER: &str = "X-Factory-Token";
 const BODY_LIMIT: u64 = 64 * 1024;
 
 fn is_local_authority(authority: &str, port: u16) -> bool {
@@ -90,21 +91,78 @@ fn is_local_authority(authority: &str, port: u16) -> bool {
     })
 }
 
+fn random_token() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    // `RandomState` is seeded from the operating system's randomness.
+    let part = || {
+        std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish()
+    };
+    format!("{:016x}{:016x}", part(), part())
+}
+
 /// A random value created when the server starts. Only the dashboard page this server
 /// serves to a local host carries it, so a request that has it came from that page.
 struct SessionToken(String);
 
 impl SessionToken {
     fn new() -> Self {
-        use std::hash::{BuildHasher, Hasher};
-        // `RandomState` is seeded from the operating system's randomness.
-        let part = || {
-            std::collections::hash_map::RandomState::new()
-                .build_hasher()
-                .finish()
-        };
-        Self(format!("{:016x}{:016x}", part(), part()))
+        Self(random_token())
     }
+}
+
+/// A second random value, per server process, that the `factory` CLI needs to POST. It is
+/// written to a file only the user can read and is never part of any response.
+struct CliToken(String);
+
+impl CliToken {
+    /// Compares without stopping at the first differing byte.
+    fn matches(&self, given: &str) -> bool {
+        self.0.len() == given.len()
+            && self
+                .0
+                .bytes()
+                .zip(given.bytes())
+                .fold(0, |diff, (a, b)| diff | (a ^ b))
+                == 0
+    }
+}
+
+/// Where the CLI token lives: next to the runs file, named per port like the runs file.
+pub(crate) fn token_path(runs: &Path, port: u16) -> PathBuf {
+    let name = if port == DEFAULT_PORT {
+        "session-token".to_string()
+    } else {
+        format!("session-token-{port}")
+    };
+    runs.with_file_name(name)
+}
+
+/// Writes `token` to `path` so no reader sees a partial file; on Unix only the user can read it.
+fn write_token_file(path: &Path, token: &str) -> io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().unwrap_or(Path::new("."));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(dir)?;
+    let temp = path.with_extension("tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(&temp)?.write_all(token.as_bytes())?;
+    std::fs::rename(&temp, path)
 }
 
 /// The browser sends an `Origin` on a same-origin DELETE; it must be the dashboard itself.
@@ -134,7 +192,12 @@ impl<'r> FromRequest<'r> for Security {
             local,
             post_allowed: local
                 && request.headers().get_one("Origin").is_none()
-                && request.content_type() == Some(&ContentType::JSON),
+                && request.content_type() == Some(&ContentType::JSON)
+                && request
+                    .rocket()
+                    .state::<CliToken>()
+                    .zip(request.headers().get_one(CLI_TOKEN_HEADER))
+                    .is_some_and(|(token, given)| token.matches(given)),
             delete_allowed: local
                 && request
                     .headers()
@@ -526,6 +589,9 @@ pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> 
     build_rocket_with(path, port, Collector::new(None))
 }
 
+/// The runs file the CLI token is kept next to.
+struct TokenFile(PathBuf);
+
 pub(crate) fn build_rocket_with(
     path: &Path,
     port: u16,
@@ -539,6 +605,25 @@ pub(crate) fn build_rocket_with(
         .manage(RunStore::open(path)?)
         .manage(collector)
         .manage(SessionToken::new())
+        .manage(CliToken(random_token()))
+        .manage(TokenFile(path.to_path_buf()))
+        .attach(rocket::fairing::AdHoc::on_liftoff(
+            "Write CLI token",
+            |rocket| {
+                Box::pin(async move {
+                    // Only once the port is bound, so a dashboard that fails to bind leaves the token alone.
+                    if let (Some(token), Some(file)) =
+                        (rocket.state::<CliToken>(), rocket.state::<TokenFile>())
+                    {
+                        if let Err(error) =
+                            write_token_file(&token_path(&file.0, rocket.config().port), &token.0)
+                        {
+                            eprintln!("The CLI token was not written: {error}");
+                        }
+                    }
+                })
+            },
+        ))
         .mount(
             "/",
             rocket::routes![
@@ -1311,6 +1396,7 @@ mod tests {
     async fn start(api: &Client, body: &str) -> Run {
         let response = api
             .post("/api/runs")
+            .header(cli_token_header(api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body(body)
@@ -1775,6 +1861,7 @@ mod tests {
         ] {
             let response = api
                 .post("/api/runs")
+                .header(cli_token_header(&api))
                 .header(Header::new("Host", "127.0.0.1:4311"))
                 .header(ContentType::JSON)
                 .body(with(&routing))
@@ -1811,6 +1898,7 @@ mod tests {
         ] {
             let response = api
                 .post("/api/runs")
+                .header(cli_token_header(&api))
                 .header(Header::new("Host", "127.0.0.1:4311"))
                 .header(ContentType::JSON)
                 .body(body)
@@ -2697,6 +2785,7 @@ mod tests {
         // An update through the API cannot set it.
         let response = api
             .post(format!("/api/runs/{}", run.id))
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body(r#"{"stage":"finish","status":"done","summaries":{"finish":"Shipped"},"pr_status":{"state":"open"}}"#)
@@ -3032,6 +3121,7 @@ mod tests {
         let api = client(&dir).await;
         let response = api
             .post("/api/runs")
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body(r#"{"title":"<task>","project":"/work"}"#)
@@ -3043,6 +3133,7 @@ mod tests {
         assert!(created.updated_at.is_some());
         let response = api
             .post(format!("/api/runs/{}", created.id))
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body(r#"{"stage":"check","status":"running"}"#)
@@ -3087,6 +3178,7 @@ mod tests {
         assert_eq!(wrong_port.status(), HttpStatus::BadRequest);
         let origin = api
             .post("/api/runs")
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .header(Header::new("Origin", "https://example.test"))
@@ -3096,6 +3188,7 @@ mod tests {
         assert_eq!(origin.status(), HttpStatus::Forbidden);
         let content_type = api
             .post("/api/runs")
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::Plain)
             .body(r#"{"title":"x","project":"/"}"#)
@@ -3104,6 +3197,7 @@ mod tests {
         assert_eq!(content_type.status(), HttpStatus::Forbidden);
         let invalid = api
             .post("/api/runs")
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body("{")
@@ -3123,6 +3217,11 @@ mod tests {
             fs::read(dir.0.path().join("runs.json")).unwrap_or_default(),
             b""
         );
+    }
+
+    fn cli_token_header(api: &Client) -> Header<'static> {
+        let token = api.rocket().state::<CliToken>().unwrap();
+        Header::new(CLI_TOKEN_HEADER, token.0.clone())
     }
 
     async fn session_token(api: &Client) -> String {
@@ -3349,6 +3448,7 @@ mod tests {
         );
         let response = api
             .post("/api/runs")
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body(big)
@@ -3357,6 +3457,7 @@ mod tests {
         assert_eq!(response.status(), HttpStatus::PayloadTooLarge);
         let response = api
             .post("/api/runs/nope")
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body(r#"{"stage":"check","status":"done"}"#)
@@ -3365,6 +3466,7 @@ mod tests {
         assert_eq!(response.status(), HttpStatus::BadRequest);
         assert_eq!(
             api.post("/api/runs/123")
+                .header(cli_token_header(&api))
                 .header(Header::new("Host", "127.0.0.1:4311"))
                 .header(ContentType::JSON)
                 .body(r#"{"stage":"check","status":"done"}"#)
@@ -3381,6 +3483,7 @@ mod tests {
         body: &str,
     ) -> rocket::local::asynchronous::LocalResponse<'a> {
         api.post(format!("/api/runs/{id}"))
+            .header(cli_token_header(api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body(body)
@@ -3555,6 +3658,136 @@ mod tests {
                 serde_json::to_vec(&store.list().unwrap()).unwrap(),
                 original
             );
+        }
+    }
+
+    async fn post_status(api: &Client, route: &str, token: Option<&str>) -> HttpStatus {
+        let body = if route == "/api/runs" {
+            r#"{"title":"x","project":"/work"}"#
+        } else {
+            r#"{"stage":"build","status":"running"}"#
+        };
+        let mut request = api
+            .post(route.to_owned())
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .header(ContentType::JSON)
+            .body(body);
+        if let Some(token) = token {
+            request = request.header(Header::new(CLI_TOKEN_HEADER, token.to_owned()));
+        }
+        request.dispatch().await.status()
+    }
+
+    #[rocket::async_test]
+    async fn post_requires_the_cli_token_and_refuses_the_page_token() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let cli = api.rocket().state::<CliToken>().unwrap().0.clone();
+        let page = session_token(&api).await;
+        assert_ne!(cli, page);
+        for route in ["/api/runs", "/api/runs/1"] {
+            assert_eq!(post_status(&api, route, None).await, HttpStatus::Forbidden);
+            assert_eq!(
+                post_status(&api, route, Some(&page)).await,
+                HttpStatus::Forbidden
+            );
+            assert_eq!(
+                post_status(&api, route, Some("wrong")).await,
+                HttpStatus::Forbidden
+            );
+        }
+        assert_eq!(
+            post_status(&api, "/api/runs", Some(&cli)).await,
+            HttpStatus::Created
+        );
+        assert!(load_runs(&dir.0.path().join("runs.json"))
+            .unwrap()
+            .iter()
+            .all(|run| run.title == "x"));
+    }
+
+    #[rocket::async_test]
+    async fn the_cli_token_is_in_no_response() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let cli = api.rocket().state::<CliToken>().unwrap().0.clone();
+        let create = api
+            .post("/api/runs")
+            .header(cli_token_header(&api))
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .header(ContentType::JSON)
+            .body(r#"{"title":"x","project":"/work"}"#);
+        let created = create.dispatch().await;
+        assert_eq!(created.status(), HttpStatus::Created);
+        let mut bodies = vec![created.into_string().await.unwrap()];
+        for route in ["/", "/api/runs", "/api/runs/1", "/api/info"] {
+            let response = api
+                .get(route)
+                .header(Header::new("Host", "127.0.0.1:4311"))
+                .dispatch()
+                .await;
+            assert!(!response.headers().iter().any(|h| h.value().contains(&cli)));
+            bodies.push(response.into_string().await.unwrap_or_default());
+        }
+        assert!(bodies.iter().all(|body| !body.contains(&cli)));
+    }
+
+    #[test]
+    fn the_token_file_is_named_per_port_next_to_the_runs_file() {
+        let runs = Path::new("/data/tds-factory/runs.json");
+        assert_eq!(
+            token_path(runs, DEFAULT_PORT),
+            Path::new("/data/tds-factory/session-token")
+        );
+        assert_eq!(
+            token_path(runs, 4400),
+            Path::new("/data/tds-factory/session-token-4400")
+        );
+    }
+
+    /// Launches `rocket` on a thread and returns once it has lifted off or failed to launch.
+    fn launch(rocket: Rocket<Build>) -> Option<rocket::Shutdown> {
+        let quiet = rocket.figment().clone().merge(("log_level", "off"));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let failed = sender.clone();
+        let rocket = rocket
+            .configure(quiet)
+            .attach(rocket::fairing::AdHoc::on_liftoff("Up", move |rocket| {
+                let _ = sender.send(Some(rocket.shutdown()));
+                Box::pin(async {})
+            }));
+        std::thread::spawn(move || {
+            let _ = rocket::execute(rocket.launch());
+            let _ = failed.send(None);
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .ok()
+            .flatten()
+    }
+
+    #[test]
+    fn each_start_writes_a_new_token_that_a_failed_bind_leaves_alone() {
+        let dir = TestDir::new();
+        let runs = dir.0.path().join("data").join("runs.json");
+        let file = dir.0.path().join("data").join("session-token-4477");
+        let first = launch(build_rocket(&runs, 4477).unwrap()).expect("first start binds");
+        let written = fs::read_to_string(&file).unwrap();
+        assert_eq!(written.len(), 32);
+        // The port is taken, so this one fails to bind and must not touch the file.
+        assert!(launch(build_rocket(&runs, 4477).unwrap()).is_none());
+        assert_eq!(fs::read_to_string(&file).unwrap(), written);
+        first.notify();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let second = launch(build_rocket(&runs, 4477).unwrap()).expect("restart binds");
+        assert_ne!(fs::read_to_string(&file).unwrap(), written);
+        second.notify();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&file), 0o600);
+            assert_eq!(mode(file.parent().unwrap()), 0o700);
         }
     }
 }
