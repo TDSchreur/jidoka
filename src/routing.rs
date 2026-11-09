@@ -127,7 +127,8 @@ impl RoutingAgent {
 }
 
 /// The reasoning efforts Copilot CLI lists for `--reasoning-effort`; any other text is silently ignored.
-const COPILOT_EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+pub(crate) const COPILOT_EFFORTS: [&str; 7] =
+    ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 /// Claude Code's subagent aliases. Copilot CLI takes exact model IDs and quietly runs an unknown name on the session's model.
 const CLAUDE_CODE_ALIASES: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
 

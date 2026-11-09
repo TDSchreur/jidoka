@@ -4,7 +4,9 @@
 //! session's model. Nothing here changes a file or calls a model; at most it asks an agent for its `--version`.
 
 use super::{find_program, read_doc, Check, Machine};
-use crate::routing::{policy_path_in, read, Coverage, Host, ModelRouting, Policy, RoutingAgent};
+use crate::routing::{
+    policy_path_in, read, Coverage, Host, ModelRouting, Policy, RoutingAgent, COPILOT_EFFORTS,
+};
 use std::path::Path;
 
 /// The Agent tool's `effort` option first appeared in this Claude Code release.
@@ -66,7 +68,7 @@ fn agent_checks(selection: &ModelRouting, root: &Path, machine: &Machine) -> Vec
     match selection.agent {
         RoutingAgent::Claude => claude_checks(selection, root, machine),
         RoutingAgent::Codex => codex_checks(machine),
-        RoutingAgent::Copilot => copilot_checks(machine),
+        RoutingAgent::Copilot => copilot_checks(selection, machine),
     }
 }
 
@@ -131,22 +133,32 @@ fn codex_checks(machine: &Machine) -> Vec<Check> {
     ]
 }
 
-fn copilot_checks(machine: &Machine) -> Vec<Check> {
+fn copilot_checks(selection: &ModelRouting, machine: &Machine) -> Vec<Check> {
     vec![
         host_check("copilot", machine, None),
-        Check::skipped(
-            "model",
-            "Copilot models are not checked: which ones an account can use differs, and an unavailable model quietly runs on the session's model, so compare the models `factory run inspect` observed",
-        ),
+        copilot_model_check(selection),
+        effort_check(selection, "Copilot CLI", &COPILOT_EFFORTS),
         Check::skipped("overrides", "Copilot configuration is not checked"),
     ]
+}
+
+/// The policy check already rejects Claude Code aliases, which Copilot CLI would run on the session's model.
+/// Which models an account can use is not known to the factory, so availability is left to the user.
+fn copilot_model_check(selection: &ModelRouting) -> Check {
+    let count = selection.stages.len();
+    Check::pass(
+        "model",
+        format!(
+            "{count} routed stage(s) name an exact model ID; whether the account can use them is not checked, so compare the models `factory run inspect` observed"
+        ),
+    )
 }
 
 fn claude_checks(selection: &ModelRouting, root: &Path, machine: &Machine) -> Vec<Check> {
     vec![
         host_check("claude", machine, Some(CLAUDE_MIN_VERSION)),
         claude_model_check(selection),
-        claude_effort_check(selection),
+        effort_check(selection, "Claude Code", &CLAUDE_EFFORTS),
         claude_overrides_check(root, machine),
     ]
 }
@@ -177,12 +189,12 @@ fn claude_model_check(selection: &ModelRouting) -> Check {
     )
 }
 
-fn claude_effort_check(selection: &ModelRouting) -> Check {
+fn effort_check(selection: &ModelRouting, host: &str, accepted: &[&str]) -> Check {
     let (mut unsupported, mut unset) = (Vec::new(), Vec::new());
     for (stage, choice) in &selection.stages {
         match choice.effort.as_deref() {
             None => unset.push(stage.name().to_string()),
-            Some(effort) if !CLAUDE_EFFORTS.contains(&effort) => {
+            Some(effort) if !accepted.contains(&effort) => {
                 unsupported.push(format!("{}: {effort}", stage.name()));
             }
             Some(_) => {}
@@ -192,7 +204,7 @@ fn claude_effort_check(selection: &ModelRouting) -> Check {
     if !unsupported.is_empty() {
         problems.push(format!(
             "unsupported effort ({}): {}",
-            CLAUDE_EFFORTS.join(", "),
+            accepted.join(", "),
             unsupported.join(", ")
         ));
     }
@@ -205,13 +217,16 @@ fn claude_effort_check(selection: &ModelRouting) -> Check {
     if problems.is_empty() {
         return Check::pass(
             "effort",
-            "every routed stage has an effort Claude Code accepts; which levels a model offers is not checked",
+            format!("every routed stage has an effort {host} accepts; which levels a model offers is not checked"),
         );
     }
     Check::warning(
         "effort",
         problems.join("; "),
-        "Set effort to low, medium, high, xhigh or max for each routed stage.",
+        format!(
+            "Set effort to one of {} for each routed stage.",
+            accepted.join(", ")
+        ),
     )
 }
 
