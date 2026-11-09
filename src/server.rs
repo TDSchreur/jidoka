@@ -577,8 +577,7 @@ async fn get_document(
         })?
         .ok_or_else(|| refused(HttpStatus::NotFound, "Not found"))?;
     let reference = reference.to_owned();
-    let port = (config.port != DEFAULT_PORT).then_some(config.port);
-    let plan = crate::plans::plan_path(&runs_file.0, port, &run.id);
+    let plan = crate::plans::plan_path(&runs_file.0, config.port, &run.id);
     let read = rocket::tokio::task::spawn_blocking(move || document::read(&run, &reference, &plan))
         .await
         .map_err(|error| {
@@ -1111,7 +1110,7 @@ mod tests {
         let repository = dir.0.path().join("repo");
         let id = document_run(&runs, &worktree, &repository, "x.md", &[]);
         let other = document_run(&runs, &worktree, &repository, "x.md", &[]);
-        let plans = crate::plans::plans_dir(&runs, None);
+        let plans = crate::plans::plans_dir(&runs, DEFAULT_PORT);
         fs::create_dir_all(&plans).unwrap();
         fs::write(plans.join(format!("{id}.md")), "own plan").unwrap();
         fs::write(plans.join(format!("{other}.md")), "other plan").unwrap();

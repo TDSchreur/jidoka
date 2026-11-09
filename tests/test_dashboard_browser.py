@@ -73,6 +73,29 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(count, 1)
 
 
+class AttemptIsolationTests(unittest.TestCase):
+    def test_a_stale_result_from_a_timed_out_attempt_is_not_read_by_the_retry(self):
+        seen = []
+
+        def fake_wait(server, results, size, env, extra_args, command=None):
+            seen.append(results)
+            if len(seen) == 1:
+                results.put({"ok": True, "stale": True})  # posted late by the timed-out first browser
+                raise harness.BrowserFailure("no result in time", "waited")
+            self.assertTrue(results.empty(), "the retry sees the first attempt's late result")
+            return {"ok": True, "fresh": True}
+
+        real = harness.wait_for_result
+        harness.wait_for_result = fake_wait
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                result = harness.run_dashboard([], "")
+        finally:
+            harness.wait_for_result = real
+        self.assertEqual(result, {"ok": True, "fresh": True})
+        self.assertIsNot(seen[0], seen[1])
+
+
 class StubBrowserTests(unittest.TestCase):
     """A stub browser process that exits at once is told apart from a posted result."""
 

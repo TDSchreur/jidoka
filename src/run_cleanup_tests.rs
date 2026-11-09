@@ -203,7 +203,7 @@ fn cleanup_leaves_the_runs_plan_in_the_data_dir() {
     let fx = Fixture::new();
     let data = tempfile::tempdir().unwrap();
     let runs = data.path().join("runs.json");
-    let plan = crate::plans::plan_path_ready(&runs, None, "100").unwrap();
+    let plan = crate::plans::plan_path_ready(&runs, crate::server::DEFAULT_PORT, "100").unwrap();
     std::fs::write(&plan, "# plan").unwrap();
     fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
     assert!(!fx.wt.exists());

@@ -132,19 +132,27 @@ def stop(process):
 
 
 def run_dashboard(runs, check, size=(1100, 700), handler=Handler, env=None, extra_args=()):
-    """Opens the dashboard with `runs` and the `check` script in a headless browser; returns the page's /result."""
-    results = queue.Queue()
+    """Opens the dashboard with `runs` and the `check` script in a headless browser; returns the page's /result.
+
+    Each attempt gets its own server and result queue, so a late result from a timed-out first browser
+    can never be taken as the retry's result.
+    """
     check = f"<script>window.PAGE_WAIT_MS = {PAGE_WAIT_MS};</script>" + check
-    handler = type("TestHandler", (handler,), {"runs": runs, "check": check, "results": results})
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever)
-    thread.start()
-    try:
-        return run_with_retry(lambda: wait_for_result(server, results, size, env, extra_args))
-    finally:
-        server.shutdown()
-        thread.join()
-        server.server_close()
+
+    def attempt():
+        results = queue.Queue()
+        attempt_handler = type("TestHandler", (handler,), {"runs": runs, "check": check, "results": results})
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), attempt_handler)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            return wait_for_result(server, results, size, env, extra_args)
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+
+    return run_with_retry(attempt)
 
 
 def wait_for_result(server, results, size, env, extra_args, command=None):

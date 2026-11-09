@@ -146,7 +146,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 ["--json"] => true,
                 _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
             };
-            let run = fetch_run(&update_address(), id)?;
+            let run = fetch_run(&cli_address(), id)?;
             let plan = plan_path(id)?.to_string_lossy().into_owned();
             if json {
                 let mut shown = serde_json::to_value(&run)?;
@@ -211,7 +211,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 options.extend(["--session", session]);
             }
             report_run(
-                &update_address(),
+                &cli_address(),
                 &cli_token_file()?,
                 id,
                 stage,
@@ -669,10 +669,9 @@ fn report_to_dashboard(
     report_run(ADDRESS, &token_file, id, stage, status, options).map_err(|e| e.to_string())
 }
 
-/// Where the default dashboard writes the CLI token that POSTs must send.
 /// The server `run update` talks to. Debug builds honor `FACTORY_TEST_ADDRESS`, so CLI tests can use a
 /// fake server on an OS-assigned port; release builds always use the default dashboard.
-fn update_address() -> String {
+fn cli_address() -> String {
     #[cfg(debug_assertions)]
     if let Ok(address) = env::var("FACTORY_TEST_ADDRESS") {
         return address;
@@ -680,13 +679,14 @@ fn update_address() -> String {
     ADDRESS.to_string()
 }
 
+/// Where the default dashboard writes the CLI token that POSTs must send.
 fn cli_token_file() -> io::Result<PathBuf> {
     Ok(server::token_path(&data_path(DEFAULT_PORT)?, DEFAULT_PORT))
 }
 
 /// Where the plan of run `id` is saved, in the default dashboard's data dir; its folder is created.
 fn plan_path(id: &str) -> io::Result<PathBuf> {
-    plans::plan_path_ready(&data_path(DEFAULT_PORT)?, None, id)
+    plans::plan_path_ready(&data_path(DEFAULT_PORT)?, DEFAULT_PORT, id)
 }
 
 /// The default dashboard keeps `runs.json`; one on another port keeps its own file and shares nothing.

@@ -79,6 +79,9 @@ pub(crate) fn read(run: &Run, reference: &str, plan: &Path) -> Result<Document, 
         return Err(DocumentError::OutsideRoots);
     }
     require_markdown(&file)?;
+    if roots.iter().any(|root| file.starts_with(root.join(".git"))) {
+        return Err(DocumentError::OutsideRoots);
+    }
     let markdown = read_markdown(&file, not_available)?;
     let name = file
         .file_name()
@@ -412,6 +415,61 @@ mod tests {
         assert_eq!(
             read(&run, &plan.to_string_lossy(), &plan).err(),
             Some(DocumentError::OutsideRoots)
+        );
+    }
+
+    #[test]
+    fn a_recorded_markdown_file_inside_a_git_dir_is_refused() {
+        let (_dir, repository, worktree, _) = setup("x.md");
+        let in_repository = repository.join(".git/worktrees/x");
+        fs::create_dir_all(&in_repository).unwrap();
+        fs::write(in_repository.join("factory-plan.md"), "# git plan").unwrap();
+        fs::write(worktree.join(".git/factory-plan.md"), "# git plan").unwrap();
+        for reference in [
+            in_repository.join("factory-plan.md"),
+            worktree.join(".git/factory-plan.md"),
+        ] {
+            let reference = reference.to_string_lossy().into_owned();
+            let run = run(&repository, &worktree, &reference);
+            assert_eq!(
+                read(&run, &reference, &no_plan()).err(),
+                Some(DocumentError::OutsideRoots),
+                "{reference}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_plans_folder_itself_is_refused() {
+        let (_dir, plans, worktree, _) = plans_setup();
+        let repository = worktree.parent().unwrap().parent().unwrap().join("repo");
+        let folder = plans.to_string_lossy().into_owned();
+        let run = run(&repository, &worktree, &folder);
+        let error = read(&run, &folder, &plans.join("1.md")).err();
+        assert!(error.is_some(), "{error:?}");
+    }
+
+    #[test]
+    fn a_non_markdown_file_at_the_plan_location_is_refused() {
+        let (_dir, plans, worktree, _) = plans_setup();
+        let repository = worktree.parent().unwrap().parent().unwrap().join("repo");
+        fs::write(plans.join("1.txt"), "text").unwrap();
+        let reference = plans.join("1.txt").to_string_lossy().into_owned();
+        let run = run(&repository, &worktree, &reference);
+        assert_eq!(
+            read(&run, &reference, &plans.join("1.txt")).err(),
+            Some(DocumentError::NotMarkdown)
+        );
+    }
+
+    #[test]
+    fn an_oversized_plan_is_refused() {
+        let (_dir, plans, _, run) = plans_setup();
+        fs::write(plans.join("1.md"), vec![b'a'; 1024 * 1024 + 1]).unwrap();
+        let plan = plans.join("1.md");
+        assert_eq!(
+            read(&run, &plan.to_string_lossy(), &plan).err(),
+            Some(DocumentError::TooLarge)
         );
     }
 

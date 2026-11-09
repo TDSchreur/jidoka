@@ -865,8 +865,7 @@ fn update_warnings(previous: Stage, next: &Run) -> Vec<String> {
         || (next.stage == Stage::Check && previous != Stage::Check);
     if leaves_build && next.mode == Some(Mode::Full) && next.spec.is_none() {
         warnings.push(
-            "This Full run has no spec recorded; write the spec and record it with --spec <url|path> before Build."
-                .to_string(),
+            "This Full run has no spec recorded; record it with --spec <url|path>.".to_string(),
         );
     }
     warnings
@@ -1993,6 +1992,7 @@ mod tests {
         let done = warnings_for(&store, id, "build", "done", &[]);
         assert_eq!(done.len(), 1);
         assert!(done[0].contains("no spec"));
+        assert!(!done[0].contains("before Build"), "{}", done[0]);
         let check = warnings_for(&store, id, "check", "running", &[]);
         assert_eq!(check.len(), 1);
         assert!(warnings_for(&store, id, "check", "running", &[]).is_empty());
