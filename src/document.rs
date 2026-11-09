@@ -10,6 +10,9 @@ use std::{
 /// The largest document the dashboard renders.
 const MAX_DOCUMENT_BYTES: u64 = 1024 * 1024;
 
+/// The largest `.git` file (a `gitdir:` pointer) that is read.
+const MAX_GIT_FILE_BYTES: u64 = 4096;
+
 /// A rendered document: its file name and HTML that is safe to insert into the page.
 pub(crate) struct Document {
     pub(crate) name: String,
@@ -17,7 +20,7 @@ pub(crate) struct Document {
 }
 
 /// Why a document is not served.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DocumentError {
     NotRecorded,
     WebReference,
@@ -47,7 +50,7 @@ pub(crate) fn read(run: &Run, reference: &str) -> Result<Document, DocumentError
     }
     let reference_path = Path::new(reference);
     require_markdown(reference_path)?;
-    let not_available = || DocumentError::NotAvailable {
+    let not_available = DocumentError::NotAvailable {
         path: reference.to_owned(),
     };
     let worktree = run
@@ -73,13 +76,13 @@ pub(crate) fn read(run: &Run, reference: &str) -> Result<Document, DocumentError
         .iter()
         .filter(|candidate| is_local_path(candidate))
         .find_map(|candidate| std::fs::canonicalize(candidate).ok())
-        .ok_or_else(not_available)?;
+        .ok_or_else(|| not_available.clone())?;
     let roots = roots(worktree, repository);
     if !roots.iter().any(|root| file.starts_with(root)) {
         return Err(DocumentError::OutsideRoots);
     }
     require_markdown(&file)?;
-    let markdown = read_markdown(&file, &not_available)?;
+    let markdown = read_markdown(&file, not_available)?;
     let name = file
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -90,15 +93,19 @@ pub(crate) fn read(run: &Run, reference: &str) -> Result<Document, DocumentError
     })
 }
 
-/// Reads the file through one handle, so what is checked is what is read.
-fn read_markdown(
-    file: &Path,
-    not_available: &dyn Fn() -> DocumentError,
-) -> Result<String, DocumentError> {
-    let handle = File::open(file).map_err(|_| not_available())?;
-    let metadata = handle.metadata().map_err(|_| not_available())?;
+/// Reads the file through one handle, so what is checked is what is read. `not_available` is the
+/// error for a file that is not a readable regular file.
+fn read_markdown(file: &Path, not_available: DocumentError) -> Result<String, DocumentError> {
+    // Opening a FIFO or device can block forever, so only a regular file is opened.
+    if !std::fs::metadata(file).is_ok_and(|metadata| metadata.is_file()) {
+        return Err(not_available);
+    }
+    // Accepted: a symlink swapped in between the canonicalize and this open is not detected. That
+    // needs write access inside the run's worktree or repository, and the dashboard is local-only.
+    let handle = File::open(file).map_err(|_| not_available.clone())?;
+    let metadata = handle.metadata().map_err(|_| not_available.clone())?;
     if !metadata.is_file() {
-        return Err(not_available());
+        return Err(not_available);
     }
     if metadata.len() > MAX_DOCUMENT_BYTES {
         return Err(DocumentError::TooLarge);
@@ -159,7 +166,19 @@ fn git_dir(worktree: &Path, repository: Option<&Path>) -> Option<PathBuf> {
     if dot_git.is_dir() {
         return std::fs::canonicalize(dot_git).ok();
     }
-    let text = std::fs::read_to_string(&dot_git).ok()?;
+    if !std::fs::metadata(&dot_git).ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    File::open(&dot_git)
+        .ok()?
+        .take(MAX_GIT_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_GIT_FILE_BYTES {
+        return None;
+    }
+    let text = String::from_utf8(bytes).ok()?;
     let target = worktree.join(text.trim().strip_prefix("gitdir:")?.trim());
     if !is_local_path(&target) {
         return None;
@@ -360,6 +379,97 @@ mod tests {
         let (_dir, _, worktree, run) = setup("bin.md");
         fs::write(worktree.join("bin.md"), [0xff, 0xfe, 0x00]).unwrap();
         assert_eq!(read(&run, "bin.md").err(), Some(DocumentError::NotText));
+    }
+
+    /// Makes a FIFO with the `mkfifo` program (libc is not a dependency); `false` if unavailable.
+    #[cfg(unix)]
+    fn make_fifo(path: &Path) -> bool {
+        std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    /// Runs `work` on a thread and fails instead of hanging if it does not finish in 5 seconds.
+    #[cfg(unix)]
+    fn within_five_seconds<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(work());
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("blocked: a non-regular file was opened")
+    }
+
+    // Opening a FIFO blocks until a writer appears, so a FIFO named `x.md` must never be opened.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_named_like_a_document_is_not_available_and_does_not_block() {
+        let (_dir, _, worktree, run) = setup("x.md");
+        if !make_fifo(&worktree.join("x.md")) {
+            eprintln!("skipped: mkfifo is not available");
+            return;
+        }
+        let result = within_five_seconds(move || read(&run, "x.md").err());
+        assert_eq!(
+            result,
+            Some(DocumentError::NotAvailable {
+                path: "x.md".into()
+            })
+        );
+    }
+
+    // Reading a FIFO as `.git` would block forever, so it must give no git directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_as_dot_git_gives_no_git_dir_and_does_not_block() {
+        let (_dir, repository, worktree, _) = setup("x.md");
+        fs::remove_dir(worktree.join(".git")).unwrap();
+        if !make_fifo(&worktree.join(".git")) {
+            eprintln!("skipped: mkfifo is not available");
+            return;
+        }
+        assert_eq!(
+            within_five_seconds(move || git_dir(&worktree, Some(&repository))),
+            None
+        );
+    }
+
+    #[test]
+    fn an_oversized_dot_git_file_gives_no_git_dir() {
+        let (_dir, repository, worktree, _) = setup("x.md");
+        fs::remove_dir(worktree.join(".git")).unwrap();
+        let inside = repository.join(".git/worktrees/feature");
+        fs::create_dir_all(&inside).unwrap();
+        let text = format!("gitdir: {}{}", inside.display(), " ".repeat(5000));
+        fs::write(worktree.join(".git"), text).unwrap();
+        assert_eq!(git_dir(&worktree, Some(&repository)), None);
+    }
+
+    #[test]
+    fn a_plan_in_the_worktree_git_directory_and_the_sibling_plan_are_served() {
+        let (_dir, repository, worktree, _) = setup("x.md");
+        fs::remove_dir(worktree.join(".git")).unwrap();
+        let inside = repository.join(".git/worktrees/wt");
+        fs::create_dir_all(&inside).unwrap();
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}", inside.display()),
+        )
+        .unwrap();
+        let plan = inside.join("factory-plan.md");
+        fs::write(&plan, "# saved plan").unwrap();
+        let run_plan = run(&repository, &worktree, &plan.to_string_lossy());
+        let served = read(&run_plan, &plan.to_string_lossy()).unwrap();
+        assert!(served.html.contains("saved plan"));
+        let mut sibling = worktree.as_os_str().to_owned();
+        sibling.push(".factory-plan.md");
+        let sibling = PathBuf::from(sibling);
+        fs::write(&sibling, "# sibling plan").unwrap();
+        let run_sibling = run(&repository, &worktree, &sibling.to_string_lossy());
+        let served = read(&run_sibling, &sibling.to_string_lossy()).unwrap();
+        assert!(served.html.contains("sibling plan"));
     }
 
     #[test]
