@@ -28,7 +28,7 @@ fn is_valid(token: &str) -> bool {
 
 /// Reads the token a server wrote to `path`, or `None` when the file is missing, is not a regular file, is longer than
 /// a token with a line break, or holds anything other than a valid token. It never reads more than a few bytes and
-/// never blocks on a pipe, so a hostile or mistaken path cannot hang or bloat the CLI.
+/// never blocks on a pipe that is already there (see the comment below for the swap race), so a hostile or mistaken path cannot hang or bloat the CLI.
 pub(crate) fn read_file(path: &Path) -> Option<String> {
     // Check the type before opening: opening a named pipe for reading waits for a writer, and `metadata` never waits.
     // The handle is checked again after opening, which catches a swap to another file type but not a swap to a pipe
