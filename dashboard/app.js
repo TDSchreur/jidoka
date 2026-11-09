@@ -207,7 +207,7 @@ function Reader({ run, reference, onClose }) {
       <button type="button" class="toggle reader-close" onClick=${() => dialog.current.close()}>Close</button>
     </div>
     ${doc === null
-      ? html`<p class="reader-note">Loading…</p>`
+      ? html`<p class="reader-note" role="status">Loading…</p>`
       : doc.gone !== undefined
         ? html`<p class="reader-note">This document is no longer available (${doc.gone})</p>`
         : doc.error !== undefined

@@ -1,5 +1,7 @@
 use crate::{
-    current_build, pr_state,
+    current_build,
+    document::{self, DocumentError},
+    pr_state,
     pr_wait::{self, RealGh},
     run::{NewRun, Run, RunStore, UpdateRun},
     usage::{collect_and_store, UsageSettings},
@@ -14,7 +16,11 @@ use rocket::{
     Build, Rocket, State,
 };
 use serde::{Deserialize, Serialize};
-use std::{io, path::Path, sync::Mutex};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 pub(crate) const DEFAULT_PORT: u16 = 4311;
 pub(crate) const ADDRESS: &str = "127.0.0.1:4311";
@@ -160,10 +166,7 @@ fn dashboard(
 }
 
 #[rocket::get("/assets/<path..>")]
-fn asset(
-    request: Security,
-    path: std::path::PathBuf,
-) -> Result<(ContentType, &'static [u8]), HttpStatus> {
+fn asset(request: Security, path: PathBuf) -> Result<(ContentType, &'static [u8]), HttpStatus> {
     if !request.local {
         return Err(HttpStatus::BadRequest);
     }
@@ -312,177 +315,55 @@ fn get_run(
         })
 }
 
-/// The largest document the dashboard renders.
-const MAX_DOCUMENT_BYTES: u64 = 1024 * 1024;
-
-/// Why a document is not served. The status code tells a client which: `404` with
+/// The HTTP answer for a document that is not served: `404` with
 /// `{"available": false, "path": <reference>}` when the recorded file is not there (yet), any other
 /// code with `{"error": <reason>}` when the request is refused.
-type DocumentError = (HttpStatus, Json<serde_json::Value>);
+type DocumentFailure = (HttpStatus, Json<serde_json::Value>);
 
-fn refused(status: HttpStatus, reason: &str) -> DocumentError {
+fn refused(status: HttpStatus, reason: &str) -> DocumentFailure {
     (status, Json(serde_json::json!({ "error": reason })))
 }
 
-fn is_web_reference(reference: &str) -> bool {
-    let lower = reference.trim_start().to_ascii_lowercase();
-    lower.starts_with("http://") || lower.starts_with("https://")
-}
-
-fn is_markdown(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
-}
-
-/// The git directory of a worktree: `<worktree>/.git` is a directory, or a file `gitdir: <path>`.
-fn git_dir(worktree: &Path) -> Option<std::path::PathBuf> {
-    let dot_git = worktree.join(".git");
-    if dot_git.is_dir() {
-        return Some(dot_git);
-    }
-    let text = std::fs::read_to_string(&dot_git).ok()?;
-    let target = Path::new(text.trim().strip_prefix("gitdir:")?.trim());
-    Some(worktree.join(target))
-}
-
-/// The recorded local document `reference` of `run` as a canonical file path inside the worktree,
-/// the repository, or a saved-plan location (the worktree's git directory or the sibling
-/// `<worktree>.factory-plan.md`).
-fn recorded_document(run: &Run, reference: &str) -> Result<std::path::PathBuf, DocumentError> {
-    if is_web_reference(reference) {
-        return Err(refused(
-            HttpStatus::BadRequest,
-            "Only local documents are served",
-        ));
-    }
-    let recorded = run.spec.as_deref() == Some(reference)
-        || run
-            .tickets
-            .iter()
-            .any(|ticket| ticket.reference == reference);
-    if !recorded {
-        return Err(refused(
+fn document_failure(error: DocumentError) -> DocumentFailure {
+    match error {
+        DocumentError::NotRecorded => refused(
             HttpStatus::Forbidden,
             "Not a reference recorded on this run",
-        ));
-    }
-    if !is_markdown(Path::new(reference)) {
-        return Err(refused(
+        ),
+        DocumentError::WebReference => {
+            refused(HttpStatus::BadRequest, "Only local documents are served")
+        }
+        DocumentError::NotMarkdown => refused(
             HttpStatus::BadRequest,
             "Only Markdown (.md) documents are served",
-        ));
-    }
-    let worktree = run.worktree.as_deref().map(Path::new);
-    let repository = run.repository.as_deref().map(Path::new);
-    let reference_path = Path::new(reference);
-    let candidates: Vec<std::path::PathBuf> = if reference_path.is_absolute() {
-        vec![reference_path.to_path_buf()]
-    } else {
-        worktree
-            .into_iter()
-            .chain(repository)
-            .map(|root| root.join(reference_path))
-            .collect()
-    };
-    let not_available = || {
-        (
-            HttpStatus::NotFound,
-            Json(serde_json::json!({ "available": false, "path": reference })),
-        )
-    };
-    let file = candidates
-        .iter()
-        .find_map(|candidate| std::fs::canonicalize(candidate).ok())
-        .ok_or_else(not_available)?;
-    let mut roots: Vec<std::path::PathBuf> = worktree
-        .into_iter()
-        .chain(repository)
-        .filter_map(|root| std::fs::canonicalize(root).ok())
-        .collect();
-    if let Some(worktree) = worktree {
-        roots.extend(git_dir(worktree).and_then(|dir| std::fs::canonicalize(dir).ok()));
-        let mut plan = worktree.as_os_str().to_owned();
-        plan.push(".factory-plan.md");
-        roots.extend(std::fs::canonicalize(plan).ok());
-    }
-    if !roots.iter().any(|root| file.starts_with(root)) {
-        return Err(refused(
+        ),
+        DocumentError::OutsideRoots => refused(
             HttpStatus::Forbidden,
             "The document is outside the run's worktree and repository",
-        ));
-    }
-    if !is_markdown(&file) {
-        return Err(refused(
-            HttpStatus::BadRequest,
-            "Only Markdown (.md) documents are served",
-        ));
-    }
-    let metadata = std::fs::metadata(&file).map_err(|_| not_available())?;
-    if !metadata.is_file() {
-        return Err(not_available());
-    }
-    if metadata.len() > MAX_DOCUMENT_BYTES {
-        return Err(refused(
+        ),
+        DocumentError::TooLarge => refused(
             HttpStatus::PayloadTooLarge,
             "The document is larger than 1 MB",
-        ));
-    }
-    Ok(file)
-}
-
-fn escape_html(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
-
-/// Renders Markdown as HTML that is safe to insert into the page: raw HTML is shown as text, images
-/// as their alt text, http(s) links open in a new tab and every other link is plain text.
-fn render_markdown(markdown: &str) -> String {
-    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
-    let mut kept_links = Vec::new();
-    let events = Parser::new_ext(
-        markdown,
-        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS,
-    )
-    .filter_map(|event| match event {
-        Event::Html(html) | Event::InlineHtml(html) => Some(Event::Text(html)),
-        Event::Start(Tag::Image { .. }) | Event::End(TagEnd::Image) => None,
-        Event::Start(Tag::Link { dest_url, .. }) => {
-            let keep = is_web_reference(&dest_url);
-            kept_links.push(keep);
-            keep.then(|| {
-                Event::Html(
-                    format!(
-                        "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">",
-                        escape_html(&dest_url)
-                    )
-                    .into(),
-                )
-            })
+        ),
+        DocumentError::NotText => {
+            refused(HttpStatus::UnprocessableEntity, "The document is not text")
         }
-        Event::End(TagEnd::Link) => kept_links
-            .pop()
-            .unwrap_or(false)
-            .then(|| Event::Html("</a>".into())),
-        other => Some(other),
-    });
-    let mut html = String::new();
-    pulldown_cmark::html::push_html(&mut html, events);
-    html
+        DocumentError::NotAvailable { path } => (
+            HttpStatus::NotFound,
+            Json(serde_json::json!({ "available": false, "path": path })),
+        ),
+    }
 }
 
 /// A recorded local spec or ticket of a run as rendered HTML: `{"name": <file name>, "html": <HTML>}`.
-/// See `recorded_document` for the refusals and the not-available answer.
+/// See `document::read` for the refusals and the not-available answer.
 #[rocket::get("/api/runs/<id>/document?<reference>")]
-fn get_document(
+async fn get_document(
     request: Security,
     id: &str,
     reference: &str,
     store: &State<RunStore>,
-) -> Result<Json<serde_json::Value>, DocumentError> {
+) -> Result<Json<serde_json::Value>, DocumentFailure> {
     if !request.local {
         return Err(refused(HttpStatus::BadRequest, "Bad request"));
     }
@@ -496,15 +377,16 @@ fn get_document(
             refused(HttpStatus::InternalServerError, "Internal server error")
         })?
         .ok_or_else(|| refused(HttpStatus::NotFound, "Not found"))?;
-    let file = recorded_document(&run, reference)?;
-    let markdown = std::fs::read_to_string(&file)
-        .map_err(|_| refused(HttpStatus::UnprocessableEntity, "The document is not text"))?;
-    let name = file
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let reference = reference.to_owned();
+    let read = rocket::tokio::task::spawn_blocking(move || document::read(&run, &reference))
+        .await
+        .map_err(|error| {
+            eprintln!("Document read stopped: {error}");
+            refused(HttpStatus::InternalServerError, "Internal server error")
+        })?;
+    let document = read.map_err(document_failure)?;
     Ok(Json(
-        serde_json::json!({ "name": name, "html": render_markdown(&markdown) }),
+        serde_json::json!({ "name": document.name, "html": document.html }),
     ))
 }
 
@@ -866,15 +748,12 @@ mod tests {
     }
 
     /// A repository and a worktree beside it, and a run recording `spec` and `tickets`.
-    fn document_setup(
-        spec: &str,
-        tickets: &[&str],
-    ) -> (TestDir, std::path::PathBuf, std::path::PathBuf, String) {
+    fn document_setup(spec: &str, tickets: &[&str]) -> (TestDir, PathBuf, PathBuf, String) {
         let dir = TestDir::new();
         let repository = dir.0.path().join("repo");
         let worktree = dir.0.path().join("repo.worktrees").join("feature");
-        fs::create_dir_all(&repository).unwrap();
-        fs::create_dir_all(&worktree).unwrap();
+        fs::create_dir_all(repository.join(".git")).unwrap();
+        fs::create_dir_all(worktree.join(".git")).unwrap();
         let id = document_run(
             &dir.0.path().join("runs.json"),
             &worktree,
@@ -928,6 +807,7 @@ mod tests {
         assert_eq!(status, HttpStatus::Forbidden);
     }
 
+    // Creating symlinks on Windows needs extra privileges.
     #[cfg(unix)]
     #[rocket::async_test]
     async fn a_symlink_out_of_the_roots_is_rejected() {
@@ -990,34 +870,6 @@ mod tests {
         );
         let (status, body, _) = fetch_document(&dir, &id, &plan).await;
         assert_eq!(status, HttpStatus::Ok, "{body}");
-    }
-
-    #[test]
-    fn raw_html_is_shown_as_text() {
-        let html = render_markdown("<script>alert(1)</script>\n\ntext <b onclick=x>hi</b>");
-        assert!(
-            !html.contains("<script>") && !html.contains("<b "),
-            "{html}"
-        );
-        assert!(html.contains("&lt;script&gt;"), "{html}");
-    }
-
-    #[test]
-    fn only_http_links_are_links_and_images_are_alt_text() {
-        let html = render_markdown(
-            "[web](https://example.com/a?b=1&c=2) [rel](other.md) [js](javascript:alert(1)) [mail](mailto:a@b.c) ![alt text](http://evil.test/x.png)",
-        );
-        assert!(html.contains(
-            "<a href=\"https://example.com/a?b=1&amp;c=2\" target=\"_blank\" rel=\"noopener noreferrer\">web</a>"
-        ), "{html}");
-        assert_eq!(html.matches("<a ").count(), 1, "{html}");
-        for text in ["rel", "js", "mail", "alt text"] {
-            assert!(html.contains(text), "{html}");
-        }
-        assert!(
-            !html.contains("javascript:") && !html.contains("<img"),
-            "{html}"
-        );
     }
 
     #[rocket::async_test]
