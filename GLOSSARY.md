@@ -18,9 +18,9 @@
 
 **Workflow mode**: The workflow skill that carries a run: `factory-full` (quality), `factory-balanced`, or `factory-fast` (speed). Modes differ in how much Define, Build, and Check do.
 
-**Model routing**: Choosing the model and effort each Stage's agents run on, independently of the workflow mode. The coordinating session keeps its own model; a routed Stage hands its work to agents started on the Stage's model, while conversation with the user stays in the coordinating session. It is not the same as workflow selection, which `/factory` does. A run records its model-routing selection when it starts. Copilot CLI is not supported: every Stage there keeps the session's model.
+**Model routing**: Choosing the model and effort each Stage's agents run on, independently of the workflow mode. The coordinating session keeps its own model; a routed Stage hands its work to agents started on the Stage's model, while conversation with the user stays in the coordinating session. It is not the same as workflow selection, which `/factory` does. A run records its model-routing selection when it starts.
 
-**Model routing policy**: The user-owned file that describes model routing: for each agent (Claude Code, Codex), a model and optional effort per Stage. A Stage left out keeps the session's model. A run starts in one agent and records only that agent's part. The factory reads the file once, when a run starts.
+**Model routing policy**: The user-owned file that describes model routing: for each agent (Claude Code, Codex, Copilot CLI), a model and optional effort per Stage. A Stage left out keeps the session's model. A run starts in one agent and records only that agent's part. The factory reads the file once, when a run starts.
 
 **Run context**: What a new agent session needs to continue a run: the repository, worktree, branch and base commit it started from, the workflow mode, a reference to the spec, the ordered tickets with their progress, the pull request, a short summary per Stage and the status reason. It holds references and summaries only, never transcripts or secrets, and is changed only through `factory run update`. Anything a run never recorded is shown as unknown, not guessed.
 
@@ -36,7 +36,7 @@
 
 **Estimated cost**: The cost of a run's token usage in USD, computed when it is shown from the factory's built-in price table (per million tokens) for each row, model, stage and run. A model without a price is `unknown`, never zero; a total that includes one is partial (`>= $X`). It is not stored.
 
-**Pause**: A moment the agent's Claude Code log shows work stopped: a usage limit or a context compaction. The dashboard keeps its kind and time, blocks a running run with the matching reason until later activity appears, and shows it on the run's timeline. A stretch of over 10 minutes with no activity that no pause explains is an idle gap. Codex and Copilot logs are not checked.
+**Pause**: A moment the agent's Claude Code log shows work stopped: a usage limit or a context compaction. The dashboard keeps its kind and time, blocks a running run with the matching reason until later activity appears, and shows it on the run's timeline. A stretch of over 10 minutes with no activity that no pause explains is an idle gap. Codex and Copilot logs are not checked: Copilot's `events.jsonl` writes no usage-limit or compaction events.
 
 **Model request**: One response from the model, counted once however many times its agent's log repeats it. It is the unit of the request analysis; user turns and individual tool calls are different units.
 

@@ -640,8 +640,31 @@ pub(crate) fn civil_day(millis: u64) -> String {
 
 // --- Copilot ----------------------------------------------------------------------------------------
 
+/// The tokens of a Copilot `usage` object, or `None` when it reports neither input nor output.
+pub(crate) fn copilot_tokens(usage: &Value) -> Option<Tokens> {
+    let (input, read, write, output) = (
+        count(usage.get("inputTokens")),
+        count(usage.get("cacheReadTokens")),
+        count(usage.get("cacheWriteTokens")),
+        count(usage.get("outputTokens")),
+    );
+    if input.is_none() && output.is_none() {
+        return None;
+    }
+    Some(Tokens {
+        input: input.map(|n| {
+            n.saturating_sub(read.unwrap_or(0))
+                .saturating_sub(write.unwrap_or(0))
+        }),
+        cache_read: read,
+        cache_write: write,
+        output,
+        reasoning: count(usage.get("reasoningTokens")),
+    })
+}
+
 /// Copilot counts cache reads and writes inside `inputTokens`; both are taken out of input. Reasoning
-/// tokens are part of output.
+/// tokens are part of output. Each record also names the effort of its call as `reasoningEffort`.
 fn parse_copilot(text: &str, session: &str) -> Parsed {
     let mut parsed = Parsed::default();
     for (number, line) in text
@@ -664,25 +687,9 @@ fn parse_copilot(text: &str, session: &str) -> Parsed {
             parsed.unusable += 1;
             continue;
         };
-        let (input, read, write, output) = (
-            count(usage.get("inputTokens")),
-            count(usage.get("cacheReadTokens")),
-            count(usage.get("cacheWriteTokens")),
-            count(usage.get("outputTokens")),
-        );
-        if input.is_none() && output.is_none() {
+        let Some(tokens) = copilot_tokens(usage) else {
             parsed.unusable += 1;
             continue;
-        }
-        let tokens = Tokens {
-            input: input.map(|n| {
-                n.saturating_sub(read.unwrap_or(0))
-                    .saturating_sub(write.unwrap_or(0))
-            }),
-            cache_read: read,
-            cache_write: write,
-            output,
-            reasoning: count(usage.get("reasoningTokens")),
         };
         parsed.push(
             usage["apiCallId"].as_str().map(str::to_string),
@@ -694,8 +701,7 @@ fn parse_copilot(text: &str, session: &str) -> Parsed {
                 model,
                 tokens,
                 subagent: usage["initiator"] == "sub-agent",
-                // Copilot's usage records carry no effort.
-                effort: None,
+                effort: effort_name(&usage["reasoningEffort"]),
             },
         );
     }

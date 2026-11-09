@@ -475,20 +475,39 @@ fn verification_check(root: &Path, path: &OsString) -> Check {
 }
 
 /// Finds `name` in the `PATH` folders; on Windows it also tries the `PATHEXT` extensions.
-fn find_program(name: &str, path: &OsString) -> Option<PathBuf> {
-    let extensions: Vec<String> = if cfg!(windows) {
-        std::iter::once(String::new())
-            .chain(
-                std::env::var("PATHEXT")
-                    .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
-                    .split(';')
-                    .filter(|ext| ext.starts_with('.'))
-                    .map(str::to_string),
-            )
-            .collect()
+pub(crate) fn find_program(name: &str, path: &OsString) -> Option<PathBuf> {
+    let extensions = if cfg!(windows) {
+        let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        windows_extensions(&pathext)
     } else {
         vec![String::new()]
     };
+    find_with_extensions(name, path, &extensions)
+}
+
+/// What to run for `az`. Windows starts only `az.exe` for a bare name, but the Azure CLI installs `az.cmd`,
+/// so the launcher found on `PATH` is used.
+pub(crate) fn az_program() -> PathBuf {
+    std::env::var_os("PATH").map_or_else(|| PathBuf::from("az"), |path| az_program_in(&path))
+}
+
+fn az_program_in(path: &OsString) -> PathBuf {
+    find_program("az", path)
+        .filter(|found| found.is_absolute())
+        .unwrap_or_else(|| PathBuf::from("az"))
+}
+
+/// The extensions Windows runs, in `PATHEXT` order. A file without one, such as the Bash launcher
+/// next to `az.cmd`, is not something Windows can run, so it is not a candidate.
+fn windows_extensions(pathext: &str) -> Vec<String> {
+    pathext
+        .split(';')
+        .filter(|ext| ext.starts_with('.'))
+        .map(str::to_string)
+        .collect()
+}
+
+fn find_with_extensions(name: &str, path: &OsString, extensions: &[String]) -> Option<PathBuf> {
     std::env::split_paths(path).find_map(|dir| {
         extensions.iter().find_map(|ext| {
             let candidate = dir.join(format!("{name}{ext}"));
@@ -724,9 +743,13 @@ fn create_model_routing(agents: &[RoutingAgent], machine: &Machine) -> Result<St
     let shown = printable(&path.display().to_string());
     match install_starter(&path, agents) {
         Ok(done @ (Starter::Created | Starter::Replaced(_))) => {
+            let names: Vec<_> = agents.iter().map(|agent| agent.name()).collect();
+            let named = match names.split_last() {
+                Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+                _ => names.join(""),
+            };
             let about = format!(
-                "It is a starter policy for {} that routes every stage (define, build, check, finish) of each.",
-                agents.iter().map(|agent| agent.name()).collect::<Vec<_>>().join(" and ")
+                "It is a starter policy for {named} that routes every stage (define, build, check, finish) of each."
             );
             Ok(match done {
                 Starter::Replaced(off) => Starter::replaced_message(&shown, off, Some(&about)),
@@ -776,12 +799,14 @@ pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
         (false, _) => None,
         (true, Some("claude")) => Some(vec![RoutingAgent::Claude]),
         (true, Some("codex")) => Some(vec![RoutingAgent::Codex]),
-        // Without an agent the starter has an entry for each, which is what one file for both is for.
-        (true, None) => Some(vec![RoutingAgent::Claude, RoutingAgent::Codex]),
-        (true, Some(_)) => return Err(
-            "Model routing is not supported on Copilot CLI, so there is no policy file to create."
-                .into(),
-        ),
+        (true, Some("copilot")) => Some(vec![RoutingAgent::Copilot]),
+        // Without an agent the starter has an entry for each, which is what one file for all is for.
+        (true, None) => Some(vec![
+            RoutingAgent::Claude,
+            RoutingAgent::Codex,
+            RoutingAgent::Copilot,
+        ]),
+        (true, Some(other)) => return Err(format!("Unknown agent {other:?}.")),
     };
     Ok(Args {
         agent,
@@ -1365,19 +1390,23 @@ mod tests {
     }
 
     #[test]
-    fn creating_the_policy_covers_both_agents_unless_one_is_named_and_refuses_copilot() {
+    fn creating_the_policy_covers_every_agent_unless_one_is_named() {
         let error = |args: &[&str]| parse_args(args).unwrap_err();
         let both = parse_args(&["--create-model-routing"]).unwrap();
         assert_eq!(
             both.create_model_routing,
-            Some(vec![RoutingAgent::Claude, RoutingAgent::Codex])
+            Some(vec![
+                RoutingAgent::Claude,
+                RoutingAgent::Codex,
+                RoutingAgent::Copilot
+            ])
         );
-        let copilot = error(&["--create-model-routing", "--agent", "copilot"]);
-        assert!(
-            copilot.contains("Copilot") && copilot.contains("not supported"),
-            "{copilot}"
+        let copilot = parse_args(&["--create-model-routing", "--agent", "copilot"]).unwrap();
+        assert_eq!(
+            copilot.create_model_routing,
+            Some(vec![RoutingAgent::Copilot])
         );
-        assert!(parse_args(&["--agent", "copilot"]).is_ok());
+        assert!(error(&["--create-model-routing", "--agent", "gemini"]).contains("Unknown agent"));
     }
 
     impl World {
@@ -1590,13 +1619,12 @@ mod tests {
         assert!(!tagged(&claude, "claude").is_empty() && tagged(&claude, "codex").is_empty());
         let codex = world.report(Some("codex"));
         assert!(!tagged(&codex, "codex").is_empty() && tagged(&codex, "claude").is_empty());
-        // Copilot has nothing to route, and says so once.
+        // BOTH_POLICY has no Copilot entry, so Copilot is skipped with the reason.
         let copilot = world.report(Some("copilot"));
         assert!(tagged(&copilot, "claude").is_empty() && tagged(&copilot, "codex").is_empty());
-        assert!(copilot
-            .model_routing
+        assert!(tagged(&copilot, "copilot")
             .iter()
-            .any(|c| c.message.contains("Copilot")));
+            .any(|c| c.status == Status::Skipped && c.message.contains("no entry for copilot")));
     }
 
     #[test]
@@ -1676,14 +1704,12 @@ mod tests {
             // The summary of the file, then what the policy does for that agent.
             assert_eq!(report.model_routing.len(), 2, "{other}");
             let checks = &report.model_routing[1..];
-            // Copilot CLI is never routed, whatever the file says; an agent without an entry is skipped.
-            let (status, text) = if other == "copilot" {
-                (Status::Pass, "not supported on Copilot")
-            } else {
-                (Status::Skipped, "no entry for codex")
-            };
-            assert_eq!(checks[0].status, status, "{other}");
-            assert!(checks[0].message.contains(text), "{other}");
+            // An agent without an entry is skipped.
+            assert_eq!(checks[0].status, Status::Skipped, "{other}");
+            assert!(
+                checks[0].message.contains(&format!("no entry for {other}")),
+                "{other}"
+            );
             // Only a missing Copilot command, never the policy, can make that report not ready.
             assert!(checks.iter().all(|c| !c.blocks()), "{other}");
         }
@@ -1960,19 +1986,36 @@ mod tests {
     }
 
     #[test]
-    fn a_copilot_policy_is_information_and_does_not_change_the_exit_status() {
-        let ready = World::ready().claude_ready();
-        let without = ready.report(Some("copilot")).ok;
-        let report = ready.with_policy(CLAUDE_POLICY).report(Some("copilot"));
-        assert_eq!(report.ok, without);
-        assert_eq!(report.model_routing.len(), 2);
-        let check = &report.model_routing[1];
-        assert_eq!(check.status, Status::Pass);
-        assert!(
-            check.message.contains("not supported") && check.message.contains("session"),
-            "{}",
-            check.message
-        );
+    fn a_copilot_entry_checks_the_command_models_and_effort_and_warns_about_problems() {
+        let policy = r#"{"agents":{"copilot":{"stages":{
+            "check":{"model":"claude-opus-4.8","effort":"high"}}}}}"#;
+        let report = World::ready()
+            .claude_ready()
+            .with_agent("copilot")
+            .with_policy(policy)
+            .report(Some("copilot"));
+        let copilot = tagged(&report, "copilot");
+        let ids: Vec<_> = copilot.iter().map(|c| c.id).collect();
+        assert_eq!(ids, ["host", "model", "effort", "overrides"]);
+        assert!(copilot
+            .iter()
+            .any(|c| c.id == "model" && c.status == Status::Pass));
+        assert!(copilot.iter().all(|c| !c.blocks()));
+        // A missing effort is a warning, never a failure.
+        let weak = r#"{"agents":{"copilot":{"stages":{
+            "check":{"model":"claude-opus-4.8"},"build":{"model":"claude-sonnet-5.5","effort":"low"}}}}}"#;
+        let report = World::ready()
+            .claude_ready()
+            .with_agent("copilot")
+            .with_policy(weak)
+            .report(Some("copilot"));
+        assert!(report.ok, "{}", render(&report));
+        let warned: Vec<_> = tagged(&report, "copilot")
+            .iter()
+            .filter(|c| c.status == Status::Warning)
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(warned, ["effort"]);
         // A policy that is switched off says nothing.
         let off = World::ready()
             .claude_ready()
@@ -2105,6 +2148,73 @@ mod tests {
 
     fn provider_check<'a>(report: &'a Report, id: &str) -> Option<&'a Check> {
         report.provider.iter().find(|check| check.id == id)
+    }
+
+    #[test]
+    fn windows_skips_the_extensionless_launcher_next_to_the_cmd_one() {
+        let bin = tempfile::tempdir().unwrap();
+        for name in ["az", "az.cmd"] {
+            let file = bin.path().join(name);
+            fs::write(&file, "").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let extensions = windows_extensions(".COM;.EXE;;.cmd");
+        assert_eq!(extensions, [".COM", ".EXE", ".cmd"]);
+        let found = find_with_extensions("az", &bin.path().into(), &extensions).unwrap();
+        assert_eq!(found, bin.path().join("az.cmd"));
+    }
+
+    /// Runs on Windows in CI: the Bash launcher must not shadow `az.cmd`, and the `.cmd` must start.
+    #[cfg(windows)]
+    #[test]
+    fn az_resolves_to_the_cmd_launcher_and_the_cmd_runs() {
+        let bin = tempfile::tempdir().unwrap();
+        fs::write(bin.path().join("az"), "#!/usr/bin/env bash\nexit 1\n").unwrap();
+        fs::write(
+            bin.path().join("az.cmd"),
+            "@echo off\r\necho launched %1\r\n",
+        )
+        .unwrap();
+        let program = az_program_in(&bin.path().into());
+        // PATHEXT spells the extension in capitals, which the file system treats as the same file.
+        assert_eq!(
+            program.to_string_lossy().to_lowercase(),
+            bin.path().join("az.cmd").to_string_lossy().to_lowercase()
+        );
+        let output = Command::new(&program).arg("version").output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "launched version"
+        );
+    }
+
+    /// A bare `az` is looked up by Windows as `az.exe` only, so it never finds the Azure CLI there.
+    #[test]
+    fn az_is_never_started_by_its_bare_name() {
+        let bare = ["Command::new(", "\"az\")"].concat();
+        let mut found = Vec::new();
+        let mut folders = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(folder) = folders.pop() {
+            for entry in fs::read_dir(&folder).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "rs")
+                    && fs::read_to_string(&path).unwrap().contains(&bare)
+                {
+                    found.push(path);
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "start the Azure CLI with `az_program()`, not by name: {found:?}"
+        );
     }
 
     /// A fake host tool on PATH: a shell script that exits 0 only for the listed argument lines. Tests that

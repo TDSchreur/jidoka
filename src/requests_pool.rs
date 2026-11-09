@@ -261,7 +261,7 @@ pub(crate) fn pool(
         .any(|row| row.category == Category::NotCategorized)
     {
         out.notes.push(
-            "Copilot requests are not categorized and have no tool output size, so the tool output totals cover Claude Code and Codex requests only".into(),
+            "Some Copilot requests have no matching assistant message in the log, so they are not categorized and have no tool output size; the tool output totals leave them out".into(),
         );
     }
     if out.included.len() < 10 {

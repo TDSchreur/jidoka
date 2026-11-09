@@ -41,7 +41,7 @@ pub(crate) enum Category {
     ReadingEditingAnalysis,
     /// No tool call.
     TextOnly,
-    /// Codex and Copilot requests: their logs are not classified.
+    /// A Copilot request whose log has no assistant message to read its tool calls from.
     NotCategorized,
 }
 
@@ -948,30 +948,4 @@ fn hit(segment: &str) -> Hit {
         _ => return Hit::Other,
     };
     Hit::Category(category)
-}
-
-/// Copilot requests as the usage reader found them, with no category. A session counts for a run by
-/// the usage reader's rule: its id was recorded on the run, or its log names the run.
-pub(crate) fn uncategorized(sessions: Vec<crate::usage_logs::SessionData>) -> Vec<SessionRequests> {
-    sessions
-        .into_iter()
-        .map(|session| SessionRequests {
-            id: session.id,
-            has_subagent_logs: session.entries.iter().any(|entry| entry.subagent),
-            claims: session.mentions,
-            requests: session
-                .entries
-                .into_iter()
-                .map(|entry| Request {
-                    ts: entry.ts,
-                    category: Category::NotCategorized,
-                    tokens: entry.tokens,
-                    chained_reporting: false,
-                    several_categories: false,
-                    tool_output_bytes: None,
-                    subagent: entry.subagent,
-                })
-                .collect(),
-        })
-        .collect()
 }

@@ -392,6 +392,10 @@ mod tests {
         assert!(text.contains("  finish  not routed\n"), "{text}");
         assert!(!text.contains("Effort observed"), "{text}");
         assert!(!render(&run_with_summary("s")).contains("Model routing"));
+        // A Copilot selection is shown like any other agent's.
+        let mut copilot = routed_run();
+        copilot.model_routing.as_mut().unwrap().agent = crate::routing::RoutingAgent::Copilot;
+        assert!(render(&copilot).contains("Model routing copilot\n"));
         // The machine-readable form is the whole run, so skills can read the selection from it.
         let json = serde_json::to_value(routed_run()).unwrap();
         assert_eq!(json["model_routing"]["stages"]["check"]["model"], "opus");
@@ -551,6 +555,40 @@ mod tests {
         assert!(
             observed(&text, "build").ends_with("matches the request"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn a_copilot_request_is_compared_with_exact_model_ids_and_recorded_efforts() {
+        let mut run: Run = serde_json::from_value(serde_json::json!({
+            "id": "1", "title": "t", "project": "/p", "stage": "build", "status": "running",
+            "model_routing": {
+                "agent": "copilot",
+                "stages": {
+                    "build": {"model": "claude-sonnet-5.5", "effort": "medium"},
+                    "check": {"model": "claude-haiku-4.5", "effort": "low"}
+                }
+            },
+            "usage": {"status": "tracked", "collected_at": 1, "rows": [
+                {"stage": "build", "model": "claude-sonnet-5.5", "efforts": ["high"], "input": 10, "output": 5},
+                {"stage": "check", "model": "gpt-5.6-terra", "input": 10, "output": 5}
+            ]}
+        }))
+        .unwrap();
+        let text = render(&run);
+        assert_eq!(
+            observed(&text, "build"),
+            "observed: claude-sonnet-5.5 (effort high); MISMATCH: effort medium was requested, observed high"
+        );
+        // A silent fallback to the session's model is a mismatch.
+        assert_eq!(
+            observed(&text, "check"),
+            "observed: gpt-5.6-terra; MISMATCH: claude-haiku-4.5 was requested and never observed"
+        );
+        run.usage.as_mut().unwrap().status = UsageStatus::Partial;
+        assert_eq!(
+            observed(&render(&run), "check"),
+            "observed: gpt-5.6-terra; claude-haiku-4.5 not observed (usage is partial, so it may be missing)"
         );
     }
 

@@ -66,7 +66,7 @@ Evidence: old [worktree management](https://github.com/TDSchreur/tds-factory/blo
 | Ticket progress, spec/ticket/PR links, rendered local documents and stage summaries | One current-ticket URL and activity; basic run-detail drawer | The dashboard tracks current activity but cannot present the full delivery context | P1 |
 | Event timeline, last-seen observations and quiet-agent warnings | Latest update timestamp only | No history of stage visits, verification, waiting or rework decisions | P2 |
 | Stage durations, rework causes, first-pass clean rate and totals via `run stats` | Latest rework count and timestamp | No outcome or throughput comparison across runs | P2 |
-| Per-stage/model/ticket token usage from Claude, Codex and Copilot session logs | No usage accounting | Low-token-cost goals cannot be measured in the product | P2 |
+| Per-stage/model/ticket token usage from Claude, Codex and Copilot session logs | Per-stage, per-model usage is read from the three agents' logs; no per-ticket breakdown | Token cost per stage and model is measurable; per-ticket cost is not | P3 |
 | Sync, Accept Check, extra-loop grants, Split/Continue and Clean up actions | Delete done records; other decisions remain in chat | The dashboard is mainly an observer rather than a run-control surface | P2 |
 | Older-run filtering and waiting duration | Needs-you filtering exists, but no age filter or waiting-age history | Long-lived dashboards offer less history management | P3 |
 | Persistent project registry, empty/missing-project management and automatic free-port fallback | One shared default-port dashboard, grouping projects from stored runs; explicit alternate port | Empty projects are not registered, worktree paths fragment identity, and a busy foreign port requires intervention | P3 |
@@ -77,7 +77,7 @@ Evidence: old [dashboard guide](https://github.com/TDSchreur/tds-factory/blob/36
 
 | Capability in the old project | New project today | Practical consequence | Priority |
 | --- | --- | --- | --- |
-| Project options frozen per run: stage models, loop cap, ticket labels, usage and extra reviews | Three fixed workflow modes and project instructions | No equivalent configuration contract or snapshot for reproducible run policy | P2 |
+| Project options frozen per run: stage models, loop cap, ticket labels, usage and extra reviews | Three fixed workflow modes, project instructions, and a model-routing policy for Claude Code, Codex and Copilot CLI whose selection is recorded on the run | Stage models are covered; loop cap, ticket labels and extra reviews have no configuration contract or snapshot | P2 |
 | Project-local installation, dry run, saved destination selection, multiple explicit Claude directories | Global agent selection; environment variables select Claude/Codex roots | Shared repositories and multiple profiles need more manual setup | P2 |
 | Ownership/change detection, preservation of edited or colliding skills, force override, cleanup/backups for deselected destinations and install-path trust checks | Bundled directories are replaced on install; unrelated skill names remain | Same-name local changes can be overwritten; switching destination selection has fewer safeguards | P1 |
 | Dedicated checksum-verified `update` command | Re-running the checksum-verified one-line installer updates CLI and skills | Updating remains possible, but has no dedicated CLI entry point or no-force mode | P3 |
@@ -91,11 +91,21 @@ Evidence: old [installer guide](https://github.com/TDSchreur/tds-factory/blob/36
 ## Differences that should not automatically be restored
 
 - The new project has three explicit modes: quality, balanced and fast. The old Fast track still required Standards and Security reviews and a spec/ticket. The new fast mode intentionally skips Check and can work directly from a clear request. These are different policies, not an absent Fast mode.
-- The new workflows use sequential implementation. The old stage dispatch, per-stage models and restricted review agents are useful capabilities, but recreating the entire coordinator architecture would increase complexity.
+- The new workflows use sequential implementation. Per-stage models are now available through model routing on all three agents. The old stage dispatch and restricted review agents are useful capabilities, but recreating the entire coordinator architecture would increase complexity.
 - The old Build exit checklist required story traces, a security-boundary account, hostile-input checks, a term sweep and extensive repeated test runs. The new project retains testing, reviews and required project checks, with less mandatory ceremony. Restore targeted checks when they prevent observed failures; avoid importing that entire checklist by default.
 - `diagnosing-bugs` exists in the new source tree but is not bundled by `build.rs` or explicitly integrated into the fast workflow. The old Fast track invoked it for bugs. `reliable-tests`, `add-project-review` and `unslop` are also absent from the new shipped bundle. Domain modeling, TDD, code review, security review and PR writing already have equivalents; renaming `security-scan` to `security-review` is not a missing scan.
 - Native Rust installation removes the old Node/npm runtime requirement. Linux/Windows installation, Claude/Codex/Copilot targets, checksums, themes, responsive project rows, a detail drawer, needs-you filtering, browser notifications and done-record deletion already exist.
 - Both projects isolate runs in worktrees and leave merge decisions to the user. Multiple concurrent factories are supported. The new Finish stage also explicitly watches CI and fixes failures before marking the run done.
+
+## Remaining differences between Claude Code, Codex and Copilot
+
+Model routing works on all three agents. These differences remain:
+
+- **Installed stage agents and read-only reviewers.** The old project installed named stage agents and restricted read-only reviewers for each agent. The new project installs skills only, for all three agents; reviews and routed stages use subagents started by the skills, without installed isolation or sandbox contracts.
+- **Model selection.** Claude Code accepts only the aliases `opus`, `sonnet`, `haiku` and `fable` through the Agent tool. Codex uses its subagent model and effort settings. Copilot CLI uses exact model IDs through the `task` tool, and an unavailable model silently runs on the session's model.
+- **Readiness checks.** `factory doctor` checks the Claude Code version and its routed models and efforts. For Codex and Copilot CLI it cannot tell which versions support per-subagent models, and for Codex it keeps no model list, so those checks are skipped.
+- **Pause detection.** Usage limits and context compactions are detected from Claude Code logs only. Codex and Copilot runs are never blocked as paused; only idle gaps show.
+- **Validation.** The old live-agent baseline covers only a subset of scenarios on Claude. The Copilot agent-flow evaluations are marked unvalidated until run.
 
 ## Suggested implementation order
 
