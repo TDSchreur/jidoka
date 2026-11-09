@@ -200,7 +200,11 @@ class RunTimelineTest(unittest.TestCase):
 
     def test_durations_are_plain_words_until_the_next_pass_and_the_last_runs_to_the_end(self):
         self.assertEqual([p["duration"] for p in self.rework], DURATIONS)
-        self.assertRegex(self.rework[1]["when"], r"^\d{2}:\d{2} · 13 min$")
+        # The fixture's date is fixed, so the time reads as today's, "Yesterday" or a weekday and date.
+        self.assertRegex(
+            self.rework[1]["when"],
+            r"^(?:Yesterday |\w{3} (?:\w{3} \d{1,2}|\d{1,2} \w{3}) )?\d{2}:\d{2} · 13 min$",
+        )
 
     def test_the_last_pass_of_an_active_run_runs_to_now_and_a_finished_one_to_its_end(self):
         body = """
