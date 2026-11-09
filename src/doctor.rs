@@ -2180,7 +2180,11 @@ mod tests {
         )
         .unwrap();
         let program = az_program_in(&bin.path().into());
-        assert_eq!(program, bin.path().join("az.cmd"));
+        // PATHEXT spells the extension in capitals, which the file system treats as the same file.
+        assert_eq!(
+            program.to_string_lossy().to_lowercase(),
+            bin.path().join("az.cmd").to_string_lossy().to_lowercase()
+        );
         let output = Command::new(&program).arg("version").output().unwrap();
         assert!(output.status.success());
         assert_eq!(
