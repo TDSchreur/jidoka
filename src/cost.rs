@@ -46,7 +46,10 @@ pub(crate) const PRICES: &[(&str, Price)] = &[
 
 pub(crate) type Table<'a> = &'a [(&'a str, Price)];
 
+/// Claude Code logs `claude-sonnet-5-5` where Copilot logs `claude-sonnet-5.5`: the same model, so a dot
+/// and a dash match.
 fn lookup(table: Table, model: &str) -> Option<Price> {
+    let model = model.replace('.', "-");
     table.iter().find(|(id, _)| *id == model).map(|(_, p)| *p)
 }
 
@@ -208,6 +211,14 @@ mod tests {
                 "{id}"
             );
         }
+    }
+
+    #[test]
+    fn a_dotted_model_id_is_priced_like_its_dashed_form() {
+        let table: Table = &[("claude-m-5-5", price(2.0, 10.0, 0.5, 3.0))];
+        assert!(lookup(table, "claude-m-5.5").is_some());
+        assert!(lookup(table, "claude-m-5-5").is_some());
+        assert!(lookup(table, "claude-m-5.6").is_none());
     }
 
     #[test]
