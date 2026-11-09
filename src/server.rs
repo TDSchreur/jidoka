@@ -312,6 +312,202 @@ fn get_run(
         })
 }
 
+/// The largest document the dashboard renders.
+const MAX_DOCUMENT_BYTES: u64 = 1024 * 1024;
+
+/// Why a document is not served. The status code tells a client which: `404` with
+/// `{"available": false, "path": <reference>}` when the recorded file is not there (yet), any other
+/// code with `{"error": <reason>}` when the request is refused.
+type DocumentError = (HttpStatus, Json<serde_json::Value>);
+
+fn refused(status: HttpStatus, reason: &str) -> DocumentError {
+    (status, Json(serde_json::json!({ "error": reason })))
+}
+
+fn is_web_reference(reference: &str) -> bool {
+    let lower = reference.trim_start().to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+fn is_markdown(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+}
+
+/// The git directory of a worktree: `<worktree>/.git` is a directory, or a file `gitdir: <path>`.
+fn git_dir(worktree: &Path) -> Option<std::path::PathBuf> {
+    let dot_git = worktree.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let text = std::fs::read_to_string(&dot_git).ok()?;
+    let target = Path::new(text.trim().strip_prefix("gitdir:")?.trim());
+    Some(worktree.join(target))
+}
+
+/// The recorded local document `reference` of `run` as a canonical file path inside the worktree,
+/// the repository, or a saved-plan location (the worktree's git directory or the sibling
+/// `<worktree>.factory-plan.md`).
+fn recorded_document(run: &Run, reference: &str) -> Result<std::path::PathBuf, DocumentError> {
+    if is_web_reference(reference) {
+        return Err(refused(
+            HttpStatus::BadRequest,
+            "Only local documents are served",
+        ));
+    }
+    let recorded = run.spec.as_deref() == Some(reference)
+        || run
+            .tickets
+            .iter()
+            .any(|ticket| ticket.reference == reference);
+    if !recorded {
+        return Err(refused(
+            HttpStatus::Forbidden,
+            "Not a reference recorded on this run",
+        ));
+    }
+    if !is_markdown(Path::new(reference)) {
+        return Err(refused(
+            HttpStatus::BadRequest,
+            "Only Markdown (.md) documents are served",
+        ));
+    }
+    let worktree = run.worktree.as_deref().map(Path::new);
+    let repository = run.repository.as_deref().map(Path::new);
+    let reference_path = Path::new(reference);
+    let candidates: Vec<std::path::PathBuf> = if reference_path.is_absolute() {
+        vec![reference_path.to_path_buf()]
+    } else {
+        worktree
+            .into_iter()
+            .chain(repository)
+            .map(|root| root.join(reference_path))
+            .collect()
+    };
+    let not_available = || {
+        (
+            HttpStatus::NotFound,
+            Json(serde_json::json!({ "available": false, "path": reference })),
+        )
+    };
+    let file = candidates
+        .iter()
+        .find_map(|candidate| std::fs::canonicalize(candidate).ok())
+        .ok_or_else(not_available)?;
+    let mut roots: Vec<std::path::PathBuf> = worktree
+        .into_iter()
+        .chain(repository)
+        .filter_map(|root| std::fs::canonicalize(root).ok())
+        .collect();
+    if let Some(worktree) = worktree {
+        roots.extend(git_dir(worktree).and_then(|dir| std::fs::canonicalize(dir).ok()));
+        let mut plan = worktree.as_os_str().to_owned();
+        plan.push(".factory-plan.md");
+        roots.extend(std::fs::canonicalize(plan).ok());
+    }
+    if !roots.iter().any(|root| file.starts_with(root)) {
+        return Err(refused(
+            HttpStatus::Forbidden,
+            "The document is outside the run's worktree and repository",
+        ));
+    }
+    if !is_markdown(&file) {
+        return Err(refused(
+            HttpStatus::BadRequest,
+            "Only Markdown (.md) documents are served",
+        ));
+    }
+    let metadata = std::fs::metadata(&file).map_err(|_| not_available())?;
+    if !metadata.is_file() {
+        return Err(not_available());
+    }
+    if metadata.len() > MAX_DOCUMENT_BYTES {
+        return Err(refused(
+            HttpStatus::PayloadTooLarge,
+            "The document is larger than 1 MB",
+        ));
+    }
+    Ok(file)
+}
+
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+/// Renders Markdown as HTML that is safe to insert into the page: raw HTML is shown as text, images
+/// as their alt text, http(s) links open in a new tab and every other link is plain text.
+fn render_markdown(markdown: &str) -> String {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+    let mut kept_links = Vec::new();
+    let events = Parser::new_ext(
+        markdown,
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS,
+    )
+    .filter_map(|event| match event {
+        Event::Html(html) | Event::InlineHtml(html) => Some(Event::Text(html)),
+        Event::Start(Tag::Image { .. }) | Event::End(TagEnd::Image) => None,
+        Event::Start(Tag::Link { dest_url, .. }) => {
+            let keep = is_web_reference(&dest_url);
+            kept_links.push(keep);
+            keep.then(|| {
+                Event::Html(
+                    format!(
+                        "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">",
+                        escape_html(&dest_url)
+                    )
+                    .into(),
+                )
+            })
+        }
+        Event::End(TagEnd::Link) => kept_links
+            .pop()
+            .unwrap_or(false)
+            .then(|| Event::Html("</a>".into())),
+        other => Some(other),
+    });
+    let mut html = String::new();
+    pulldown_cmark::html::push_html(&mut html, events);
+    html
+}
+
+/// A recorded local spec or ticket of a run as rendered HTML: `{"name": <file name>, "html": <HTML>}`.
+/// See `recorded_document` for the refusals and the not-available answer.
+#[rocket::get("/api/runs/<id>/document?<reference>")]
+fn get_document(
+    request: Security,
+    id: &str,
+    reference: &str,
+    store: &State<RunStore>,
+) -> Result<Json<serde_json::Value>, DocumentError> {
+    if !request.local {
+        return Err(refused(HttpStatus::BadRequest, "Bad request"));
+    }
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(refused(HttpStatus::BadRequest, "Invalid run id"));
+    }
+    let run = store
+        .get(id)
+        .map_err(|error| {
+            eprintln!("Run storage error: {error}");
+            refused(HttpStatus::InternalServerError, "Internal server error")
+        })?
+        .ok_or_else(|| refused(HttpStatus::NotFound, "Not found"))?;
+    let file = recorded_document(&run, reference)?;
+    let markdown = std::fs::read_to_string(&file)
+        .map_err(|_| refused(HttpStatus::UnprocessableEntity, "The document is not text"))?;
+    let name = file
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(Json(
+        serde_json::json!({ "name": name, "html": render_markdown(&markdown) }),
+    ))
+}
+
 /// Deletes the Run record only; nothing the Run created (worktree, branch, pull request) is touched.
 #[rocket::delete("/api/runs/<id>")]
 fn delete_run(
@@ -464,7 +660,15 @@ pub(crate) fn build_rocket_with(
         .mount(
             "/",
             rocket::routes![
-                dashboard, asset, info, list_runs, get_run, create_run, update_run, delete_run
+                dashboard,
+                asset,
+                info,
+                list_runs,
+                get_run,
+                get_document,
+                create_run,
+                update_run,
+                delete_run
             ],
         )
         .register(
@@ -476,6 +680,10 @@ pub(crate) fn build_rocket_with(
             |_, response| {
                 Box::pin(async move {
                     response.set_header(rocket::http::Header::new("Cache-Control", "no-store"));
+                    response.set_header(rocket::http::Header::new(
+                        "X-Content-Type-Options",
+                        "nosniff",
+                    ));
                 })
             },
         )))
@@ -586,6 +794,230 @@ mod tests {
         Client::tracked(build_rocket(&dir.0.path().join("runs.json"), DEFAULT_PORT).unwrap())
             .await
             .unwrap()
+    }
+
+    /// A run with the given worktree, repository, spec and ticket references, and its id.
+    fn document_run(
+        path: &Path,
+        worktree: &Path,
+        repository: &Path,
+        spec: &str,
+        tickets: &[&str],
+    ) -> String {
+        let store = RunStore::open(path).unwrap();
+        let run = store
+            .create(NewRun {
+                title: "t".into(),
+                project: repository.to_string_lossy().into_owned(),
+                repository: Some(repository.to_string_lossy().into_owned()),
+                session: None,
+                model_routing: None,
+            })
+            .unwrap();
+        let tickets: Vec<_> = tickets
+            .iter()
+            .map(|reference| serde_json::json!({ "reference": reference, "title": "T" }))
+            .collect();
+        store
+            .update(
+                &run.id,
+                serde_json::from_value(serde_json::json!({
+                    "stage": "build",
+                    "status": "running",
+                    "worktree": worktree.to_string_lossy(),
+                    "spec": spec,
+                    "tickets": tickets,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        run.id
+    }
+
+    /// Fetches the document and returns its status and JSON body.
+    async fn fetch_document(
+        dir: &TestDir,
+        id: &str,
+        reference: &str,
+    ) -> (HttpStatus, serde_json::Value, Option<String>) {
+        let api = client(dir).await;
+        let response = api
+            .get(format!(
+                "/api/runs/{id}/document?reference={}",
+                percent_encoding::utf8_percent_encode(
+                    reference,
+                    percent_encoding::NON_ALPHANUMERIC
+                )
+            ))
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .dispatch()
+            .await;
+        let status = response.status();
+        let nosniff = response
+            .headers()
+            .get_one("X-Content-Type-Options")
+            .map(str::to_owned);
+        let body = response.into_string().await.unwrap_or_default();
+        (
+            status,
+            serde_json::from_str(&body).unwrap_or_default(),
+            nosniff,
+        )
+    }
+
+    /// A repository and a worktree beside it, and a run recording `spec` and `tickets`.
+    fn document_setup(
+        spec: &str,
+        tickets: &[&str],
+    ) -> (TestDir, std::path::PathBuf, std::path::PathBuf, String) {
+        let dir = TestDir::new();
+        let repository = dir.0.path().join("repo");
+        let worktree = dir.0.path().join("repo.worktrees").join("feature");
+        fs::create_dir_all(&repository).unwrap();
+        fs::create_dir_all(&worktree).unwrap();
+        let id = document_run(
+            &dir.0.path().join("runs.json"),
+            &worktree,
+            &repository,
+            spec,
+            tickets,
+        );
+        (dir, repository, worktree, id)
+    }
+
+    #[rocket::async_test]
+    async fn a_recorded_spec_is_rendered_with_nosniff() {
+        let (dir, _, worktree, id) = document_setup("docs/spec.md", &[]);
+        fs::create_dir_all(worktree.join("docs")).unwrap();
+        fs::write(worktree.join("docs/spec.md"), "# Title\n\nSome *text*").unwrap();
+        let (status, body, nosniff) = fetch_document(&dir, &id, "docs/spec.md").await;
+        assert_eq!(status, HttpStatus::Ok);
+        assert_eq!(body["name"], "spec.md");
+        assert!(body["html"].as_str().unwrap().contains("<h1>Title</h1>"));
+        assert_eq!(nosniff.as_deref(), Some("nosniff"));
+    }
+
+    #[rocket::async_test]
+    async fn only_recorded_references_are_served() {
+        let (dir, _, worktree, id) = document_setup("spec.md", &["one.md"]);
+        fs::write(worktree.join("one.md"), "ticket").unwrap();
+        fs::write(worktree.join("other.md"), "other").unwrap();
+        let (status, body, _) = fetch_document(&dir, &id, "one.md").await;
+        assert_eq!(status, HttpStatus::Ok, "{body}");
+        let (status, _, _) = fetch_document(&dir, &id, "other.md").await;
+        assert_eq!(status, HttpStatus::Forbidden);
+        let (status, _, _) = fetch_document(&dir, "999", "one.md").await;
+        assert_eq!(status, HttpStatus::NotFound);
+    }
+
+    #[rocket::async_test]
+    async fn web_references_are_rejected() {
+        let (dir, _, _, id) =
+            document_setup("https://example.com/spec.md", &["http://x.test/1.md"]);
+        for reference in ["https://example.com/spec.md", "http://x.test/1.md"] {
+            let (status, _, _) = fetch_document(&dir, &id, reference).await;
+            assert_eq!(status, HttpStatus::BadRequest, "{reference}");
+        }
+    }
+
+    #[rocket::async_test]
+    async fn traversal_out_of_the_roots_is_rejected() {
+        let (dir, _, _, id) = document_setup("../../outside.md", &[]);
+        fs::write(dir.0.path().join("outside.md"), "secret").unwrap();
+        let (status, _, _) = fetch_document(&dir, &id, "../../outside.md").await;
+        assert_eq!(status, HttpStatus::Forbidden);
+    }
+
+    #[cfg(unix)]
+    #[rocket::async_test]
+    async fn a_symlink_out_of_the_roots_is_rejected() {
+        let (dir, _, worktree, id) = document_setup("link.md", &[]);
+        let outside = dir.0.path().join("outside.md");
+        fs::write(&outside, "secret").unwrap();
+        std::os::unix::fs::symlink(&outside, worktree.join("link.md")).unwrap();
+        let (status, _, _) = fetch_document(&dir, &id, "link.md").await;
+        assert_eq!(status, HttpStatus::Forbidden);
+    }
+
+    #[rocket::async_test]
+    async fn only_markdown_files_are_served() {
+        let (dir, _, worktree, id) = document_setup("notes.txt", &[]);
+        fs::write(worktree.join("notes.txt"), "text").unwrap();
+        let (status, _, _) = fetch_document(&dir, &id, "notes.txt").await;
+        assert_eq!(status, HttpStatus::BadRequest);
+    }
+
+    #[rocket::async_test]
+    async fn a_document_over_a_megabyte_is_rejected() {
+        let (dir, _, worktree, id) = document_setup("big.md", &[]);
+        fs::write(worktree.join("big.md"), vec![b'a'; 1024 * 1024 + 1]).unwrap();
+        let (status, _, _) = fetch_document(&dir, &id, "big.md").await;
+        assert_eq!(status, HttpStatus::PayloadTooLarge);
+    }
+
+    #[rocket::async_test]
+    async fn a_missing_file_is_not_available_rather_than_rejected() {
+        let (dir, _, _, id) = document_setup("gone.md", &[]);
+        let (status, body, _) = fetch_document(&dir, &id, "gone.md").await;
+        assert_eq!(status, HttpStatus::NotFound);
+        assert_eq!(body["available"], false);
+        assert_eq!(body["path"], "gone.md");
+    }
+
+    #[rocket::async_test]
+    async fn relative_references_resolve_against_the_worktree_then_the_repository() {
+        let (dir, repository, worktree, id) = document_setup("spec.md", &["only-repo.md"]);
+        fs::write(repository.join("spec.md"), "from repository").unwrap();
+        fs::write(worktree.join("spec.md"), "from worktree").unwrap();
+        fs::write(repository.join("only-repo.md"), "repo only").unwrap();
+        let (_, body, _) = fetch_document(&dir, &id, "spec.md").await;
+        assert!(body["html"].as_str().unwrap().contains("from worktree"));
+        let (_, body, _) = fetch_document(&dir, &id, "only-repo.md").await;
+        assert!(body["html"].as_str().unwrap().contains("repo only"));
+    }
+
+    #[rocket::async_test]
+    async fn the_saved_plan_beside_the_worktree_is_served() {
+        let (dir, _, worktree, _) = document_setup("x.md", &[]);
+        let plan = format!("{}.factory-plan.md", worktree.display());
+        fs::write(&plan, "plan").unwrap();
+        let id = document_run(
+            &dir.0.path().join("runs.json"),
+            &worktree,
+            &dir.0.path().join("repo"),
+            &plan,
+            &[],
+        );
+        let (status, body, _) = fetch_document(&dir, &id, &plan).await;
+        assert_eq!(status, HttpStatus::Ok, "{body}");
+    }
+
+    #[test]
+    fn raw_html_is_shown_as_text() {
+        let html = render_markdown("<script>alert(1)</script>\n\ntext <b onclick=x>hi</b>");
+        assert!(
+            !html.contains("<script>") && !html.contains("<b "),
+            "{html}"
+        );
+        assert!(html.contains("&lt;script&gt;"), "{html}");
+    }
+
+    #[test]
+    fn only_http_links_are_links_and_images_are_alt_text() {
+        let html = render_markdown(
+            "[web](https://example.com/a?b=1&c=2) [rel](other.md) [js](javascript:alert(1)) [mail](mailto:a@b.c) ![alt text](http://evil.test/x.png)",
+        );
+        assert!(html.contains(
+            "<a href=\"https://example.com/a?b=1&amp;c=2\" target=\"_blank\" rel=\"noopener noreferrer\">web</a>"
+        ), "{html}");
+        assert_eq!(html.matches("<a ").count(), 1, "{html}");
+        for text in ["rel", "js", "mail", "alt text"] {
+            assert!(html.contains(text), "{html}");
+        }
+        assert!(
+            !html.contains("javascript:") && !html.contains("<img"),
+            "{html}"
+        );
     }
 
     #[rocket::async_test]
