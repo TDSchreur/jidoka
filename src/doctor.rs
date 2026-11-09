@@ -2246,10 +2246,28 @@ mod tests {
         );
     }
 
+    /// Whether `source` starts the Azure CLI by its bare name, however rustfmt wraps the call.
+    fn starts_az_by_name(source: &str) -> bool {
+        let squeezed: String = source.split_whitespace().collect();
+        let plain = ["Command::new(", "\"az\")"].concat();
+        let trailing_comma = ["Command::new(", "\"az\",)"].concat();
+        squeezed.contains(&plain) || squeezed.contains(&trailing_comma)
+    }
+
+    #[test]
+    fn starts_az_by_name_catches_split_calls_only_for_the_bare_name() {
+        let one_line = ["Command::new(", "\"az\")"].concat();
+        let split = ["Command::new(\n    ", "\"az\"\n)"].concat();
+        let split_comma = ["Command::new(\n    ", "\"az\",\n)"].concat();
+        assert!(starts_az_by_name(&one_line));
+        assert!(starts_az_by_name(&split));
+        assert!(starts_az_by_name(&split_comma));
+        assert!(!starts_az_by_name("Command::new(az_program())"));
+    }
+
     /// A bare `az` is looked up by Windows as `az.exe` only, so it never finds the Azure CLI there.
     #[test]
     fn az_is_never_started_by_its_bare_name() {
-        let bare = ["Command::new(", "\"az\")"].concat();
         let mut found = Vec::new();
         let mut folders = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
         while let Some(folder) = folders.pop() {
@@ -2258,7 +2276,7 @@ mod tests {
                 if path.is_dir() {
                     folders.push(path);
                 } else if path.extension().is_some_and(|ext| ext == "rs")
-                    && fs::read_to_string(&path).unwrap().contains(&bare)
+                    && starts_az_by_name(&fs::read_to_string(&path).unwrap())
                 {
                     found.push(path);
                 }

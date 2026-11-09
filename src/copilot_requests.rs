@@ -157,7 +157,8 @@ fn parse_events(text: &str, session: &str) -> (BTreeMap<String, Request>, usize)
 }
 
 /// Reads the Copilot sessions under `root`: every session that names a run in `ids` in a
-/// `factory run update`, `run inspect` or `run stats` command, or was recorded for one in `recorded`.
+/// `factory run update`, `run inspect`, `run stats` or `run check` command or a `factory pr open`,
+/// `pr sync` or `pr wait` command, or was recorded for one in `recorded`.
 pub(crate) fn read_copilot_requests(
     root: &Path,
     ids: &HashSet<&str>,
