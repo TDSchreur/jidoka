@@ -12,6 +12,8 @@ const CLAUDE_MIN_VERSION: (u32, u32, u32) = (2, 1, 292);
 /// The only model names the Agent tool accepts.
 const CLAUDE_MODELS: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
 const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+/// The efforts Copilot CLI lists for `--reasoning-effort`.
+const COPILOT_EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// The routing checks for `agent` (all agents when `None`), as `--agent` on `factory doctor` selects. What
 /// the policy does for each agent comes from `Policy::coverage`, the same rule `factory run start` follows;
@@ -66,7 +68,7 @@ fn agent_checks(selection: &ModelRouting, root: &Path, machine: &Machine) -> Vec
     match selection.agent {
         RoutingAgent::Claude => claude_checks(selection, root, machine),
         RoutingAgent::Codex => codex_checks(machine),
-        RoutingAgent::Copilot => copilot_checks(machine),
+        RoutingAgent::Copilot => copilot_checks(selection, machine),
     }
 }
 
@@ -131,22 +133,42 @@ fn codex_checks(machine: &Machine) -> Vec<Check> {
     ]
 }
 
-fn copilot_checks(machine: &Machine) -> Vec<Check> {
+fn copilot_checks(selection: &ModelRouting, machine: &Machine) -> Vec<Check> {
     vec![
         host_check("copilot", machine, None),
-        Check::skipped(
-            "model",
-            "Copilot models are not checked: which ones an account can use differs, and an unavailable model quietly runs on the session's model, so compare the models `factory run inspect` observed",
+        copilot_model_check(selection),
+        effort_check(
+            selection,
+            "Copilot CLI",
+            &COPILOT_EFFORTS,
+            "Set effort to none, minimal, low, medium, high, xhigh or max for each routed stage.",
         ),
         Check::skipped("overrides", "Copilot configuration is not checked"),
     ]
+}
+
+/// The policy check already rejects Claude Code aliases, which Copilot CLI would run on the session's model.
+/// Which models an account can use is not known to the factory, so availability is left to the user.
+fn copilot_model_check(selection: &ModelRouting) -> Check {
+    let count = selection.stages.len();
+    Check::pass(
+        "model",
+        format!(
+            "{count} routed stage(s) name an exact model ID; whether the account can use them is not checked, so compare the models `factory run inspect` observed"
+        ),
+    )
 }
 
 fn claude_checks(selection: &ModelRouting, root: &Path, machine: &Machine) -> Vec<Check> {
     vec![
         host_check("claude", machine, Some(CLAUDE_MIN_VERSION)),
         claude_model_check(selection),
-        claude_effort_check(selection),
+        effort_check(
+            selection,
+            "Claude Code",
+            &CLAUDE_EFFORTS,
+            "Set effort to low, medium, high, xhigh or max for each routed stage.",
+        ),
         claude_overrides_check(root, machine),
     ]
 }
@@ -177,12 +199,12 @@ fn claude_model_check(selection: &ModelRouting) -> Check {
     )
 }
 
-fn claude_effort_check(selection: &ModelRouting) -> Check {
+fn effort_check(selection: &ModelRouting, host: &str, accepted: &[&str], fix: &str) -> Check {
     let (mut unsupported, mut unset) = (Vec::new(), Vec::new());
     for (stage, choice) in &selection.stages {
         match choice.effort.as_deref() {
             None => unset.push(stage.name().to_string()),
-            Some(effort) if !CLAUDE_EFFORTS.contains(&effort) => {
+            Some(effort) if !accepted.contains(&effort) => {
                 unsupported.push(format!("{}: {effort}", stage.name()));
             }
             Some(_) => {}
@@ -192,7 +214,7 @@ fn claude_effort_check(selection: &ModelRouting) -> Check {
     if !unsupported.is_empty() {
         problems.push(format!(
             "unsupported effort ({}): {}",
-            CLAUDE_EFFORTS.join(", "),
+            accepted.join(", "),
             unsupported.join(", ")
         ));
     }
@@ -205,14 +227,10 @@ fn claude_effort_check(selection: &ModelRouting) -> Check {
     if problems.is_empty() {
         return Check::pass(
             "effort",
-            "every routed stage has an effort Claude Code accepts; which levels a model offers is not checked",
+            format!("every routed stage has an effort {host} accepts; which levels a model offers is not checked"),
         );
     }
-    Check::warning(
-        "effort",
-        problems.join("; "),
-        "Set effort to low, medium, high, xhigh or max for each routed stage.",
-    )
+    Check::warning("effort", problems.join("; "), fix)
 }
 
 /// Where Claude Code settings can set environment variables, besides the environment itself.

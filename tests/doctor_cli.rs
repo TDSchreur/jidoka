@@ -218,7 +218,7 @@ fn doctor_creates_the_codex_starter_too_and_reports_when_it_cannot_write() {
 }
 
 #[test]
-fn doctor_creates_one_file_for_both_agents_and_checks_each_of_them() {
+fn doctor_creates_one_file_for_every_agent_and_checks_each_of_them() {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let output = factory(
@@ -227,12 +227,14 @@ fn doctor_creates_one_file_for_both_agents_and_checks_each_of_them() {
         home.path(),
     );
     let note = String::from_utf8_lossy(&output.stderr);
-    assert!(note.contains("claude and codex"), "{note}");
+    assert!(note.contains("claude, codex and copilot"), "{note}");
     let written =
         std::fs::read_to_string(home.path().join(".config/tds-factory/model-routing.json"))
             .unwrap();
     assert!(
-        written.contains("\"claude\"") && written.contains("\"codex\""),
+        ["claude", "codex", "copilot"]
+            .iter()
+            .all(|agent| written.contains(&format!("\"{agent}\""))),
         "{written}"
     );
     // The next report checks both entries, each tagged with its agent.
@@ -243,7 +245,7 @@ fn doctor_creates_one_file_for_both_agents_and_checks_each_of_them() {
         .iter()
         .filter_map(|check| check["agent"].as_str())
         .collect();
-    assert_eq!(agents, ["claude", "codex"].into());
+    assert_eq!(agents, ["claude", "codex", "copilot"].into());
     // Asking for one agent checks only its entry.
     let output = factory(
         &["doctor", "--agent", "codex", "--json"],

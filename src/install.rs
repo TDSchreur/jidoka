@@ -83,6 +83,7 @@ pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> i
     let agents = [
         crate::routing::RoutingAgent::Claude,
         crate::routing::RoutingAgent::Codex,
+        crate::routing::RoutingAgent::Copilot,
     ];
     use crate::routing::Starter;
     let created = crate::routing::install_starter(&path, &agents).map_err(|error| {

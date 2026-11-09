@@ -724,9 +724,13 @@ fn create_model_routing(agents: &[RoutingAgent], machine: &Machine) -> Result<St
     let shown = printable(&path.display().to_string());
     match install_starter(&path, agents) {
         Ok(done @ (Starter::Created | Starter::Replaced(_))) => {
+            let names: Vec<_> = agents.iter().map(|agent| agent.name()).collect();
+            let named = match names.split_last() {
+                Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+                _ => names.join(""),
+            };
             let about = format!(
-                "It is a starter policy for {} that routes every stage (define, build, check, finish) of each.",
-                agents.iter().map(|agent| agent.name()).collect::<Vec<_>>().join(" and ")
+                "It is a starter policy for {named} that routes every stage (define, build, check, finish) of each."
             );
             Ok(match done {
                 Starter::Replaced(off) => Starter::replaced_message(&shown, off, Some(&about)),
@@ -777,8 +781,12 @@ pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
         (true, Some("claude")) => Some(vec![RoutingAgent::Claude]),
         (true, Some("codex")) => Some(vec![RoutingAgent::Codex]),
         (true, Some("copilot")) => Some(vec![RoutingAgent::Copilot]),
-        // Without an agent the starter has an entry for each, which is what one file for both is for.
-        (true, None) => Some(vec![RoutingAgent::Claude, RoutingAgent::Codex]),
+        // Without an agent the starter has an entry for each, which is what one file for all is for.
+        (true, None) => Some(vec![
+            RoutingAgent::Claude,
+            RoutingAgent::Codex,
+            RoutingAgent::Copilot,
+        ]),
         (true, Some(other)) => return Err(format!("Unknown agent {other:?}.")),
     };
     Ok(Args {
@@ -1363,12 +1371,16 @@ mod tests {
     }
 
     #[test]
-    fn creating_the_policy_covers_claude_and_codex_unless_one_is_named() {
+    fn creating_the_policy_covers_every_agent_unless_one_is_named() {
         let error = |args: &[&str]| parse_args(args).unwrap_err();
         let both = parse_args(&["--create-model-routing"]).unwrap();
         assert_eq!(
             both.create_model_routing,
-            Some(vec![RoutingAgent::Claude, RoutingAgent::Codex])
+            Some(vec![
+                RoutingAgent::Claude,
+                RoutingAgent::Codex,
+                RoutingAgent::Copilot
+            ])
         );
         let copilot = parse_args(&["--create-model-routing", "--agent", "copilot"]).unwrap();
         assert_eq!(
@@ -1955,7 +1967,7 @@ mod tests {
     }
 
     #[test]
-    fn a_copilot_entry_checks_the_command_and_skips_what_the_factory_cannot_judge() {
+    fn a_copilot_entry_checks_the_command_models_and_effort_and_warns_about_problems() {
         let policy = r#"{"agents":{"copilot":{"stages":{
             "check":{"model":"claude-opus-4.8","effort":"high"}}}}}"#;
         let report = World::ready()
@@ -1965,11 +1977,26 @@ mod tests {
             .report(Some("copilot"));
         let copilot = tagged(&report, "copilot");
         let ids: Vec<_> = copilot.iter().map(|c| c.id).collect();
-        assert_eq!(ids, ["host", "model", "overrides"]);
+        assert_eq!(ids, ["host", "model", "effort", "overrides"]);
         assert!(copilot
             .iter()
-            .any(|c| c.id == "model" && c.status == Status::Skipped));
+            .any(|c| c.id == "model" && c.status == Status::Pass));
         assert!(copilot.iter().all(|c| !c.blocks()));
+        // A missing effort is a warning, never a failure.
+        let weak = r#"{"agents":{"copilot":{"stages":{
+            "check":{"model":"claude-opus-4.8"},"build":{"model":"claude-sonnet-5.5","effort":"low"}}}}}"#;
+        let report = World::ready()
+            .claude_ready()
+            .with_agent("copilot")
+            .with_policy(weak)
+            .report(Some("copilot"));
+        assert!(report.ok, "{}", render(&report));
+        let warned: Vec<_> = tagged(&report, "copilot")
+            .iter()
+            .filter(|c| c.status == Status::Warning)
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(warned, ["effort"]);
         // A policy that is switched off says nothing.
         let off = World::ready()
             .claude_ready()
