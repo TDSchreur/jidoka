@@ -82,7 +82,8 @@ const TOKEN_PLACEHOLDER: &str = "__TOKEN__";
 const PID_PLACEHOLDER: &str = "__PID__";
 /// The header the dashboard sends its session token in.
 const TOKEN_HEADER: &str = "X-Session-Token";
-const CLI_TOKEN_HEADER: &str = "X-Factory-Token";
+/// The header the `factory` CLI sends its CLI token in.
+pub(crate) const CLI_TOKEN_HEADER: &str = "X-Factory-Token";
 const BODY_LIMIT: u64 = 64 * 1024;
 
 fn is_local_authority(authority: &str, port: u16) -> bool {
@@ -91,15 +92,11 @@ fn is_local_authority(authority: &str, port: u16) -> bool {
     })
 }
 
+/// 32 bytes from the operating system's CSPRNG, as 64 hex characters.
 fn random_token() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    // `RandomState` is seeded from the operating system's randomness.
-    let part = || {
-        std::collections::hash_map::RandomState::new()
-            .build_hasher()
-            .finish()
-    };
-    format!("{:016x}{:016x}", part(), part())
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).expect("the operating system provides randomness");
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// A random value created when the server starts. Only the dashboard page this server
@@ -139,30 +136,42 @@ pub(crate) fn token_path(runs: &Path, port: u16) -> PathBuf {
     runs.with_file_name(name)
 }
 
-/// Writes `token` to `path` so no reader sees a partial file; on Unix only the user can read it.
+/// Writes `token` to `path` so no reader sees a partial file; on Unix only the user can read it and the
+/// directory is made private.
 fn write_token_file(path: &Path, token: &str) -> io::Result<()> {
-    use std::io::Write;
     let dir = path.parent().unwrap_or(Path::new("."));
     #[cfg(unix)]
     {
-        use std::os::unix::fs::DirBuilderExt;
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(dir)?;
+        // The folder may already exist with looser rights.
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
     #[cfg(not(unix))]
     std::fs::create_dir_all(dir)?;
-    let temp = path.with_extension("tmp");
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let temp = dir.join(format!(".{name}.{}.tmp", random_token()));
+    let written = write_new_file(&temp, token).and_then(|()| std::fs::rename(&temp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
+
+/// Creates `path`, which must not exist (and is never a followed symlink), holding `content`; mode 0600 on Unix.
+fn write_new_file(path: &Path, content: &str) -> io::Result<()> {
+    use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(&temp)?.write_all(token.as_bytes())?;
-    std::fs::rename(&temp, path)
+    options.open(path)?.write_all(content.as_bytes())
 }
 
 /// The browser sends an `Origin` on a same-origin DELETE; it must be the dashboard itself.
@@ -174,8 +183,25 @@ fn is_local_origin(origin: &str, port: u16) -> bool {
 
 struct Security {
     local: bool,
-    post_allowed: bool,
+    /// Host, Origin and content type are acceptable for a POST.
+    post_shape_ok: bool,
+    /// The request carries the CLI token.
+    cli_token_ok: bool,
     delete_allowed: bool,
+}
+
+impl Security {
+    /// Why a POST is refused: 403 when Host, Origin or content type are not acceptable, 401 when only the
+    /// CLI token is missing or wrong.
+    fn post_refusal(&self) -> Option<HttpStatus> {
+        if !self.post_shape_ok {
+            Some(HttpStatus::Forbidden)
+        } else if !self.cli_token_ok {
+            Some(HttpStatus::Unauthorized)
+        } else {
+            None
+        }
+    }
 }
 
 #[rocket::async_trait]
@@ -188,16 +214,18 @@ impl<'r> FromRequest<'r> for Security {
             .headers()
             .get_one("Host")
             .is_some_and(|authority| is_local_authority(authority, port));
+        let post_shape_ok = local
+            && request.headers().get_one("Origin").is_none()
+            && request.content_type() == Some(&ContentType::JSON);
+        let cli_token_ok = request
+            .rocket()
+            .state::<CliToken>()
+            .zip(request.headers().get_one(CLI_TOKEN_HEADER))
+            .is_some_and(|(token, given)| token.matches(given));
         Outcome::Success(Self {
             local,
-            post_allowed: local
-                && request.headers().get_one("Origin").is_none()
-                && request.content_type() == Some(&ContentType::JSON)
-                && request
-                    .rocket()
-                    .state::<CliToken>()
-                    .zip(request.headers().get_one(CLI_TOKEN_HEADER))
-                    .is_some_and(|(token, given)| token.matches(given)),
+            post_shape_ok,
+            cli_token_ok,
             delete_allowed: local
                 && request
                     .headers()
@@ -303,8 +331,8 @@ fn create_run(
     new: Json<NewRun>,
     store: &State<RunStore>,
 ) -> Result<(HttpStatus, Json<Run>), HttpStatus> {
-    if !request.post_allowed {
-        return Err(HttpStatus::Forbidden);
+    if let Some(status) = request.post_refusal() {
+        return Err(status);
     }
     store
         .create(new.into_inner())
@@ -327,8 +355,8 @@ fn update_run(
     store: &State<RunStore>,
     collector: &State<Collector>,
 ) -> Result<Json<Run>, (HttpStatus, String)> {
-    if !request.post_allowed {
-        return Err((HttpStatus::Forbidden, "Forbidden".into()));
+    if let Some(status) = request.post_refusal() {
+        return Err((status, status.reason_lossy().into()));
     }
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err((HttpStatus::BadRequest, "Invalid run id".into()));
@@ -592,6 +620,9 @@ pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> 
 /// The runs file the CLI token is kept next to.
 struct TokenFile(PathBuf);
 
+/// Set at liftoff when the CLI token could not be written; the server shuts down and `serve` reports it.
+struct TokenWriteFailure(std::sync::Mutex<Option<String>>);
+
 pub(crate) fn build_rocket_with(
     path: &Path,
     port: u16,
@@ -607,18 +638,28 @@ pub(crate) fn build_rocket_with(
         .manage(SessionToken::new())
         .manage(CliToken(random_token()))
         .manage(TokenFile(path.to_path_buf()))
+        .manage(TokenWriteFailure(std::sync::Mutex::new(None)))
         .attach(rocket::fairing::AdHoc::on_liftoff(
             "Write CLI token",
             |rocket| {
                 Box::pin(async move {
                     // Only once the port is bound, so a dashboard that fails to bind leaves the token alone.
-                    if let (Some(token), Some(file)) =
-                        (rocket.state::<CliToken>(), rocket.state::<TokenFile>())
-                    {
-                        if let Err(error) =
-                            write_token_file(&token_path(&file.0, rocket.config().port), &token.0)
-                        {
-                            eprintln!("The CLI token was not written: {error}");
+                    if let (Some(token), Some(file), Some(failure)) = (
+                        rocket.state::<CliToken>(),
+                        rocket.state::<TokenFile>(),
+                        rocket.state::<TokenWriteFailure>(),
+                    ) {
+                        let path = token_path(&file.0, rocket.config().port);
+                        if let Err(error) = write_token_file(&path, &token.0) {
+                            let message = format!(
+                                "could not write the CLI token to {}: {error}",
+                                path.display()
+                            );
+                            eprintln!("{message}");
+                            if let Ok(mut slot) = failure.0.lock() {
+                                *slot = Some(message);
+                            }
+                            rocket.shutdown().notify();
                         }
                     }
                 })
@@ -742,8 +783,16 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
             ))
             .launch()
             .await
-            .map(|_| ())
             .map_err(io::Error::other)
+            .and_then(|rocket| {
+                match rocket
+                    .state::<TokenWriteFailure>()
+                    .and_then(|failure| failure.0.lock().ok()?.take())
+                {
+                    Some(message) => Err(io::Error::other(message)),
+                    None => Ok(()),
+                }
+            })
     })
 }
 
@@ -3433,7 +3482,7 @@ mod tests {
         let (first, second) = (TestDir::new(), TestDir::new());
         let (first, second) = (client(&first).await, client(&second).await);
         let (a, b) = (session_token(&first).await, session_token(&second).await);
-        assert_eq!(a.len(), 32);
+        assert_eq!(a.len(), 64);
         assert_ne!(a, b);
         assert_eq!(a, session_token(&first).await);
     }
@@ -3686,14 +3735,17 @@ mod tests {
         let page = session_token(&api).await;
         assert_ne!(cli, page);
         for route in ["/api/runs", "/api/runs/1"] {
-            assert_eq!(post_status(&api, route, None).await, HttpStatus::Forbidden);
+            assert_eq!(
+                post_status(&api, route, None).await,
+                HttpStatus::Unauthorized
+            );
             assert_eq!(
                 post_status(&api, route, Some(&page)).await,
-                HttpStatus::Forbidden
+                HttpStatus::Unauthorized
             );
             assert_eq!(
                 post_status(&api, route, Some("wrong")).await,
-                HttpStatus::Forbidden
+                HttpStatus::Unauthorized
             );
         }
         assert_eq!(
@@ -3745,43 +3797,83 @@ mod tests {
         );
     }
 
-    /// Launches `rocket` on a thread and returns once it has lifted off or failed to launch.
-    fn launch(rocket: Rocket<Build>) -> Option<rocket::Shutdown> {
+    /// A launched server that is shut down and joined on drop, so a failing assertion leaves nothing running.
+    struct Launched {
+        port: u16,
+        shutdown: rocket::Shutdown,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Launched {
+        /// Stops the server and waits until its port is free again.
+        fn stop(mut self) {
+            self.shutdown.clone().notify();
+            if let Some(thread) = self.thread.take() {
+                thread.join().expect("server thread should not panic");
+            }
+        }
+    }
+
+    impl Drop for Launched {
+        fn drop(&mut self) {
+            self.shutdown.clone().notify();
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    /// Launches `rocket` on a thread and returns once it has lifted off (with its port), or `None` when it
+    /// failed to launch, or `Err` when it lifted off and then ended by itself.
+    fn launch(rocket: Rocket<Build>) -> Option<Launched> {
         let quiet = rocket.figment().clone().merge(("log_level", "off"));
         let (sender, receiver) = std::sync::mpsc::channel();
-        let failed = sender.clone();
         let rocket = rocket
             .configure(quiet)
-            .attach(rocket::fairing::AdHoc::on_liftoff("Up", move |rocket| {
-                let _ = sender.send(Some(rocket.shutdown()));
-                Box::pin(async {})
+            .attach(rocket::fairing::AdHoc::on_liftoff("Up", {
+                let sender = sender.clone();
+                move |rocket| {
+                    let _ = sender.send(Some((rocket.config().port, rocket.shutdown())));
+                    Box::pin(async {})
+                }
             }));
-        std::thread::spawn(move || {
-            let _ = rocket::execute(rocket.launch());
-            let _ = failed.send(None);
+        let thread = std::thread::spawn(move || {
+            // Displaying the error marks it handled; an unhandled launch error panics when dropped.
+            if let Err(error) = rocket::execute(rocket.launch()) {
+                let _ = error.to_string();
+            }
+            let _ = sender.send(None);
         });
-        receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .ok()
-            .flatten()
+        match receiver.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(Some((port, shutdown))) => Some(Launched {
+                port,
+                shutdown,
+                thread: Some(thread),
+            }),
+            Ok(None) => {
+                let _ = thread.join();
+                None
+            }
+            Err(_) => panic!("the server neither lifted off nor failed within 10 seconds"),
+        }
     }
 
     #[test]
     fn each_start_writes_a_new_token_that_a_failed_bind_leaves_alone() {
         let dir = TestDir::new();
         let runs = dir.0.path().join("data").join("runs.json");
-        let file = dir.0.path().join("data").join("session-token-4477");
-        let first = launch(build_rocket(&runs, 4477).unwrap()).expect("first start binds");
+        let first = launch(build_rocket(&runs, 0).unwrap()).expect("first start binds");
+        let port = first.port;
+        let file = token_path(&runs, port);
         let written = fs::read_to_string(&file).unwrap();
-        assert_eq!(written.len(), 32);
+        assert_eq!(written.len(), 64);
+        assert!(written.bytes().all(|byte| byte.is_ascii_hexdigit()));
         // The port is taken, so this one fails to bind and must not touch the file.
-        assert!(launch(build_rocket(&runs, 4477).unwrap()).is_none());
+        assert!(launch(build_rocket(&runs, port).unwrap()).is_none());
         assert_eq!(fs::read_to_string(&file).unwrap(), written);
-        first.notify();
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let second = launch(build_rocket(&runs, 4477).unwrap()).expect("restart binds");
+        first.stop();
+        let second = launch(build_rocket(&runs, port).unwrap()).expect("restart binds");
         assert_ne!(fs::read_to_string(&file).unwrap(), written);
-        second.notify();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -3789,5 +3881,80 @@ mod tests {
             assert_eq!(mode(&file), 0o600);
             assert_eq!(mode(file.parent().unwrap()), 0o700);
         }
+        second.stop();
+    }
+
+    #[test]
+    fn random_tokens_are_64_hex_characters_and_differ() {
+        let (a, b) = (random_token(), random_token());
+        assert_eq!((a.len(), b.len()), (64, 64));
+        assert!(a.bytes().chain(b.bytes()).all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_dashboard_that_cannot_write_its_token_shuts_down_and_says_why() {
+        let dir = TestDir::new();
+        let data = dir.0.path().join("data");
+        let runs = data.join("runs.json");
+        let rocket = build_rocket(&runs, 0).unwrap();
+        // The folder for the token turns into a file after the run storage opened.
+        fs::remove_dir_all(&data).ok();
+        fs::write(&data, "not a folder").unwrap();
+        let quiet = rocket.figment().clone().merge(("log_level", "off"));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let ended = rocket::execute(rocket.configure(quiet).launch());
+            let _ = sender.send(ended.map(|ignited| {
+                ignited
+                    .state::<TokenWriteFailure>()
+                    .and_then(|failure| failure.0.lock().unwrap().take())
+            }));
+        });
+        let ended = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the server should shut down when the token cannot be written");
+        thread.join().unwrap();
+        let message = ended.unwrap().expect("the failure is recorded");
+        assert!(message.contains("session-token"), "{message}");
+        assert!(!message.contains(&fs::read_to_string(&data).unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writing_the_token_makes_an_existing_loose_folder_private_and_ignores_stale_temp_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TestDir::new();
+        let folder = dir.0.path().join("tds-factory");
+        fs::create_dir(&folder).unwrap();
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+        let stale = folder.join("session-token.tmp");
+        fs::write(&stale, "stale").unwrap();
+        fs::set_permissions(&stale, fs::Permissions::from_mode(0o644)).unwrap();
+        let path = folder.join("session-token");
+        write_token_file(&path, "secret").unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&folder), 0o700);
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "secret");
+        assert_eq!(fs::read_to_string(&stale).unwrap(), "stale");
+        let names: Vec<_> = fs::read_dir(&folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 2, "no temp file is left: {names:?}");
+    }
+
+    #[test]
+    fn a_failed_rename_removes_the_temp_file() {
+        let dir = TestDir::new();
+        let target = dir.0.path().join("session-token");
+        fs::create_dir(&target).unwrap();
+        assert!(write_token_file(&target, "secret").is_err());
+        let names: Vec<_> = fs::read_dir(dir.0.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 1, "no temp file is left: {names:?}");
     }
 }

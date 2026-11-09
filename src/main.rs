@@ -223,11 +223,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
 
 impl pr_open::RunApi for ServerApi {
     fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
-        cli_token_file()
-            .map_err(|e| e.to_string())
-            .and_then(|token| {
-                report_run(ADDRESS, &token, id, stage, status, options).map_err(|e| e.to_string())
-            })
+        report_to_dashboard(id, stage, status, options)
     }
 }
 
@@ -409,20 +405,7 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     let mut reported_failure = false;
     let mut activity = |text: &str| {
         if running {
-            if let Err(error) = cli_token_file()
-                .map_err(|e| e.to_string())
-                .and_then(|token| {
-                    report_run(
-                        ADDRESS,
-                        &token,
-                        id,
-                        &stage,
-                        "running",
-                        &["--activity", text],
-                    )
-                    .map_err(|e| e.to_string())
-                })
-            {
+            if let Err(error) = report_to_dashboard(id, &stage, "running", &["--activity", text]) {
                 if !reported_failure {
                     reported_failure = true;
                     eprintln!("The run's activity could not be updated: {error}");
@@ -497,11 +480,7 @@ impl run_begin::RunApi for ServerApi {
     }
 
     fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
-        cli_token_file()
-            .map_err(|e| e.to_string())
-            .and_then(|token| {
-                report_run(ADDRESS, &token, id, stage, status, options).map_err(|e| e.to_string())
-            })
+        report_to_dashboard(id, stage, status, options)
     }
 
     fn runs_with_session(&self, session: &str) -> Result<Vec<(String, String)>, String> {
@@ -659,6 +638,17 @@ fn dashboard(port: u16, usage: bool) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+/// Reports a run update to the default dashboard, with the CLI token it wrote.
+fn report_to_dashboard(
+    id: &str,
+    stage: &str,
+    status: &str,
+    options: &[&str],
+) -> Result<(), String> {
+    let token_file = cli_token_file().map_err(|e| e.to_string())?;
+    report_run(ADDRESS, &token_file, id, stage, status, options).map_err(|e| e.to_string())
 }
 
 /// Where the default dashboard writes the CLI token that POSTs must send.

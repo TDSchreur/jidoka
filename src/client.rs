@@ -1,7 +1,7 @@
 use crate::{
     routing::ModelRouting,
     run::{parse_update, NewRun, Run},
-    server::Info,
+    server::{Info, CLI_TOKEN_HEADER},
 };
 use std::{
     io::{self, Read, Write},
@@ -122,7 +122,7 @@ pub(crate) fn fetch_run(server: &str, id: &str) -> Result<Run, Box<dyn std::erro
         "GET",
         &format!("/api/runs/{id}"),
         &[],
-        None,
+        "",
     )?)?)
 }
 
@@ -133,7 +133,7 @@ pub(crate) fn fetch_runs(server: &str) -> Result<Vec<Run>, Box<dyn std::error::E
         "GET",
         "/api/runs",
         &[],
-        None,
+        "",
     )?)?)
 }
 
@@ -147,7 +147,7 @@ fn api_post(
     let token = std::fs::read_to_string(token_file)
         .map(|token| token.trim().to_string())
         .map_err(|_| "no CLI token for the factory server; start or restart 'factory dashboard'")?;
-    api_request(server, "POST", route, body, Some(&token))
+    api_request(server, "POST", route, body, &token)
 }
 
 // Requests name the address they connect to in `Host`, which is the server's own authority.
@@ -156,15 +156,15 @@ fn api_request(
     method: &str,
     route: &str,
     body: &[u8],
-    token: Option<&str>,
+    cli_token: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut stream = TcpStream::connect(server).map_err(|e| {
         io::Error::new(e.kind(), format!("cannot connect to factory server at {server}; start it with 'factory dashboard': {e}"))
     })?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    if let Some(token) = token {
-        write!(stream, "POST {route} HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\nX-Factory-Token: {token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
+    if method == "POST" {
+        write!(stream, "POST {route} HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\n{CLI_TOKEN_HEADER}: {cli_token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
     } else {
         write!(
             stream,
@@ -180,7 +180,7 @@ fn api_request(
         .ok_or("invalid server response")?
         + 4;
     let headers = std::str::from_utf8(&response[..end])?;
-    if headers.starts_with("HTTP/1.1 403 ") {
+    if headers.starts_with("HTTP/1.1 401 ") {
         return Err(
             "the factory server rejected the CLI token; restart 'factory dashboard'".into(),
         );
@@ -511,6 +511,36 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("restart 'factory dashboard'"), "{error}");
+    }
+
+    #[test]
+    fn a_refusal_other_than_a_bad_token_is_not_blamed_on_the_token() {
+        let dir = TestDir::new();
+        let token_file = dir.0.path().join("session-token");
+        fs::write(&token_file, "token").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut seen = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                let read = stream.read(&mut chunk).unwrap();
+                seen.extend_from_slice(&chunk[..read]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 6\r\nConnection: close\r\n\r\nNo way")
+                .unwrap();
+        });
+        let error = report_run(&address, &token_file, "1", "build", "running", &[])
+            .unwrap_err()
+            .to_string();
+        thread.join().unwrap();
+        assert!(error.contains("server rejected request"), "{error}");
+        assert!(!error.contains("CLI token"), "{error}");
     }
 
     #[test]

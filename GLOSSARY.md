@@ -34,7 +34,7 @@
 
 **Session token**: The random value in the dashboard page that the page sends as `X-Session-Token` to delete runs. Any local process can read it through `GET /`, so it does not authorise POST.
 
-**CLI token**: The random value the dashboard writes on each start to `session-token` in its data folder, readable only by the user. The `factory` CLI sends it as `X-Factory-Token` on every POST. It is never part of a response, and differs from the Session token.
+**CLI token**: The random value the dashboard writes on each start to `session-token` (`session-token-<port>` for a non-default port) in its data folder, readable only by the user. If the dashboard cannot write it, the dashboard exits. A POST without the right value gets 401. The `factory` CLI sends it as `X-Factory-Token` on every POST. It is never part of a response, and differs from the Session token.
 
 **Token usage**: The tokens a run used, read from the agents' session logs and kept as counts per stage, model and ticket (plus the reasoning efforts the logs recorded), with the rework and work with no ticket in their own buckets. It is `tracked`, `partial` or `not tracked`, with the reason; unknown usage is never shown as zero.
 
