@@ -119,9 +119,7 @@ pub(crate) fn fetch_run(server: &str, id: &str) -> Result<Run, Box<dyn std::erro
     }
     Ok(serde_json::from_slice(&api_request(
         server,
-        "GET",
         &format!("/api/runs/{id}"),
-        &[],
         None,
     )?)?)
 }
@@ -130,9 +128,7 @@ pub(crate) fn fetch_run(server: &str, id: &str) -> Result<Run, Box<dyn std::erro
 pub(crate) fn fetch_runs(server: &str) -> Result<Vec<Run>, Box<dyn std::error::Error>> {
     Ok(serde_json::from_slice(&api_request(
         server,
-        "GET",
         "/api/runs",
-        &[],
         None,
     )?)?)
 }
@@ -147,31 +143,31 @@ fn api_post(
     let token = std::fs::read_to_string(token_file)
         .map(|token| token.trim().to_string())
         .map_err(|_| "no CLI token for the factory server; start or restart 'factory dashboard'")?;
-    api_request(server, "POST", route, body, Some(&token))
+    api_request(server, route, Some((&token, body)))
 }
 
 // Requests name the address they connect to in `Host`, which is the server's own authority.
+// `post` is the CLI token and body of a POST; without it the request is a bodiless GET.
 fn api_request(
     server: &str,
-    method: &str,
     route: &str,
-    body: &[u8],
-    cli_token: Option<&str>,
+    post: Option<(&str, &[u8])>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut stream = TcpStream::connect(server).map_err(|e| {
         io::Error::new(e.kind(), format!("cannot connect to factory server at {server}; start it with 'factory dashboard': {e}"))
     })?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    if let (true, Some(cli_token)) = (method == "POST", cli_token) {
-        write!(stream, "POST {route} HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\n{CLI_TOKEN_HEADER}: {cli_token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
-    } else {
-        write!(
+    match post {
+        Some((cli_token, body)) => {
+            write!(stream, "POST {route} HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\n{CLI_TOKEN_HEADER}: {cli_token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
+            stream.write_all(body)?;
+        }
+        None => write!(
             stream,
-            "{method} {route} HTTP/1.1\r\nHost: {server}\r\nConnection: close\r\n\r\n"
-        )?;
+            "GET {route} HTTP/1.1\r\nHost: {server}\r\nConnection: close\r\n\r\n"
+        )?,
     }
-    stream.write_all(body)?;
     let mut response = Vec::new();
     stream.read_to_end(&mut response)?;
     let end = response

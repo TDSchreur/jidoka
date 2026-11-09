@@ -141,6 +141,25 @@ pub(crate) fn token_path(runs: &Path, port: u16) -> PathBuf {
 /// Writes `token` to `path` so no reader sees a partial file; on Unix only the user can read it and the
 /// directory is made private.
 fn write_token_file(path: &Path, token: &str) -> io::Result<()> {
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let first = COUNTER.fetch_add(TOKEN_TEMP_ATTEMPTS, std::sync::atomic::Ordering::Relaxed);
+    write_token_file_from(path, token, first)
+}
+
+/// How many temporary names a token write tries before it gives up.
+const TOKEN_TEMP_ATTEMPTS: u32 = 8;
+
+/// The temporary name for the `counter`-th attempt. It needs no secrecy: `create_new` refuses to reuse or
+/// follow anything that exists.
+fn token_temp_path(path: &Path, counter: u32) -> PathBuf {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    dir.join(format!(".{name}.{}.{counter}.tmp", std::process::id()))
+}
+
+/// `write_token_file`, trying the temporary names from `first_counter` on. A name left by a killed dashboard
+/// (same pid, same counter) is skipped; after `TOKEN_TEMP_ATTEMPTS` taken names the error is returned.
+fn write_token_file_from(path: &Path, token: &str, first_counter: u32) -> io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     #[cfg(unix)]
     {
@@ -152,27 +171,38 @@ fn write_token_file(path: &Path, token: &str) -> io::Result<()> {
     }
     #[cfg(not(unix))]
     std::fs::create_dir_all(dir)?;
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    // The name needs no secrecy: `create_new` refuses to reuse or follow anything that exists.
-    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let temp = dir.join(format!(".{name}.{}.{unique}.tmp", std::process::id()));
-    let written = write_new_file(&temp, token).and_then(|()| std::fs::rename(&temp, path));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temp);
+    let mut attempt = 0;
+    loop {
+        let temp = token_temp_path(path, first_counter.wrapping_add(attempt));
+        match write_new_file(&temp, token) {
+            Err(error)
+                if error.kind() == io::ErrorKind::AlreadyExists
+                    && attempt + 1 < TOKEN_TEMP_ATTEMPTS =>
+            {
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+            Ok(()) => {
+                let renamed = std::fs::rename(&temp, path);
+                if renamed.is_err() {
+                    let _ = std::fs::remove_file(&temp);
+                }
+                return renamed;
+            }
+        }
     }
-    written
 }
 
 /// Makes the data folder of `runs` private (0700) before anything is written into it: created that way
 /// when missing, chmod-ed when it is a real folder. A symlinked folder is left as it is. Fails when the
-/// folder cannot be made private, so the dashboard does not start with a readable token folder.
+/// folder cannot be made private, so the dashboard does not start with a readable token folder. Returns a
+/// warning when the folder is a symlink whose target is group- or world-accessible.
 #[cfg(unix)]
-fn secure_data_dir(runs: &Path) -> io::Result<()> {
+fn secure_data_dir(runs: &Path) -> io::Result<Option<String>> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     let dir = match runs.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
-        _ => return Ok(()),
+        _ => return Ok(None),
     };
     let failed = |error: io::Error| {
         io::Error::new(
@@ -184,14 +214,24 @@ fn secure_data_dir(runs: &Path) -> io::Result<()> {
         )
     };
     match std::fs::symlink_metadata(dir) {
-        Ok(meta) if meta.file_type().is_symlink() => Ok(()),
-        Ok(_) => {
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(failed)
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let open = std::fs::metadata(dir).map_err(failed)?.permissions().mode() & 0o077 != 0;
+            Ok(open.then(|| {
+                format!(
+                    "warning: the data folder {} is a symlink to a folder that other users can access; the CLI token is stored there. Run: chmod 700 {}",
+                    dir.display(),
+                    dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()).display()
+                )
+            }))
         }
+        Ok(_) => std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .map(|()| None)
+            .map_err(failed),
         Err(error) if error.kind() == io::ErrorKind::NotFound => std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(dir)
+            .map(|()| None)
             .map_err(failed),
         Err(error) => Err(failed(error)),
     }
@@ -683,7 +723,9 @@ pub(crate) fn build_rocket_with(
         .merge(("port", port))
         .merge(("limits", Limits::new().limit("json", BODY_LIMIT.bytes())));
     #[cfg(unix)]
-    secure_data_dir(path)?;
+    if let Some(warning) = secure_data_dir(path)? {
+        eprintln!("{warning}");
+    }
     Ok(rocket::custom(config)
         .manage(RunStore::open(path)?)
         .manage(collector)
@@ -3814,37 +3856,30 @@ mod tests {
     async fn the_token_is_checked_before_the_body_is_parsed() {
         let dir = TestDir::new();
         let api = client(&dir).await;
+        let post = |route: &'static str, host: &'static str, content_type, token: bool, body| {
+            let mut request = api
+                .post(route)
+                .header(Header::new("Host", host))
+                .header(content_type)
+                .body(body);
+            if token {
+                request = request.header(cli_token_header(&api));
+            }
+            request.dispatch()
+        };
         for route in ["/api/runs", "/api/runs/1"] {
             for body in ["{not json", r#"{"unknown":1}"#, ""] {
-                let no_token = api
-                    .post(route.to_owned())
-                    .header(Header::new("Host", "127.0.0.1:4311"))
-                    .header(ContentType::JSON)
-                    .body(body)
-                    .dispatch()
-                    .await;
+                let host = "127.0.0.1:4311";
+                let no_token = post(route, host, ContentType::JSON, false, body).await;
                 assert_eq!(
                     no_token.status(),
                     HttpStatus::Unauthorized,
                     "{route} {body}"
                 );
-                let bad_shape = api
-                    .post(route.to_owned())
-                    .header(Header::new("Host", "evil.example:4311"))
-                    .header(ContentType::JSON)
-                    .header(cli_token_header(&api))
-                    .body(body)
-                    .dispatch()
-                    .await;
+                let evil = "evil.example:4311";
+                let bad_shape = post(route, evil, ContentType::JSON, true, body).await;
                 assert_eq!(bad_shape.status(), HttpStatus::Forbidden, "{route} {body}");
-                let wrong_type = api
-                    .post(route.to_owned())
-                    .header(Header::new("Host", "127.0.0.1:4311"))
-                    .header(ContentType::Plain)
-                    .header(cli_token_header(&api))
-                    .body(body)
-                    .dispatch()
-                    .await;
+                let wrong_type = post(route, host, ContentType::Plain, true, body).await;
                 assert_eq!(wrong_type.status(), HttpStatus::Forbidden, "{route} {body}");
             }
         }
@@ -3910,6 +3945,31 @@ mod tests {
         fn drop(&mut self) {
             self.shutdown.clone().notify();
             if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    /// A server thread that is shut down (when a handle exists) and joined on drop. Without a handle the
+    /// server never lifted off, so the thread is given a deadline to end by itself.
+    struct ServerThread {
+        shutdown: Option<rocket::Shutdown>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for ServerThread {
+        fn drop(&mut self) {
+            if let Some(shutdown) = self.shutdown.take() {
+                shutdown.notify();
+            }
+            let Some(thread) = self.thread.take() else {
+                return;
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !thread.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            if thread.is_finished() {
                 let _ = thread.join();
             }
         }
@@ -4011,15 +4071,15 @@ mod tests {
                     .and_then(|failure| failure.0.lock().unwrap().take())
             }));
         });
-        // Stops and joins the server when an assertion or the wait below fails.
-        let _guard = lifted
+        // Stops and joins the server on every path, including a liftoff that never comes.
+        let mut guard = ServerThread {
+            shutdown: None,
+            thread: Some(thread),
+        };
+        guard.shutdown = lifted
             .recv_timeout(std::time::Duration::from_secs(10))
             .ok()
-            .map(|(port, shutdown)| Launched {
-                port,
-                shutdown,
-                thread: Some(thread),
-            });
+            .map(|(_, shutdown)| shutdown);
         let ended = receiver
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the server should shut down when the token cannot be written");
@@ -4092,6 +4152,63 @@ mod tests {
         let fresh = dir.0.path().join("new").join("session-token");
         write_token_file(&fresh, "secret").unwrap();
         assert_eq!(mode(fresh.parent().unwrap()), 0o700);
+    }
+
+    #[test]
+    fn a_leftover_temp_file_of_a_killed_dashboard_does_not_stop_the_token_write() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("session-token");
+        let leftovers: Vec<_> = (5..7).map(|n| token_temp_path(&path, n)).collect();
+        for leftover in &leftovers {
+            fs::write(leftover, "left behind").unwrap();
+        }
+        write_token_file_from(&path, "secret", 5).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "secret");
+        for leftover in &leftovers {
+            assert_eq!(fs::read_to_string(leftover).unwrap(), "left behind");
+        }
+        assert_eq!(fs::read_dir(dir.0.path()).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn the_token_write_gives_up_after_a_few_taken_temp_names() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("session-token");
+        for n in 0..TOKEN_TEMP_ATTEMPTS {
+            fs::write(token_temp_path(&path, n), "left behind").unwrap();
+        }
+        let error = write_token_file_from(&path, "secret", 0).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_data_folder_warns_when_its_target_is_open_to_others() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TestDir::new();
+        let target = dir.0.path().join("elsewhere");
+        fs::create_dir(&target).unwrap();
+        let link = dir.0.path().join("tds-factory");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let runs = link.join("runs.json");
+        for mode in [0o755, 0o710, 0o704] {
+            fs::set_permissions(&target, fs::Permissions::from_mode(mode)).unwrap();
+            let warning = secure_data_dir(&runs).unwrap().expect("a warning");
+            assert!(warning.contains(&*link.to_string_lossy()), "{warning}");
+            assert!(warning.contains("chmod 700"), "{warning}");
+        }
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(secure_data_dir(&runs).unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_real_data_folder_gives_no_warning() {
+        let dir = TestDir::new();
+        let runs = dir.0.path().join("tds-factory").join("runs.json");
+        assert_eq!(secure_data_dir(&runs).unwrap(), None);
+        assert_eq!(secure_data_dir(&runs).unwrap(), None);
     }
 
     #[test]
