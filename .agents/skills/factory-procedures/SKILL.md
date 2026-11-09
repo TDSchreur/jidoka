@@ -103,8 +103,4 @@ How a run's model-routing selection applies to every Stage (Define, Build, Check
 
 ## Finish
 
-Use `factory-pr` to write the pull request description. When the user chose to finish with remaining Check findings, list them in the description. Commit anything still uncommitted that belongs to the change as a new commit. Verify the final commit before pushing: reuse the latest passing full verification when nothing has changed since it ran (same `HEAD`, clean tree), otherwise run the project's verification on it. Report the result; do not open the pull request while a check fails or cannot run. Then follow [Pull request and CI](references/pull-request-and-ci.md). The Finish report tells the user to run `factory run cleanup <id>` once the pull request merges.
-
-## Pull request and CI
-
-Opening the pull request, watching its CI, keeping the branch current, fixing CI failures and reporting the result are in [references/pull-request-and-ci.md](references/pull-request-and-ci.md). Read it in Finish before opening the pull request, and again while watching CI.
+Use `factory-pr` to write the pull request description. When the user chose to finish with remaining Check findings, list them in the description. Commit anything still uncommitted that belongs to the change as a new commit. Verify the final commit before pushing: reuse the latest passing full verification when nothing has changed since it ran (same `HEAD`, clean tree), otherwise run the project's verification on it. Report the result; do not open the pull request while a check fails or cannot run. Then follow [Pull request and CI](references/pull-request-and-ci.md) to open the pull request, and read it again while watching CI. The Finish report tells the user to run `factory run cleanup <id>` once the pull request merges.
