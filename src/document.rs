@@ -79,7 +79,15 @@ pub(crate) fn read(run: &Run, reference: &str, plan: &Path) -> Result<Document, 
         return Err(DocumentError::OutsideRoots);
     }
     require_markdown(&file)?;
-    if roots.iter().any(|root| file.starts_with(root.join(".git"))) {
+    // Any `.git` directory inside a root (nested repositories, submodules) is never served.
+    let in_git_dir = roots.iter().any(|root| {
+        file.strip_prefix(root).is_ok_and(|inner| {
+            inner
+                .components()
+                .any(|part| part.as_os_str().eq_ignore_ascii_case(".git"))
+        })
+    });
+    if in_git_dir {
         return Err(DocumentError::OutsideRoots);
     }
     let markdown = read_markdown(&file, not_available)?;
@@ -445,8 +453,41 @@ mod tests {
         let repository = worktree.parent().unwrap().parent().unwrap().join("repo");
         let folder = plans.to_string_lossy().into_owned();
         let run = run(&repository, &worktree, &folder);
-        let error = read(&run, &folder, &plans.join("1.md")).err();
-        assert!(error.is_some(), "{error:?}");
+        assert_eq!(
+            read(&run, &folder, &plans.join("1.md")).err(),
+            Some(DocumentError::NotMarkdown)
+        );
+    }
+
+    #[test]
+    fn a_nested_git_dir_is_refused_but_git_like_names_are_served() {
+        let (_dir, repository, worktree, _) = setup("x.md");
+        let nested = repository.join("vendor/x/.git");
+        let upper = repository.join("vendor/y/.GIT");
+        let docs = repository.join("docs");
+        let github = repository.join(".github");
+        for folder in [&nested, &upper, &docs, &github] {
+            fs::create_dir_all(folder).unwrap();
+        }
+        let refused = [nested.join("notes.md"), upper.join("notes.md")];
+        let served = [docs.join("git-notes.md"), github.join("x.md")];
+        for file in refused.iter().chain(&served) {
+            fs::write(file, "# note").unwrap();
+        }
+        for file in refused {
+            let reference = file.to_string_lossy().into_owned();
+            let run = run(&repository, &worktree, &reference);
+            assert_eq!(
+                read(&run, &reference, &no_plan()).err(),
+                Some(DocumentError::OutsideRoots),
+                "{reference}"
+            );
+        }
+        for file in served {
+            let reference = file.to_string_lossy().into_owned();
+            let run = run(&repository, &worktree, &reference);
+            assert!(read(&run, &reference, &no_plan()).is_ok(), "{reference}");
+        }
     }
 
     #[test]
