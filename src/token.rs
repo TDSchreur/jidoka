@@ -5,7 +5,7 @@ use std::{fs, io::Read, path::Path};
 /// Random bytes in a token.
 const BYTES: usize = 32;
 /// Characters in a token: each byte as two lowercase hex digits.
-pub(crate) const LENGTH: usize = BYTES * 2;
+const LENGTH: usize = BYTES * 2;
 /// A token file may end in a line break (`\n` or `\r\n`); nothing more is read than that allows.
 const MAX_FILE_BYTES: u64 = LENGTH as u64 + 2;
 
@@ -19,7 +19,7 @@ pub(crate) fn random() -> String {
 }
 
 /// Whether `token` is exactly what `random` produces: 64 lowercase hex characters.
-pub(crate) fn is_valid(token: &str) -> bool {
+fn is_valid(token: &str) -> bool {
     token.len() == LENGTH
         && token
             .bytes()
@@ -31,7 +31,8 @@ pub(crate) fn is_valid(token: &str) -> bool {
 /// never blocks on a pipe, so a hostile or mistaken path cannot hang or bloat the CLI.
 pub(crate) fn read_file(path: &Path) -> Option<String> {
     // Check the type before opening: opening a named pipe for reading waits for a writer, and `metadata` never waits.
-    // The handle is checked again after opening, in case the path was swapped in between.
+    // The handle is checked again after opening, which catches a swap to another file type but not a swap to a pipe
+    // between the two calls: that `open` would still wait for a writer, because it is not opened non-blocking.
     if !fs::metadata(path).ok()?.is_file() {
         return None;
     }
