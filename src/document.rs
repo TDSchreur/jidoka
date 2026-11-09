@@ -10,9 +10,6 @@ use std::{
 /// The largest document the dashboard renders.
 const MAX_DOCUMENT_BYTES: u64 = 1024 * 1024;
 
-/// The largest `.git` file (a `gitdir:` pointer) that is read.
-const MAX_GIT_FILE_BYTES: u64 = 4096;
-
 /// A rendered document: its file name and HTML that is safe to insert into the page.
 pub(crate) struct Document {
     pub(crate) name: String,
@@ -35,8 +32,8 @@ pub(crate) enum DocumentError {
 }
 
 /// The recorded local document `reference` of `run`, rendered. The file must be inside the
-/// worktree, the repository, the worktree's git directory, or be `<worktree>.factory-plan.md`.
-pub(crate) fn read(run: &Run, reference: &str) -> Result<Document, DocumentError> {
+/// worktree or the repository, or be exactly `plan`, the run's own plan file (never its folder).
+pub(crate) fn read(run: &Run, reference: &str, plan: &Path) -> Result<Document, DocumentError> {
     if is_web_reference(reference) {
         return Err(DocumentError::WebReference);
     }
@@ -78,7 +75,7 @@ pub(crate) fn read(run: &Run, reference: &str) -> Result<Document, DocumentError
         .find_map(|candidate| std::fs::canonicalize(candidate).ok())
         .ok_or_else(|| not_available.clone())?;
     let roots = roots(worktree, repository);
-    if !roots.iter().any(|root| file.starts_with(root)) {
+    if !roots.iter().any(|root| file.starts_with(root)) && !is_own_plan(&file, plan) {
         return Err(DocumentError::OutsideRoots);
     }
     require_markdown(&file)?;
@@ -121,23 +118,23 @@ fn read_markdown(file: &Path, not_available: DocumentError) -> Result<String, Do
     String::from_utf8(bytes).map_err(|_| DocumentError::NotText)
 }
 
-/// The canonical directories and file a document may live in.
+/// The canonical directories a document may live in.
 fn roots(worktree: Option<&Path>, repository: Option<&Path>) -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = worktree
+    worktree
         .into_iter()
         .chain(repository)
         .filter_map(|root| std::fs::canonicalize(root).ok())
-        .collect();
-    if let Some(worktree) = worktree {
-        roots.extend(git_dir(worktree, repository));
-        let mut plan = worktree.as_os_str().to_owned();
-        plan.push(".factory-plan.md");
-        let plan = PathBuf::from(plan);
-        if is_local_path(&plan) {
-            roots.extend(std::fs::canonicalize(plan).ok());
-        }
-    }
-    roots
+        .collect()
+}
+
+/// Whether the canonical `file` is `plan` itself. The plan's folder is resolved but its file name
+/// is not, so a symlink at the plan path that points elsewhere does not match.
+fn is_own_plan(file: &Path, plan: &Path) -> bool {
+    let (Some(folder), Some(name)) = (plan.parent(), plan.file_name()) else {
+        return false;
+    };
+    is_local_path(plan)
+        && std::fs::canonicalize(folder).is_ok_and(|folder| file == folder.join(name))
 }
 
 /// A root that is a real repository or worktree: not a filesystem root, with a `.git` entry, and
@@ -157,35 +154,6 @@ fn is_local_path(path: &Path) -> bool {
         Some(Component::Prefix(prefix)) => is_drive_prefix(prefix.kind()),
         _ => true,
     }
-}
-
-/// The canonical git directory of a worktree: `<worktree>/.git` is a directory, or a file
-/// `gitdir: <path>` whose target is inside the repository's own `.git` directory.
-fn git_dir(worktree: &Path, repository: Option<&Path>) -> Option<PathBuf> {
-    let dot_git = worktree.join(".git");
-    if dot_git.is_dir() {
-        return std::fs::canonicalize(dot_git).ok();
-    }
-    if !std::fs::metadata(&dot_git).ok()?.is_file() {
-        return None;
-    }
-    let mut bytes = Vec::new();
-    File::open(&dot_git)
-        .ok()?
-        .take(MAX_GIT_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() as u64 > MAX_GIT_FILE_BYTES {
-        return None;
-    }
-    let text = String::from_utf8(bytes).ok()?;
-    let target = worktree.join(text.trim().strip_prefix("gitdir:")?.trim());
-    if !is_local_path(&target) {
-        return None;
-    }
-    let target = std::fs::canonicalize(target).ok()?;
-    let repository_git = std::fs::canonicalize(repository?.join(".git")).ok()?;
-    target.starts_with(repository_git).then_some(target)
 }
 
 fn require_markdown(path: &Path) -> Result<(), DocumentError> {
@@ -261,6 +229,10 @@ mod tests {
         (dir, repository, worktree, run)
     }
 
+    fn no_plan() -> PathBuf {
+        PathBuf::from("/nonexistent/plans/none.md")
+    }
+
     fn run(repository: &Path, worktree: &Path, spec: &str) -> Run {
         serde_json::from_value(serde_json::json!({
             "id": "1", "title": "t", "project": repository.to_string_lossy(),
@@ -320,11 +292,11 @@ mod tests {
     fn a_run_in_a_directory_without_git_serves_nothing() {
         let (_dir, repository, worktree, run) = setup("spec.md");
         fs::write(worktree.join("spec.md"), "x").unwrap();
-        assert!(read(&run, "spec.md").is_ok());
+        assert!(read(&run, "spec.md", &no_plan()).is_ok());
         fs::remove_dir(worktree.join(".git")).unwrap();
         fs::remove_dir(repository.join(".git")).unwrap();
         assert_eq!(
-            read(&run, "spec.md").err(),
+            read(&run, "spec.md", &no_plan()).err(),
             Some(DocumentError::NotAvailable {
                 path: "spec.md".into()
             })
@@ -332,53 +304,25 @@ mod tests {
     }
 
     #[test]
-    fn a_gitdir_file_is_trusted_only_inside_the_repository_git_directory() {
-        let (dir, repository, worktree, _) = setup("spec.md");
-        fs::remove_dir(worktree.join(".git")).unwrap();
-        let inside = repository.join(".git/worktrees/feature");
-        let outside = dir.0.path().join("elsewhere");
-        fs::create_dir_all(&inside).unwrap();
-        fs::create_dir_all(&outside).unwrap();
-        fs::write(
-            worktree.join(".git"),
-            format!("gitdir: {}", inside.display()),
-        )
-        .unwrap();
-        assert_eq!(
-            git_dir(&worktree, Some(&repository)),
-            Some(fs::canonicalize(&inside).unwrap())
-        );
-        fs::write(
-            worktree.join(".git"),
-            format!("gitdir: {}", outside.display()),
-        )
-        .unwrap();
-        assert_eq!(git_dir(&worktree, Some(&repository)), None);
-    }
-
-    #[test]
-    fn a_git_directory_is_used_as_is() {
-        let (_dir, repository, worktree, _) = setup("spec.md");
-        assert_eq!(
-            git_dir(&worktree, Some(&repository)),
-            Some(fs::canonicalize(worktree.join(".git")).unwrap())
-        );
-    }
-
-    #[test]
     fn a_document_over_a_megabyte_is_rejected_but_exactly_a_megabyte_is_served() {
         let (_dir, _, worktree, run) = setup("big.md");
         fs::write(worktree.join("big.md"), vec![b'a'; 1024 * 1024 + 1]).unwrap();
-        assert_eq!(read(&run, "big.md").err(), Some(DocumentError::TooLarge));
+        assert_eq!(
+            read(&run, "big.md", &no_plan()).err(),
+            Some(DocumentError::TooLarge)
+        );
         fs::write(worktree.join("big.md"), vec![b'a'; 1024 * 1024]).unwrap();
-        assert!(read(&run, "big.md").is_ok());
+        assert!(read(&run, "big.md", &no_plan()).is_ok());
     }
 
     #[test]
     fn a_file_that_is_not_text_is_rejected() {
         let (_dir, _, worktree, run) = setup("bin.md");
         fs::write(worktree.join("bin.md"), [0xff, 0xfe, 0x00]).unwrap();
-        assert_eq!(read(&run, "bin.md").err(), Some(DocumentError::NotText));
+        assert_eq!(
+            read(&run, "bin.md", &no_plan()).err(),
+            Some(DocumentError::NotText)
+        );
     }
 
     /// Makes a FIFO with the `mkfifo` program (libc is not a dependency); `false` if unavailable.
@@ -411,7 +355,7 @@ mod tests {
             eprintln!("skipped: mkfifo is not available");
             return;
         }
-        let result = within_five_seconds(move || read(&run, "x.md").err());
+        let result = within_five_seconds(move || read(&run, "x.md", &no_plan()).err());
         assert_eq!(
             result,
             Some(DocumentError::NotAvailable {
@@ -420,56 +364,69 @@ mod tests {
         );
     }
 
-    // Reading a FIFO as `.git` would block forever, so it must give no git directory.
+    /// A plans folder with run 1's own plan and run 2's plan, and a run recording its own plan as spec.
+    fn plans_setup() -> (TestDir, PathBuf, PathBuf, Run) {
+        let (dir, repository, worktree, _) = setup("x.md");
+        let plans = dir.0.path().join("data").join("plans");
+        fs::create_dir_all(&plans).unwrap();
+        fs::write(plans.join("1.md"), "# own plan").unwrap();
+        fs::write(plans.join("2.md"), "# other plan").unwrap();
+        let run = run(
+            &repository,
+            &worktree,
+            &plans.join("1.md").to_string_lossy(),
+        );
+        (dir, plans, worktree, run)
+    }
+
+    #[test]
+    fn the_runs_own_plan_is_served_even_when_the_worktree_is_gone() {
+        let (_dir, plans, worktree, run) = plans_setup();
+        fs::remove_dir_all(&worktree).unwrap();
+        let plan = plans.join("1.md");
+        let served = read(&run, &plan.to_string_lossy(), &plan).unwrap();
+        assert!(served.html.contains("own plan"));
+    }
+
+    #[test]
+    fn another_runs_plan_is_refused_even_when_recorded_as_spec() {
+        let (_dir, plans, worktree, _) = plans_setup();
+        let other = plans.join("2.md").to_string_lossy().into_owned();
+        let repository = worktree.parent().unwrap().parent().unwrap().join("repo");
+        let run = run(&repository, &worktree, &other);
+        assert_eq!(
+            read(&run, &other, &plans.join("1.md")).err(),
+            Some(DocumentError::OutsideRoots)
+        );
+    }
+
     #[cfg(unix)]
     #[test]
-    fn a_fifo_as_dot_git_gives_no_git_dir_and_does_not_block() {
-        let (_dir, repository, worktree, _) = setup("x.md");
-        fs::remove_dir(worktree.join(".git")).unwrap();
-        if !make_fifo(&worktree.join(".git")) {
-            eprintln!("skipped: mkfifo is not available");
-            return;
-        }
+    fn a_symlink_at_the_plan_path_pointing_elsewhere_is_refused() {
+        let (dir, plans, _, run) = plans_setup();
+        let secret = dir.0.path().join("secret.md");
+        fs::write(&secret, "# secret").unwrap();
+        fs::remove_file(plans.join("1.md")).unwrap();
+        std::os::unix::fs::symlink(&secret, plans.join("1.md")).unwrap();
+        let plan = plans.join("1.md");
         assert_eq!(
-            within_five_seconds(move || git_dir(&worktree, Some(&repository))),
-            None
+            read(&run, &plan.to_string_lossy(), &plan).err(),
+            Some(DocumentError::OutsideRoots)
         );
     }
 
     #[test]
-    fn an_oversized_dot_git_file_gives_no_git_dir() {
+    fn the_old_plan_beside_the_worktree_is_refused() {
         let (_dir, repository, worktree, _) = setup("x.md");
-        fs::remove_dir(worktree.join(".git")).unwrap();
-        let inside = repository.join(".git/worktrees/feature");
-        fs::create_dir_all(&inside).unwrap();
-        let text = format!("gitdir: {}{}", inside.display(), " ".repeat(5000));
-        fs::write(worktree.join(".git"), text).unwrap();
-        assert_eq!(git_dir(&worktree, Some(&repository)), None);
-    }
-
-    #[test]
-    fn a_plan_in_the_worktree_git_directory_and_the_sibling_plan_are_served() {
-        let (_dir, repository, worktree, _) = setup("x.md");
-        fs::remove_dir(worktree.join(".git")).unwrap();
-        let inside = repository.join(".git/worktrees/wt");
-        fs::create_dir_all(&inside).unwrap();
-        fs::write(
-            worktree.join(".git"),
-            format!("gitdir: {}", inside.display()),
-        )
-        .unwrap();
-        let plan = inside.join("factory-plan.md");
-        fs::write(&plan, "# saved plan").unwrap();
-        let run_plan = run(&repository, &worktree, &plan.to_string_lossy());
-        let served = read(&run_plan, &plan.to_string_lossy()).unwrap();
-        assert!(served.html.contains("saved plan"));
         let mut sibling = worktree.as_os_str().to_owned();
         sibling.push(".factory-plan.md");
         let sibling = PathBuf::from(sibling);
-        fs::write(&sibling, "# sibling plan").unwrap();
-        let run_sibling = run(&repository, &worktree, &sibling.to_string_lossy());
-        let served = read(&run_sibling, &sibling.to_string_lossy()).unwrap();
-        assert!(served.html.contains("sibling plan"));
+        fs::write(&sibling, "# old plan").unwrap();
+        let run = run(&repository, &worktree, &sibling.to_string_lossy());
+        assert_eq!(
+            read(&run, &sibling.to_string_lossy(), &no_plan()).err(),
+            Some(DocumentError::OutsideRoots)
+        );
     }
 
     #[test]
