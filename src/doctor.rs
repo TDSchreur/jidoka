@@ -526,8 +526,8 @@ fn candidate_suffixes(name: &str, extensions: &[String]) -> Vec<String> {
 fn find_with_extensions(name: &str, path: &OsString, extensions: &[String]) -> Option<PathBuf> {
     let suffixes = candidate_suffixes(name, extensions);
     std::env::split_paths(path).find_map(|dir| {
-        suffixes.iter().find_map(|ext| {
-            let candidate = dir.join(format!("{name}{ext}"));
+        suffixes.iter().find_map(|suffix| {
+            let candidate = dir.join(format!("{name}{suffix}"));
             is_executable(&candidate).then_some(candidate)
         })
     })
