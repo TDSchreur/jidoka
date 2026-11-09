@@ -23,6 +23,7 @@ mod run_cleanup;
 mod run_reinstall;
 mod server;
 mod stats;
+mod token;
 mod update;
 mod usage;
 mod usage_logs;

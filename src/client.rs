@@ -140,15 +140,7 @@ fn api_post(
     body: &[u8],
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     // Read on every call, so a restarted dashboard needs no manual step. The token is never put in an error.
-    let token = std::fs::read_to_string(token_file)
-        .map(|token| token.trim().to_string())
-        .ok()
-        .filter(|token| {
-            token.len() == 64
-                && token
-                    .bytes()
-                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-        })
+    let token = crate::token::read_file(token_file)
         .ok_or("no CLI token for the factory server; start or restart 'factory dashboard'")?;
     api_request(server, route, Some((&token, body)))
 }
@@ -206,6 +198,30 @@ mod tests {
 
     /// An address nobody listens on: a port the tests' own servers can never be assigned.
     const NOTHING_LISTENS: &str = "127.0.0.1:1";
+
+    /// Accepts the client's connection to a fake server, failing the test with an explanation when it has not
+    /// connected by the deadline, instead of waiting forever.
+    fn accept_within(listener: &std::net::TcpListener, wait: Duration) -> std::net::TcpStream {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    // A stream accepted from a non-blocking listener may be non-blocking itself.
+                    stream.set_nonblocking(false).unwrap();
+                    return stream;
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the client did not connect to the fake server within {wait:?}"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("the fake server could not accept: {error}"),
+            }
+        }
+    }
 
     /// A real Rocket server on an OS-assigned port, shut down and joined on drop.
     struct TestServer {
@@ -530,6 +546,24 @@ mod tests {
     }
 
     #[test]
+    fn an_oversized_or_non_file_token_path_says_to_restart_the_dashboard() {
+        let dir = TestDir::new();
+        let server = TestServer::start(&dir.0.path().join("runs.json"));
+        let real = token_of(&server);
+        let oversized = dir.0.path().join("oversized");
+        fs::write(&oversized, format!("{real}{}", "a".repeat(1024 * 1024))).unwrap();
+        for path in [oversized.as_path(), dir.0.path()] {
+            let error = start_run(&server.address, path, "t", "/w", None, None, None)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("no CLI token"), "{error}");
+            assert!(error.contains("restart 'factory dashboard'"), "{error}");
+            assert!(!error.contains(&real), "{error}");
+        }
+        assert!(server.runs().as_array().unwrap().is_empty());
+    }
+
+    #[test]
     fn rejected_token_hints_at_restarting_the_dashboard_without_leaking_tokens() {
         let dir = TestDir::new();
         let server = TestServer::start(&dir.0.path().join("runs.json"));
@@ -558,7 +592,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
         let thread = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let mut stream = accept_within(&listener, Duration::from_secs(5));
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
@@ -628,7 +662,7 @@ mod tests {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap().to_string();
             let thread = std::thread::spawn(move || {
-                let (mut stream, _) = listener.accept().unwrap();
+                let mut stream = accept_within(&listener, Duration::from_secs(5));
                 let mut buffer = [0; 1024];
                 let _ = stream.read(&mut buffer);
                 stream.write_all(reply).unwrap();

@@ -92,22 +92,13 @@ fn is_local_authority(authority: &str, port: u16) -> bool {
     })
 }
 
-/// 32 bytes from the operating system's CSPRNG, as 64 hex characters.
-fn random_token() -> String {
-    let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).expect(
-        "cannot start the dashboard: the operating system gave no random bytes for its tokens",
-    );
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 /// A random value created when the server starts. Only the dashboard page this server
 /// serves to a local host carries it, so a request that has it came from that page.
 struct SessionToken(String);
 
 impl SessionToken {
     fn new() -> Self {
-        Self(random_token())
+        Self(crate::token::random())
     }
 }
 
@@ -746,7 +737,7 @@ pub(crate) fn build_rocket_with(
         .manage(RunStore::open(path)?)
         .manage(collector)
         .manage(SessionToken::new())
-        .manage(CliToken(random_token()))
+        .manage(CliToken(crate::token::random()))
         .manage(TokenFile(path.to_path_buf()))
         .manage(TokenWriteFailure(std::sync::Mutex::new(None)))
         .attach(rocket::fairing::AdHoc::on_liftoff(
@@ -4050,14 +4041,6 @@ mod tests {
             assert_eq!(mode(file.parent().unwrap()), 0o700);
         }
         second.stop();
-    }
-
-    #[test]
-    fn random_tokens_are_64_hex_characters_and_differ() {
-        let (a, b) = (random_token(), random_token());
-        assert_eq!((a.len(), b.len()), (64, 64));
-        assert!(a.bytes().chain(b.bytes()).all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(a, b);
     }
 
     #[test]
