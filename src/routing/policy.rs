@@ -1,7 +1,7 @@
 //! The model-routing policy file: reading it, what it means for a run that starts, and the starter
 //! `factory doctor --create-model-routing` writes.
 //!
-//! The file has an `agents` object with an entry per agent (`claude`, `codex`), each with a `stages` map
+//! The file has an `agents` object with an entry per agent (`claude`, `codex`, `copilot`), each with a `stages` map
 //! from Stage to model and effort and an optional `enabled`. The earlier format (roles and tasks, or the
 //! single-agent form) is recognised only to replace it with the starter (see `install_starter`) and to tell the user to do so.
 //!
@@ -24,10 +24,7 @@ use std::{
 /// The policy file is user-owned and could be anything: larger files are not read.
 const MAX_POLICY_BYTES: u64 = 1 << 20;
 
-pub(crate) const COPILOT_NOTICE: &str =
-    "Model routing is not supported on Copilot CLI: every stage uses the session's model.";
-
-/// The agent a run starts in. Copilot CLI is a valid host, but nothing is routed for it.
+/// The agent a run starts in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Host {
     Claude,
@@ -53,11 +50,11 @@ impl Host {
         }
     }
 
-    pub(crate) fn routing_agent(self) -> Option<RoutingAgent> {
+    pub(crate) fn routing_agent(self) -> RoutingAgent {
         match self {
-            Self::Claude => Some(RoutingAgent::Claude),
-            Self::Codex => Some(RoutingAgent::Codex),
-            Self::Copilot => None,
+            Self::Claude => RoutingAgent::Claude,
+            Self::Codex => RoutingAgent::Codex,
+            Self::Copilot => RoutingAgent::Copilot,
         }
     }
 }
@@ -67,6 +64,7 @@ impl From<RoutingAgent> for Host {
         match agent {
             RoutingAgent::Claude => Self::Claude,
             RoutingAgent::Codex => Self::Codex,
+            RoutingAgent::Copilot => Self::Copilot,
         }
     }
 }
@@ -111,6 +109,7 @@ pub(crate) enum Policy {
     Multi {
         claude: Option<AgentPolicy>,
         codex: Option<AgentPolicy>,
+        copilot: Option<AgentPolicy>,
     },
 }
 
@@ -145,8 +144,6 @@ impl Resolution {
 /// Why a run in some agent is not routed by a policy.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum NotRouted {
-    /// Copilot CLI is not supported.
-    Copilot,
     /// The `agents` form has no entry for the agent.
     NoEntry,
     /// The agent's entry has `enabled: false`.
@@ -157,7 +154,6 @@ impl NotRouted {
     /// What to tell the user about a run in `host`.
     pub(crate) fn text(self, host: Host) -> String {
         match self {
-            Self::Copilot => COPILOT_NOTICE.to_string(),
             Self::NoEntry => format!(
                 "The model-routing policy has no entry for {0}, so this run is not routed: every stage uses the session's model. Add \"agents\".\"{0}\" to route it.",
                 host.name()
@@ -184,9 +180,7 @@ impl Policy {
         if matches!(self, Self::Off) {
             return None;
         }
-        let Some(agent) = host.routing_agent() else {
-            return Some(Coverage::NotRouted(NotRouted::Copilot));
-        };
+        let agent = host.routing_agent();
         Some(match self.entry(agent) {
             None => Coverage::NotRouted(NotRouted::NoEntry),
             Some(entry) if !entry.enabled => Coverage::NotRouted(NotRouted::SwitchedOff),
@@ -198,17 +192,22 @@ impl Policy {
     /// acceptable when no entry is switched on.
     pub(crate) fn resolve(&self, host: Option<Host>) -> Result<Resolution, String> {
         let Some(host) = host else {
-            let Self::Multi { claude, codex } = self else {
+            let Self::Multi {
+                claude,
+                codex,
+                copilot,
+            } = self
+            else {
                 return Ok(Resolution::default());
             };
-            if [claude, codex]
+            if [claude, codex, copilot]
                 .iter()
                 .all(|e| e.as_ref().is_none_or(|e| !e.enabled))
             {
                 return Ok(Resolution::default());
             }
             return Err(format!(
-                "the policy configures several agents ({}), so `factory run start` must be told which agent the run is in: add `--agent claude` or `--agent codex`",
+                "the policy configures several agents ({}), so `factory run start` must be told which agent the run is in: add `--agent claude`, `--agent codex` or `--agent copilot`",
                 self.configured().join(", ")
             ));
         };
@@ -220,17 +219,22 @@ impl Policy {
         match (self, agent) {
             (Self::Multi { claude, .. }, RoutingAgent::Claude) => claude.as_ref(),
             (Self::Multi { codex, .. }, RoutingAgent::Codex) => codex.as_ref(),
+            (Self::Multi { copilot, .. }, RoutingAgent::Copilot) => copilot.as_ref(),
             (Self::Off, _) => None,
         }
     }
 
     /// The agents that have an entry, in a fixed order.
     pub(crate) fn configured(&self) -> Vec<&'static str> {
-        [RoutingAgent::Claude, RoutingAgent::Codex]
-            .into_iter()
-            .filter(|agent| self.entry(*agent).is_some())
-            .map(RoutingAgent::name)
-            .collect()
+        [
+            RoutingAgent::Claude,
+            RoutingAgent::Codex,
+            RoutingAgent::Copilot,
+        ]
+        .into_iter()
+        .filter(|agent| self.entry(*agent).is_some())
+        .map(RoutingAgent::name)
+        .collect()
     }
 }
 
@@ -289,6 +293,7 @@ struct Entry {
 struct Agents {
     claude: Option<Entry>,
     codex: Option<Entry>,
+    copilot: Option<Entry>,
 }
 
 /// The policy file as the user writes it.
@@ -313,8 +318,8 @@ impl From<Entry> for AgentPolicy {
 
 impl Agents {
     fn into_policy(self) -> Result<Policy, String> {
-        if self.claude.is_none() && self.codex.is_none() {
-            return Err("`agents` has no entry: add `claude`, `codex` or both".into());
+        if self.claude.is_none() && self.codex.is_none() && self.copilot.is_none() {
+            return Err("`agents` has no entry: add `claude`, `codex` or `copilot`".into());
         }
         let checked = |name: &str, agent, entry: Option<Entry>| {
             entry
@@ -334,6 +339,7 @@ impl Agents {
         Ok(Policy::Multi {
             claude: checked("claude", RoutingAgent::Claude, self.claude)?,
             codex: checked("codex", RoutingAgent::Codex, self.codex)?,
+            copilot: checked("copilot", RoutingAgent::Copilot, self.copilot)?,
         })
     }
 }
@@ -432,11 +438,6 @@ pub(crate) fn read(path: &Path) -> Result<Policy, String> {
             "the model-routing policy is in the old format (roles and tasks, or a single agent); run `factory install` or `factory doctor --create-model-routing` to replace it with the per-stage starter (your custom values are not migrated)".into(),
         ));
     }
-    if value.pointer("/agents/copilot").is_some() {
-        return Err(fail(
-            "invalid model-routing policy: `agents.copilot`: model routing is not supported on Copilot CLI, so there is nothing to configure for it; remove the entry".into(),
-        ));
-    }
     // Read again from the text: the typed form refuses repeated keys, which a parsed value would not show.
     let file: File = serde_json::from_str(&text)
         .map_err(|error| fail(format!("invalid model-routing policy: {error}")))?;
@@ -447,13 +448,6 @@ pub(crate) fn read(path: &Path) -> Result<Policy, String> {
 
 /// The policy for a run that is starting in `host`, which may be unknown only when nothing is switched on.
 pub(crate) fn load(path: &Path, host: Option<Host>) -> Result<Resolution, String> {
-    // Nothing is routed on Copilot CLI, so a mistake in the file cannot matter to such a run.
-    if host == Some(Host::Copilot) {
-        return Ok(read(path).map_or_else(
-            |_| Resolution::default(),
-            |policy| Resolution::resolved(&policy, Host::Copilot),
-        ));
-    }
     read(path)?
         .resolve(host)
         .map_err(|problem| format!("{}: {problem}", path.display()))
@@ -482,6 +476,8 @@ struct StarterAgents {
     claude: Option<StarterEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     codex: Option<StarterEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    copilot: Option<StarterEntry>,
 }
 
 #[derive(Serialize)]
@@ -514,6 +510,12 @@ fn starter_stages(agent: RoutingAgent) -> StarterStages {
             build: choice("gpt-6.1-terra", "low"),
             check: choice("gpt-6.1-terra", "medium"),
             finish: choice("gpt-6-luna", "low"),
+        },
+        RoutingAgent::Copilot => StarterStages {
+            define: choice("claude-sonnet-5.5", "low"),
+            build: choice("claude-sonnet-5.5", "low"),
+            check: choice("claude-sonnet-5.5", "medium"),
+            finish: choice("claude-haiku-4.5", "low"),
         },
     }
 }
@@ -578,6 +580,7 @@ fn starter(agents: &[RoutingAgent], off: Off) -> String {
         agents: StarterAgents {
             claude: entry(RoutingAgent::Claude, off.claude),
             codex: entry(RoutingAgent::Codex, off.codex),
+            copilot: entry(RoutingAgent::Copilot, false),
         },
     };
     let mut text = serde_json::to_string_pretty(&file).expect("the starter serializes");

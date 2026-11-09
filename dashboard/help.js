@@ -634,7 +634,7 @@ function ModelRouting() {
       <p>
         One file, <${Code}>model-routing.json<//>, in the factory’s config folder: <${Code}>$XDG_CONFIG_HOME/tds-factory/<//>
         ${' '}(or <${Code}>~/.config/tds-factory/<//>) on Linux, and <${Code}>%APPDATA%\\tds-factory\\<//> on Windows. It has an
-        entry for each agent under <${Code}>agents<//> (<${Code}>claude<//> and <${Code}>codex<//>), and each entry has${' '}
+        entry for each agent under <${Code}>agents<//> (<${Code}>claude<//>, <${Code}>codex<//> and <${Code}>copilot<//>), and each entry has${' '}
         <${Code}>stages<//> that map <${Code}>define<//>, <${Code}>build<//>, <${Code}>check<//> and${' '}
         <${Code}>finish<//> to a model and an optional effort. A file in the earlier format (roles and tasks) stops a Run from starting
         until <${Code}>factory install<//> replaces it. A run records only the entry of
@@ -664,7 +664,7 @@ function ModelRouting() {
 }</code></pre>
       <p>
         <${Code}>factory doctor --agent claude --create-model-routing<//> writes this starter with an entry for each agent (add${' '}
-        <${Code}>--agent claude<//> or <${Code}>--agent codex<//> for one). It replaces only a file in the earlier format, keeping a switched-off policy or agent switched off (install, update and doctor name what is off, and that removing its <${Code}>"enabled": false<//> switches it on), and never overwrites any other file.
+        <${Code}>--agent claude<//>, <${Code}>--agent codex<//> or <${Code}>--agent copilot<//> for one). It replaces only a file in the earlier format, keeping a switched-off policy or agent switched off (install, update and doctor name what is off, and that removing its <${Code}>"enabled": false<//> switches it on), and never overwrites any other file.
       </p>
     <//>
     <${Topic} title="Checking that it works">
@@ -699,7 +699,7 @@ function ModelRouting() {
           ],
           [
             'Copilot CLI',
-            'Not supported. Copilot picks a subagent’s model from its own settings per agent name and offers no choice per call, so every Stage keeps the session’s model there.',
+            'Each Stage’s agents start as subagents with the model and reasoning effort from the policy. The model must be an exact ID such as claude-sonnet-5.5, not a Claude Code alias, and the effort one of none, minimal, low, medium, high, xhigh or max. A model the account cannot use silently runs on the session’s model, so check the observed models in inspect.',
           ],
         ]}
       />

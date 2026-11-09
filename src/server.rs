@@ -1484,10 +1484,10 @@ mod tests {
             format!(r#"{{"agent":"claude","stages":{{"check":{{"model":"{long}"}}}}}}"#),
             r#"{"agent":"claude","stages":{"check":{"model":"son net"}}}"#.to_string(),
             r#"{"agent":"claude","stages":{"check":{"model":"sonnet","effort":"hi\u001b[2Jgh"}}}"#.to_string(),
-            // Unknown field, unknown stage, unknown agent (Copilot records no selection).
+            // Unknown field, unknown stage, unknown agent.
             r#"{"agent":"claude","stages":{},"extra":1}"#.to_string(),
             r#"{"agent":"claude","stages":{"deploy":{"model":"sonnet"}}}"#.to_string(),
-            r#"{"agent":"copilot","stages":{}}"#.to_string(),
+            r#"{"agent":"gemini","stages":{}}"#.to_string(),
         ] {
             let response = api
                 .post("/api/runs")

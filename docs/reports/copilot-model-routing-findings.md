@@ -78,4 +78,4 @@ Pass the `events.jsonl` path as the argument.
 
 ## Implications for the factory
 
-The factory records no model routing for Copilot CLI (`factory run begin --agent copilot` prints "Model routing is not supported on Copilot CLI"). If that is revisited, validate every routed stage afterwards against `usage_record.usage.model`, never against the requested name, and treat a mismatch as a failed switch.
+The factory now routes Copilot CLI through an `agents.copilot` policy entry. It rejects Claude Code aliases and efforts outside the list above, and cannot know which models an account has, so validate every routed stage afterwards against `usage_record.usage.model`, never against the requested name, and treat a mismatch as a failed switch.

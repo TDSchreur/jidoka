@@ -259,7 +259,7 @@ fn doctor_creates_one_file_for_both_agents_and_checks_each_of_them() {
 }
 
 #[test]
-fn doctor_will_not_create_a_policy_for_copilot() {
+fn doctor_creates_a_copilot_only_policy_when_asked() {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let output = factory(
@@ -267,10 +267,16 @@ fn doctor_will_not_create_a_policy_for_copilot() {
         dir.path(),
         home.path(),
     );
-    assert!(!output.status.success());
+    let note = String::from_utf8_lossy(&output.stdout);
+    assert!(note.contains("starter policy for copilot"), "{note}");
+    let written =
+        std::fs::read_to_string(home.path().join(".config/tds-factory/model-routing.json"))
+            .unwrap();
     assert!(
-        !home.path().join(".config").exists(),
-        "something was written"
+        written.contains("\"copilot\"")
+            && !written.contains("\"claude\"")
+            && !written.contains("\"codex\""),
+        "{written}"
     );
 }
 

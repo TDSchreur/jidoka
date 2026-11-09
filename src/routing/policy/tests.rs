@@ -148,14 +148,86 @@ fn a_disabled_entry_routes_nothing_and_is_not_checked() {
         .is_some());
 }
 
+const COPILOT: &str = r#"{"agents":{"copilot":{"stages":{
+    "check":{"model":"claude-opus-4.8","effort":"xhigh"},
+    "finish":{"model":"claude-haiku-4.5"}}}}}"#;
+
 #[test]
-fn copilot_routes_nothing() {
+fn a_copilot_run_records_the_copilot_entry_and_not_another_agents() {
+    let both = COPILOT.replace(
+        r#"{"agents":{"#,
+        r#"{"agents":{"codex":{"stages":{"check":{"model":"gpt-6-astra"}}},"#,
+    );
+    for text in [COPILOT, both.as_str()] {
+        let selection = load_text(text, Some(Host::Copilot))
+            .unwrap()
+            .selection
+            .unwrap();
+        assert_eq!(selection.agent, RoutingAgent::Copilot);
+        assert_eq!(selection.stages.len(), 2);
+        assert_eq!(selection.stages[&Stage::Check].model, "claude-opus-4.8");
+        assert_eq!(
+            selection.stages[&Stage::Check].effort.as_deref(),
+            Some("xhigh")
+        );
+    }
+    // The other agents get nothing from a file that only has a Copilot entry.
+    let resolution = load_text(COPILOT, Some(Host::Claude)).unwrap();
+    assert_eq!(resolution.selection, None);
+    assert!(resolution.notice.unwrap().contains("no entry for claude"));
+    // Several configured agents still need `--agent`.
+    assert!(load_text(&both, None)
+        .unwrap_err()
+        .contains("--agent copilot"));
+}
+
+#[test]
+fn copilot_without_an_entry_says_so() {
     let resolution = load_text(MULTI, Some(Host::Copilot)).unwrap();
     assert_eq!(resolution.selection, None);
-    let notice = resolution.notice.unwrap();
+    assert!(resolution.notice.unwrap().contains("no entry for copilot"));
+}
+
+#[test]
+fn copilot_entries_need_exact_model_ids_and_listed_efforts() {
+    for (model, effort, problem) in [
+        ("sonnet", "low", "Claude Code alias"),
+        ("Haiku", "low", "Claude Code alias"),
+        ("claude-sonnet-5.5", "ultra", "Effort"),
+        ("claude-sonnet-5.5", "Low", "Effort"),
+    ] {
+        let text = format!(
+            r#"{{"agents":{{"copilot":{{"stages":{{"check":{{"model":"{model}","effort":"{effort}"}}}}}}}}}}"#
+        );
+        let error = read_error(&text);
+        assert!(
+            error.contains("agents.copilot") && error.contains(problem),
+            "{text}: {error}"
+        );
+    }
+    for effort in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+        let text = format!(
+            r#"{{"agents":{{"copilot":{{"stages":{{"check":{{"model":"auto","effort":"{effort}"}}}}}}}}}}"#
+        );
+        assert!(
+            load_text(&text, Some(Host::Copilot))
+                .unwrap()
+                .selection
+                .is_some(),
+            "{effort}"
+        );
+    }
+    // Claude Code keeps its aliases, and a switched-off Copilot entry is not checked.
     assert!(
-        notice.contains("Copilot") && notice.contains("session"),
-        "{notice}"
+        load_text(MULTI.replace("opus", "sonnet").as_str(), Some(Host::Claude))
+            .unwrap()
+            .selection
+            .is_some()
+    );
+    let off = r#"{"agents":{"copilot":{"enabled":false,"stages":{"check":{"model":"sonnet"}}}}}"#;
+    assert_eq!(
+        load_text(off, Some(Host::Copilot)).unwrap(),
+        Resolution::default()
     );
 }
 
@@ -269,7 +341,6 @@ fn mistakes_in_the_file_are_errors_that_name_the_file_and_the_problem() {
         ),
         (r#"{"agents":{"gemini":{"stages":{}}}}"#, "gemini"),
         // Unsupported or empty.
-        (r#"{"agents":{"copilot":{"stages":{}}}}"#, "Copilot CLI"),
         (r#"{"agents":{}}"#, "no entry"),
         (r#"{"agents":[]}"#, "invalid"),
         // Missing parts.
@@ -349,12 +420,16 @@ fn a_directory_at_the_policy_path_is_refused_as_not_a_regular_file() {
 }
 
 #[test]
-fn a_broken_policy_cannot_stop_a_copilot_run_but_still_stops_the_others() {
+fn a_broken_policy_stops_a_run_in_any_agent() {
     let broken = r#"{"agents": {"claude": {"typo": 1}}}"#;
-    let resolution = load_text(broken, Some(Host::Copilot)).unwrap();
-    assert!(resolution.selection.is_none());
-    assert!(load_text(broken, Some(Host::Claude)).is_err());
-    assert!(load_text(broken, None).is_err());
+    for host in [
+        None,
+        Some(Host::Claude),
+        Some(Host::Codex),
+        Some(Host::Copilot),
+    ] {
+        assert!(load_text(broken, host).is_err(), "{host:?}");
+    }
 }
 
 #[test]
@@ -407,7 +482,8 @@ fn a_starter_for_both_agents_routes_every_stage_with_the_cost_optimised_defaults
         read(&path).unwrap(),
         Policy::Multi {
             claude: Some(_),
-            codex: Some(_)
+            codex: Some(_),
+            copilot: None
         }
     ));
     for (host, agent, expected) in [

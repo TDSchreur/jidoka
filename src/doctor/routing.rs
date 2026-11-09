@@ -4,10 +4,7 @@
 //! session's model. Nothing here changes a file or calls a model; at most it asks an agent for its `--version`.
 
 use super::{find_program, read_doc, Check, Machine};
-use crate::routing::{
-    policy_path_in, read, Coverage, Host, ModelRouting, NotRouted, Policy, RoutingAgent,
-    COPILOT_NOTICE,
-};
+use crate::routing::{policy_path_in, read, Coverage, Host, ModelRouting, Policy, RoutingAgent};
 use std::path::Path;
 
 /// The Agent tool's `effort` option first appeared in this Claude Code release.
@@ -57,10 +54,6 @@ pub(super) fn checks(root: &Path, machine: &Machine, agent: Option<&str>) -> Vec
             Some(Coverage::Routed(selection)) => {
                 checks.extend(agent_checks(&selection, root, machine).into_iter().map(tag));
             }
-            // Information, never a problem.
-            Some(Coverage::NotRouted(NotRouted::Copilot)) => {
-                checks.push(Check::pass("policy", COPILOT_NOTICE));
-            }
             Some(Coverage::NotRouted(why)) => {
                 checks.push(tag(Check::skipped("policy", why.text(host))));
             }
@@ -73,6 +66,7 @@ fn agent_checks(selection: &ModelRouting, root: &Path, machine: &Machine) -> Vec
     match selection.agent {
         RoutingAgent::Claude => claude_checks(selection, root, machine),
         RoutingAgent::Codex => codex_checks(machine),
+        RoutingAgent::Copilot => copilot_checks(machine),
     }
 }
 
@@ -134,6 +128,17 @@ fn codex_checks(machine: &Machine) -> Vec<Check> {
             "Codex models and efforts are not checked: the factory keeps no list of them",
         ),
         Check::skipped("overrides", "Codex configuration is not checked"),
+    ]
+}
+
+fn copilot_checks(machine: &Machine) -> Vec<Check> {
+    vec![
+        host_check("copilot", machine, None),
+        Check::skipped(
+            "model",
+            "Copilot models are not checked: which ones an account can use differs, and an unavailable model quietly runs on the session's model, so compare the models `factory run inspect` observed",
+        ),
+        Check::skipped("overrides", "Copilot configuration is not checked"),
     ]
 }
 
