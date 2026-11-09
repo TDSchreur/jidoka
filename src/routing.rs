@@ -9,19 +9,21 @@ use std::collections::BTreeMap;
 
 mod policy;
 pub(crate) use policy::{
-    install_starter, load, parse_start_options, policy_path_in, read, Coverage, Host, NotRouted,
-    Policy, Resolution, Starter, COPILOT_NOTICE,
+    install_starter, load, parse_start_options, policy_path_in, read, Coverage, Host, Policy,
+    Resolution, Starter,
 };
 
-/// The coding agent a selection is for. Copilot CLI is not here: it records no selection.
+/// The coding agent a selection is for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum RoutingAgent {
     Codex,
     Claude,
+    Copilot,
 }
 
-/// A Stage's model and effort. Both are free text: the factory keeps no list of valid values.
+/// A Stage's model and effort. Both are free text: the factory keeps no list of valid models. Copilot CLI
+/// entries get a few extra checks (see `validate_for_copilot`), because it ignores what it does not know.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ModelChoice {
@@ -82,6 +84,9 @@ impl ModelRouting {
     pub(crate) fn validate(&self) -> Result<(), String> {
         for choice in self.stages.values().chain(self.overrides.values()) {
             choice.validate()?;
+            if self.agent == RoutingAgent::Copilot {
+                choice.validate_for_copilot()?;
+            }
         }
         Ok(())
     }
@@ -116,6 +121,32 @@ impl RoutingAgent {
         match self {
             Self::Codex => "codex",
             Self::Claude => "claude",
+            Self::Copilot => "copilot",
+        }
+    }
+}
+
+/// The reasoning efforts Copilot CLI lists for `--reasoning-effort`; any other text is silently ignored.
+const COPILOT_EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+/// Claude Code's subagent aliases. Copilot CLI takes exact model IDs and quietly runs an unknown name on the session's model.
+const CLAUDE_CODE_ALIASES: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
+
+impl ModelChoice {
+    /// What Copilot CLI needs on top of the shared rules: a model ID, not a Claude Code alias, and an effort it lists.
+    fn validate_for_copilot(&self) -> Result<(), String> {
+        let alias = self.model.to_ascii_lowercase();
+        if CLAUDE_CODE_ALIASES.contains(&alias.as_str()) {
+            return Err(format!(
+                "Model {:?} is a Claude Code alias; Copilot CLI needs an exact model ID such as claude-sonnet-5.5, and runs an unknown name on the session's model",
+                self.model
+            ));
+        }
+        match self.effort.as_deref() {
+            Some(effort) if !COPILOT_EFFORTS.contains(&effort) => Err(format!(
+                "Effort {effort:?} is not one Copilot CLI accepts ({})",
+                COPILOT_EFFORTS.join(", ")
+            )),
+            _ => Ok(()),
         }
     }
 }

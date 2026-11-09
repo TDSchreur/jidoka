@@ -776,12 +776,10 @@ pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
         (false, _) => None,
         (true, Some("claude")) => Some(vec![RoutingAgent::Claude]),
         (true, Some("codex")) => Some(vec![RoutingAgent::Codex]),
+        (true, Some("copilot")) => Some(vec![RoutingAgent::Copilot]),
         // Without an agent the starter has an entry for each, which is what one file for both is for.
         (true, None) => Some(vec![RoutingAgent::Claude, RoutingAgent::Codex]),
-        (true, Some(_)) => return Err(
-            "Model routing is not supported on Copilot CLI, so there is no policy file to create."
-                .into(),
-        ),
+        (true, Some(other)) => return Err(format!("Unknown agent {other:?}.")),
     };
     Ok(Args {
         agent,
@@ -1365,19 +1363,19 @@ mod tests {
     }
 
     #[test]
-    fn creating_the_policy_covers_both_agents_unless_one_is_named_and_refuses_copilot() {
+    fn creating_the_policy_covers_claude_and_codex_unless_one_is_named() {
         let error = |args: &[&str]| parse_args(args).unwrap_err();
         let both = parse_args(&["--create-model-routing"]).unwrap();
         assert_eq!(
             both.create_model_routing,
             Some(vec![RoutingAgent::Claude, RoutingAgent::Codex])
         );
-        let copilot = error(&["--create-model-routing", "--agent", "copilot"]);
-        assert!(
-            copilot.contains("Copilot") && copilot.contains("not supported"),
-            "{copilot}"
+        let copilot = parse_args(&["--create-model-routing", "--agent", "copilot"]).unwrap();
+        assert_eq!(
+            copilot.create_model_routing,
+            Some(vec![RoutingAgent::Copilot])
         );
-        assert!(parse_args(&["--agent", "copilot"]).is_ok());
+        assert!(error(&["--create-model-routing", "--agent", "gemini"]).contains("Unknown agent"));
     }
 
     impl World {
@@ -1590,13 +1588,12 @@ mod tests {
         assert!(!tagged(&claude, "claude").is_empty() && tagged(&claude, "codex").is_empty());
         let codex = world.report(Some("codex"));
         assert!(!tagged(&codex, "codex").is_empty() && tagged(&codex, "claude").is_empty());
-        // Copilot has nothing to route, and says so once.
+        // BOTH_POLICY has no Copilot entry, so Copilot is skipped with the reason.
         let copilot = world.report(Some("copilot"));
         assert!(tagged(&copilot, "claude").is_empty() && tagged(&copilot, "codex").is_empty());
-        assert!(copilot
-            .model_routing
+        assert!(tagged(&copilot, "copilot")
             .iter()
-            .any(|c| c.message.contains("Copilot")));
+            .any(|c| c.status == Status::Skipped && c.message.contains("no entry for copilot")));
     }
 
     #[test]
@@ -1676,14 +1673,12 @@ mod tests {
             // The summary of the file, then what the policy does for that agent.
             assert_eq!(report.model_routing.len(), 2, "{other}");
             let checks = &report.model_routing[1..];
-            // Copilot CLI is never routed, whatever the file says; an agent without an entry is skipped.
-            let (status, text) = if other == "copilot" {
-                (Status::Pass, "not supported on Copilot")
-            } else {
-                (Status::Skipped, "no entry for codex")
-            };
-            assert_eq!(checks[0].status, status, "{other}");
-            assert!(checks[0].message.contains(text), "{other}");
+            // An agent without an entry is skipped.
+            assert_eq!(checks[0].status, Status::Skipped, "{other}");
+            assert!(
+                checks[0].message.contains(&format!("no entry for {other}")),
+                "{other}"
+            );
             // Only a missing Copilot command, never the policy, can make that report not ready.
             assert!(checks.iter().all(|c| !c.blocks()), "{other}");
         }
@@ -1960,19 +1955,21 @@ mod tests {
     }
 
     #[test]
-    fn a_copilot_policy_is_information_and_does_not_change_the_exit_status() {
-        let ready = World::ready().claude_ready();
-        let without = ready.report(Some("copilot")).ok;
-        let report = ready.with_policy(CLAUDE_POLICY).report(Some("copilot"));
-        assert_eq!(report.ok, without);
-        assert_eq!(report.model_routing.len(), 2);
-        let check = &report.model_routing[1];
-        assert_eq!(check.status, Status::Pass);
-        assert!(
-            check.message.contains("not supported") && check.message.contains("session"),
-            "{}",
-            check.message
-        );
+    fn a_copilot_entry_checks_the_command_and_skips_what_the_factory_cannot_judge() {
+        let policy = r#"{"agents":{"copilot":{"stages":{
+            "check":{"model":"claude-opus-4.8","effort":"high"}}}}}"#;
+        let report = World::ready()
+            .claude_ready()
+            .with_agent("copilot")
+            .with_policy(policy)
+            .report(Some("copilot"));
+        let copilot = tagged(&report, "copilot");
+        let ids: Vec<_> = copilot.iter().map(|c| c.id).collect();
+        assert_eq!(ids, ["host", "model", "overrides"]);
+        assert!(copilot
+            .iter()
+            .any(|c| c.id == "model" && c.status == Status::Skipped));
+        assert!(copilot.iter().all(|c| !c.blocks()));
         // A policy that is switched off says nothing.
         let off = World::ready()
             .claude_ready()

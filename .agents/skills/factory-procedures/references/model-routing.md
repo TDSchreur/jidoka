@@ -6,11 +6,10 @@ A run can carry a model-routing selection: the model and effort each Stage's age
 
 ## Reading the selection
 
-Read it with `factory run inspect <id> --json`. `model_routing` holds `agent` (`claude` or `codex`), `stages` and `overrides`; both map a Stage (`define`, `build`, `check`, `finish`) to a `model` and an optional `effort`. The choice for a Stage is `overrides.<stage>`, otherwise `stages.<stage>`. The Stage is not routed, and keeps the session's model, when:
+Read it with `factory run inspect <id> --json`. `model_routing` holds `agent` (`claude`, `codex` or `copilot`), `stages` and `overrides`; both map a Stage (`define`, `build`, `check`, `finish`) to a `model` and an optional `effort`. The choice for a Stage is `overrides.<stage>`, otherwise `stages.<stage>`. The Stage is not routed, and keeps the session's model, when:
 
 - the run has no `model_routing`, or neither map has the Stage;
 - `agent` is not the agent you are running in;
-- you run in Copilot CLI, which records no selection and is never routed;
 - `factory doctor` warned that the policy cannot apply here.
 
 Define and Finish are also not routed when the run's mode is `factory-fast`, or when the change is small: a clear, bounded request planned in the conversation, without a spec or tickets. Routing those two Stages costs more than it saves there, so they keep the session's model. Build and Check are routed as above.
@@ -18,6 +17,7 @@ Define and Finish are also not routed when the run's mode is `factory-fast`, or 
 ## Starting a routed agent
 
 - On Claude Code, the Agent tool's `model` accepts only the aliases `opus`, `sonnet`, `haiku` and `fable`, so pass the recorded model only if it is one of them. Set `effort` to the recorded effort, and start a fresh subagent, never a fork, because a fork ignores `model`.
+- On Copilot CLI, pass the recorded model and effort as the `task` tool's `model` and `reasoning_effort` and start a fresh agent. The model must be an exact ID; an unknown or unavailable model silently runs on the session's model, so afterwards check the model the agent ran on (the Stage summary says which one was requested).
 - On Codex, set the model and effort of the agent you start through the subagent settings Codex documents.
 - If the recorded model is not one the host takes, or the host refuses a setting, such as a Claude Code that rejects `effort`, start the agent with neither the model nor the effort, so an effort is never paired with a model it was not chosen for.
 - Give each agent what it needs to work on its own: the run's worktree, the spec or plan reference, its task and the skill to follow. For a ticket that changes an agent skill, also point it to "Changing agent skills" in the procedures. It reports back to you, and you record its result on the run.
