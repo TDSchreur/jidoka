@@ -130,7 +130,7 @@ Only include for CRITICAL and HIGH findings:
 ````
 🛠️  PATCH PROPOSALS
 ══════════════════
-⚠️  REVIEW EACH PATCH BEFORE APPLYING — Nothing has been changed yet.
+⚠️  Review each patch before applying. Nothing has been changed yet.
 
 ─────────────────────────────────────────────
 Patch 1/3: SQL Injection in src/routes/users.js
@@ -191,4 +191,4 @@ Apply to every finding:
 | **MEDIUM** | Vulnerability likely exists but depends on runtime context, config, or call path the agent couldn't fully trace. |
 | **LOW** | Suspicious pattern detected but could be a false positive. Flag for human review. |
 
-Never omit confidence — it helps developers prioritize their review effort.
+Give every finding a confidence rating; it helps developers prioritize their review effort.

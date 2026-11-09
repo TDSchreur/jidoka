@@ -60,10 +60,22 @@ Pick the smallest view that makes the key point clear.
 - Component tree: UI structure, including state and module boundaries that matter.
 - Shallow file tree: file responsibility or a broad refactor.
 - Mermaid: component interaction, control flow, or data flow.
-- `diff`: what changes when the surrounding shape already exists; match the diff shape to the topic (component, file layout, call tree, state or control flow).
+- `diff`: what changes when the surrounding shape already exists; match the diff shape to the topic (component, file layout, call tree, state or control flow). For a file-layout change:
+
+  ```diff
+   src/
+   ├── commands/
+  +│   └── show-me.ts       # expands the slash command
+   ├── sessions/
+  -└── transport.ts
+  +└── transport/
+  +    ├── client.ts
+  +    └── stream.ts
+  ```
+
 - Whole block: most of it is new, omitted context would hide ownership or order, or the user needs a copyable target shape.
 
-Examples of each are in [references/visuals.md](references/visuals.md).
+Before drawing a visual, read [references/visuals.md](references/visuals.md), which has an example of each.
 
 #### Guidance
 
