@@ -349,7 +349,7 @@ fn doctor_offers_only_switching_off_when_nothing_was_off() {
     assert!(!stdout.contains("stays off"), "{stdout}");
     assert!(!stdout.contains("is switched off"), "{stdout}");
     assert!(
-        stdout.contains("starter policy for claude and codex"),
+        stdout.contains("starter policy for claude, codex and copilot"),
         "{stdout}"
     );
     assert!(stdout.contains("\"enabled\": false"), "{stdout}");
