@@ -173,11 +173,19 @@ pub(crate) fn read_text(path: &Path) -> io::Result<LogFile> {
 }
 
 /// The run ids a log names *in a command on the run*: a known run id right after `run update`,
-/// `run inspect` or `run stats`, as `factory run update <id>` is written. Run ids also appear in tool
+/// `run inspect`, `run stats`, `run check`, `pr open`, `pr sync` or `pr wait`, as `factory run update <id>` is written. Run ids also appear in tool
 /// output and in files an agent reads (a session that listed every run would otherwise claim them all), so
 /// a bare number does not count. A run id is digits only, so a number inside a longer number does not match.
 pub(crate) fn mentioned_runs(text: &str, ids: &HashSet<&str>) -> HashSet<String> {
-    const COMMANDS: [&str; 3] = ["run update", "run inspect", "run stats"];
+    const COMMANDS: [&str; 7] = [
+        "run update",
+        "run inspect",
+        "run stats",
+        "run check",
+        "pr open",
+        "pr sync",
+        "pr wait",
+    ];
     let bytes = text.as_bytes();
     let mut found = HashSet::new();
     let mut at = 0;
