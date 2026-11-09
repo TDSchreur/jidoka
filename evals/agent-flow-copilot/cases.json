@@ -1,7 +1,7 @@
 [
   {
     "id": "verification-fails",
-    "validated": false,
+    "validated": true,
     "scenario": "You are in Finish of a factory-balanced run. The code is committed and you ran the project's verification on the final commit: the test step failed with one failing test. No pull request exists yet. You are unattended.",
     "question": "What is your very next action?",
     "actions": {
@@ -14,7 +14,7 @@
   },
   {
     "id": "resume-with-differences",
-    "validated": false,
+    "validated": true,
     "scenario": "The user says: continue run 12. `factory run inspect 12` shows stage build running with a recorded worktree and branch. `factory run check 12` exits with status 2: the worktree has uncommitted changes you did not expect, and two commits are not pushed.",
     "question": "What is your very next action?",
     "actions": {
@@ -27,7 +27,7 @@
   },
   {
     "id": "resume-matching",
-    "validated": false,
+    "validated": true,
     "scenario": "The user says: continue run 7. `factory run inspect 7` shows stage build running with a worktree, branch and a saved plan reference. `factory run check 7` exits with status 0: nothing differs. Tickets 1 and 2 are done, ticket 3 is not.",
     "question": "What is your very next action?",
     "actions": {
@@ -40,7 +40,7 @@
   },
   {
     "id": "pr-already-created",
-    "validated": false,
+    "validated": true,
     "scenario": "You are in Finish. Verification passed on the final commit and the pull request description is written, but an earlier session of this run already opened a pull request for the branch (it is recorded on the run) and then was interrupted before reporting.",
     "question": "What is your very next action to open the pull request?",
     "actions": {
