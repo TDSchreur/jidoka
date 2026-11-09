@@ -454,7 +454,7 @@ fn update_run(
     update: Json<UpdateRun>,
     store: &State<RunStore>,
     collector: &State<Collector>,
-) -> Result<Json<Run>, (HttpStatus, String)> {
+) -> Result<Json<serde_json::Value>, (HttpStatus, String)> {
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err((HttpStatus::BadRequest, "Invalid run id".into()));
     }
@@ -473,7 +473,16 @@ fn update_run(
         })?
         .ok_or((HttpStatus::NotFound, "Not found".into()))?;
     collector.after_update(store, &updated.run.id);
-    Ok(Json(updated.run))
+    // The run's own fields stay as they were; `warnings` is added beside them (empty when none).
+    let mut body = serde_json::to_value(&updated.run).map_err(|error| {
+        eprintln!("Run serialization error: {error}");
+        (
+            HttpStatus::InternalServerError,
+            "Internal server error".into(),
+        )
+    })?;
+    body["warnings"] = updated.warnings.into();
+    Ok(Json(body))
 }
 
 #[rocket::get("/api/runs/<id>")]
@@ -3639,6 +3648,34 @@ mod tests {
             .body(body)
             .dispatch()
             .await
+    }
+
+    #[rocket::async_test]
+    async fn update_response_carries_warnings_beside_the_run() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        fs::write(
+            &path,
+            r#"[{"id":"42","title":"old","project":"/work","stage":"define","status":"running"}]"#,
+        )
+        .unwrap();
+        let api = client(&dir).await;
+        let response = report(&api, "42", r#"{"stage":"build","status":"running"}"#).await;
+        let body: serde_json::Value = response.into_json().await.unwrap();
+        assert_eq!(body["warnings"], serde_json::json!([]));
+        assert_eq!(body["id"], "42");
+        let response = report(
+            &api,
+            "42",
+            r#"{"stage":"finish","status":"done","summaries":{"finish":"Shipped"}}"#,
+        )
+        .await;
+        assert_eq!(response.status(), HttpStatus::Ok);
+        let body: serde_json::Value = response.into_json().await.unwrap();
+        let warnings = body["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].as_str().unwrap().contains("never entered"));
+        assert_eq!(body["stage"], "finish");
     }
 
     #[rocket::async_test]

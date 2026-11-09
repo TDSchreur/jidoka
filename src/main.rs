@@ -205,7 +205,14 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             if let Some(session) = session.as_deref() {
                 options.extend(["--session", session]);
             }
-            report_run(ADDRESS, &cli_token_file()?, id, stage, status, &options)?;
+            report_run(
+                &update_address(),
+                &cli_token_file()?,
+                id,
+                stage,
+                status,
+                &options,
+            )?;
             println!("Updated run {id}");
         }
         ["pr", "wait", id, options @ ..] if !id.starts_with('-') => {
@@ -653,6 +660,16 @@ fn report_to_dashboard(
 }
 
 /// Where the default dashboard writes the CLI token that POSTs must send.
+/// The server `run update` talks to. Debug builds honor `FACTORY_TEST_ADDRESS`, so CLI tests can use a
+/// fake server on an OS-assigned port; release builds always use the default dashboard.
+fn update_address() -> String {
+    #[cfg(debug_assertions)]
+    if let Ok(address) = env::var("FACTORY_TEST_ADDRESS") {
+        return address;
+    }
+    ADDRESS.to_string()
+}
+
 fn cli_token_file() -> io::Result<PathBuf> {
     Ok(server::token_path(&data_path(DEFAULT_PORT)?, DEFAULT_PORT))
 }
