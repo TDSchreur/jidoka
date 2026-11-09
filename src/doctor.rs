@@ -488,8 +488,11 @@ pub(crate) fn find_program(name: &str, path: &OsString) -> Option<PathBuf> {
 /// What to run for `az`. Windows starts only `az.exe` for a bare name, but the Azure CLI installs `az.cmd`,
 /// so the launcher found on `PATH` is used.
 pub(crate) fn az_program() -> PathBuf {
-    std::env::var_os("PATH")
-        .and_then(|path| find_program("az", &path))
+    std::env::var_os("PATH").map_or_else(|| PathBuf::from("az"), |path| az_program_in(&path))
+}
+
+fn az_program_in(path: &OsString) -> PathBuf {
+    find_program("az", path)
         .filter(|found| found.is_absolute())
         .unwrap_or_else(|| PathBuf::from("az"))
 }
@@ -2163,6 +2166,55 @@ mod tests {
         assert_eq!(extensions, [".COM", ".EXE", ".cmd"]);
         let found = find_with_extensions("az", &bin.path().into(), &extensions).unwrap();
         assert_eq!(found, bin.path().join("az.cmd"));
+    }
+
+    /// Runs on Windows in CI: the Bash launcher must not shadow `az.cmd`, and the `.cmd` must start.
+    #[cfg(windows)]
+    #[test]
+    fn az_resolves_to_the_cmd_launcher_and_the_cmd_runs() {
+        let bin = tempfile::tempdir().unwrap();
+        fs::write(bin.path().join("az"), "#!/usr/bin/env bash\nexit 1\n").unwrap();
+        fs::write(
+            bin.path().join("az.cmd"),
+            "@echo off\r\necho launched %1\r\n",
+        )
+        .unwrap();
+        let program = az_program_in(&bin.path().into());
+        // PATHEXT spells the extension in capitals, which the file system treats as the same file.
+        assert_eq!(
+            program.to_string_lossy().to_lowercase(),
+            bin.path().join("az.cmd").to_string_lossy().to_lowercase()
+        );
+        let output = Command::new(&program).arg("version").output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "launched version"
+        );
+    }
+
+    /// A bare `az` is looked up by Windows as `az.exe` only, so it never finds the Azure CLI there.
+    #[test]
+    fn az_is_never_started_by_its_bare_name() {
+        let bare = ["Command::new(", "\"az\")"].concat();
+        let mut found = Vec::new();
+        let mut folders = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(folder) = folders.pop() {
+            for entry in fs::read_dir(&folder).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "rs")
+                    && fs::read_to_string(&path).unwrap().contains(&bare)
+                {
+                    found.push(path);
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "start the Azure CLI with `az_program()`, not by name: {found:?}"
+        );
     }
 
     /// A fake host tool on PATH: a shell script that exits 0 only for the listed argument lines. Tests that
