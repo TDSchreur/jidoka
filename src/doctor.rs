@@ -2258,7 +2258,11 @@ mod tests {
                 if path.is_dir() {
                     folders.push(path);
                 } else if path.extension().is_some_and(|ext| ext == "rs")
-                    && fs::read_to_string(&path).unwrap().contains(&bare)
+                    && fs::read_to_string(&path)
+                        .unwrap()
+                        .split_whitespace()
+                        .collect::<String>()
+                        .contains(&bare)
                 {
                     found.push(path);
                 }

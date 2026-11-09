@@ -173,9 +173,11 @@ pub(crate) fn read_text(path: &Path) -> io::Result<LogFile> {
 }
 
 /// The run ids a log names *in a command on the run*: a known run id right after `run update`,
-/// `run inspect`, `run stats`, `run check`, `pr open`, `pr sync` or `pr wait`, as `factory run update <id>` is written. Run ids also appear in tool
-/// output and in files an agent reads (a session that listed every run would otherwise claim them all), so
-/// a bare number does not count. A run id is digits only, so a number inside a longer number does not match.
+/// `run inspect`, `run stats`, `run check`, `pr open`, `pr sync` or `pr wait`, as `factory run update <id>`
+/// is written. The command word must start the text or follow whitespace, so `xpr open <id>` does not count.
+/// Run ids also appear in tool output and in files an agent reads (a session that listed every run would
+/// otherwise claim them all), so a bare number does not count. A run id is digits only, so a number inside
+/// a longer number does not match.
 pub(crate) fn mentioned_runs(text: &str, ids: &HashSet<&str>) -> HashSet<String> {
     const COMMANDS: [&str; 7] = [
         "run update",
@@ -210,7 +212,14 @@ pub(crate) fn mentioned_runs(text: &str, ids: &HashSet<&str>) -> HashSet<String>
             .collect::<Vec<u8>>();
         let before: String = before.into_iter().rev().map(char::from).collect();
         let before = before.trim_end_matches(['"', '\'', '`', ' ']);
-        if COMMANDS.iter().any(|command| before.ends_with(command)) {
+        let names_a_command = COMMANDS.iter().any(|command| {
+            before.strip_suffix(command).is_some_and(|rest| {
+                rest.chars()
+                    .next_back()
+                    .is_none_or(|c| c.is_ascii_whitespace())
+            })
+        });
+        if names_a_command {
             found.insert(text[start..at].to_string());
         }
     }

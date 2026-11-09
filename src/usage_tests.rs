@@ -1286,6 +1286,15 @@ fn only_a_run_command_naming_the_whole_run_id_counts_as_naming_the_run() {
         "factory run update 1793872800000000009".to_string(),
         "factory run update 17938728".to_string(),
         format!("see {RUN_A}"),
+        // The command word must stand alone: a longer word ending in it is not the command.
+        format!("xrun check {RUN_A}"),
+        format!("xpr open {RUN_A}"),
+        format!("factory xpr sync {RUN_A}"),
+        format!("xpr wait {RUN_A}"),
+        // A short PR number after the command is not a run id.
+        "factory pr open 123 --title x".to_string(),
+        "factory pr sync 42".to_string(),
+        "factory pr wait 7".to_string(),
     ] {
         assert!(
             crate::usage_logs::mentioned_runs(&no, &ids).is_empty(),

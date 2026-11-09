@@ -1,6 +1,6 @@
 # Agent flow eval (Copilot)
 
-This eval checks what GitHub Copilot CLI does next in three situations the factory procedures cover: failed verification, interrupted and resumed work, and a pull request that already exists. Run it after installing the skills for Copilot, and before and after changing `factory-procedures` or its references, to see whether a choice shifted. It only measures Copilot; Claude Code and Codex are not covered.
+This eval checks what GitHub Copilot CLI does next in four situations the factory procedures cover: failed verification, resumed work that still matches the plan, resumed work that differs from it, and a pull request that already exists. Run it after installing the skills for Copilot, and before and after changing `factory-procedures` or its references, to see whether a choice shifted. It only measures Copilot; Claude Code and Codex are not covered.
 
 It calls a paid model once per case in each repetition, so it is not part of CI or `scripts/verify.sh`.
 
