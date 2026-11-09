@@ -1267,6 +1267,10 @@ fn only_a_run_command_naming_the_whole_run_id_counts_as_naming_the_run() {
         format!("factory run update \"{RUN_A}\" build running"),
         format!("{{\"command\":\"factory run inspect {RUN_A} --json\"}}"),
         format!("factory run stats {RUN_A}"),
+        format!("factory run check {RUN_A}"),
+        format!("factory pr open {RUN_A} --title x --body-file b"),
+        format!("factory pr sync {RUN_A} --base develop"),
+        format!("factory pr wait {RUN_A}"),
     ] {
         assert!(
             !crate::usage_logs::mentioned_runs(&yes, &ids).is_empty(),
