@@ -2453,8 +2453,8 @@ mod tests {
         );
         assert_eq!(
             rules.matches("var(--shadow-dialog)").count(),
-            3,
-            "confirm, detail and the Projects menu"
+            4,
+            "confirm, detail, Reader and the Projects menu"
         );
         let license = include_str!("../third-party/barlow-LICENSE");
         assert!(license.contains("SIL Open Font License"));
