@@ -1,6 +1,6 @@
 [package]
 name = "factory"
-version = "0.9.2"
+version = "0.10.0"
 edition = "2021"
 description = "A small software factory"
 
@@ -13,8 +13,10 @@ rocket = { version = "0.5.2", features = ["json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 percent-encoding = "2"
+getrandom = "0.4.3"
 time = { version = "0.3", features = ["parsing"] }
 sha2 = "0.11.1"
+pulldown-cmark = { version = "0.13.6", default-features = false, features = ["html"] }
 
 [dev-dependencies]
 tempfile = "3"

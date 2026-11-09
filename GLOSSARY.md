@@ -32,6 +32,10 @@
 
 **Fresh tokens**: The headline token figure of a run: input excluding cache reads, plus cache writes and output. Cache reads are shown beside it, and reasoning is part of output and not added again.
 
+**Session token**: The random value in the dashboard page that the page sends as `X-Session-Token` to delete runs. Any local process can read it through `GET /`, so it does not authorise POST.
+
+**CLI token**: The random value the dashboard writes on each start to `session-token` (`session-token-<port>` for a non-default port) in its data folder, readable only by the user. If the dashboard cannot write it, the dashboard exits. A POST without the right value gets 401. The `factory` CLI sends it as `X-Factory-Token` on every POST. It is never part of a response, and differs from the Session token.
+
 **Token usage**: The tokens a run used, read from the agents' session logs and kept as counts per stage, model and ticket (plus the reasoning efforts the logs recorded), with the rework and work with no ticket in their own buckets. It is `tracked`, `partial` or `not tracked`, with the reason; unknown usage is never shown as zero.
 
 **Estimated cost**: The cost of a run's token usage in USD, computed when it is shown from the factory's built-in price table (per million tokens) for each row, model, stage and run. A model without a price is `unknown`, never zero; a total that includes one is partial (`>= $X`). It is not stored.
@@ -51,3 +55,5 @@
 **Ticket report**: A short, agent-reported skill or activity associated with a ticket in a run. Reports may be incomplete and are not independent proof of the work.
 
 **Run report**: A short, agent-reported skill or activity associated with a run rather than a particular ticket. Reports may be incomplete and are not independent proof of the work.
+
+**Reader**: The dashboard's view of a run's local spec or ticket, rendered from the Markdown file the run recorded. It shows only documents the run recorded, and says so when the file is no longer there.

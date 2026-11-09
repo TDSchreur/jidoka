@@ -30,7 +30,7 @@ Reason about the code like a security researcher rather than matching patterns: 
 
 ## Execution Workflow
 
-Follow these steps in order every time, because the later steps build on the earlier ones: the self-verification pass checks the scans' findings, and the report and patches use the verified results:
+Follow these steps in order every time, because each step uses the results of the one before.
 
 ### Step 1 — Scope Resolution
 Determine what to scan:

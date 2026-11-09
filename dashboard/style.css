@@ -446,3 +446,26 @@ a:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline
 @media (prefers-reduced-motion: reduce) {
   .theme label, .toggle, .rail-marker, .detail .mark { transition: none; }
 }
+
+/* Reader: a run's local spec or ticket as a document, in a modal dialog over the page. */
+.link-button { padding: 0; border: 0; background: none; color: var(--color-blue); font: inherit; text-decoration: underline; cursor: pointer; }
+.link-button:hover { color: var(--color-blue-hover); }
+.link-button:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline-offset: var(--stroke-thick); }
+.reader { box-sizing: border-box; width: min(48rem, calc(100% - 2 * var(--space-6))); max-height: calc(100% - 2 * var(--space-6)); padding: var(--space-6) var(--space-7); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-l); background: var(--color-panel); color: var(--color-slate); box-shadow: var(--shadow-dialog); overflow-y: auto; }
+.reader-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-6); margin-bottom: var(--space-5); }
+.reader-bar h2 { margin: 0; font-size: var(--text-m); overflow-wrap: anywhere; }
+.reader-note { margin: 0; color: var(--color-muted); }
+.reader-doc { max-width: 72ch; font-size: var(--text-s); line-height: var(--leading-s); overflow-wrap: anywhere; }
+.reader-doc h1, .reader-doc h2, .reader-doc h3, .reader-doc h4 { margin: var(--space-6) 0 var(--space-4); line-height: var(--leading-l); }
+.reader-doc h1 { font-size: var(--text-l); }
+.reader-doc h2 { font-size: var(--text-m); }
+.reader-doc p, .reader-doc ul, .reader-doc ol, .reader-doc pre, .reader-doc table, .reader-doc blockquote { margin: 0 0 var(--space-5); }
+.reader-doc ul, .reader-doc ol { padding-left: var(--space-7); }
+.reader-doc a { color: var(--color-blue); }
+.reader-doc code { font-family: var(--font-mono); font-size: var(--text-xs); padding: var(--space-1) var(--space-2); border-radius: var(--radius-m); background: var(--color-tint); }
+.reader-doc pre { padding: var(--space-5); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-m); background: var(--color-tint); overflow-x: auto; }
+.reader-doc pre code { padding: 0; background: none; }
+.reader-doc blockquote { padding-left: var(--space-5); border-left: var(--stroke-thick) solid var(--color-rule); color: var(--color-muted); }
+.reader-doc table { display: block; max-width: 100%; border-collapse: collapse; overflow-x: auto; }
+.reader-doc th, .reader-doc td { padding: var(--space-2) var(--space-4); border: var(--stroke-thin) solid var(--color-rule); text-align: left; }
+.reader-doc th { background: var(--color-tint); }

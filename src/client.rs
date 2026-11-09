@@ -1,17 +1,19 @@
 use crate::{
     routing::ModelRouting,
     run::{parse_update, NewRun, Run},
-    server::Info,
+    server::{Info, CLI_TOKEN_HEADER},
 };
 use std::{
     io::{self, Read, Write},
     net::{TcpStream, ToSocketAddrs},
+    path::Path,
     time::Duration,
 };
 
 /// Creates a run on the factory server at `server` and returns its id.
 pub(crate) fn start_run(
     server: &str,
+    token_file: &Path,
     title: &str,
     project: &str,
     repository: Option<String>,
@@ -25,13 +27,14 @@ pub(crate) fn start_run(
         session,
         model_routing,
     })?;
-    let run: Run = serde_json::from_slice(&api_post(server, "/api/runs", &body)?)?;
+    let run: Run = serde_json::from_slice(&api_post(server, token_file, "/api/runs", &body)?)?;
     Ok(run.id)
 }
 
 /// Sends a CLI run update (stage, status and metadata options) to the factory server at `server`.
 pub(crate) fn report_run(
     server: &str,
+    token_file: &Path,
     id: &str,
     stage: &str,
     status: &str,
@@ -43,6 +46,7 @@ pub(crate) fn report_run(
     let update = parse_update(stage, status, options)?;
     api_post(
         server,
+        token_file,
         &format!("/api/runs/{id}"),
         &serde_json::to_vec(&update)?,
     )?;
@@ -115,9 +119,8 @@ pub(crate) fn fetch_run(server: &str, id: &str) -> Result<Run, Box<dyn std::erro
     }
     Ok(serde_json::from_slice(&api_request(
         server,
-        "GET",
         &format!("/api/runs/{id}"),
-        &[],
+        None,
     )?)?)
 }
 
@@ -125,37 +128,45 @@ pub(crate) fn fetch_run(server: &str, id: &str) -> Result<Run, Box<dyn std::erro
 pub(crate) fn fetch_runs(server: &str) -> Result<Vec<Run>, Box<dyn std::error::Error>> {
     Ok(serde_json::from_slice(&api_request(
         server,
-        "GET",
         "/api/runs",
-        &[],
+        None,
     )?)?)
 }
 
-fn api_post(server: &str, route: &str, body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    api_request(server, "POST", route, body)
+fn api_post(
+    server: &str,
+    token_file: &Path,
+    route: &str,
+    body: &[u8],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    // Read on every call, so a restarted dashboard needs no manual step. The token is never put in an error.
+    let token = crate::token::read_file(token_file)
+        .ok_or("no CLI token for the factory server; start or restart 'factory dashboard'")?;
+    api_request(server, route, Some((&token, body)))
 }
 
 // Requests name the address they connect to in `Host`, which is the server's own authority.
+// `post` is the CLI token and body of a POST; without it the request is a bodiless GET.
 fn api_request(
     server: &str,
-    method: &str,
     route: &str,
-    body: &[u8],
+    post: Option<(&str, &[u8])>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut stream = TcpStream::connect(server).map_err(|e| {
         io::Error::new(e.kind(), format!("cannot connect to factory server at {server}; start it with 'factory dashboard': {e}"))
     })?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    if method == "POST" {
-        write!(stream, "POST {route} HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
-    } else {
-        write!(
+    match post {
+        Some((cli_token, body)) => {
+            write!(stream, "POST {route} HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\n{CLI_TOKEN_HEADER}: {cli_token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
+            stream.write_all(body)?;
+        }
+        None => write!(
             stream,
-            "{method} {route} HTTP/1.1\r\nHost: {server}\r\nConnection: close\r\n\r\n"
-        )?;
+            "GET {route} HTTP/1.1\r\nHost: {server}\r\nConnection: close\r\n\r\n"
+        )?,
     }
-    stream.write_all(body)?;
     let mut response = Vec::new();
     stream.read_to_end(&mut response)?;
     let end = response
@@ -164,6 +175,11 @@ fn api_request(
         .ok_or("invalid server response")?
         + 4;
     let headers = std::str::from_utf8(&response[..end])?;
+    if headers.starts_with("HTTP/1.1 401 ") {
+        return Err(
+            "the factory server rejected the CLI token; restart 'factory dashboard'".into(),
+        );
+    }
     if !headers.starts_with("HTTP/1.1 200 ") && !headers.starts_with("HTTP/1.1 201 ") {
         return Err(format!(
             "server rejected request: {}",
@@ -183,9 +199,34 @@ mod tests {
     /// An address nobody listens on: a port the tests' own servers can never be assigned.
     const NOTHING_LISTENS: &str = "127.0.0.1:1";
 
+    /// Accepts the client's connection to a fake server, failing the test with an explanation when it has not
+    /// connected by the deadline, instead of waiting forever.
+    fn accept_within(listener: &std::net::TcpListener, wait: Duration) -> std::net::TcpStream {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    // A stream accepted from a non-blocking listener may be non-blocking itself.
+                    stream.set_nonblocking(false).unwrap();
+                    return stream;
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the client did not connect to the fake server within {wait:?}"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("the fake server could not accept: {error}"),
+            }
+        }
+    }
+
     /// A real Rocket server on an OS-assigned port, shut down and joined on drop.
     struct TestServer {
         address: String,
+        token_file: std::path::PathBuf,
         shutdown: rocket::Shutdown,
         thread: Option<std::thread::JoinHandle<()>>,
     }
@@ -214,6 +255,7 @@ mod tests {
                 .expect("test server should report its port within 10 seconds");
             Self {
                 address: format!("127.0.0.1:{port}"),
+                token_file: crate::server::token_path(path, port),
                 shutdown,
                 thread: Some(thread),
             }
@@ -257,7 +299,16 @@ mod tests {
         )
         .unwrap();
         let server = TestServer::start(&path);
-        let id = start_run(&server.address, "Verify slice", "/work", None, None, None).unwrap();
+        let id = start_run(
+            &server.address,
+            &server.token_file,
+            "Verify slice",
+            "/work",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let ticket = "https://github.com/example/repo/issues/7";
         let steps: [(&str, &str, &[&str]); 4] = [
             (
@@ -289,7 +340,15 @@ mod tests {
         ];
         let mut snapshots = Vec::new();
         for (stage, status, options) in steps {
-            report_run(&server.address, &id, stage, status, options).unwrap();
+            report_run(
+                &server.address,
+                &server.token_file,
+                &id,
+                stage,
+                status,
+                options,
+            )
+            .unwrap();
             snapshots.push(server.runs()[1].clone());
         }
         assert_eq!(snapshots[0]["activity"], "Implementing");
@@ -314,6 +373,7 @@ mod tests {
 
         report_run(
             &server.address,
+            &server.token_file,
             "42",
             "check",
             "blocked",
@@ -337,19 +397,242 @@ mod tests {
     fn cli_reports_rejections_and_unreachable_server() {
         let dir = TestDir::new();
         let server = TestServer::start(&dir.0.path().join("runs.json"));
-        let missing = report_run(&server.address, "123", "build", "running", &[]).unwrap_err();
+        let missing = report_run(
+            &server.address,
+            &server.token_file,
+            "123",
+            "build",
+            "running",
+            &[],
+        )
+        .unwrap_err();
         assert!(missing.to_string().contains("Not found"), "{missing}");
-        let invalid = report_run(&server.address, "12a", "build", "running", &[]).unwrap_err();
+        let invalid = report_run(
+            &server.address,
+            &server.token_file,
+            "12a",
+            "build",
+            "running",
+            &[],
+        )
+        .unwrap_err();
         assert_eq!(invalid.to_string(), "Invalid run id");
         // Nothing listens on port 1. A port that was just freed could be taken by another test's server.
         let address = NOTHING_LISTENS.to_string();
-        let unreachable = start_run(&address, "task", "/work", None, None, None).unwrap_err();
+        let unreachable = start_run(
+            &address,
+            &server.token_file,
+            "task",
+            "/work",
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert!(
             unreachable
                 .to_string()
                 .contains(&format!("cannot connect to factory server at {address}")),
             "{unreachable}"
         );
+    }
+
+    /// The server's current CLI token, as the file holds it.
+    fn token_of(server: &TestServer) -> String {
+        fs::read_to_string(&server.token_file)
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn cli_keeps_working_after_the_dashboard_restarts_with_a_new_token() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let first = TestServer::start(&path);
+        let id = start_run(
+            &first.address,
+            &first.token_file,
+            "t",
+            "/w",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let old = token_of(&first);
+        drop(first);
+        let second = TestServer::start(&path);
+        assert_ne!(token_of(&second), old, "a restart issues a new token");
+        report_run(
+            &second.address,
+            &second.token_file,
+            &id,
+            "build",
+            "running",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(second.runs()[0]["stage"], "build");
+    }
+
+    #[test]
+    fn missing_or_unreadable_token_file_points_to_the_dashboard_without_the_token() {
+        let dir = TestDir::new();
+        let server = TestServer::start(&dir.0.path().join("runs.json"));
+        let token = token_of(&server);
+        fs::remove_file(&server.token_file).unwrap();
+        let missing = start_run(
+            &server.address,
+            &server.token_file,
+            "t",
+            "/w",
+            None,
+            None,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(missing.contains("factory dashboard"), "{missing}");
+        assert!(!missing.contains(&token), "{missing}");
+        // A directory in place of the file is unreadable.
+        fs::create_dir(&server.token_file).unwrap();
+        let unreadable = report_run(
+            &server.address,
+            &server.token_file,
+            "1",
+            "build",
+            "running",
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(unreadable.contains("factory dashboard"), "{unreadable}");
+        assert!(server.runs().as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_malformed_token_file_is_refused_before_anything_is_sent() {
+        let dir = TestDir::new();
+        let server = TestServer::start(&dir.0.path().join("runs.json"));
+        let valid = token_of(&server);
+        let upper = valid.to_uppercase();
+        let evil = format!("{}\r\nX-Evil: 1", &valid[..32]);
+        let nonhex = format!("{}g", &valid[..63]);
+        for bad in [
+            format!("{valid}\r\nX-Evil: 1"),
+            evil,
+            "abc123".into(),
+            upper,
+            nonhex,
+        ] {
+            fs::write(&server.token_file, &bad).unwrap();
+            let message = start_run(
+                &server.address,
+                &server.token_file,
+                "t",
+                "/w",
+                None,
+                None,
+                None,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(message.contains("no CLI token"), "{message}");
+            assert!(message.contains("factory dashboard"), "{message}");
+            assert!(!message.contains("X-Evil"), "{message}");
+        }
+        assert!(server.runs().as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_oversized_or_non_file_token_path_says_to_restart_the_dashboard() {
+        let dir = TestDir::new();
+        let server = TestServer::start(&dir.0.path().join("runs.json"));
+        let real = token_of(&server);
+        let oversized = dir.0.path().join("oversized");
+        fs::write(&oversized, format!("{real}{}", "a".repeat(1024 * 1024))).unwrap();
+        for path in [oversized.as_path(), dir.0.path()] {
+            let error = start_run(&server.address, path, "t", "/w", None, None, None)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("no CLI token"), "{error}");
+            assert!(error.contains("restart 'factory dashboard'"), "{error}");
+            assert!(!error.contains(&real), "{error}");
+        }
+        assert!(server.runs().as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejected_token_hints_at_restarting_the_dashboard_without_leaking_tokens() {
+        let dir = TestDir::new();
+        let server = TestServer::start(&dir.0.path().join("runs.json"));
+        let real = token_of(&server);
+        let stale = dir.0.path().join("stale-token");
+        fs::write(&stale, "stale-token-value\n").unwrap();
+        let error = start_run(&server.address, &stale, "t", "/w", None, None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("restart 'factory dashboard'"), "{error}");
+        assert!(
+            !error.contains("stale-token-value") && !error.contains(&real),
+            "{error}"
+        );
+        let error = report_run(&server.address, &stale, "1", "build", "running", &[])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("restart 'factory dashboard'"), "{error}");
+    }
+
+    #[test]
+    fn a_refusal_other_than_a_bad_token_is_not_blamed_on_the_token() {
+        let dir = TestDir::new();
+        let token_file = dir.0.path().join("session-token");
+        fs::write(&token_file, "a".repeat(64)).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let thread = std::thread::spawn(move || {
+            let mut stream = accept_within(&listener, Duration::from_secs(5));
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut seen = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                let read = stream.read(&mut chunk).unwrap();
+                seen.extend_from_slice(&chunk[..read]);
+            }
+            // Take the whole body too: closing with unread data resets the connection and hides the response.
+            let head_end = seen.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            let head = String::from_utf8_lossy(&seen[..head_end]).to_lowercase();
+            let length: usize = head
+                .split("content-length: ")
+                .nth(1)
+                .and_then(|rest| rest.split("\r\n").next())
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            while seen.len() < head_end + length {
+                let read = stream.read(&mut chunk).unwrap();
+                seen.extend_from_slice(&chunk[..read]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 6\r\nConnection: close\r\n\r\nNo way")
+                .unwrap();
+        });
+        let error = report_run(&address, &token_file, "1", "build", "running", &[])
+            .unwrap_err()
+            .to_string();
+        thread.join().unwrap();
+        assert!(error.contains("server rejected request"), "{error}");
+        assert!(!error.contains("CLI token"), "{error}");
+    }
+
+    #[test]
+    fn a_server_on_another_port_keeps_its_own_token_file() {
+        let dir = TestDir::new();
+        let server = TestServer::start(&dir.0.path().join("runs.json"));
+        let port: u16 = server.address.rsplit(':').next().unwrap().parse().unwrap();
+        assert!(server.token_file.ends_with(format!("session-token-{port}")));
     }
 
     #[test]
@@ -379,7 +662,7 @@ mod tests {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap().to_string();
             let thread = std::thread::spawn(move || {
-                let (mut stream, _) = listener.accept().unwrap();
+                let mut stream = accept_within(&listener, Duration::from_secs(5));
                 let mut buffer = [0; 1024];
                 let _ = stream.read(&mut buffer);
                 stream.write_all(reply).unwrap();
@@ -411,10 +694,20 @@ mod tests {
         let codex = crate::routing::load(&policy, Some(Host::Codex))
             .unwrap()
             .selection;
-        let id = start_run(&server.address, "Routed", "/work", None, None, codex).unwrap();
+        let id = start_run(
+            &server.address,
+            &server.token_file,
+            "Routed",
+            "/work",
+            None,
+            None,
+            codex,
+        )
+        .unwrap();
         fs::write(&policy, both_agents("opus", "gpt-6-luna")).unwrap();
         report_run(
             &server.address,
+            &server.token_file,
             &id,
             "build",
             "running",
@@ -431,6 +724,7 @@ mod tests {
         // A per-run override keeps working on the recorded selection.
         report_run(
             &server.address,
+            &server.token_file,
             &id,
             "check",
             "running",
@@ -447,7 +741,16 @@ mod tests {
         let codex = crate::routing::load(&policy, Some(Host::Codex))
             .unwrap()
             .selection;
-        let next = start_run(&server.address, "Next", "/work", None, None, codex).unwrap();
+        let next = start_run(
+            &server.address,
+            &server.token_file,
+            "Next",
+            "/work",
+            None,
+            None,
+            codex,
+        )
+        .unwrap();
         let run = fetch_run(&server.address, &next).unwrap();
         assert_eq!(
             run.model_routing.unwrap().stages[&Stage::Check].model,
@@ -456,7 +759,16 @@ mod tests {
         let claude = crate::routing::load(&policy, Some(Host::Claude))
             .unwrap()
             .selection;
-        let third = start_run(&server.address, "Claude", "/work", None, None, claude).unwrap();
+        let third = start_run(
+            &server.address,
+            &server.token_file,
+            "Claude",
+            "/work",
+            None,
+            None,
+            claude,
+        )
+        .unwrap();
         let routing = fetch_run(&server.address, &third)
             .unwrap()
             .model_routing
@@ -471,6 +783,7 @@ mod tests {
         let server = TestServer::start(&dir.0.path().join("runs.json"));
         let id = start_run(
             &server.address,
+            &server.token_file,
             "Continue me",
             "/work/repo.worktrees/x",
             Some("/work/repo".into()),
@@ -480,6 +793,7 @@ mod tests {
         .unwrap();
         report_run(
             &server.address,
+            &server.token_file,
             &id,
             "build",
             "blocked",
@@ -537,6 +851,7 @@ mod tests {
         );
         let rejected = report_run(
             &server.address,
+            &server.token_file,
             &id,
             "build",
             "running",
@@ -555,9 +870,25 @@ mod tests {
         let path = dir.0.path().join("runs.json");
         let server = TestServer::start(&path);
         for mode in ["factory", "factory-full"] {
-            let id =
-                start_run(&server.address, "Full run", "/work/repo", None, None, None).unwrap();
-            report_run(&server.address, &id, "build", "running", &["--mode", mode]).unwrap();
+            let id = start_run(
+                &server.address,
+                &server.token_file,
+                "Full run",
+                "/work/repo",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            report_run(
+                &server.address,
+                &server.token_file,
+                &id,
+                "build",
+                "running",
+                &["--mode", mode],
+            )
+            .unwrap();
             let run = fetch_run(&server.address, &id).unwrap();
             assert!(crate::inspect::render(&run).contains("Mode          factory-full"));
             assert_eq!(serde_json::to_value(&run).unwrap()["mode"], "factory-full");

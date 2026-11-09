@@ -474,7 +474,8 @@ fn verification_check(root: &Path, path: &OsString) -> Check {
     }
 }
 
-/// Finds `name` in the `PATH` folders; on Windows it also tries the `PATHEXT` extensions.
+/// Finds `name` in the `PATH` folders. On Windows a name without a `PATHEXT` extension is tried with each
+/// extension, and a name that already ends in one, such as `npm.cmd`, is tried as given first.
 pub(crate) fn find_program(name: &str, path: &OsString) -> Option<PathBuf> {
     let extensions = if cfg!(windows) {
         let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
@@ -507,10 +508,26 @@ fn windows_extensions(pathext: &str) -> Vec<String> {
         .collect()
 }
 
+/// The suffixes to append to `name`: the extensions, preceded by the empty suffix when `name` already
+/// ends in one of them (compared case-insensitively).
+fn candidate_suffixes(name: &str, extensions: &[String]) -> Vec<String> {
+    let lower = name.to_lowercase();
+    let has_extension = extensions
+        .iter()
+        .any(|ext| !ext.is_empty() && lower.ends_with(&ext.to_lowercase()));
+    let mut suffixes = Vec::new();
+    if has_extension {
+        suffixes.push(String::new());
+    }
+    suffixes.extend(extensions.iter().cloned());
+    suffixes
+}
+
 fn find_with_extensions(name: &str, path: &OsString, extensions: &[String]) -> Option<PathBuf> {
+    let suffixes = candidate_suffixes(name, extensions);
     std::env::split_paths(path).find_map(|dir| {
-        extensions.iter().find_map(|ext| {
-            let candidate = dir.join(format!("{name}{ext}"));
+        suffixes.iter().find_map(|suffix| {
+            let candidate = dir.join(format!("{name}{suffix}"));
             is_executable(&candidate).then_some(candidate)
         })
     })
@@ -2168,6 +2185,42 @@ mod tests {
         assert_eq!(found, bin.path().join("az.cmd"));
     }
 
+    #[test]
+    fn a_name_with_a_pathext_extension_is_also_tried_as_given() {
+        let extensions = windows_extensions(".COM;.EXE;.CMD");
+        assert_eq!(
+            candidate_suffixes("npm.cmd", &extensions),
+            ["", ".COM", ".EXE", ".CMD"]
+        );
+        assert_eq!(
+            candidate_suffixes("tool.EXE", &extensions),
+            ["", ".COM", ".EXE", ".CMD"]
+        );
+        assert_eq!(
+            candidate_suffixes("az", &extensions),
+            [".COM", ".EXE", ".CMD"]
+        );
+        assert_eq!(candidate_suffixes("git", &[String::new()]), [""]);
+    }
+
+    /// Runs on Windows in CI: names that carry their extension resolve, and bare `az` still skips the launcher.
+    #[cfg(windows)]
+    #[test]
+    fn windows_finds_names_given_with_their_extension() {
+        let bin = tempfile::tempdir().unwrap();
+        for name in ["tool.exe", "npm.cmd", "az", "az.cmd"] {
+            fs::write(bin.path().join(name), "").unwrap();
+        }
+        let path: OsString = bin.path().into();
+        let lower = |p: PathBuf| p.to_string_lossy().to_lowercase();
+        for name in ["tool.exe", "npm.cmd", "npm.CMD"] {
+            let found = find_program(name, &path).unwrap_or_else(|| panic!("{name} not found"));
+            assert_eq!(lower(found), lower(bin.path().join(name)));
+        }
+        let az = find_program("az", &path).unwrap();
+        assert_eq!(lower(az), lower(bin.path().join("az.cmd")));
+    }
+
     /// Runs on Windows in CI: the Bash launcher must not shadow `az.cmd`, and the `.cmd` must start.
     #[cfg(windows)]
     #[test]
@@ -2193,10 +2246,28 @@ mod tests {
         );
     }
 
+    /// Whether `source` starts the Azure CLI by its bare name, however rustfmt wraps the call.
+    fn starts_az_by_name(source: &str) -> bool {
+        let squeezed: String = source.split_whitespace().collect();
+        let plain = ["Command::new(", "\"az\")"].concat();
+        let trailing_comma = ["Command::new(", "\"az\",)"].concat();
+        squeezed.contains(&plain) || squeezed.contains(&trailing_comma)
+    }
+
+    #[test]
+    fn starts_az_by_name_catches_split_calls_only_for_the_bare_name() {
+        let one_line = ["Command::new(", "\"az\")"].concat();
+        let split = ["Command::new(\n    ", "\"az\"\n)"].concat();
+        let split_comma = ["Command::new(\n    ", "\"az\",\n)"].concat();
+        assert!(starts_az_by_name(&one_line));
+        assert!(starts_az_by_name(&split));
+        assert!(starts_az_by_name(&split_comma));
+        assert!(!starts_az_by_name("Command::new(az_program())"));
+    }
+
     /// A bare `az` is looked up by Windows as `az.exe` only, so it never finds the Azure CLI there.
     #[test]
     fn az_is_never_started_by_its_bare_name() {
-        let bare = ["Command::new(", "\"az\")"].concat();
         let mut found = Vec::new();
         let mut folders = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
         while let Some(folder) = folders.pop() {
@@ -2205,7 +2276,7 @@ mod tests {
                 if path.is_dir() {
                     folders.push(path);
                 } else if path.extension().is_some_and(|ext| ext == "rs")
-                    && fs::read_to_string(&path).unwrap().contains(&bare)
+                    && starts_az_by_name(&fs::read_to_string(&path).unwrap())
                 {
                     found.push(path);
                 }

@@ -1,5 +1,7 @@
 use crate::{
-    current_build, pr_state,
+    current_build,
+    document::{self, DocumentError},
+    pr_state,
     pr_wait::{self, RealGh},
     run::{NewRun, Run, RunStore, UpdateRun},
     usage::{collect_and_store, UsageSettings},
@@ -14,7 +16,11 @@ use rocket::{
     Build, Rocket, State,
 };
 use serde::{Deserialize, Serialize};
-use std::{io, path::Path, sync::Mutex};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 pub(crate) const DEFAULT_PORT: u16 = 4311;
 pub(crate) const ADDRESS: &str = "127.0.0.1:4311";
@@ -76,6 +82,8 @@ const TOKEN_PLACEHOLDER: &str = "__TOKEN__";
 const PID_PLACEHOLDER: &str = "__PID__";
 /// The header the dashboard sends its session token in.
 const TOKEN_HEADER: &str = "X-Session-Token";
+/// The header the `factory` CLI sends its CLI token in.
+pub(crate) const CLI_TOKEN_HEADER: &str = "X-Factory-Token";
 const BODY_LIMIT: u64 = 64 * 1024;
 
 fn is_local_authority(authority: &str, port: u16) -> bool {
@@ -90,15 +98,163 @@ struct SessionToken(String);
 
 impl SessionToken {
     fn new() -> Self {
-        use std::hash::{BuildHasher, Hasher};
-        // `RandomState` is seeded from the operating system's randomness.
-        let part = || {
-            std::collections::hash_map::RandomState::new()
-                .build_hasher()
-                .finish()
-        };
-        Self(format!("{:016x}{:016x}", part(), part()))
+        Self(crate::token::random())
     }
+}
+
+/// A second random value, per server process, that the `factory` CLI needs to POST. It is
+/// written to a file only the user can read and is never part of any response.
+struct CliToken(String);
+
+impl CliToken {
+    /// Compares without stopping at the first differing byte.
+    fn matches(&self, given: &str) -> bool {
+        self.0.len() == given.len()
+            && self
+                .0
+                .bytes()
+                .zip(given.bytes())
+                .fold(0, |diff, (a, b)| diff | (a ^ b))
+                == 0
+    }
+}
+
+/// Where the CLI token lives: next to the runs file, named per port like the runs file.
+pub(crate) fn token_path(runs: &Path, port: u16) -> PathBuf {
+    let name = if port == DEFAULT_PORT {
+        "session-token".to_string()
+    } else {
+        format!("session-token-{port}")
+    };
+    runs.with_file_name(name)
+}
+
+/// Writes `token` to `path` so no reader sees a partial file; on Unix only the user can read it and the
+/// directory is made private.
+fn write_token_file(path: &Path, token: &str) -> io::Result<()> {
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let first = COUNTER.fetch_add(TOKEN_TEMP_ATTEMPTS, std::sync::atomic::Ordering::Relaxed);
+    write_token_file_from(path, token, first)
+}
+
+/// How many temporary names a token write tries before it gives up.
+const TOKEN_TEMP_ATTEMPTS: u32 = 8;
+
+/// The temporary name for the `counter`-th attempt. It needs no secrecy: `create_new` refuses to reuse or
+/// follow anything that exists.
+fn token_temp_path(path: &Path, counter: u32) -> PathBuf {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    dir.join(format!(".{name}.{}.{counter}.tmp", std::process::id()))
+}
+
+/// `write_token_file`, trying the temporary names from `first_counter` on. A name left by a killed dashboard
+/// (same pid, same counter) is skipped; after `TOKEN_TEMP_ATTEMPTS` taken names the error is returned.
+fn write_token_file_from(path: &Path, token: &str, first_counter: u32) -> io::Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(dir)?;
+    let mut attempt = 0;
+    loop {
+        let temp = token_temp_path(path, first_counter.wrapping_add(attempt));
+        match write_new_file(&temp, token) {
+            Err(error)
+                if error.kind() == io::ErrorKind::AlreadyExists
+                    && attempt + 1 < TOKEN_TEMP_ATTEMPTS =>
+            {
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+            Ok(()) => {
+                let renamed = std::fs::rename(&temp, path);
+                if renamed.is_err() {
+                    let _ = std::fs::remove_file(&temp);
+                }
+                return renamed;
+            }
+        }
+    }
+}
+
+/// Makes the data folder of `runs` private (0700) before anything is written into it: created that way
+/// when missing, chmod-ed when it is a real folder. A symlinked folder is left as it is. Fails when the
+/// folder cannot be made private, so the dashboard does not start with a readable token folder. Returns a
+/// warning when the folder is a symlink whose target is group- or world-accessible.
+#[cfg(unix)]
+fn secure_data_dir(runs: &Path) -> io::Result<Option<String>> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let dir = match runs.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => return Ok(None),
+    };
+    let failed = |error: io::Error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "cannot make the data folder {} private (mode 0700): {error}",
+                dir.display()
+            ),
+        )
+    };
+    match std::fs::symlink_metadata(dir) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let open = std::fs::metadata(dir).map_err(failed)?.permissions().mode() & 0o077 != 0;
+            Ok(open.then(|| {
+                format!(
+                    "warning: the data folder {} is a symlink to a folder that other users can access; the CLI token is stored there. Run: chmod 700 {}",
+                    dir.display(),
+                    dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()).display()
+                )
+            }))
+        }
+        Ok(_) => std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .map(|()| None)
+            .map_err(failed),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+            .map(|()| None)
+            .map_err(failed),
+        Err(error) => Err(failed(error)),
+    }
+}
+
+/// Creates `path`, which must not exist (and is never a followed symlink), holding `content`; mode 0600 on Unix.
+fn write_new_file(path: &Path, content: &str) -> io::Result<()> {
+    use std::io::Write;
+    write_new_file_with(path, content, |file, bytes| file.write_all(bytes))
+}
+
+/// `write_new_file` with the write step injected. When the write fails after the file was created, the
+/// file is removed again; an open error never removes anything (an existing file is not ours).
+fn write_new_file_with(
+    path: &Path,
+    content: &str,
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    let written = write(&mut file, content.as_bytes());
+    if written.is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+    written
 }
 
 /// The browser sends an `Origin` on a same-origin DELETE; it must be the dashboard itself.
@@ -110,8 +266,25 @@ fn is_local_origin(origin: &str, port: u16) -> bool {
 
 struct Security {
     local: bool,
-    post_allowed: bool,
+    /// Host, Origin and content type are acceptable for a POST.
+    post_shape_ok: bool,
+    /// The request carries the CLI token.
+    cli_token_ok: bool,
     delete_allowed: bool,
+}
+
+impl Security {
+    /// Why a POST is refused: 403 when Host, Origin or content type are not acceptable, 401 when only the
+    /// CLI token is missing or wrong.
+    fn post_refusal(&self) -> Option<HttpStatus> {
+        if !self.post_shape_ok {
+            Some(HttpStatus::Forbidden)
+        } else if !self.cli_token_ok {
+            Some(HttpStatus::Unauthorized)
+        } else {
+            None
+        }
+    }
 }
 
 #[rocket::async_trait]
@@ -124,11 +297,18 @@ impl<'r> FromRequest<'r> for Security {
             .headers()
             .get_one("Host")
             .is_some_and(|authority| is_local_authority(authority, port));
+        let post_shape_ok = local
+            && request.headers().get_one("Origin").is_none()
+            && request.content_type() == Some(&ContentType::JSON);
+        let cli_token_ok = request
+            .rocket()
+            .state::<CliToken>()
+            .zip(request.headers().get_one(CLI_TOKEN_HEADER))
+            .is_some_and(|(token, given)| token.matches(given));
         Outcome::Success(Self {
             local,
-            post_allowed: local
-                && request.headers().get_one("Origin").is_none()
-                && request.content_type() == Some(&ContentType::JSON),
+            post_shape_ok,
+            cli_token_ok,
             delete_allowed: local
                 && request
                     .headers()
@@ -140,6 +320,26 @@ impl<'r> FromRequest<'r> for Security {
                     .zip(request.headers().get_one(TOKEN_HEADER))
                     .is_some_and(|(token, given)| token.0 == given),
         })
+    }
+}
+
+/// A POST that passed the Host, Origin, content type and CLI token checks. As a request guard it runs
+/// before the body is read, so a caller without the token never reaches the JSON parser.
+struct PostAccess;
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for PostAccess {
+    type Error = ();
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        match Security::from_request(request).await {
+            Outcome::Success(security) => match security.post_refusal() {
+                None => Outcome::Success(Self),
+                Some(status) => Outcome::Error((status, ())),
+            },
+            Outcome::Error(error) => Outcome::Error(error),
+            Outcome::Forward(status) => Outcome::Forward(status),
+        }
     }
 }
 
@@ -160,10 +360,7 @@ fn dashboard(
 }
 
 #[rocket::get("/assets/<path..>")]
-fn asset(
-    request: Security,
-    path: std::path::PathBuf,
-) -> Result<(ContentType, &'static [u8]), HttpStatus> {
+fn asset(request: Security, path: PathBuf) -> Result<(ContentType, &'static [u8]), HttpStatus> {
     if !request.local {
         return Err(HttpStatus::BadRequest);
     }
@@ -233,13 +430,10 @@ fn run_with_cost(run: &Run) -> serde_json::Result<serde_json::Value> {
 
 #[rocket::post("/api/runs", data = "<new>")]
 fn create_run(
-    request: Security,
+    _access: PostAccess,
     new: Json<NewRun>,
     store: &State<RunStore>,
 ) -> Result<(HttpStatus, Json<Run>), HttpStatus> {
-    if !request.post_allowed {
-        return Err(HttpStatus::Forbidden);
-    }
     store
         .create(new.into_inner())
         .map(|run| (HttpStatus::Created, Json(run)))
@@ -255,15 +449,12 @@ fn create_run(
 
 #[rocket::post("/api/runs/<id>", data = "<update>")]
 fn update_run(
-    request: Security,
+    _access: PostAccess,
     id: &str,
     update: Json<UpdateRun>,
     store: &State<RunStore>,
     collector: &State<Collector>,
 ) -> Result<Json<Run>, (HttpStatus, String)> {
-    if !request.post_allowed {
-        return Err((HttpStatus::Forbidden, "Forbidden".into()));
-    }
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err((HttpStatus::BadRequest, "Invalid run id".into()));
     }
@@ -310,6 +501,81 @@ fn get_run(
                 HttpStatus::InternalServerError
             })
         })
+}
+
+/// The HTTP answer for a document that is not served: `404` with
+/// `{"available": false, "path": <reference>}` when the recorded file is not there (yet), any other
+/// code with `{"error": <reason>}` when the request is refused.
+type DocumentFailure = (HttpStatus, Json<serde_json::Value>);
+
+fn refused(status: HttpStatus, reason: &str) -> DocumentFailure {
+    (status, Json(serde_json::json!({ "error": reason })))
+}
+
+fn document_failure(error: DocumentError) -> DocumentFailure {
+    match error {
+        DocumentError::NotRecorded => refused(
+            HttpStatus::Forbidden,
+            "Not a reference recorded on this run",
+        ),
+        DocumentError::WebReference => {
+            refused(HttpStatus::BadRequest, "Only local documents are served")
+        }
+        DocumentError::NotMarkdown => refused(
+            HttpStatus::BadRequest,
+            "Only Markdown (.md) documents are served",
+        ),
+        DocumentError::OutsideRoots => refused(
+            HttpStatus::Forbidden,
+            "The document is outside the run's worktree and repository",
+        ),
+        DocumentError::TooLarge => refused(
+            HttpStatus::PayloadTooLarge,
+            "The document is larger than 1 MB",
+        ),
+        DocumentError::NotText => {
+            refused(HttpStatus::UnprocessableEntity, "The document is not text")
+        }
+        DocumentError::NotAvailable { path } => (
+            HttpStatus::NotFound,
+            Json(serde_json::json!({ "available": false, "path": path })),
+        ),
+    }
+}
+
+/// A recorded local spec or ticket of a run as rendered HTML: `{"name": <file name>, "html": <HTML>}`.
+/// See `document::read` for the refusals and the not-available answer.
+#[rocket::get("/api/runs/<id>/document?<reference>")]
+async fn get_document(
+    request: Security,
+    id: &str,
+    reference: &str,
+    store: &State<RunStore>,
+) -> Result<Json<serde_json::Value>, DocumentFailure> {
+    if !request.local {
+        return Err(refused(HttpStatus::BadRequest, "Bad request"));
+    }
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(refused(HttpStatus::BadRequest, "Invalid run id"));
+    }
+    let run = store
+        .get(id)
+        .map_err(|error| {
+            eprintln!("Run storage error: {error}");
+            refused(HttpStatus::InternalServerError, "Internal server error")
+        })?
+        .ok_or_else(|| refused(HttpStatus::NotFound, "Not found"))?;
+    let reference = reference.to_owned();
+    let read = rocket::tokio::task::spawn_blocking(move || document::read(&run, &reference))
+        .await
+        .map_err(|error| {
+            eprintln!("Document read stopped: {error}");
+            refused(HttpStatus::InternalServerError, "Internal server error")
+        })?;
+    let document = read.map_err(document_failure)?;
+    Ok(Json(
+        serde_json::json!({ "name": document.name, "html": document.html }),
+    ))
 }
 
 /// Deletes the Run record only; nothing the Run created (worktree, branch, pull request) is touched.
@@ -448,6 +714,12 @@ pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> 
     build_rocket_with(path, port, Collector::new(None))
 }
 
+/// The runs file the CLI token is kept next to.
+struct TokenFile(PathBuf);
+
+/// Set at liftoff when the CLI token could not be written; the server shuts down and `serve` reports it.
+struct TokenWriteFailure(std::sync::Mutex<Option<String>>);
+
 pub(crate) fn build_rocket_with(
     path: &Path,
     port: u16,
@@ -457,14 +729,55 @@ pub(crate) fn build_rocket_with(
         .merge(("address", "127.0.0.1"))
         .merge(("port", port))
         .merge(("limits", Limits::new().limit("json", BODY_LIMIT.bytes())));
+    #[cfg(unix)]
+    if let Some(warning) = secure_data_dir(path)? {
+        eprintln!("{warning}");
+    }
     Ok(rocket::custom(config)
         .manage(RunStore::open(path)?)
         .manage(collector)
         .manage(SessionToken::new())
+        .manage(CliToken(crate::token::random()))
+        .manage(TokenFile(path.to_path_buf()))
+        .manage(TokenWriteFailure(std::sync::Mutex::new(None)))
+        .attach(rocket::fairing::AdHoc::on_liftoff(
+            "Write CLI token",
+            |rocket| {
+                Box::pin(async move {
+                    // Only once the port is bound, so a dashboard that fails to bind leaves the token alone.
+                    if let (Some(token), Some(file), Some(failure)) = (
+                        rocket.state::<CliToken>(),
+                        rocket.state::<TokenFile>(),
+                        rocket.state::<TokenWriteFailure>(),
+                    ) {
+                        let path = token_path(&file.0, rocket.config().port);
+                        if let Err(error) = write_token_file(&path, &token.0) {
+                            let message = format!(
+                                "could not write the CLI token to {}: {error}",
+                                path.display()
+                            );
+                            eprintln!("{message}");
+                            if let Ok(mut slot) = failure.0.lock() {
+                                *slot = Some(message);
+                            }
+                            rocket.shutdown().notify();
+                        }
+                    }
+                })
+            },
+        ))
         .mount(
             "/",
             rocket::routes![
-                dashboard, asset, info, list_runs, get_run, create_run, update_run, delete_run
+                dashboard,
+                asset,
+                info,
+                list_runs,
+                get_run,
+                get_document,
+                create_run,
+                update_run,
+                delete_run
             ],
         )
         .register(
@@ -476,6 +789,10 @@ pub(crate) fn build_rocket_with(
             |_, response| {
                 Box::pin(async move {
                     response.set_header(rocket::http::Header::new("Cache-Control", "no-store"));
+                    response.set_header(rocket::http::Header::new(
+                        "X-Content-Type-Options",
+                        "nosniff",
+                    ));
                 })
             },
         )))
@@ -567,8 +884,16 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
             ))
             .launch()
             .await
-            .map(|_| ())
             .map_err(io::Error::other)
+            .and_then(|rocket| {
+                match rocket
+                    .state::<TokenWriteFailure>()
+                    .and_then(|failure| failure.0.lock().ok()?.take())
+                {
+                    Some(message) => Err(io::Error::other(message)),
+                    None => Ok(()),
+                }
+            })
     })
 }
 
@@ -586,6 +911,200 @@ mod tests {
         Client::tracked(build_rocket(&dir.0.path().join("runs.json"), DEFAULT_PORT).unwrap())
             .await
             .unwrap()
+    }
+
+    /// A run with the given worktree, repository, spec and ticket references, and its id.
+    fn document_run(
+        path: &Path,
+        worktree: &Path,
+        repository: &Path,
+        spec: &str,
+        tickets: &[&str],
+    ) -> String {
+        let store = RunStore::open(path).unwrap();
+        let run = store
+            .create(NewRun {
+                title: "t".into(),
+                project: repository.to_string_lossy().into_owned(),
+                repository: Some(repository.to_string_lossy().into_owned()),
+                session: None,
+                model_routing: None,
+            })
+            .unwrap();
+        let tickets: Vec<_> = tickets
+            .iter()
+            .map(|reference| serde_json::json!({ "reference": reference, "title": "T" }))
+            .collect();
+        store
+            .update(
+                &run.id,
+                serde_json::from_value(serde_json::json!({
+                    "stage": "build",
+                    "status": "running",
+                    "worktree": worktree.to_string_lossy(),
+                    "spec": spec,
+                    "tickets": tickets,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        run.id
+    }
+
+    /// Fetches the document and returns its status and JSON body.
+    async fn fetch_document(
+        dir: &TestDir,
+        id: &str,
+        reference: &str,
+    ) -> (HttpStatus, serde_json::Value, Option<String>) {
+        let api = client(dir).await;
+        let response = api
+            .get(format!(
+                "/api/runs/{id}/document?reference={}",
+                percent_encoding::utf8_percent_encode(
+                    reference,
+                    percent_encoding::NON_ALPHANUMERIC
+                )
+            ))
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .dispatch()
+            .await;
+        let status = response.status();
+        let nosniff = response
+            .headers()
+            .get_one("X-Content-Type-Options")
+            .map(str::to_owned);
+        let body = response.into_string().await.unwrap_or_default();
+        (
+            status,
+            serde_json::from_str(&body).unwrap_or_default(),
+            nosniff,
+        )
+    }
+
+    /// A repository and a worktree beside it, and a run recording `spec` and `tickets`.
+    fn document_setup(spec: &str, tickets: &[&str]) -> (TestDir, PathBuf, PathBuf, String) {
+        let dir = TestDir::new();
+        let repository = dir.0.path().join("repo");
+        let worktree = dir.0.path().join("repo.worktrees").join("feature");
+        fs::create_dir_all(repository.join(".git")).unwrap();
+        fs::create_dir_all(worktree.join(".git")).unwrap();
+        let id = document_run(
+            &dir.0.path().join("runs.json"),
+            &worktree,
+            &repository,
+            spec,
+            tickets,
+        );
+        (dir, repository, worktree, id)
+    }
+
+    #[rocket::async_test]
+    async fn a_recorded_spec_is_rendered_with_nosniff() {
+        let (dir, _, worktree, id) = document_setup("docs/spec.md", &[]);
+        fs::create_dir_all(worktree.join("docs")).unwrap();
+        fs::write(worktree.join("docs/spec.md"), "# Title\n\nSome *text*").unwrap();
+        let (status, body, nosniff) = fetch_document(&dir, &id, "docs/spec.md").await;
+        assert_eq!(status, HttpStatus::Ok);
+        assert_eq!(body["name"], "spec.md");
+        assert!(body["html"].as_str().unwrap().contains("<h1>Title</h1>"));
+        assert_eq!(nosniff.as_deref(), Some("nosniff"));
+    }
+
+    #[rocket::async_test]
+    async fn only_recorded_references_are_served() {
+        let (dir, _, worktree, id) = document_setup("spec.md", &["one.md"]);
+        fs::write(worktree.join("one.md"), "ticket").unwrap();
+        fs::write(worktree.join("other.md"), "other").unwrap();
+        let (status, body, _) = fetch_document(&dir, &id, "one.md").await;
+        assert_eq!(status, HttpStatus::Ok, "{body}");
+        let (status, _, _) = fetch_document(&dir, &id, "other.md").await;
+        assert_eq!(status, HttpStatus::Forbidden);
+        let (status, _, _) = fetch_document(&dir, "999", "one.md").await;
+        assert_eq!(status, HttpStatus::NotFound);
+    }
+
+    #[rocket::async_test]
+    async fn web_references_are_rejected() {
+        let (dir, _, _, id) =
+            document_setup("https://example.com/spec.md", &["http://x.test/1.md"]);
+        for reference in ["https://example.com/spec.md", "http://x.test/1.md"] {
+            let (status, _, _) = fetch_document(&dir, &id, reference).await;
+            assert_eq!(status, HttpStatus::BadRequest, "{reference}");
+        }
+    }
+
+    #[rocket::async_test]
+    async fn traversal_out_of_the_roots_is_rejected() {
+        let (dir, _, _, id) = document_setup("../../outside.md", &[]);
+        fs::write(dir.0.path().join("outside.md"), "secret").unwrap();
+        let (status, _, _) = fetch_document(&dir, &id, "../../outside.md").await;
+        assert_eq!(status, HttpStatus::Forbidden);
+    }
+
+    // Creating symlinks on Windows needs extra privileges.
+    #[cfg(unix)]
+    #[rocket::async_test]
+    async fn a_symlink_out_of_the_roots_is_rejected() {
+        let (dir, _, worktree, id) = document_setup("link.md", &[]);
+        let outside = dir.0.path().join("outside.md");
+        fs::write(&outside, "secret").unwrap();
+        std::os::unix::fs::symlink(&outside, worktree.join("link.md")).unwrap();
+        let (status, _, _) = fetch_document(&dir, &id, "link.md").await;
+        assert_eq!(status, HttpStatus::Forbidden);
+    }
+
+    #[rocket::async_test]
+    async fn only_markdown_files_are_served() {
+        let (dir, _, worktree, id) = document_setup("notes.txt", &[]);
+        fs::write(worktree.join("notes.txt"), "text").unwrap();
+        let (status, _, _) = fetch_document(&dir, &id, "notes.txt").await;
+        assert_eq!(status, HttpStatus::BadRequest);
+    }
+
+    #[rocket::async_test]
+    async fn a_document_over_a_megabyte_is_rejected() {
+        let (dir, _, worktree, id) = document_setup("big.md", &[]);
+        fs::write(worktree.join("big.md"), vec![b'a'; 1024 * 1024 + 1]).unwrap();
+        let (status, _, _) = fetch_document(&dir, &id, "big.md").await;
+        assert_eq!(status, HttpStatus::PayloadTooLarge);
+    }
+
+    #[rocket::async_test]
+    async fn a_missing_file_is_not_available_rather_than_rejected() {
+        let (dir, _, _, id) = document_setup("gone.md", &[]);
+        let (status, body, _) = fetch_document(&dir, &id, "gone.md").await;
+        assert_eq!(status, HttpStatus::NotFound);
+        assert_eq!(body["available"], false);
+        assert_eq!(body["path"], "gone.md");
+    }
+
+    #[rocket::async_test]
+    async fn relative_references_resolve_against_the_worktree_then_the_repository() {
+        let (dir, repository, worktree, id) = document_setup("spec.md", &["only-repo.md"]);
+        fs::write(repository.join("spec.md"), "from repository").unwrap();
+        fs::write(worktree.join("spec.md"), "from worktree").unwrap();
+        fs::write(repository.join("only-repo.md"), "repo only").unwrap();
+        let (_, body, _) = fetch_document(&dir, &id, "spec.md").await;
+        assert!(body["html"].as_str().unwrap().contains("from worktree"));
+        let (_, body, _) = fetch_document(&dir, &id, "only-repo.md").await;
+        assert!(body["html"].as_str().unwrap().contains("repo only"));
+    }
+
+    #[rocket::async_test]
+    async fn the_saved_plan_beside_the_worktree_is_served() {
+        let (dir, _, worktree, _) = document_setup("x.md", &[]);
+        let plan = format!("{}.factory-plan.md", worktree.display());
+        fs::write(&plan, "plan").unwrap();
+        let id = document_run(
+            &dir.0.path().join("runs.json"),
+            &worktree,
+            &dir.0.path().join("repo"),
+            &plan,
+            &[],
+        );
+        let (status, body, _) = fetch_document(&dir, &id, &plan).await;
+        assert_eq!(status, HttpStatus::Ok, "{body}");
     }
 
     #[rocket::async_test]
@@ -1027,6 +1546,7 @@ mod tests {
     async fn start(api: &Client, body: &str) -> Run {
         let response = api
             .post("/api/runs")
+            .header(cli_token_header(api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body(body)
@@ -1491,6 +2011,7 @@ mod tests {
         ] {
             let response = api
                 .post("/api/runs")
+                .header(cli_token_header(&api))
                 .header(Header::new("Host", "127.0.0.1:4311"))
                 .header(ContentType::JSON)
                 .body(with(&routing))
@@ -1527,6 +2048,7 @@ mod tests {
         ] {
             let response = api
                 .post("/api/runs")
+                .header(cli_token_header(&api))
                 .header(Header::new("Host", "127.0.0.1:4311"))
                 .header(ContentType::JSON)
                 .body(body)
@@ -2021,8 +2543,8 @@ mod tests {
         );
         assert_eq!(
             rules.matches("var(--shadow-dialog)").count(),
-            3,
-            "confirm, detail and the Projects menu"
+            4,
+            "confirm, detail, Reader and the Projects menu"
         );
         let license = include_str!("../third-party/barlow-LICENSE");
         assert!(license.contains("SIL Open Font License"));
@@ -2413,6 +2935,7 @@ mod tests {
         // An update through the API cannot set it.
         let response = api
             .post(format!("/api/runs/{}", run.id))
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body(r#"{"stage":"finish","status":"done","summaries":{"finish":"Shipped"},"pr_status":{"state":"open"}}"#)
@@ -2748,6 +3271,7 @@ mod tests {
         let api = client(&dir).await;
         let response = api
             .post("/api/runs")
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body(r#"{"title":"<task>","project":"/work"}"#)
@@ -2759,6 +3283,7 @@ mod tests {
         assert!(created.updated_at.is_some());
         let response = api
             .post(format!("/api/runs/{}", created.id))
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body(r#"{"stage":"check","status":"running"}"#)
@@ -2803,6 +3328,7 @@ mod tests {
         assert_eq!(wrong_port.status(), HttpStatus::BadRequest);
         let origin = api
             .post("/api/runs")
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .header(Header::new("Origin", "https://example.test"))
@@ -2812,6 +3338,7 @@ mod tests {
         assert_eq!(origin.status(), HttpStatus::Forbidden);
         let content_type = api
             .post("/api/runs")
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::Plain)
             .body(r#"{"title":"x","project":"/"}"#)
@@ -2820,6 +3347,7 @@ mod tests {
         assert_eq!(content_type.status(), HttpStatus::Forbidden);
         let invalid = api
             .post("/api/runs")
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body("{")
@@ -2839,6 +3367,11 @@ mod tests {
             fs::read(dir.0.path().join("runs.json")).unwrap_or_default(),
             b""
         );
+    }
+
+    fn cli_token_header(api: &Client) -> Header<'static> {
+        let token = api.rocket().state::<CliToken>().unwrap();
+        Header::new(CLI_TOKEN_HEADER, token.0.clone())
     }
 
     async fn session_token(api: &Client) -> String {
@@ -3050,7 +3583,7 @@ mod tests {
         let (first, second) = (TestDir::new(), TestDir::new());
         let (first, second) = (client(&first).await, client(&second).await);
         let (a, b) = (session_token(&first).await, session_token(&second).await);
-        assert_eq!(a.len(), 32);
+        assert_eq!(a.len(), 64);
         assert_ne!(a, b);
         assert_eq!(a, session_token(&first).await);
     }
@@ -3065,6 +3598,7 @@ mod tests {
         );
         let response = api
             .post("/api/runs")
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body(big)
@@ -3073,6 +3607,7 @@ mod tests {
         assert_eq!(response.status(), HttpStatus::PayloadTooLarge);
         let response = api
             .post("/api/runs/nope")
+            .header(cli_token_header(&api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body(r#"{"stage":"check","status":"done"}"#)
@@ -3081,6 +3616,7 @@ mod tests {
         assert_eq!(response.status(), HttpStatus::BadRequest);
         assert_eq!(
             api.post("/api/runs/123")
+                .header(cli_token_header(&api))
                 .header(Header::new("Host", "127.0.0.1:4311"))
                 .header(ContentType::JSON)
                 .body(r#"{"stage":"check","status":"done"}"#)
@@ -3097,6 +3633,7 @@ mod tests {
         body: &str,
     ) -> rocket::local::asynchronous::LocalResponse<'a> {
         api.post(format!("/api/runs/{id}"))
+            .header(cli_token_header(api))
             .header(Header::new("Host", "127.0.0.1:4311"))
             .header(ContentType::JSON)
             .body(body)
@@ -3272,5 +3809,445 @@ mod tests {
                 original
             );
         }
+    }
+
+    async fn post_status(api: &Client, route: &str, token: Option<&str>) -> HttpStatus {
+        let body = if route == "/api/runs" {
+            r#"{"title":"x","project":"/work"}"#
+        } else {
+            r#"{"stage":"build","status":"running"}"#
+        };
+        let mut request = api
+            .post(route.to_owned())
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .header(ContentType::JSON)
+            .body(body);
+        if let Some(token) = token {
+            request = request.header(Header::new(CLI_TOKEN_HEADER, token.to_owned()));
+        }
+        request.dispatch().await.status()
+    }
+
+    #[rocket::async_test]
+    async fn post_requires_the_cli_token_and_refuses_the_page_token() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let cli = api.rocket().state::<CliToken>().unwrap().0.clone();
+        let page = session_token(&api).await;
+        assert_ne!(cli, page);
+        for route in ["/api/runs", "/api/runs/1"] {
+            assert_eq!(
+                post_status(&api, route, None).await,
+                HttpStatus::Unauthorized
+            );
+            assert_eq!(
+                post_status(&api, route, Some(&page)).await,
+                HttpStatus::Unauthorized
+            );
+            assert_eq!(
+                post_status(&api, route, Some("wrong")).await,
+                HttpStatus::Unauthorized
+            );
+        }
+        assert_eq!(
+            post_status(&api, "/api/runs", Some(&cli)).await,
+            HttpStatus::Created
+        );
+        assert!(load_runs(&dir.0.path().join("runs.json"))
+            .unwrap()
+            .iter()
+            .all(|run| run.title == "x"));
+    }
+
+    #[rocket::async_test]
+    async fn the_token_is_checked_before_the_body_is_parsed() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let post = |route: &'static str, host: &'static str, content_type, token: bool, body| {
+            let mut request = api
+                .post(route)
+                .header(Header::new("Host", host))
+                .header(content_type)
+                .body(body);
+            if token {
+                request = request.header(cli_token_header(&api));
+            }
+            request.dispatch()
+        };
+        for route in ["/api/runs", "/api/runs/1"] {
+            for body in ["{not json", r#"{"unknown":1}"#, ""] {
+                let host = "127.0.0.1:4311";
+                let no_token = post(route, host, ContentType::JSON, false, body).await;
+                assert_eq!(
+                    no_token.status(),
+                    HttpStatus::Unauthorized,
+                    "{route} {body}"
+                );
+                let evil = "evil.example:4311";
+                let bad_shape = post(route, evil, ContentType::JSON, true, body).await;
+                assert_eq!(bad_shape.status(), HttpStatus::Forbidden, "{route} {body}");
+                let wrong_type = post(route, host, ContentType::Plain, true, body).await;
+                assert_eq!(wrong_type.status(), HttpStatus::Forbidden, "{route} {body}");
+            }
+        }
+    }
+
+    #[rocket::async_test]
+    async fn the_cli_token_is_in_no_response() {
+        let dir = TestDir::new();
+        let api = client(&dir).await;
+        let cli = api.rocket().state::<CliToken>().unwrap().0.clone();
+        let create = api
+            .post("/api/runs")
+            .header(cli_token_header(&api))
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .header(ContentType::JSON)
+            .body(r#"{"title":"x","project":"/work"}"#);
+        let created = create.dispatch().await;
+        assert_eq!(created.status(), HttpStatus::Created);
+        let mut bodies = vec![created.into_string().await.unwrap()];
+        for route in ["/", "/api/runs", "/api/runs/1", "/api/info"] {
+            let response = api
+                .get(route)
+                .header(Header::new("Host", "127.0.0.1:4311"))
+                .dispatch()
+                .await;
+            assert!(!response.headers().iter().any(|h| h.value().contains(&cli)));
+            bodies.push(response.into_string().await.unwrap_or_default());
+        }
+        assert!(bodies.iter().all(|body| !body.contains(&cli)));
+    }
+
+    #[test]
+    fn the_token_file_is_named_per_port_next_to_the_runs_file() {
+        let runs = Path::new("/data/tds-factory/runs.json");
+        assert_eq!(
+            token_path(runs, DEFAULT_PORT),
+            Path::new("/data/tds-factory/session-token")
+        );
+        assert_eq!(
+            token_path(runs, 4400),
+            Path::new("/data/tds-factory/session-token-4400")
+        );
+    }
+
+    /// A launched server that is shut down and joined on drop, so a failing assertion leaves nothing running.
+    struct Launched {
+        port: u16,
+        shutdown: rocket::Shutdown,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Launched {
+        /// Stops the server and waits until its port is free again.
+        fn stop(mut self) {
+            self.shutdown.clone().notify();
+            if let Some(thread) = self.thread.take() {
+                thread.join().expect("server thread should not panic");
+            }
+        }
+    }
+
+    impl Drop for Launched {
+        fn drop(&mut self) {
+            self.shutdown.clone().notify();
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    /// A server thread that is shut down (when a handle exists) and joined on drop. Without a handle the
+    /// server never lifted off, so the thread is given a deadline to end by itself.
+    struct ServerThread {
+        shutdown: Option<rocket::Shutdown>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for ServerThread {
+        fn drop(&mut self) {
+            if let Some(shutdown) = self.shutdown.take() {
+                shutdown.notify();
+            }
+            let Some(thread) = self.thread.take() else {
+                return;
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !thread.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            if thread.is_finished() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    /// Launches `rocket` on a thread and returns once it has lifted off (with its port), or `None` when it
+    /// failed to launch. Panics when it does neither within 10 seconds.
+    fn launch(rocket: Rocket<Build>) -> Option<Launched> {
+        let quiet = rocket.figment().clone().merge(("log_level", "off"));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let rocket = rocket
+            .configure(quiet)
+            .attach(rocket::fairing::AdHoc::on_liftoff("Up", {
+                let sender = sender.clone();
+                move |rocket| {
+                    let _ = sender.send(Some((rocket.config().port, rocket.shutdown())));
+                    Box::pin(async {})
+                }
+            }));
+        let thread = std::thread::spawn(move || {
+            // Displaying the error marks it handled; an unhandled launch error panics when dropped.
+            if let Err(error) = rocket::execute(rocket.launch()) {
+                let _ = error.to_string();
+            }
+            let _ = sender.send(None);
+        });
+        match receiver.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(Some((port, shutdown))) => Some(Launched {
+                port,
+                shutdown,
+                thread: Some(thread),
+            }),
+            Ok(None) => {
+                let _ = thread.join();
+                None
+            }
+            Err(_) => panic!("the server neither lifted off nor failed within 10 seconds"),
+        }
+    }
+
+    #[test]
+    fn each_start_writes_a_new_token_that_a_failed_bind_leaves_alone() {
+        let dir = TestDir::new();
+        let runs = dir.0.path().join("data").join("runs.json");
+        let first = launch(build_rocket(&runs, 0).unwrap()).expect("first start binds");
+        let port = first.port;
+        let file = token_path(&runs, port);
+        let written = fs::read_to_string(&file).unwrap();
+        assert_eq!(written.len(), 64);
+        assert!(written.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        // The port is taken, so this one fails to bind and must not touch the file.
+        assert!(launch(build_rocket(&runs, port).unwrap()).is_none());
+        assert_eq!(fs::read_to_string(&file).unwrap(), written);
+        first.stop();
+        let second = launch(build_rocket(&runs, port).unwrap()).expect("restart binds");
+        assert_ne!(fs::read_to_string(&file).unwrap(), written);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&file), 0o600);
+            assert_eq!(mode(file.parent().unwrap()), 0o700);
+        }
+        second.stop();
+    }
+
+    #[test]
+    fn a_dashboard_that_cannot_write_its_token_shuts_down_and_says_why() {
+        let dir = TestDir::new();
+        let data = dir.0.path().join("data");
+        let runs = data.join("runs.json");
+        let rocket = build_rocket(&runs, 0).unwrap();
+        let cli_token = rocket.state::<CliToken>().unwrap().0.clone();
+        // The folder for the token turns into a file after the run storage opened.
+        fs::remove_dir_all(&data).ok();
+        fs::write(&data, "not a folder").unwrap();
+        let quiet = rocket.figment().clone().merge(("log_level", "off"));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (up, lifted) = std::sync::mpsc::channel();
+        let rocket = rocket
+            .configure(quiet)
+            .attach(rocket::fairing::AdHoc::on_liftoff("Up", move |rocket| {
+                let _ = up.send((rocket.config().port, rocket.shutdown()));
+                Box::pin(async {})
+            }));
+        let thread = std::thread::spawn(move || {
+            let ended = rocket::execute(rocket.launch());
+            let _ = sender.send(ended.map(|ignited| {
+                ignited
+                    .state::<TokenWriteFailure>()
+                    .and_then(|failure| failure.0.lock().unwrap().take())
+            }));
+        });
+        // Stops and joins the server on every path, including a liftoff that never comes.
+        let mut guard = ServerThread {
+            shutdown: None,
+            thread: Some(thread),
+        };
+        guard.shutdown = lifted
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .ok()
+            .map(|(_, shutdown)| shutdown);
+        let ended = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the server should shut down when the token cannot be written");
+        let message = ended.unwrap().expect("the failure is recorded");
+        assert!(message.contains("session-token"), "{message}");
+        assert!(!message.contains(&cli_token), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn building_the_server_makes_an_existing_loose_folder_private_before_runs_json_is_written() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TestDir::new();
+        let folder = dir.0.path().join("tds-factory");
+        fs::create_dir(&folder).unwrap();
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+        let _rocket = build_rocket(&folder.join("runs.json"), 0).unwrap();
+        let mode = fs::metadata(&folder).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        assert!(!folder.join("runs.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn building_the_server_creates_a_missing_folder_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TestDir::new();
+        let folder = dir.0.path().join("tds-factory");
+        let _rocket = build_rocket(&folder.join("runs.json"), 0).unwrap();
+        let mode = fs::metadata(&folder).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_data_folder_keeps_the_mode_of_its_target() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TestDir::new();
+        let target = dir.0.path().join("elsewhere");
+        fs::create_dir(&target).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        let link = dir.0.path().join("tds-factory");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let _rocket = build_rocket(&link.join("runs.json"), 0).unwrap();
+        let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writing_the_token_creates_a_missing_folder_private_and_ignores_stale_temp_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TestDir::new();
+        let folder = dir.0.path().join("tds-factory");
+        fs::create_dir(&folder).unwrap();
+        let stale = folder.join("session-token.tmp");
+        fs::write(&stale, "stale").unwrap();
+        fs::set_permissions(&stale, fs::Permissions::from_mode(0o644)).unwrap();
+        let path = folder.join("session-token");
+        write_token_file(&path, "secret").unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "secret");
+        assert_eq!(fs::read_to_string(&stale).unwrap(), "stale");
+        let names: Vec<_> = fs::read_dir(&folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 2, "no temp file is left: {names:?}");
+        let fresh = dir.0.path().join("new").join("session-token");
+        write_token_file(&fresh, "secret").unwrap();
+        assert_eq!(mode(fresh.parent().unwrap()), 0o700);
+    }
+
+    #[test]
+    fn a_leftover_temp_file_of_a_killed_dashboard_does_not_stop_the_token_write() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("session-token");
+        let leftovers: Vec<_> = (5..7).map(|n| token_temp_path(&path, n)).collect();
+        for leftover in &leftovers {
+            fs::write(leftover, "left behind").unwrap();
+        }
+        write_token_file_from(&path, "secret", 5).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "secret");
+        for leftover in &leftovers {
+            assert_eq!(fs::read_to_string(leftover).unwrap(), "left behind");
+        }
+        assert_eq!(fs::read_dir(dir.0.path()).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn the_token_write_gives_up_after_a_few_taken_temp_names() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("session-token");
+        for n in 0..TOKEN_TEMP_ATTEMPTS {
+            fs::write(token_temp_path(&path, n), "left behind").unwrap();
+        }
+        let error = write_token_file_from(&path, "secret", 0).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_data_folder_warns_when_its_target_is_open_to_others() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TestDir::new();
+        let target = dir.0.path().join("elsewhere");
+        fs::create_dir(&target).unwrap();
+        let link = dir.0.path().join("tds-factory");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let runs = link.join("runs.json");
+        for mode in [0o755, 0o710, 0o704] {
+            fs::set_permissions(&target, fs::Permissions::from_mode(mode)).unwrap();
+            let warning = secure_data_dir(&runs).unwrap().expect("a warning");
+            assert!(warning.contains(&*link.to_string_lossy()), "{warning}");
+            assert!(warning.contains("chmod 700"), "{warning}");
+        }
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(secure_data_dir(&runs).unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_real_data_folder_gives_no_warning() {
+        let dir = TestDir::new();
+        let runs = dir.0.path().join("tds-factory").join("runs.json");
+        assert_eq!(secure_data_dir(&runs).unwrap(), None);
+        assert_eq!(secure_data_dir(&runs).unwrap(), None);
+    }
+
+    #[test]
+    fn a_failed_write_removes_the_new_file_but_an_open_error_keeps_the_existing_one() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("partial");
+        let error = write_new_file_with(&path, "secret", |_, _| Err(io::Error::other("disk full")))
+            .unwrap_err();
+        assert_eq!(error.to_string(), "disk full");
+        assert!(!path.exists(), "the partial file is removed");
+        let taken = dir.0.path().join("taken");
+        fs::write(&taken, "theirs").unwrap();
+        let error = write_new_file_with(&taken, "secret", |_, _| Ok(())).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&taken).unwrap(), "theirs");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlinked_data_folder_stops_startup_naming_the_folder() {
+        let dir = TestDir::new();
+        let link = dir.0.path().join("tds-factory");
+        std::os::unix::fs::symlink(dir.0.path().join("missing"), &link).unwrap();
+        let error = secure_data_dir(&link.join("runs.json")).unwrap_err();
+        assert!(
+            error.to_string().contains(&*link.to_string_lossy()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_failed_rename_removes_the_temp_file() {
+        let dir = TestDir::new();
+        let target = dir.0.path().join("session-token");
+        fs::create_dir(&target).unwrap();
+        assert!(write_token_file(&target, "secret").is_err());
+        let names: Vec<_> = fs::read_dir(dir.0.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 1, "no temp file is left: {names:?}");
     }
 }

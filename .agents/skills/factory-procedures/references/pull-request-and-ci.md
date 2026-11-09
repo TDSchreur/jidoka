@@ -1,8 +1,6 @@
 # Pull request and CI
 
-Read this in Finish before opening the pull request, and again while watching CI.
-
-The factory's pull request commands work with two hosts, and each needs its own command line tool, signed in: `gh` for GitHub, and `az` with the `azure-devops` extension for Azure Repos (signed in with `az login`, or with a personal access token in `AZURE_DEVOPS_EXT_PAT`). They work out the host from `origin`. `factory doctor` shows the host it found, and whether the tool and a sign-in are there. For any other host, or when the host is not configured, open the pull request and watch its CI with that host's own tooling, then record the URL on the run with `--pr <url>`. `factory pr sync` needs only git, so it works on any host; the rest of this section still applies, with the host's own tooling in place of `factory pr open` and `factory pr wait`. Watch every check there until all have completed, noticing failures as well as success, with `--activity "Waiting for CI"` on the running run.
+The factory's pull request commands work with two hosts, and each needs its own command line tool, signed in: `gh` for GitHub, and `az` with the `azure-devops` extension for Azure Repos (signed in with `az login`, or with a personal access token in `AZURE_DEVOPS_EXT_PAT`). They work out the host from `origin`. `factory doctor` shows the host it found, and whether the tool and a sign-in are there. For any other host, or when the host is not configured, open the pull request and watch its CI with that host's own tooling, then record the URL on the run with `--pr <url>`. `factory pr sync` needs only git, so it works on any host; the rest of this file still applies, with the host's own tooling in place of `factory pr open` and `factory pr wait`. Watch every check there until all have completed, noticing failures as well as success, with `--activity "Waiting for CI"` on the running run.
 
 ## Opening the pull request
 

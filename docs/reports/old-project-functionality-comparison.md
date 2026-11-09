@@ -105,7 +105,7 @@ Model routing works on all three agents. These differences remain:
 - **Model selection.** Claude Code accepts only the aliases `opus`, `sonnet`, `haiku` and `fable` through the Agent tool. Codex uses its subagent model and effort settings. Copilot CLI uses exact model IDs through the `task` tool, and an unavailable model silently runs on the session's model.
 - **Readiness checks.** `factory doctor` checks the Claude Code version and its routed models and efforts. For Codex and Copilot CLI it cannot tell which versions support per-subagent models, and for Codex it keeps no model list, so those checks are skipped.
 - **Pause detection.** Usage limits and context compactions are detected from Claude Code logs only. Codex and Copilot runs are never blocked as paused; only idle gaps show.
-- **Validation.** The old live-agent baseline covers only a subset of scenarios on Claude. The Copilot agent-flow evaluations are marked unvalidated until run.
+- **Validation.** The old live-agent baseline covers only a subset of scenarios on Claude. The Copilot agent-flow cases are validated (five runs each), though `verification-fails` never showed its `block` option.
 
 ## Suggested implementation order
 
