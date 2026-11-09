@@ -22,7 +22,8 @@ pub(crate) enum RoutingAgent {
     Copilot,
 }
 
-/// A Stage's model and effort. Both are free text: the factory keeps no list of valid values.
+/// A Stage's model and effort. Both are free text: the factory keeps no list of valid models. Copilot CLI
+/// entries get a few extra checks (see `validate_for_copilot`), because it ignores what it does not know.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ModelChoice {
@@ -128,13 +129,13 @@ impl RoutingAgent {
 /// The reasoning efforts Copilot CLI lists for `--reasoning-effort`; any other text is silently ignored.
 const COPILOT_EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 /// Claude Code's subagent aliases. Copilot CLI takes exact model IDs and quietly runs an unknown name on the session's model.
-const CLAUDE_ALIASES: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
+const CLAUDE_CODE_ALIASES: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
 
 impl ModelChoice {
     /// What Copilot CLI needs on top of the shared rules: a model ID, not a Claude Code alias, and an effort it lists.
     fn validate_for_copilot(&self) -> Result<(), String> {
         let alias = self.model.to_ascii_lowercase();
-        if CLAUDE_ALIASES.contains(&alias.as_str()) {
+        if CLAUDE_CODE_ALIASES.contains(&alias.as_str()) {
             return Err(format!(
                 "Model {:?} is a Claude Code alias; Copilot CLI needs an exact model ID such as claude-sonnet-5.5, and runs an unknown name on the session's model",
                 self.model

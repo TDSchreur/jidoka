@@ -779,7 +779,7 @@ pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
         (true, Some("copilot")) => Some(vec![RoutingAgent::Copilot]),
         // Without an agent the starter has an entry for each, which is what one file for both is for.
         (true, None) => Some(vec![RoutingAgent::Claude, RoutingAgent::Codex]),
-        (true, Some(other)) => unreachable!("parse_args accepted the agent {other:?}"),
+        (true, Some(other)) => return Err(format!("Unknown agent {other:?}.")),
     };
     Ok(Args {
         agent,
