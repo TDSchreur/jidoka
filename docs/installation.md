@@ -30,15 +30,15 @@ Both installers download the prebuilt CLI, verify its release checksum, ask whic
 
 To see whether a newer release exists, run `jidoka check`. It looks up the latest release, says whether you are up to date, and exits 0 either way (1 on an error, such as no network). A development build cannot be compared, so it only names the latest release.
 
-To update, run `jidoka update`. It downloads the latest release for your platform, verifies its checksum, replaces the installed `jidoka`, and reinstalls the skills for the agents that already have them. Use `jidoka update --agent codex,claude` to choose the agents yourself. If you run a development build, it updates to the latest release. It supports Linux and Windows on x86-64 only. Restart a running dashboard afterwards. Re-running the one-line installer does the same.
+To update, re-run the one-line installer. It downloads the latest release for your platform, verifies its checksum, replaces the installed `jidoka`, and reinstalls the skills. Restart a running dashboard afterwards.
 
-Stop the dashboard before upgrading when you can; `jidoka update` renames a running Windows executable aside, but the dashboard keeps running the old version until you restart it. The release workflow checks Windows runtime imports and starts the Windows executable on a Windows runner.
+Stop the dashboard before upgrading when you can; the dashboard keeps running the old version until you restart it. The release workflow checks Windows runtime imports and starts the Windows executable on a Windows runner.
 
 ## Skills folders and several Claude Code configs
 
 Claude Code skills go to `$CLAUDE_CONFIG_DIR/skills` when `CLAUDE_CONFIG_DIR` is set (for example `~/.claude-work`), otherwise `~/.claude/skills`. Codex skills likewise honor `CODEX_HOME`, and Copilot skills honor `COPILOT_HOME` (otherwise `~/.copilot/skills`).
 
-To serve more than one Claude Code config folder, such as a personal `~/.claude` and a work `~/.claude-work`, repeat `--config-dir <path>` on `jidoka install`, `jidoka update` and `jidoka doctor`:
+To serve more than one Claude Code config folder, such as a personal `~/.claude` and a work `~/.claude-work`, repeat `--config-dir <path>` on `jidoka install` and `jidoka doctor`:
 
 ```sh
 jidoka install --agent claude --config-dir ~/.claude --config-dir ~/.claude-work
@@ -50,7 +50,7 @@ The flag applies to the `claude` agent only, and is an error when `--agent` leav
 2. `CLAUDE_CONFIG_DIR`, when it is not empty.
 3. `~/.claude`.
 
-A leading `~` means your home folder. A relative path is rejected before anything is written, and a folder named twice is used once. `jidoka update` reinstalls the skills into each folder given, and `jidoka doctor` reports each folder by path.
+A leading `~` means your home folder. A relative path is rejected before anything is written, and a folder named twice is used once. `jidoka install` installs the skills into each folder given, and `jidoka doctor` reports each folder by path.
 
 The installers, `scripts/update-local.sh` and `scripts/switch-jidoka.sh` read an optional `JIDOKA_CLAUDE_CONFIG_DIRS` and pass each entry as `--config-dir`. Separate entries with `:` on Linux and `;` in PowerShell. Empty entries are skipped.
 

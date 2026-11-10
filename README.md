@@ -34,7 +34,7 @@ curl -fsSL https://github.com/TDSchreur/jidoka/releases/latest/download/install.
 irm https://github.com/TDSchreur/jidoka/releases/latest/download/install.ps1 | iex
 ```
 
-The installer downloads the `jidoka` command, checks it against the release checksum, asks which agents to install the skills for, and installs them. Run `jidoka update` later to update both.
+The installer downloads the `jidoka` command, checks it against the release checksum, asks which agents to install the skills for, and installs them. Re-run the same one-liner later to update both.
 
 Windows Defender sometimes flags the unsigned Windows build; see [what to do](docs/installation.md#windows-defender-blocks-the-download). For unattended installs, several Claude Code configs and building from source, see the [installation guide](docs/installation.md).
 
@@ -74,7 +74,6 @@ Useful commands:
 | `jidoka run inspect <id>` | Shows a run's stage, workspace, tickets and pull request. |
 | `jidoka run stats <id>` | Shows a run's token usage and token-based estimated cost at API list prices (not subscription charges). |
 | `jidoka run cleanup <id>` | Removes a run's worktree and branch after its pull request merged. |
-| `jidoka update` | Updates the command and the installed skills. |
 
 Run `jidoka --help` for every command.
 
@@ -101,7 +100,7 @@ Free code signing provided by [SignPath.io](https://about.signpath.io), certific
 
 This program will not transfer any information to other networked systems unless specifically requested by the user.
 
-- `jidoka check` and `jidoka update` contact GitHub Releases; the release installers download from GitHub Releases too.
+- `jidoka check` contacts GitHub Releases; the release installers download from GitHub Releases too.
 - `jidoka run begin` fetches the chosen base from the repository's configured Git remote. `jidoka pr open` and `jidoka pr sync` fetch or push to that remote as needed.
 - `jidoka run cleanup --reinstall`, or confirming the interactive reinstall during cleanup, runs `cargo install --locked`, which may contact configured Cargo registries and dependency sources.
 - `jidoka pr open`, `jidoka pr sync`, `jidoka pr wait`, `jidoka run sync`, `jidoka run cleanup`, and the dashboard use `gh` or `az` to access the user's pull requests and CI on GitHub or Azure DevOps. The dashboard may refresh recorded pull request status while running. `jidoka doctor` checks the selected provider's CLI and authentication status.

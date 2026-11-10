@@ -3,11 +3,10 @@
 
 use crate::{
     inspect::shown,
-    pr_state,
+    install, pr_state,
     pr_sync::Git,
     pr_wait::{Gh, ToolProblem},
     run_begin::first_line,
-    update,
 };
 use std::{
     ffi::OsString,
@@ -175,11 +174,7 @@ fn commands(input: &Inputs) -> [Command; 2] {
             input.repository,
         ),
         // The freshly installed command, found on PATH like every other use of `jidoka`.
-        Command::new(
-            "jidoka",
-            update::install_args(&agents, dirs),
-            input.repository,
-        ),
+        Command::new("jidoka", install_args(&agents, dirs), input.repository),
     ]
 }
 
@@ -302,6 +297,36 @@ pub(crate) fn offer(
     }
     io.say("Reinstalled Jidoka. Restart the dashboard to use it: jidoka dashboard\n");
     Ok(())
+}
+
+/// The agents that already have bundled skills installed.
+pub(crate) fn installed_agents(
+    home: &Path,
+    config_dirs: &[String],
+    var: impl Fn(&str) -> Option<OsString>,
+) -> Vec<&'static str> {
+    let has_skills =
+        |root: PathBuf| install::bundled_skill_files().any(|file| root.join(file).is_file());
+    crate::doctor::AGENTS
+        .into_iter()
+        .filter(|agent| {
+            if *agent == "claude" {
+                return install::claude_config_dirs(config_dirs, home, &var)
+                    .is_ok_and(|dirs| dirs.into_iter().any(|dir| has_skills(dir.join("skills"))));
+            }
+            install::skills_root(agent, home, &var).is_ok_and(has_skills)
+        })
+        .collect()
+}
+
+/// The arguments of the `jidoka install` that the reinstall runs: the agents, and one `--config-dir` per folder.
+pub(crate) fn install_args(agents: &str, claude_dirs: &[PathBuf]) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec!["install".into(), "--agent".into(), agents.into()];
+    for dir in claude_dirs {
+        args.push("--config-dir".into());
+        args.push(dir.into());
+    }
+    args
 }
 
 #[cfg(test)]
