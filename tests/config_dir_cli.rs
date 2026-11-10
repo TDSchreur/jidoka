@@ -8,8 +8,8 @@ use std::{
     process::{Command, Output},
 };
 
-fn factory(home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_factory"))
+fn jidoka(home: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_jidoka"))
         .args(args)
         .current_dir(home)
         .env("HOME", home)
@@ -19,7 +19,7 @@ fn factory(home: &Path, args: &[&str]) -> Output {
         .env_remove("CLAUDE_CONFIG_DIR")
         .env_remove("CODEX_HOME")
         .env_remove("COPILOT_HOME")
-        .env_remove("FACTORY_CLAUDE_CONFIG_DIRS")
+        .env_remove("JIDOKA_CLAUDE_CONFIG_DIRS")
         .output()
         .unwrap()
 }
@@ -33,7 +33,7 @@ fn install_writes_every_config_dir_once_and_not_the_default() {
     let home = tempfile::tempdir().unwrap();
     let (a, b) = (home.path().join("a"), home.path().join("b"));
     let (a_arg, b_arg) = (a.to_str().unwrap(), b.to_str().unwrap());
-    let output = factory(
+    let output = jidoka(
         home.path(),
         &[
             "install",
@@ -49,7 +49,7 @@ fn install_writes_every_config_dir_once_and_not_the_default() {
     );
     assert!(output.status.success(), "{}", stderr(&output));
     for dir in [&a, &b] {
-        assert!(dir.join("skills/factory/SKILL.md").is_file(), "{dir:?}");
+        assert!(dir.join("skills/jidoka/SKILL.md").is_file(), "{dir:?}");
     }
     assert!(!home.path().join(".claude").exists());
 }
@@ -57,7 +57,7 @@ fn install_writes_every_config_dir_once_and_not_the_default() {
 #[test]
 fn a_tilde_expands_to_the_home_folder() {
     let home = tempfile::tempdir().unwrap();
-    let output = factory(
+    let output = jidoka(
         home.path(),
         &[
             "install",
@@ -70,7 +70,7 @@ fn a_tilde_expands_to_the_home_folder() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(
         home.path()
-            .join("work-claude/skills/factory/SKILL.md")
+            .join("work-claude/skills/jidoka/SKILL.md")
             .is_file()
     );
     assert!(!home.path().join(".claude").exists());
@@ -80,7 +80,7 @@ fn a_tilde_expands_to_the_home_folder() {
 fn a_relative_config_dir_fails_before_anything_is_written() {
     let home = tempfile::tempdir().unwrap();
     let good = home.path().join("good");
-    let output = factory(
+    let output = jidoka(
         home.path(),
         &[
             "install",
@@ -103,7 +103,7 @@ fn a_relative_config_dir_fails_before_anything_is_written() {
 fn a_config_dir_without_the_claude_agent_is_refused() {
     let home = tempfile::tempdir().unwrap();
     let dir = home.path().join("a");
-    let output = factory(
+    let output = jidoka(
         home.path(),
         &[
             "install",
@@ -123,7 +123,7 @@ fn a_config_dir_without_the_claude_agent_is_refused() {
 fn doctor_reports_each_config_dir_by_path() {
     let home = tempfile::tempdir().unwrap();
     let (a, b) = (home.path().join("a"), home.path().join("b"));
-    let install = factory(
+    let install = jidoka(
         home.path(),
         &[
             "install",
@@ -134,7 +134,7 @@ fn doctor_reports_each_config_dir_by_path() {
         ],
     );
     assert!(install.status.success(), "{}", stderr(&install));
-    let output = factory(
+    let output = jidoka(
         home.path(),
         &[
             "doctor",

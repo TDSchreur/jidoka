@@ -1,7 +1,7 @@
-//! Reads the model requests of Codex rollout files for `factory run requests`.
+//! Reads the model requests of Codex rollout files for `jidoka run requests`.
 //!
 //! Like the Claude Code reader, it keeps of each request only the time, the token counts and a category
-//! taken from its commands; of each session, the runs that an executed `factory run update <id>` names.
+//! taken from its commands; of each session, the runs that an executed `jidoka run update <id>` names.
 //! Codex runs commands through a small JavaScript snippet (`tools.exec_command({cmd: "..."})`). The snippet
 //! is scanned for string literals and never run. The command text, tool output and paths are dropped as
 //! soon as they are classified: nothing but categories, flags and counts leaves this module.
@@ -339,7 +339,7 @@ struct Open {
 struct Rollout {
     /// The responses, by key.
     requests: Vec<(String, Request)>,
-    /// The run ids an executed `factory run update` in this rollout names.
+    /// The run ids an executed `jidoka run update` in this rollout names.
     claims: HashSet<String>,
     malformed: usize,
 }
@@ -462,7 +462,7 @@ struct Seen {
     parsed: Option<Rollout>,
 }
 
-/// Reads the Codex rollouts under `root`: every session that executed `factory run update` for a run in
+/// Reads the Codex rollouts under `root`: every session that executed `jidoka run update` for a run in
 /// `ids`, or was recorded for one in `recorded`, together with the rollouts of its subagents.
 pub(crate) fn read_codex_requests(
     root: &Path,

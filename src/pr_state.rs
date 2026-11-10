@@ -249,7 +249,7 @@ pub(crate) fn describe(state: PrState, changed: bool) -> String {
     if changed {
         text.push_str(match state {
             PrState::Merged => {
-                "The run is finished. Run `factory run cleanup <id>` to remove its worktree.\n"
+                "The run is finished. Run `jidoka run cleanup <id>` to remove its worktree.\n"
             }
             PrState::Closed => "The run is blocked: the pull request was closed without merging.\n",
             PrState::Open | PrState::Draft | PrState::Unknown => "",

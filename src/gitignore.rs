@@ -11,7 +11,7 @@ fn ignored_name(line: &str) -> Option<&str> {
     Some(line.trim_start_matches('/').trim_end_matches('/'))
 }
 
-/// Appends the `entries` that `<worktree>/.gitignore` does not list yet (`.factory`, `/.factory` and `.factory/`
+/// Appends the `entries` that `<worktree>/.gitignore` does not list yet (`.jidoka`, `/.jidoka` and `.jidoka/`
 /// count alike), creating the file when it is absent. Returns the entries it added; nothing is committed.
 pub(crate) fn ensure_ignored(worktree: &Path, entries: &[&str]) -> io::Result<Vec<String>> {
     let path = worktree.join(".gitignore");

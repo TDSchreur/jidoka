@@ -9,11 +9,11 @@ The new project preserves the core idea-to-PR workflow, isolated concurrent runs
 This report compares implemented source and shipped workflow instructions at these revisions:
 
 - Old project: [`TDSchreur/tds-factory`, `36128ce`](https://github.com/TDSchreur/tds-factory/tree/36128ce0052f6dc1625aaa848fe7ac278061852a), its fetched default branch, `develop`.
-- New project: [`TDSchreur/tds-factory2`, `f319398`](https://github.com/TDSchreur/tds-factory2/tree/f3193984b7186165bcb3f6c7b987af0c97af725c), matching the checkout and fetched `origin/develop` at inspection.
+- New project: [`TDSchreur/jidoka`, `f319398`](https://github.com/TDSchreur/jidoka/tree/f3193984b7186165bcb3f6c7b987af0c97af725c), matching the checkout and fetched `origin/develop` at inspection.
 
 This is a source comparison, not a live execution of both products. An implemented capability does not establish that every agent/client combination has been validated. PR #88's worktree adoption changes were reviewed separately and are not included in the new baseline above.
 
-The old [CLI dispatcher](https://github.com/TDSchreur/tds-factory/blob/36128ce0052f6dc1625aaa848fe7ac278061852a/src/cli.js) exposes the run operations below. The new [CLI dispatcher](https://github.com/TDSchreur/tds-factory2/blob/f3193984b7186165bcb3f6c7b987af0c97af725c/src/main.rs) exposes installation, dashboard launch, run creation and run updates. The new [run model](https://github.com/TDSchreur/tds-factory2/blob/f3193984b7186165bcb3f6c7b987af0c97af725c/src/run.rs) stores title, project path, stage, status, activity, current ticket, blocking reason, rework count and update time. That deliberately small model explains several gaps.
+The old [CLI dispatcher](https://github.com/TDSchreur/tds-factory/blob/36128ce0052f6dc1625aaa848fe7ac278061852a/src/cli.js) exposes the run operations below. The new [CLI dispatcher](https://github.com/TDSchreur/jidoka/blob/f3193984b7186165bcb3f6c7b987af0c97af725c/src/main.rs) exposes installation, dashboard launch, run creation and run updates. The new [run model](https://github.com/TDSchreur/jidoka/blob/f3193984b7186165bcb3f6c7b987af0c97af725c/src/run.rs) stores title, project path, stage, status, activity, current ticket, blocking reason, rework count and update time. That deliberately small model explains several gaps.
 
 ## Missing or reduced capabilities
 
@@ -28,7 +28,7 @@ Priority is a recommendation for this project's simple, fast design, not an exis
 | Named transitions that enforce stage order and prerequisites | The agent can report any valid stage/status combination directly | A dashboard update cannot establish that Define, Build or Check requirements were satisfied | P1 |
 | Verification command execution, saved output and result tied to a clean Git head; stale evidence invalidation | Skills require project checks and final-commit verification, but results are not represented or enforced in the run model | The system cannot detect a claimed pass for older code | P1 |
 | Stored review verdicts and acceptance tied to the reviewed code, checked before Finish | Reviews and user decisions happen through skills/chat | No durable, machine-checked distinction between reviewed, accepted-with-findings and unreviewed code | P1 |
-| `run inspect`, proposed `run repair`, interruption recovery and `/factory continue <id>` | No inspect, repair or explicit continuation protocol; blocked is the only unfinished exception status | Recovery relies on chat history and manual inspection | P1 |
+| `run inspect`, proposed `run repair`, interruption recovery and `/jidoka continue <id>` | No inspect, repair or explicit continuation protocol; blocked is the only unfinished exception status | Recovery relies on chat history and manual inspection | P1 |
 | Distinct waiting, interrupted, verification-unavailable and abandoned states | Running, blocked and done | Human decisions, unavailable tools, interrupted agents and cancelled work are difficult to distinguish | P2 |
 
 Evidence: old [lifecycle implementation](https://github.com/TDSchreur/tds-factory/blob/36128ce0052f6dc1625aaa848fe7ac278061852a/src/run-lifecycle.js), [verification and review evidence](https://github.com/TDSchreur/tds-factory/blob/36128ce0052f6dc1625aaa848fe7ac278061852a/src/evidence.js), and [repair implementation](https://github.com/TDSchreur/tds-factory/blob/36128ce0052f6dc1625aaa848fe7ac278061852a/src/run-repair.js). These checks constrain supported CLI operations; the old system is not tamper-proof against an agent that edits its files directly.
@@ -52,7 +52,7 @@ Evidence: old [Follow-up implementation](https://github.com/TDSchreur/tds-factor
 | --- | --- | --- | --- |
 | CLI-managed worktree/branch identity stored with the run | Agent creates and retains its dedicated worktree; run record lacks its identity | Files remain isolated, but lifecycle operations cannot locate them from the record | P1 |
 | `run sync` fetch/rebase, conflict checks before Finish, evidence invalidation after changes | No equivalent managed command | Keeping long-running branches current requires agent/manual Git work | P2 |
-| `run clean` after a merged PR, preserving dirty work and extra commits; coordinated deletion of Factory-owned worktrees | Manual `git worktree remove`; dashboard deletes done records only and leaves files/branches | Old run workspaces accumulate unless users clean them up themselves | P2 |
+| `run clean` after a merged PR, preserving dirty work and extra commits; coordinated deletion of Jidoka-owned worktrees | Manual `git worktree remove`; dashboard deletes done records only and leaves files/branches | Old run workspaces accumulate unless users clean them up themselves | P2 |
 | Diff-size measurement, waiting for a split/continue decision and handing remaining tickets out of the run | No run-size gate or split protocol | Large runs can grow without an explicit checkpoint for reviewability | P2 |
 | Canonical project identity based on the main checkout, including launches from linked worktrees | Project identity is the reported current directory path | Runs started in separate worktrees of one repository can appear as separate Projects | P1 |
 
@@ -103,7 +103,7 @@ Model routing works on all three agents. These differences remain:
 
 - **Installed stage agents and read-only reviewers.** The old project installed named stage agents and restricted read-only reviewers for each agent. The new project installs skills only, for all three agents; reviews and routed stages use subagents started by the skills, without installed isolation or sandbox contracts.
 - **Model selection.** Claude Code accepts only the aliases `opus`, `sonnet`, `haiku` and `fable` through the Agent tool. Codex uses its subagent model and effort settings. Copilot CLI uses exact model IDs through the `task` tool, and an unavailable model silently runs on the session's model.
-- **Readiness checks.** `factory doctor` checks the Claude Code version and its routed models and efforts. For Codex and Copilot CLI it cannot tell which versions support per-subagent models, and for Codex it keeps no model list, so those checks are skipped.
+- **Readiness checks.** `jidoka doctor` checks the Claude Code version and its routed models and efforts. For Codex and Copilot CLI it cannot tell which versions support per-subagent models, and for Codex it keeps no model list, so those checks are skipped.
 - **Pause detection.** Usage limits and context compactions are detected from Claude Code logs only. Codex and Copilot runs are never blocked as paused; only idle gaps show.
 - **Validation.** The old live-agent baseline covers only a subset of scenarios on Claude. The Copilot agent-flow cases are validated (five runs each), though `verification-fails` never showed its `block` option.
 

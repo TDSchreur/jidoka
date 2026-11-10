@@ -19,11 +19,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact: factory-linux-x86_64
-            executable: target/release/factory
+            artifact: jidoka-linux-x86_64
+            executable: target/release/jidoka
           - os: windows-latest
-            artifact: factory-windows-x86_64.exe
-            executable: target/x86_64-pc-windows-msvc/release/factory.exe
+            artifact: jidoka-windows-x86_64.exe
+            executable: target/x86_64-pc-windows-msvc/release/jidoka.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -37,7 +37,7 @@ jobs:
         if: runner.os != 'Windows'
         run: cargo build --release --locked
         env:
-          FACTORY_RELEASE: '1'
+          JIDOKA_RELEASE: '1'
       - name: Build Windows release with static CRT
         if: runner.os == 'Windows'
         shell: pwsh
@@ -53,8 +53,38 @@ jobs:
           & './${{ matrix.executable }}' --version
           if ($LASTEXITCODE -ne 0) { throw "Release executable failed with exit code $LASTEXITCODE" }
       - shell: pwsh
+        run: Copy-Item '${{ matrix.executable }}' '${{ matrix.artifact }}'
+      # Code signing through SignPath Foundation. Skipped until the repository
+      # variable SIGNPATH_ORGANIZATION_ID is set, so releases stay unsigned before then.
+      - name: Upload unsigned Windows executable for signing
+        id: unsigned
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}-unsigned
+          retention-days: 1
+          path: ${{ matrix.artifact }}
+      - name: Sign Windows executable
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: jidoka
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: initial
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+      - name: Replace Windows executable with signed copy
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
+        shell: pwsh
         run: |
-          Copy-Item '${{ matrix.executable }}' '${{ matrix.artifact }}'
+          Copy-Item -Force 'signed/${{ matrix.artifact }}' '${{ matrix.artifact }}'
+          $signature = Get-AuthenticodeSignature '${{ matrix.artifact }}'
+          if ($signature.Status -ne 'Valid') { throw "Signature status is $($signature.Status): $($signature.StatusMessage)" }
+      - shell: pwsh
+        run: |
           (Get-FileHash -Algorithm SHA256 '${{ matrix.artifact }}').Hash.ToLowerInvariant() | Set-Content -Encoding ascii '${{ matrix.artifact }}.sha256'
       - uses: actions/upload-artifact@v7
         with:
@@ -75,12 +105,12 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
-          pattern: factory-*
+          pattern: jidoka-*
           merge-multiple: true
           path: dist
       - name: Read release version
         id: version
-        run: echo "tag=v$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "factory") | .version')" >> "$GITHUB_OUTPUT"
+        run: echo "tag=v$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "jidoka") | .version')" >> "$GITHUB_OUTPUT"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

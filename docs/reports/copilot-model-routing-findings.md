@@ -76,6 +76,6 @@ Pass the `events.jsonl` path as the argument.
 - The subagent's reasoning effort is only visible in `usage.reasoningEffort`, and only for models that support effort.
 - Not tried: `auto` as a `task` model, `max` effort, `context_tier`, `/subagents` and `subagents.agents.*` configuration, and a custom agent's `model` combined with an effort.
 
-## Implications for the factory
+## Implications for Jidoka
 
-The factory now routes Copilot CLI through an `agents.copilot` policy entry. It rejects Claude Code aliases and efforts outside the list above, and cannot know which models an account has, so validate every routed stage afterwards against `usage_record.usage.model`, never against the requested name, and treat a mismatch as a failed switch.
+Jidoka now routes Copilot CLI through an `agents.copilot` policy entry. It rejects Claude Code aliases and efforts outside the list above, and cannot know which models an account has, so validate every routed stage afterwards against `usage_record.usage.model`, never against the requested name, and treat a mismatch as a failed switch.

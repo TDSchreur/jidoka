@@ -373,7 +373,7 @@ function UsageDetail({ usage }) {
           <p class="usage-note">
             Fresh tokens are input excluding cache reads, plus cache writes and output. Cache reads are shown beside
             them, not inside. Reasoning is part of output. n/a means the log did not report it; it is not zero. Est. cost is an estimate
-            from the factory's price table; a model without a price is unknown, never zero, and a total that includes
+            from Jidoka's price table; a model without a price is unknown, never zero, and a total that includes
             one is marked partial.
           </p>`
       : null}
@@ -1053,10 +1053,10 @@ function ShippedLog({ entries, now, onOpen, onClear }) {
 /** Shown instead of the board while there are no Runs. */
 function Welcome({ onHelp }) {
   return html`<section class="welcome" aria-labelledby="welcome-title">
-    <h2 id="welcome-title">Welcome to the factory</h2>
+    <h2 id="welcome-title">Welcome to Jidoka</h2>
     <p>
-      No Runs yet. In your project, ask your coding agent to run <code>/factory</code> to select a workflow, or choose
-      <code>/factory-full</code>, <code>/factory-balanced</code>, or <code>/factory-fast</code> directly. Its Run appears here and follows the work from Define to a pull
+      No Runs yet. In your project, ask your coding agent to run <code>/jidoka</code> to select a workflow, or choose
+      <code>/jidoka-full</code>, <code>/jidoka-balanced</code>, or <code>/jidoka-fast</code> directly. Its Run appears here and follows the work from Define to a pull
       request.
     </p>
     <p>Not sure what the Stages, Needs you or Rework mean? <button type="button" class="link" onClick=${onHelp}>Read the Help</button>.</p>
@@ -1188,7 +1188,7 @@ function useNow() {
   return now;
 }
 
-const TITLE = 'TDS Factory';
+const TITLE = 'Jidoka';
 /** A Run needs the user when it is blocked. */
 const needsYou = (run) => run.status === 'blocked';
 
@@ -1430,7 +1430,7 @@ function App() {
     document.querySelector('main')?.focus();
   };
   let text = 'Loading runs…';
-  if (failed) text = 'Unable to load runs. Check that the factory server is running.';
+  if (failed) text = 'Unable to load runs. Check that the Jidoka server is running.';
   else if (deleteError) text = deleteError;
   else if (runs) {
     if (!runs.length) text = '';

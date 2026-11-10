@@ -1,4 +1,4 @@
-//! `factory pr wait`: watches the checks of a run's pull request and returns one CI outcome.
+//! `jidoka pr wait`: watches the checks of a run's pull request and returns one CI outcome.
 
 use crate::inspect::shown;
 use serde::Serialize;
@@ -181,7 +181,7 @@ fn parse_duration(text: &str) -> Result<Duration, String> {
     Ok(duration)
 }
 
-/// `[--timeout <duration>] [--fail-fast] [--json]` in any order: the options of `factory pr wait`, and
+/// `[--timeout <duration>] [--fail-fast] [--json]` in any order: the options of `jidoka pr wait`, and
 /// whether to print JSON.
 pub(crate) fn parse_options(options: &[&str]) -> Result<(Options, bool), String> {
     let (mut parsed, mut json, mut timeout_given) = (Options::default(), false, false);
@@ -563,7 +563,7 @@ pub(crate) fn wait(
 ) -> Result<Waited, ToolProblem> {
     let pull_request = pull_request.ok_or_else(|| {
         ToolProblem(
-            "The run has no pull request recorded. Open it, record it with `factory run update <id> finish running --pr <url>`, and try again."
+            "The run has no pull request recorded. Open it, record it with `jidoka run update <id> finish running --pr <url>`, and try again."
                 .into(),
         )
     })?;
@@ -665,7 +665,7 @@ pub(crate) fn render(waited: &Waited) -> String {
     ));
     if let Some(new_head) = &waited.new_head {
         out.push_str(&format!(
-            "  Head commit now: {}. Watch the new commit with `factory pr wait` again.\n",
+            "  Head commit now: {}. Watch the new commit with `jidoka pr wait` again.\n",
             shown(&new_head.chars().take(7).collect::<String>())
         ));
     }

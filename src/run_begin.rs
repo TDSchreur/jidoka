@@ -1,10 +1,10 @@
-//! `factory run begin`: creates a run and its workspace (a worktree on a new branch from the base) and records it.
+//! `jidoka run begin`: creates a run and its workspace (a worktree on a new branch from the base) and records it.
 
 use crate::{gitignore::ensure_ignored, inspect::shown, routing::ModelRouting};
 use serde::Serialize;
 use std::{path::Path, process::Command};
 
-/// The factory server, as far as this command needs it. Tests answer from a script.
+/// The Jidoka server, as far as this command needs it. Tests answer from a script.
 pub(crate) trait RunApi {
     /// Creates a run and returns its id.
     fn create(
@@ -17,7 +17,7 @@ pub(crate) trait RunApi {
     ) -> Result<String, String>;
     /// Reads a run that exists.
     fn get(&self, id: &str) -> Result<RunSummary, String>;
-    /// Updates a run like `factory run update <id> <stage> <status> <options>`.
+    /// Updates a run like `jidoka run update <id> <stage> <status> <options>`.
     fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String>;
     /// The id and title of every run, whatever its status, that records this agent session.
     fn runs_with_session(&self, session: &str) -> Result<Vec<(String, String)>, String>;
@@ -60,7 +60,7 @@ pub(crate) fn valid_branch_name(name: &str) -> bool {
             .any(|c| c.is_control() || c.is_whitespace() || "~^:?*[\\".contains(c))
 }
 
-/// The options of `factory run begin --run <id>`: the same, without a title.
+/// The options of `jidoka run begin --run <id>`: the same, without a title.
 pub(crate) fn parse_resume(run: &str, options: &[&str]) -> Result<Options, String> {
     if run.is_empty() || !run.bytes().all(|b| b.is_ascii_digit()) {
         return Err("Invalid run id".into());
@@ -107,7 +107,7 @@ fn parse_common(title: &str, options: &[&str], needs_title: bool) -> Result<Opti
                 serde_json::from_value::<crate::run::Mode>(serde_json::Value::from(mode)).map_err(
                     |_| {
                         format!(
-                            "Invalid value for --mode: {mode}; use factory-full, factory-balanced or factory-fast"
+                            "Invalid value for --mode: {mode}; use jidoka-full, jidoka-balanced or jidoka-fast"
                         )
                     },
                 )?;
@@ -182,8 +182,8 @@ const MAX_REASON_CHARS: usize = 300;
 const MAX_NAME_SUFFIX: u32 = 99;
 /// A derived branch name is cut to this length, so it stays short to type and read.
 const MAX_NAME_CHARS: usize = 40;
-/// What every run's worktree keeps out of git: the factory's own folder and the local tracker.
-const RUN_IGNORED: &[&str] = &[".factory/", ".scratch/"];
+/// What every run's worktree keeps out of git: Jidoka's own folder and the local tracker.
+const RUN_IGNORED: &[&str] = &[".jidoka/", ".scratch/"];
 
 /// Adds the run folders to the worktree's `.gitignore`: the entries added and, when the file could not be
 /// updated, a warning (the run itself is fine).
@@ -262,7 +262,7 @@ fn retry_command(run: &str, options: &Options, named: &Named) -> String {
         Named::Chosen(name) => Some(name.clone()),
         Named::Taken => None,
     };
-    let mut command = format!("factory run begin --run {run}");
+    let mut command = format!("jidoka run begin --run {run}");
     for (flag, value) in [
         ("--agent", &options.agent),
         ("--mode", &options.mode),

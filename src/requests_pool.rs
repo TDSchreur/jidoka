@@ -1,4 +1,4 @@
-//! `factory run requests --all`: the model requests of many runs pooled, with how they spread over the runs.
+//! `jidoka run requests --all`: the model requests of many runs pooled, with how they spread over the runs.
 
 use crate::{
     inspect::shown,

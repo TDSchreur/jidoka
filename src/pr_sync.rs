@@ -1,4 +1,4 @@
-//! `factory pr sync`: brings a run's branch up to date with its base with a normal merge commit.
+//! `jidoka pr sync`: brings a run's branch up to date with its base with a normal merge commit.
 
 use crate::{
     inspect::shown,
@@ -133,7 +133,7 @@ pub(crate) fn sync(
     let problem = |text: String| ToolProblem(text);
     let worktree = run.worktree.as_deref().ok_or_else(|| {
         problem(format!(
-            "Run {} has no worktree recorded. Record it with `factory run update` (--worktree and --branch), or create the workspace with `factory run begin`.",
+            "Run {} has no worktree recorded. Record it with `jidoka run update` (--worktree and --branch), or create the workspace with `jidoka run begin`.",
             run.id
         ))
     })?;
@@ -164,7 +164,7 @@ pub(crate) fn sync(
         && *recorded != branch
     {
         return Err(problem(format!(
-            "The worktree is on {} but the run records {}. Switch it back, or record the right branch with `factory run update`.",
+            "The worktree is on {} but the run records {}. Switch it back, or record the right branch with `jidoka run update`.",
             shown(&branch),
             shown(recorded)
         )));
@@ -459,7 +459,7 @@ pub(crate) fn render(synced: &Synced) -> String {
             shown(&synced.base)
         ),
         Outcome::Pushed => format!(
-            "Pushed: origin/{} was merged into {} and pushed. Watch CI again with `factory pr wait`.\n",
+            "Pushed: origin/{} was merged into {} and pushed. Watch CI again with `jidoka pr wait`.\n",
             shown(&synced.base),
             shown(&synced.branch)
         ),

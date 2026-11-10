@@ -1,4 +1,4 @@
-//! `factory pr open` validates arguments before contacting the server.
+//! `jidoka pr open` validates arguments before contacting the server.
 #![expect(
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
@@ -6,8 +6,8 @@
 
 use std::process::Command;
 
-fn factory(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_factory"))
+fn jidoka(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_jidoka"))
         .current_dir(dir)
         // No `gh` can be found.
         .env("PATH", "")
@@ -59,15 +59,15 @@ fn open_refuses_bad_arguments_with_the_usage() {
             "-x",
         ],
     ] {
-        let output = factory(dir.path(), &args);
+        let output = jidoka(dir.path(), &args);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         assert!(output.stdout.is_empty(), "{args:?}");
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("factory pr open <run-id>"),
+            String::from_utf8_lossy(&output.stderr).contains("jidoka pr open <run-id>"),
             "{args:?}"
         );
     }
-    let output = factory(
+    let output = jidoka(
         dir.path(),
         &["pr", "open", "12x", "--title", "T", "--body-file", body],
     );

@@ -60,15 +60,15 @@ jobs:
         run: |
           ./scripts/build-windows-release.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./scripts/check-windows-release.ps1 -Executable './target/x86_64-pc-windows-msvc/release/factory.exe'
+          ./scripts/check-windows-release.ps1 -Executable './target/x86_64-pc-windows-msvc/release/jidoka.exe'
       - name: Test Windows installer in Windows PowerShell 5.1
         if: runner.os == 'Windows' && github.event_name != 'pull_request'
         shell: powershell
-        run: ./tests/windows-installer-integration.ps1 -Executable './target/x86_64-pc-windows-msvc/release/factory.exe'
+        run: ./tests/windows-installer-integration.ps1 -Executable './target/x86_64-pc-windows-msvc/release/jidoka.exe'
       - name: Test Windows installer in PowerShell 7
         if: runner.os == 'Windows' && github.event_name != 'pull_request'
         shell: pwsh
-        run: ./tests/windows-installer-integration.ps1 -Executable './target/x86_64-pc-windows-msvc/release/factory.exe'
+        run: ./tests/windows-installer-integration.ps1 -Executable './target/x86_64-pc-windows-msvc/release/jidoka.exe'
       - name: Test Windows installer failures on Linux
         if: runner.os == 'Linux'
         shell: pwsh

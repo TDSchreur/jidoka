@@ -7,9 +7,30 @@ use std::{
 
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
-/// Skill directories from earlier releases that are no longer bundled: the pre-rename
-/// `factory2` skills, development-only skills and the generic-name skills of earlier releases.
-const LEGACY_SKILLS: [&str; 20] = [
+/// Skill directories from earlier releases that are no longer bundled: the `factory` and
+/// `factory2` skills from before the rename to Jidoka, development-only skills and the
+/// generic-name skills of earlier releases.
+const LEGACY_SKILLS: [&str; 40] = [
+    "factory",
+    "factory-full",
+    "factory-fast",
+    "factory-balanced",
+    "factory-procedures",
+    "factory-triage",
+    "factory-grill-with-docs",
+    "factory-grilling",
+    "factory-domain-modeling",
+    "factory-codebase-design",
+    "factory-to-spec",
+    "factory-to-tickets",
+    "factory-implement",
+    "factory-implement-fast",
+    "factory-implement-balanced",
+    "factory-tdd",
+    "factory-code-review",
+    "factory-security-review",
+    "factory-pr",
+    "factory-setup",
     "factory2",
     "factory2-fast",
     "github-actions-hardening",
@@ -34,13 +55,13 @@ const LEGACY_SKILLS: [&str; 20] = [
 
 /// Skills maintained in this project, installed without a third-party license.
 const LOCAL_SKILLS: [&str; 7] = [
-    "factory",
-    "factory-full",
-    "factory-procedures",
-    "factory-fast",
-    "factory-balanced",
-    "factory-implement-fast",
-    "factory-implement-balanced",
+    "jidoka",
+    "jidoka-full",
+    "jidoka-procedures",
+    "jidoka-fast",
+    "jidoka-balanced",
+    "jidoka-implement-fast",
+    "jidoka-implement-balanced",
 ];
 
 /// Reads `[--agent <list>] [--config-dir <path>]...` in any order. `--agent` can be given once.
@@ -77,7 +98,7 @@ pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> i
     let path = crate::routing::policy_path_in(var).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
-            "cannot find the factory config directory for model routing",
+            "cannot find Jidoka config directory for model routing",
         )
     })?;
     let agents = [
@@ -235,7 +256,7 @@ pub(crate) fn home_dir() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cannot find your home directory"))
 }
 
-/// The files `install` writes, as paths such as `factory/SKILL.md`, relative to the skills folder.
+/// The files `install` writes, as paths such as `jidoka/SKILL.md`, relative to the skills folder.
 pub(crate) fn bundled_skill_files() -> impl Iterator<Item = &'static str> {
     BUNDLED
         .iter()
@@ -288,7 +309,7 @@ fn install_to(root: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The files the factory installed for Humanizer before it dropped the skill, kept only to
+/// The files Jidoka installed for Humanizer before it dropped the skill, kept only to
 /// recognise that copy. They are compared against, never installed.
 const RETIRED_HUMANIZER_FILES: [(&str, &[u8]); 3] = [
     ("SKILL.md", include_bytes!("retired/humanizer-SKILL.md")),
@@ -299,7 +320,7 @@ const RETIRED_HUMANIZER_FILES: [(&str, &[u8]); 3] = [
     ("LICENSE", include_bytes!("retired/humanizer-LICENSE")),
 ];
 
-/// Removes a `humanizer` skill folder the factory installed earlier. Only an exact, unmodified
+/// Removes a `humanizer` skill folder Jidoka installed earlier. Only an exact, unmodified
 /// copy goes: the same files and nothing else, none of them a symlink. Anything else is the
 /// user's own and stays. A failure to remove it is a warning, not an install failure.
 fn remove_retired_humanizer(root: &Path) {
@@ -426,7 +447,7 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
         fs::write(destination, content)?;
     }
     let license = match name {
-        "factory-security-review" => "licenses/awesome-copilot-LICENSE",
+        "jidoka-security-review" => "licenses/awesome-copilot-LICENSE",
         _ if LOCAL_SKILLS.contains(&name) => "",
         _ => "licenses/mattpocock-skills-LICENSE",
     };
@@ -466,9 +487,9 @@ mod tests {
     }
     /// Names that belong to this repository, not to the projects the skills are installed in.
     /// Concrete commands and branches go in AGENTS.md, README or .github/instructions instead.
-    const PROJECT_SPECIFIC: [&str; 3] = ["verify.sh", "tds-factory", "for this project"];
+    const PROJECT_SPECIFIC: [&str; 3] = ["verify.sh", "TDSchreur/jidoka", "for this project"];
     /// Workflow skills must also not assume this repository's branch name.
-    const WORKFLOW_SKILLS: [&str; 3] = ["factory-full", "factory-balanced", "factory-fast"];
+    const WORKFLOW_SKILLS: [&str; 3] = ["jidoka-full", "jidoka-balanced", "jidoka-fast"];
 
     fn bundled_text(path: &str) -> String {
         BUNDLED
@@ -513,8 +534,8 @@ mod tests {
 
     #[test]
     fn selector_and_execution_workflows_are_bundled() {
-        let selector = bundled_text("factory/SKILL.md");
-        assert_eq!(selector.lines().nth(1), Some("name: factory"));
+        let selector = bundled_text("jidoka/SKILL.md");
+        assert_eq!(selector.lines().nth(1), Some("name: jidoka"));
         for skill in WORKFLOW_SKILLS {
             let workflow = bundled_text(&format!("{skill}/SKILL.md"));
             assert_eq!(
@@ -527,7 +548,7 @@ mod tests {
 
     #[test]
     fn shared_procedures_record_run_context_with_options_the_cli_accepts_and_continue_safely() {
-        let text = bundled_text("factory-procedures/SKILL.md");
+        let text = bundled_text("jidoka-procedures/SKILL.md");
         let context = text
             .split_once("- **Context:**")
             .and_then(|(_, rest)| rest.split_once("- **Done:**"))
@@ -570,8 +591,8 @@ mod tests {
             .unwrap();
         for needle in [
             "--spec",
-            "factory run begin",
-            "factory run inspect",
+            "jidoka run begin",
+            "jidoka run inspect",
             "acceptance criteria",
         ] {
             assert!(saving.contains(needle), "saving the plan lacks {needle}");
@@ -579,7 +600,7 @@ mod tests {
         for old in [
             "git directory",
             "git-dir",
-            ".factory-plan.md",
+            ".jidoka-plan.md",
             "beside the worktree",
         ] {
             assert!(
@@ -594,8 +615,8 @@ mod tests {
             .1;
         let continuing = continuing.split("\n## ").next().unwrap();
         for needle in [
-            "factory run inspect",
-            "factory run check",
+            "jidoka run inspect",
+            "jidoka run check",
             "recorded branch",
             "ancestor of `HEAD`",
             "unexpected changes",
@@ -607,10 +628,10 @@ mod tests {
 
     #[test]
     fn finish_reports_tell_the_user_to_clean_up_the_run_after_merge() {
-        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
+        let procedures = bundled_text("jidoka-procedures/SKILL.md").replace("\r\n", "\n");
         assert!(
-            procedures.contains("`factory run cleanup <id>`"),
-            "the shared procedures do not mention factory run cleanup"
+            procedures.contains("`jidoka run cleanup <id>`"),
+            "the shared procedures do not mention jidoka run cleanup"
         );
         assert!(
             !procedures.contains("git worktree remove"),
@@ -624,8 +645,8 @@ mod tests {
             .next()
             .unwrap();
         assert!(
-            finish.contains("`factory run cleanup <id>`"),
-            "the shared Finish does not mention factory run cleanup"
+            finish.contains("`jidoka run cleanup <id>`"),
+            "the shared Finish does not mention jidoka run cleanup"
         );
         for skill in WORKFLOW_SKILLS {
             let text = bundled_text(&format!("{skill}/SKILL.md"));
@@ -634,7 +655,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{skill} has no Finish"))
                 .1;
             assert!(
-                workflow_finish.contains("Finish in [factory-procedures]"),
+                workflow_finish.contains("Finish in [jidoka-procedures]"),
                 "{skill} Finish does not point to the shared Finish"
             );
         }
@@ -645,7 +666,7 @@ mod tests {
         for skill in WORKFLOW_SKILLS {
             let text = bundled_text(&format!("{skill}/SKILL.md")).replace("\r\n", "\n");
             assert!(
-                text.contains("(../factory-procedures/SKILL.md)"),
+                text.contains("(../jidoka-procedures/SKILL.md)"),
                 "{skill} does not link the shared procedures"
             );
             let shared = text
@@ -657,24 +678,24 @@ mod tests {
                 .unwrap();
             assert!(
                 shared.contains(
-                    "Run reporting, Continuing a run (to continue an existing run) and Workspace in [factory-procedures]"
+                    "Run reporting, Continuing a run (to continue an existing run) and Workspace in [jidoka-procedures]"
                 ),
                 "{skill} does not point to Run reporting, Continuing a run and Workspace"
             );
             for section in ["Tracker setup", "Define rules", "Finish"] {
                 assert!(
-                    text.contains(&format!("{section} in [factory-procedures]")),
+                    text.contains(&format!("{section} in [jidoka-procedures]")),
                     "{skill} does not point to {section}"
                 );
             }
             assert!(
-                text.contains("Verification in [factory-procedures]"),
+                text.contains("Verification in [jidoka-procedures]"),
                 "{skill} lacks Verification"
             );
-            if skill != "factory-fast" {
+            if skill != "jidoka-fast" {
                 for section in ["Committing for Check", "Reworks"] {
                     assert!(
-                        text.contains(&format!("{section} in [factory-procedures]")),
+                        text.contains(&format!("{section} in [jidoka-procedures]")),
                         "{skill} lacks {section}"
                     );
                 }
@@ -684,8 +705,8 @@ mod tests {
                 "{skill} still reports a decision wait as running"
             );
             assert_eq!(
-                text.contains("Saving the plan in [factory-procedures]"),
-                skill != "factory-full",
+                text.contains("Saving the plan in [jidoka-procedures]"),
+                skill != "jidoka-full",
                 "{skill} saves a conversational plan only in the lighter workflows"
             );
             assert!(
@@ -697,11 +718,11 @@ mod tests {
 
     #[test]
     fn shared_procedures_say_how_workflows_use_the_bundled_skills() {
-        let procedures = bundled_text("factory-procedures/SKILL.md");
+        let procedures = bundled_text("jidoka-procedures/SKILL.md");
         for needle in [
             "## Using the bundled skills",
             "they are siblings of this directory",
-            "`factory-grill-with-docs`, `factory-to-spec` and `factory-to-tickets` can only be invoked by the user",
+            "`jidoka-grill-with-docs`, `jidoka-to-spec` and `jidoka-to-tickets` can only be invoked by the user",
             "A workflow's instructions take precedence where they differ from those skills",
             "## Define rules",
             "Do not require extra approval of test seams or a separate ticket-breakdown approval",
@@ -716,14 +737,14 @@ mod tests {
             );
         }
         assert!(
-            bundled_text("factory-full/SKILL.md")
-                .contains("`factory-implement` can also only be invoked by the user")
+            bundled_text("jidoka-full/SKILL.md")
+                .contains("`jidoka-implement` can also only be invoked by the user")
         );
     }
 
     #[test]
     fn shared_procedures_cover_check_and_rework() {
-        let text = bundled_text("factory-procedures/SKILL.md");
+        let text = bundled_text("jidoka-procedures/SKILL.md");
         for needle in [
             "## Verification",
             "## Committing for Check",
@@ -751,8 +772,8 @@ mod tests {
 
     #[test]
     fn shared_procedures_are_not_invoked_on_their_own() {
-        assert!(is_user_only("factory-procedures"));
-        let codex = bundled_text("factory-procedures/agents/openai.yaml");
+        assert!(is_user_only("jidoka-procedures"));
+        let codex = bundled_text("jidoka-procedures/agents/openai.yaml");
         assert!(
             codex.contains("allow_implicit_invocation: false"),
             "{codex}"
@@ -761,7 +782,7 @@ mod tests {
 
     #[test]
     fn bundled_procedures_explain_ticket_reports() {
-        let procedures = bundled_text("factory-procedures/SKILL.md");
+        let procedures = bundled_text("jidoka-procedures/SKILL.md");
         assert!(procedures.contains("--ticket-report \"<reference>\" skill"));
         assert!(procedures.contains("--ticket-report \"<reference>\" activity"));
         assert!(procedures.contains("may be incomplete"));
@@ -769,7 +790,7 @@ mod tests {
 
     #[test]
     fn bundled_skills_keep_the_run_in_the_starting_session() {
-        let procedures = bundled_text("factory-procedures/SKILL.md");
+        let procedures = bundled_text("jidoka-procedures/SKILL.md");
         for phrase in [
             "## Run ownership",
             "never the whole run or several stages to one agent",
@@ -778,10 +799,10 @@ mod tests {
             assert!(procedures.contains(phrase), "procedures: {phrase}");
         }
         for path in [
-            "factory/SKILL.md",
-            "factory-full/SKILL.md",
-            "factory-balanced/SKILL.md",
-            "factory-fast/SKILL.md",
+            "jidoka/SKILL.md",
+            "jidoka-full/SKILL.md",
+            "jidoka-balanced/SKILL.md",
+            "jidoka-fast/SKILL.md",
         ] {
             assert!(bundled_text(path).contains("Run ownership"), "{path}");
         }
@@ -791,16 +812,16 @@ mod tests {
     fn bundled_skills_carry_the_skill_check() {
         for (path, wording) in [
             (
-                "factory-procedures/SKILL.md",
+                "jidoka-procedures/SKILL.md",
                 &["Skill check:", "wording only"][..],
             ),
             (
-                "factory-code-review/SKILL.md",
+                "jidoka-code-review/SKILL.md",
                 &["Skill check:", "no commit carries a `Skill check:`"][..],
             ),
-            ("factory-pr/SKILL.md", &["**Skill check:**"][..]),
+            ("jidoka-pr/SKILL.md", &["**Skill check:**"][..]),
             (
-                "factory-procedures/references/model-routing.md",
+                "jidoka-procedures/references/model-routing.md",
                 &["Changing agent skills"][..],
             ),
         ] {
@@ -819,7 +840,7 @@ mod tests {
             .collect();
         // The shared procedures name the user-only skills every workflow uses and say how to
         // load them; a workflow names any further one it uses.
-        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
+        let procedures = bundled_text("jidoka-procedures/SKILL.md").replace("\r\n", "\n");
         let shared = procedures
             .split_once("\n## Using the bundled skills\n")
             .expect("the shared procedures have no Using the bundled skills")
@@ -870,7 +891,7 @@ mod tests {
             let text = String::from_utf8_lossy(content).to_lowercase();
             assert!(!text.contains("humanizer"), "{path} mentions humanizer");
         }
-        let procedures = bundled_text("factory-procedures/SKILL.md");
+        let procedures = bundled_text("jidoka-procedures/SKILL.md");
         assert!(!procedures.contains("## Writing"));
         for skill in WORKFLOW_SKILLS {
             assert!(
@@ -882,10 +903,10 @@ mod tests {
 
     #[test]
     fn the_procedures_keep_the_pull_request_current_without_rewriting_history() {
-        let section = bundled_text("factory-procedures/references/pull-request-and-ci.md")
+        let section = bundled_text("jidoka-procedures/references/pull-request-and-ci.md")
             .replace("\r\n", "\n");
         for needle in [
-            "factory pr sync <run-id> --base <base>",
+            "jidoka pr sync <run-id> --base <base>",
             "gh pr view --json mergeStateStatus",
             "`BEHIND`",
             "`DIRTY`",
@@ -900,9 +921,9 @@ mod tests {
     }
 
     #[test]
-    fn the_procedures_ask_for_an_upgrade_instead_of_working_around_an_outdated_factory() {
-        let skill = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
-        let reference = bundled_text("factory-procedures/references/pull-request-and-ci.md")
+    fn the_procedures_ask_for_an_upgrade_instead_of_working_around_an_outdated_jidoka() {
+        let skill = bundled_text("jidoka-procedures/SKILL.md").replace("\r\n", "\n");
+        let reference = bundled_text("jidoka-procedures/references/pull-request-and-ci.md")
             .replace("\r\n", "\n");
         assert!(
             skill.contains("(references/pull-request-and-ci.md)"),
@@ -921,11 +942,11 @@ mod tests {
         ] {
             assert!(
                 !procedures.contains(gone),
-                "the procedures still work around an outdated factory: {gone}"
+                "the procedures still work around an outdated Jidoka: {gone}"
             );
         }
         for needle in [
-            "needs upgrading with `factory install`",
+            "needs upgrading with `jidoka install`",
             "mark the run blocked with that reason",
         ] {
             assert!(procedures.contains(needle), "missing: {needle}");
@@ -955,7 +976,7 @@ mod tests {
             2,
             "pr wait and pr sync both explain exit status 1"
         );
-        // So does a host without factory support.
+        // So does a host without Jidoka support.
         assert!(reference.contains("Watch every check there until all have completed"));
         // The hard rules say why.
         for reason in [
@@ -969,14 +990,14 @@ mod tests {
 
     #[test]
     fn the_procedures_start_a_run_naming_the_agent_with_an_option_the_cli_accepts() {
-        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
+        let procedures = bundled_text("jidoka-procedures/SKILL.md").replace("\r\n", "\n");
         let start = procedures
             .split_once("- **Start:**")
             .and_then(|(_, rest)| rest.split_once("\n- **Stage:**"))
             .map(|(start, _)| start)
             .expect("the procedures have a Start step");
         assert!(
-            start.contains("factory run start \"<short task title>\" --agent <agent>"),
+            start.contains("jidoka run start \"<short task title>\" --agent <agent>"),
             "{start}"
         );
         // The three values it names are the ones the command takes.
@@ -1006,15 +1027,15 @@ mod tests {
     fn the_model_routing_procedure_says_how_to_read_and_apply_the_selection() {
         // A Windows checkout may have CRLF line endings.
         let section =
-            bundled_text("factory-procedures/references/model-routing.md").replace("\r\n", "\n");
-        let procedures = bundled_text("factory-procedures/SKILL.md");
+            bundled_text("jidoka-procedures/references/model-routing.md").replace("\r\n", "\n");
+        let procedures = bundled_text("jidoka-procedures/SKILL.md");
         assert!(
             procedures.contains("[references/model-routing.md](references/model-routing.md)")
                 && procedures.contains("applies to every Stage"),
             "the procedures do not point to the model routing reference for every Stage"
         );
         for needle in [
-            "factory run inspect <id> --json",
+            "jidoka run inspect <id> --json",
             "`model_routing`",
             "`overrides.<stage>`",
             "`stages.<stage>`",
@@ -1027,26 +1048,23 @@ mod tests {
             "only the entry of the agent named with `--agent`",
             "never another agent's",
             // Each Stage says what is handed to agents and what stays with the coordinator.
-            "the interview (factory-grill-with-docs) stays with you",
+            "the interview (jidoka-grill-with-docs) stays with you",
             "each ticket runs in its own fresh agent on the build choice",
-            "tell `factory-code-review` the check choice",
-            "You run `factory pr open`, `factory pr wait` and `factory pr sync` yourself",
+            "tell `jidoka-code-review` the check choice",
+            "You run `jidoka pr open`, `jidoka pr wait` and `jidoka pr sync` yourself",
         ] {
             assert!(section.contains(needle), "Model routing lacks {needle}");
         }
-        let review = bundled_text("factory-code-review/SKILL.md");
+        let review = bundled_text("jidoka-code-review/SKILL.md");
         for needle in ["model and an effort for the review agents", "not forks"] {
-            assert!(
-                review.contains(needle),
-                "factory-code-review lacks {needle}"
-            );
+            assert!(review.contains(needle), "jidoka-code-review lacks {needle}");
         }
     }
 
     #[test]
     fn model_routing_is_read_at_every_stage_the_workflow_routes() {
-        let link = "[Model routing](../factory-procedures/references/model-routing.md)";
-        let procedures = bundled_text("factory-procedures/SKILL.md").replace("\r\n", "\n");
+        let link = "[Model routing](../jidoka-procedures/references/model-routing.md)";
+        let procedures = bundled_text("jidoka-procedures/SKILL.md").replace("\r\n", "\n");
         let rule = procedures
             .split_once("\n## Model routing\n")
             .expect("the shared procedures have no Model routing")
@@ -1056,7 +1074,7 @@ mod tests {
             .unwrap();
         for needle in [
             "Read it at the start of each Stage the workflow has, and again at the start of every Rework and every Check pass after one",
-            "factory-fast: it never routes Define and Finish, so it reads this only at the start of Build and does not read it for Define or Finish",
+            "jidoka-fast: it never routes Define and Finish, so it reads this only at the start of Build and does not read it for Define or Finish",
         ] {
             assert!(rule.contains(needle), "Model routing rule lacks {needle}");
         }
@@ -1076,7 +1094,7 @@ mod tests {
                 "{skill} repeats the Model routing rule for Define or Finish"
             );
         }
-        for skill in ["factory-full", "factory-balanced"] {
+        for skill in ["jidoka-full", "jidoka-balanced"] {
             let text = bundled_text(&format!("{skill}/SKILL.md"));
             assert!(
                 text.contains(&format!(
@@ -1085,17 +1103,17 @@ mod tests {
                 "{skill} does not name Model routing for Check"
             );
         }
-        let full = bundled_text("factory-full/SKILL.md");
+        let full = bundled_text("jidoka-full/SKILL.md");
         assert!(
             full.contains(&format!("Then read {link} and follow it for Define")),
-            "factory-full reads Model routing after Tracker setup in Define"
+            "jidoka-full reads Model routing after Tracker setup in Define"
         );
-        let fast = bundled_text("factory-fast/SKILL.md");
+        let fast = bundled_text("jidoka-fast/SKILL.md");
         assert!(
             !fast.contains("for Check")
                 && !fast.contains("Check pass")
                 && !fast.contains("for Define"),
-            "factory-fast has no Check to route and does not route Define"
+            "jidoka-fast has no Check to route and does not route Define"
         );
     }
 
@@ -1131,7 +1149,7 @@ mod tests {
 
     #[test]
     fn setup_links_exactly_the_bundled_issue_tracker_templates() {
-        let setup = bundled_text("factory-setup/SKILL.md");
+        let setup = bundled_text("jidoka-setup/SKILL.md");
         let mut linked: Vec<&str> = setup
             .split("](./")
             .skip(1)
@@ -1142,7 +1160,7 @@ mod tests {
         linked.sort_unstable();
         linked.dedup();
         let mut bundled: Vec<&str> = bundled_skill_files()
-            .filter_map(|path| path.strip_prefix("factory-setup/"))
+            .filter_map(|path| path.strip_prefix("jidoka-setup/"))
             .filter(|name| name.starts_with("issue-tracker-") && name.ends_with(".md"))
             .collect();
         bundled.sort_unstable();
@@ -1152,7 +1170,7 @@ mod tests {
 
     #[test]
     fn setup_stops_on_missing_azure_boards_details_without_a_partial_tracker_file() {
-        let setup = bundled_text("factory-setup/SKILL.md");
+        let setup = bundled_text("jidoka-setup/SKILL.md");
         let (_, azure) = setup
             .split_once("An Azure Boards tracker needs")
             .expect("setup has an Azure Boards part");
@@ -1164,7 +1182,7 @@ mod tests {
     fn azure_boards_template_removes_tags_with_a_replace_the_cli_cannot_send() {
         // Checked against Azure DevOps: `az boards work-item update --fields System.Tags=...` adds to
         // the tags, and `show --fields` fails with the expanded output, so neither can remove a role.
-        let template = bundled_text("factory-setup/issue-tracker-azure-boards.md");
+        let template = bundled_text("jidoka-setup/issue-tracker-azure-boards.md");
         let roles = template
             .split_once("- **Apply / remove triage roles**:")
             .and_then(|(_, rest)| rest.split_once("\n- **"))
@@ -1179,7 +1197,7 @@ mod tests {
 
     #[test]
     fn azure_boards_template_names_no_process_specific_types_or_states() {
-        let template = bundled_text("factory-setup/issue-tracker-azure-boards.md");
+        let template = bundled_text("jidoka-setup/issue-tracker-azure-boards.md");
         let found: Vec<String> = [
             "User Story",
             "Product Backlog Item",
@@ -1239,8 +1257,8 @@ mod tests {
     fn azure_boards_route_parameters_are_quoted_pairs() {
         const FLAG: &str = "--route-parameters ";
         for path in [
-            "factory-setup/issue-tracker-azure-boards.md",
-            "factory-setup/SKILL.md",
+            "jidoka-setup/issue-tracker-azure-boards.md",
+            "jidoka-setup/SKILL.md",
         ] {
             let text = bundled_text(path);
             assert!(text.contains(FLAG), "{path} has no {FLAG}");
@@ -1359,7 +1377,7 @@ mod tests {
     type Mutation = fn(&Path);
     type RetiredFile = (&'static str, Vec<u8>);
 
-    /// The files the factory installed for Humanizer, read from the copies kept for the comparison.
+    /// The files Jidoka installed for Humanizer, read from the copies kept for the comparison.
     fn retired_humanizer_files() -> Vec<RetiredFile> {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/retired");
         [
@@ -1388,7 +1406,7 @@ mod tests {
         }
     }
 
-    /// Skills roots for every agent plus two `--config-dir` folders, as `factory install` resolves them.
+    /// Skills roots for every agent plus two `--config-dir` folders, as `jidoka install` resolves them.
     fn all_skills_roots(home: &Path) -> Vec<PathBuf> {
         let configs = [
             home.join("config-a").to_string_lossy().into_owned(),
@@ -1411,13 +1429,13 @@ mod tests {
     }
 
     #[test]
-    fn install_removes_the_humanizer_the_factory_installed_earlier() {
+    fn install_removes_the_humanizer_the_jidoka_installed_earlier() {
         let home = tempfile::tempdir().unwrap();
         for root in all_skills_roots(home.path()) {
             write_retired_humanizer(&root, false);
             install_to(&root).unwrap();
             assert!(!root.join("humanizer").exists(), "{root:?}");
-            assert!(root.join("factory-tdd/SKILL.md").is_file(), "{root:?}");
+            assert!(root.join("jidoka-tdd/SKILL.md").is_file(), "{root:?}");
         }
     }
 
@@ -1431,7 +1449,7 @@ mod tests {
     }
 
     #[test]
-    fn install_keeps_a_humanizer_that_is_not_the_factory_copy() {
+    fn install_keeps_a_humanizer_that_is_not_the_jidoka_copy() {
         let home = tempfile::tempdir().unwrap();
         let mutations: [(&str, Mutation); 6] = [
             ("edited skill", |h| {
@@ -1459,7 +1477,7 @@ mod tests {
             mutate(&root.join("humanizer"));
             install_to(&root).unwrap();
             assert!(root.join("humanizer").is_dir(), "{name}");
-            assert!(root.join("factory-tdd/SKILL.md").is_file(), "{name}");
+            assert!(root.join("jidoka-tdd/SKILL.md").is_file(), "{name}");
         }
     }
 
@@ -1493,20 +1511,15 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let roots = skills_roots("codex,claude,copilot", &[], home.path(), |_: &str| None).unwrap();
         for root in roots {
-            fs::create_dir_all(root.join("factory")).unwrap();
+            fs::create_dir_all(root.join("jidoka")).unwrap();
             fs::write(
-                root.join("factory/SKILL.md"),
-                bundled_text("factory-full/SKILL.md"),
+                root.join("jidoka/SKILL.md"),
+                bundled_text("jidoka-full/SKILL.md"),
             )
             .unwrap();
             for _ in 0..2 {
                 install_to(&root).unwrap();
-                for skill in [
-                    "factory",
-                    "factory-full",
-                    "factory-balanced",
-                    "factory-fast",
-                ] {
+                for skill in ["jidoka", "jidoka-full", "jidoka-balanced", "jidoka-fast"] {
                     assert_eq!(
                         fs::read_to_string(root.join(skill).join("SKILL.md")).unwrap(),
                         bundled_text(&format!("{skill}/SKILL.md")),
@@ -1521,9 +1534,9 @@ mod tests {
     fn installs_bundled_skills_and_replaces_existing_ones() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
-        fs::create_dir_all(root.join("factory")).unwrap();
-        fs::write(root.join("factory/SKILL.md"), "old content").unwrap();
-        fs::write(root.join("factory/stale.md"), "removed upstream").unwrap();
+        fs::create_dir_all(root.join("jidoka")).unwrap();
+        fs::write(root.join("jidoka/SKILL.md"), "old content").unwrap();
+        fs::write(root.join("jidoka/stale.md"), "removed upstream").unwrap();
         for legacy in LEGACY_SKILLS {
             fs::create_dir_all(root.join(legacy)).unwrap();
             fs::write(root.join(legacy).join("SKILL.md"), "legacy").unwrap();
@@ -1532,11 +1545,11 @@ mod tests {
         fs::write(root.join("my-skill/SKILL.md"), "user skill").unwrap();
         install_to(root).unwrap();
         assert!(
-            fs::read_to_string(root.join("factory/SKILL.md"))
+            fs::read_to_string(root.join("jidoka/SKILL.md"))
                 .unwrap()
-                .contains("name: factory")
+                .contains("name: jidoka")
         );
-        assert!(!root.join("factory/stale.md").exists());
+        assert!(!root.join("jidoka/stale.md").exists());
         for old in LEGACY_SKILLS {
             assert!(!root.join(old).exists(), "{old}");
         }
@@ -1548,7 +1561,7 @@ mod tests {
         installed.sort();
         assert_eq!(installed, bundled_skill_names());
         assert!(
-            installed.iter().all(|name| name.starts_with("factory")),
+            installed.iter().all(|name| name.starts_with("jidoka")),
             "{installed:?}"
         );
         assert_eq!(
@@ -1556,41 +1569,41 @@ mod tests {
             "user skill"
         );
         assert!(
-            root.join("factory-security-review/references/language-patterns.md")
+            root.join("jidoka-security-review/references/language-patterns.md")
                 .is_file()
         );
-        assert!(root.join("factory-security-review/LICENSE").is_file());
-        assert!(root.join("factory-setup/SKILL.md").is_file());
-        assert!(root.join("factory-setup/issue-tracker-github.md").is_file());
+        assert!(root.join("jidoka-security-review/LICENSE").is_file());
+        assert!(root.join("jidoka-setup/SKILL.md").is_file());
+        assert!(root.join("jidoka-setup/issue-tracker-github.md").is_file());
         assert!(
-            root.join("factory-setup/issue-tracker-azure-boards.md")
+            root.join("jidoka-setup/issue-tracker-azure-boards.md")
                 .is_file()
         );
-        assert!(root.join("factory-setup/LICENSE").is_file());
-        assert!(root.join("factory-to-spec/SKILL.md").is_file());
-        assert!(root.join("factory-full/SKILL.md").is_file());
-        assert!(!root.join("factory-full/LICENSE").exists());
-        assert!(root.join("factory-fast/SKILL.md").is_file());
-        assert!(root.join("factory-implement-fast/SKILL.md").is_file());
-        assert!(root.join("factory-tdd/mocking.md").is_file());
-        assert!(!root.join("factory-fast/LICENSE").exists());
-        assert!(root.join("factory-balanced/SKILL.md").is_file());
-        assert!(root.join("factory-implement-balanced/SKILL.md").is_file());
-        assert!(!root.join("factory-balanced/LICENSE").exists());
-        assert!(root.join("factory-procedures/SKILL.md").is_file());
+        assert!(root.join("jidoka-setup/LICENSE").is_file());
+        assert!(root.join("jidoka-to-spec/SKILL.md").is_file());
+        assert!(root.join("jidoka-full/SKILL.md").is_file());
+        assert!(!root.join("jidoka-full/LICENSE").exists());
+        assert!(root.join("jidoka-fast/SKILL.md").is_file());
+        assert!(root.join("jidoka-implement-fast/SKILL.md").is_file());
+        assert!(root.join("jidoka-tdd/mocking.md").is_file());
+        assert!(!root.join("jidoka-fast/LICENSE").exists());
+        assert!(root.join("jidoka-balanced/SKILL.md").is_file());
+        assert!(root.join("jidoka-implement-balanced/SKILL.md").is_file());
+        assert!(!root.join("jidoka-balanced/LICENSE").exists());
+        assert!(root.join("jidoka-procedures/SKILL.md").is_file());
         assert!(
-            root.join("factory-procedures/references/model-routing.md")
+            root.join("jidoka-procedures/references/model-routing.md")
                 .is_file()
         );
         assert!(
-            root.join("factory-procedures/references/pull-request-and-ci.md")
+            root.join("jidoka-procedures/references/pull-request-and-ci.md")
                 .is_file()
         );
-        assert!(!root.join("factory-procedures/LICENSE").exists());
-        assert!(!root.join("factory-implement-balanced/LICENSE").exists());
-        assert!(!root.join("factory-implement-fast/LICENSE").exists());
-        assert!(root.join("factory-triage/AGENT-BRIEF.md").is_file());
-        assert!(root.join("factory-triage/LICENSE").is_file());
+        assert!(!root.join("jidoka-procedures/LICENSE").exists());
+        assert!(!root.join("jidoka-implement-balanced/LICENSE").exists());
+        assert!(!root.join("jidoka-implement-fast/LICENSE").exists());
+        assert!(root.join("jidoka-triage/AGENT-BRIEF.md").is_file());
+        assert!(root.join("jidoka-triage/LICENSE").is_file());
         install_to(root).unwrap();
         let leftovers: Vec<_> = fs::read_dir(root)
             .unwrap()

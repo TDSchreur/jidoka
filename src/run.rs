@@ -10,7 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory-full|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `finish done` needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
+pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `finish done` needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
 /// Tickets one update may list; a spec split into more pieces than this is too big to track on one board.
@@ -173,11 +173,11 @@ pub(crate) enum RunStatus {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Mode {
-    #[serde(rename = "factory-full", alias = "factory")]
+    #[serde(rename = "jidoka-full", alias = "jidoka")]
     Full,
-    #[serde(rename = "factory-balanced")]
+    #[serde(rename = "jidoka-balanced")]
     Balanced,
-    #[serde(rename = "factory-fast")]
+    #[serde(rename = "jidoka-fast")]
     Fast,
 }
 
@@ -710,7 +710,7 @@ pub(crate) fn parse_update(
                 } else {
                     let mode = next_value()?;
                     FieldUpdate::Set(serde_json::from_value(serde_json::Value::from(*mode)).map_err(|_| {
-                        format!("Invalid value for --mode: {mode}; use factory-full, factory-balanced or factory-fast")
+                        format!("Invalid value for --mode: {mode}; use jidoka-full, jidoka-balanced or jidoka-fast")
                     })?)
                 };
                 continue;
@@ -2036,7 +2036,7 @@ mod tests {
         let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
         let run = new_run(&store, "task");
         let id = &run.id;
-        warnings_for(&store, id, "build", "running", &["--mode", "factory-full"]);
+        warnings_for(&store, id, "build", "running", &["--mode", "jidoka-full"]);
         let done = warnings_for(&store, id, "build", "done", &[]);
         assert_eq!(done.len(), 1);
         assert!(done[0].contains("no spec"));
@@ -2058,7 +2058,7 @@ mod tests {
     fn balanced_and_fast_runs_do_not_warn_about_a_missing_spec() {
         let dir = TestDir::new();
         let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        for mode in ["factory-balanced", "factory-fast"] {
+        for mode in ["jidoka-balanced", "jidoka-fast"] {
             let run = new_run(&store, "task");
             warnings_for(&store, &run.id, "build", "running", &["--mode", mode]);
             assert!(warnings_for(&store, &run.id, "build", "done", &[]).is_empty());
@@ -2079,7 +2079,7 @@ mod tests {
                 &run.id,
                 update(&[
                     "--mode",
-                    "factory-fast",
+                    "jidoka-fast",
                     "--worktree",
                     "/work/repo.worktrees/feature",
                     "--branch",
@@ -2285,7 +2285,7 @@ mod tests {
     #[test]
     fn invalid_context_values_are_refused_with_a_message() {
         for (options, reason) in [
-            (vec!["--mode", "turbo"], "factory-fast"),
+            (vec!["--mode", "turbo"], "jidoka-fast"),
             (vec!["--worktree", "relative/path"], "absolute path"),
             (vec!["--branch", "two words"], "branch name"),
             (vec!["--branch", "-x"], "branch name"),
@@ -2328,7 +2328,7 @@ mod tests {
                 vec!["--summary", "define=a", "--clear-summary", "define"],
                 "twice",
             ),
-            (vec!["--mode", "factory", "--clear-mode"], "conflicting"),
+            (vec!["--mode", "jidoka", "--clear-mode"], "conflicting"),
             (
                 vec!["--summary", "define=bad\u{1b}[2J"],
                 "control characters",
@@ -2419,7 +2419,7 @@ mod tests {
     fn legacy_full_mode_loads_without_rewriting_and_normalizes_on_update() {
         let dir = TestDir::new();
         let path = dir.0.path().join("runs.json");
-        let legacy = r#"[{"id":"7","title":"old","project":"/work/old","stage":"build","status":"running","updated_at":5,"mode":"factory","branch":"feature/x","base_commit":"abc1234","spec":"docs/spec.md"}]"#;
+        let legacy = r#"[{"id":"7","title":"old","project":"/work/old","stage":"build","status":"running","updated_at":5,"mode":"jidoka","branch":"feature/x","base_commit":"abc1234","spec":"docs/spec.md"}]"#;
         fs::write(&path, legacy).unwrap();
         let store = RunStore::open(&path).unwrap();
         let run = store.get("7").unwrap().unwrap();
@@ -2431,7 +2431,7 @@ mod tests {
             .update("7", update(&["--activity", "Continuing"]))
             .unwrap();
         let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(stored[0]["mode"], "factory-full");
+        assert_eq!(stored[0]["mode"], "jidoka-full");
         assert_eq!(stored[0]["id"], "7");
         assert_eq!(stored[0]["stage"], "build");
         assert_eq!(stored[0]["branch"], "feature/x");
@@ -2785,7 +2785,7 @@ mod tests {
             &[
                 "--run-report",
                 "skill",
-                "factory-balanced",
+                "jidoka-balanced",
                 "--run-report",
                 "activity",
                 "Checks passed",
@@ -2797,7 +2797,7 @@ mod tests {
         let saved = serde_json::to_value(reopened.get(&run.id).unwrap().unwrap()).unwrap();
         assert_eq!(saved["tickets"], serde_json::json!([]));
         assert_eq!(saved["run_reports"][0]["kind"], "skill");
-        assert_eq!(saved["run_reports"][0]["text"], "factory-balanced");
+        assert_eq!(saved["run_reports"][0]["text"], "jidoka-balanced");
         assert_eq!(saved["run_reports"][1]["text"], "Checks passed");
         assert_eq!(saved["run_reports"][1]["stage"], "build");
         assert!(saved["run_reports"][1]["at"].as_u64().is_some());
@@ -2826,7 +2826,7 @@ mod tests {
         let update = parse_update(
             "build",
             "running",
-            &["--ticket-report", "t1", "skill", "factory-tdd"],
+            &["--ticket-report", "t1", "skill", "jidoka-tdd"],
         )
         .unwrap();
         assert!(store.update(&created.id, update).is_err());
@@ -2862,10 +2862,10 @@ mod tests {
         );
         let mut args = Vec::new();
         for _ in 0..100 {
-            args.extend(["--ticket-report", "t1", "skill", "factory-tdd"]);
+            args.extend(["--ticket-report", "t1", "skill", "jidoka-tdd"]);
         }
         assert!(parse_update("build", "running", &args).is_ok());
-        args.extend(["--ticket-report", "t1", "skill", "factory-tdd"]);
+        args.extend(["--ticket-report", "t1", "skill", "jidoka-tdd"]);
         assert!(parse_update("build", "running", &args).is_err());
     }
 
@@ -2882,7 +2882,7 @@ mod tests {
             .unwrap();
         let mut args = Vec::new();
         for _ in 0..100 {
-            args.extend(["--ticket-report", "t1", "skill", "factory-tdd"]);
+            args.extend(["--ticket-report", "t1", "skill", "jidoka-tdd"]);
         }
         for _ in 0..10 {
             store
@@ -2892,7 +2892,7 @@ mod tests {
         let extra = parse_update(
             "build",
             "running",
-            &["--ticket-report", "t1", "skill", "factory-tdd"],
+            &["--ticket-report", "t1", "skill", "jidoka-tdd"],
         )
         .unwrap();
         assert!(store.update(&run.id, extra).is_err());
@@ -2944,7 +2944,7 @@ mod tests {
                         "--ticket-report",
                         "t1",
                         "skill",
-                        "factory-tdd",
+                        "jidoka-tdd",
                     ],
                 )
                 .unwrap(),
@@ -2968,7 +2968,7 @@ mod tests {
         let json = serde_json::to_value(saved).unwrap();
         assert_eq!(json["ticket_reports"][0]["ticket"], "t1");
         assert_eq!(json["ticket_reports"][0]["kind"], "skill");
-        assert_eq!(json["ticket_reports"][0]["text"], "factory-tdd");
+        assert_eq!(json["ticket_reports"][0]["text"], "jidoka-tdd");
         assert_eq!(json["ticket_reports"][1]["text"], "Tests passed");
         assert_eq!(json["ticket_reports"][1]["stage"], "build");
         assert!(json["ticket_reports"][1]["at"].as_u64().is_some());

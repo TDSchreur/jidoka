@@ -9,7 +9,7 @@ try {
     & chmod +x $stub
     $env:PROCESSOR_ARCHITECTURE = 'AMD64'
     $env:LOCALAPPDATA = $tempRoot
-    $env:FACTORY_AGENT = 'codex'
+    $env:JIDOKA_AGENT = 'codex'
     $script:badChecksum = $false
     function Invoke-WebRequest {
         param($Uri, $OutFile)
@@ -26,9 +26,9 @@ try {
             $expected = if ($script:badChecksum) { 'checksum mismatch' } else { 'startup.*37.*0x00000025' }
             if ($_.Exception.Message -notmatch $expected) { throw "Unexpected $case failure: $_" }
         }
-        if (Test-Path (Join-Path $tempRoot 'Programs/factory/factory.exe')) { throw 'Installer copied a failed download' }
+        if (Test-Path (Join-Path $tempRoot 'Programs/jidoka/jidoka.exe')) { throw 'Installer copied a failed download' }
     }
-    try { Assert-FactoryExitCode -1073741515 'startup'; throw 'Expected failure' }
+    try { Assert-JidokaExitCode -1073741515 'startup'; throw 'Expected failure' }
     catch {
         if ($_.Exception.Message -notmatch '0xC0000135.*DLL') { throw "Missing DLL diagnostic absent: $_" }
     }

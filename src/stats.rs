@@ -1,4 +1,4 @@
-//! `factory run stats`: token usage per stage, model and ticket, in plain text.
+//! `jidoka run stats`: token usage per stage, model and ticket, in plain text.
 
 use crate::{
     cost::{self, PRICES},
@@ -275,7 +275,7 @@ pub(crate) fn render_all(runs: &[Run]) -> String {
         ));
     }
     if !partial.is_empty() {
-        out.push_str(&format!("\nPartial coverage: {} (run `factory run stats <id>` for what is missing). Their totals may be too low.\n", partial.join(", ")));
+        out.push_str(&format!("\nPartial coverage: {} (run `jidoka run stats <id>` for what is missing). Their totals may be too low.\n", partial.join(", ")));
     }
     if !left_out.is_empty() {
         out.push_str("\nLeft out, because their usage is not tracked (not counted as zero):\n");

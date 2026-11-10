@@ -1,4 +1,4 @@
-//! The readable form of a run, for `factory run inspect`: everything a new session needs to continue it.
+//! The readable form of a run, for `jidoka run inspect`: everything a new session needs to continue it.
 
 use crate::routing::{ModelChoice, ModelRouting, model_matches};
 use crate::run::{Mode, Run, RunEventKind, RunStatus, Stage, TicketStatus};
@@ -9,9 +9,9 @@ const UNKNOWN: &str = "unknown (not recorded)";
 
 fn mode_name(mode: Mode) -> &'static str {
     match mode {
-        Mode::Full => "factory-full",
-        Mode::Balanced => "factory-balanced",
-        Mode::Fast => "factory-fast",
+        Mode::Full => "jidoka-full",
+        Mode::Balanced => "jidoka-balanced",
+        Mode::Fast => "jidoka-fast",
     }
 }
 

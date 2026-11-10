@@ -31,7 +31,7 @@ const state = () => {
     terms: panel ? [...panel.querySelectorAll('dt code')].map((c) => c.textContent.trim()) : [],
     scrolls: panel ? panel.scrollHeight > panel.clientHeight : false,
     panelFocusable: panel ? panel.tabIndex === 0 : false,
-    // Words that run into an inline element, such as "as<code>factory</code>": the text before it ends in a
+    // Words that run into an inline element, such as "as<code>jidoka</code>": the text before it ends in a
     // letter or the text after it starts with one.
     glued: panel ? [...panel.querySelectorAll('code, strong, em')].flatMap((el) => {
       const before = el.previousSibling?.nodeType === 3 ? el.previousSibling.nodeValue : '';
@@ -109,9 +109,9 @@ class HelpTest(unittest.TestCase):
         for heading in ["Define", "Build", "Check", "Rework", "Finish", "Shipped", "Needs you"]:
             self.assertIn(heading, stages)
         skills = result["every"]["Skills"]["terms"]
-        for name in ["/factory", "/factory-full", "/factory-balanced", "/factory-fast", "factory-procedures", "factory-grill-with-docs",
-                     "factory-to-spec", "factory-to-tickets", "factory-implement", "factory-implement-balanced", "factory-implement-fast", "factory-tdd",
-                     "factory-code-review", "factory-security-review", "factory-pr", "factory-setup"]:
+        for name in ["/jidoka", "/jidoka-full", "/jidoka-balanced", "/jidoka-fast", "jidoka-procedures", "jidoka-grill-with-docs",
+                     "jidoka-to-spec", "jidoka-to-tickets", "jidoka-implement", "jidoka-implement-balanced", "jidoka-implement-fast", "jidoka-tdd",
+                     "jidoka-code-review", "jidoka-security-review", "jidoka-pr", "jidoka-setup"]:
             self.assertIn(name, skills)
         self.assertTrue(result["focusBack"])
 

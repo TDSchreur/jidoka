@@ -1,5 +1,5 @@
 //! The model-routing policy file: reading it, what it means for a run that starts, and the starter
-//! `factory doctor --create-model-routing` writes.
+//! `jidoka doctor --create-model-routing` writes.
 //!
 //! The file has an `agents` object with an entry per agent (`claude`, `codex`, `copilot`), each with a `stages` map
 //! from Stage to model and effort and an optional `enabled`. The earlier format (roles and tasks, or the
@@ -69,7 +69,7 @@ impl From<RoutingAgent> for Host {
     }
 }
 
-/// The options of `factory run start <title>`: only `--agent <name>`.
+/// The options of `jidoka run start <title>`: only `--agent <name>`.
 pub(crate) fn parse_start_options(options: &[&str]) -> Result<Option<Host>, String> {
     match options {
         [] => Ok(None),
@@ -175,7 +175,7 @@ pub(crate) enum Coverage {
 
 impl Policy {
     /// What the policy does for a run in `host`: the one place that decides which agent's part applies and
-    /// why none does, for `factory run start` and for `factory doctor` alike. `None` when the policy is off.
+    /// why none does, for `jidoka run start` and for `jidoka doctor` alike. `None` when the policy is off.
     pub(crate) fn coverage(&self, host: Host) -> Option<Coverage> {
         if matches!(self, Self::Off) {
             return None;
@@ -207,7 +207,7 @@ impl Policy {
                 return Ok(Resolution::default());
             }
             return Err(format!(
-                "the policy configures several agents ({}), so `factory run start` must be told which agent the run is in: add `--agent claude`, `--agent codex` or `--agent copilot`",
+                "the policy configures several agents ({}), so `jidoka run start` must be told which agent the run is in: add `--agent claude`, `--agent codex` or `--agent copilot`",
                 self.configured().join(", ")
             ));
         };
@@ -377,8 +377,8 @@ fn old_format(value: &Value) -> bool {
     top || entries
 }
 
-/// Where the user-level policy lives: `$XDG_CONFIG_HOME/tds-factory/` or `~/.config/tds-factory/`,
-/// and `%APPDATA%\tds-factory\` on Windows.
+/// Where the user-level policy lives: `$XDG_CONFIG_HOME/jidoka/` or `~/.config/jidoka/`,
+/// and `%APPDATA%\jidoka\` on Windows.
 pub(crate) fn policy_path_in(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     // A relative folder would put the file wherever the command happens to run, so, as the XDG spec says,
     // it is ignored.
@@ -393,7 +393,7 @@ pub(crate) fn policy_path_in(var: impl Fn(&str) -> Option<OsString>) -> Option<P
     } else {
         set("XDG_CONFIG_HOME").or_else(|| set("HOME").map(|home| home.join(".config")))?
     };
-    Some(base.join("tds-factory").join("model-routing.json"))
+    Some(base.join("jidoka").join("model-routing.json"))
 }
 
 /// Reads and checks the policy. No file is `Policy::Off`. A file that cannot be read or is wrong is an
@@ -438,7 +438,7 @@ pub(crate) fn read(path: &Path) -> Result<Policy, String> {
     }
     if old_format(&value) {
         return Err(fail(
-            "the model-routing policy is in the old format (roles and tasks, or a single agent); run `factory install` or `factory doctor --create-model-routing` to replace it with the per-stage starter (your custom values are not migrated)".into(),
+            "the model-routing policy is in the old format (roles and tasks, or a single agent); run `jidoka install` or `jidoka doctor --create-model-routing` to replace it with the per-stage starter (your custom values are not migrated)".into(),
         ));
     }
     // Read again from the text: the typed form refuses repeated keys, which a parsed value would not show.
@@ -569,7 +569,7 @@ impl Off {
     }
 }
 
-/// A starting policy written by `factory doctor --create-model-routing`: an entry routing all four Stages
+/// A starting policy written by `jidoka doctor --create-model-routing`: an entry routing all four Stages
 /// for each agent in `agents`, switched on except what `off` carries over.
 fn starter(agents: &[RoutingAgent], off: Off) -> String {
     let entry = |agent, is_off: bool| {

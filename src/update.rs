@@ -1,4 +1,4 @@
-//! `factory check` finds out whether a newer release exists; `factory update` installs it.
+//! `jidoka check` finds out whether a newer release exists; `jidoka update` installs it.
 
 use crate::install;
 use sha2::{Digest, Sha256};
@@ -10,8 +10,8 @@ use std::{
     process::Command,
 };
 
-const LATEST_URL: &str = "https://github.com/TDSchreur/tds-factory2/releases/latest";
-const DOWNLOAD_URL: &str = "https://github.com/TDSchreur/tds-factory2/releases/latest/download";
+const LATEST_URL: &str = "https://github.com/TDSchreur/jidoka/releases/latest";
+const DOWNLOAD_URL: &str = "https://github.com/TDSchreur/jidoka/releases/latest/download";
 const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
 
 /// How the running build compares with the latest release.
@@ -62,12 +62,12 @@ pub(crate) fn status(current: &str, release: bool, latest: &str) -> Result<Statu
 
 pub(crate) fn render(status: &Status) -> String {
     match status {
-        Status::UpToDate => "factory is up to date.".to_string(),
+        Status::UpToDate => "jidoka is up to date.".to_string(),
         Status::Available { current, latest } => {
-            format!("Update available: {current} -> {latest}. Run 'factory update' to install it.")
+            format!("Update available: {current} -> {latest}. Run 'jidoka update' to install it.")
         }
         Status::Unknown { latest } => format!(
-            "This is a development build, so it cannot be compared. The latest release is {latest}; 'factory update' installs it."
+            "This is a development build, so it cannot be compared. The latest release is {latest}; 'jidoka update' installs it."
         ),
     }
 }
@@ -94,7 +94,7 @@ pub(crate) fn latest_version() -> Result<String, String> {
     version_from_url(&url).ok_or_else(|| format!("Could not read a release version from {url}."))
 }
 
-/// Runs `factory check` for a build with this version.
+/// Runs `jidoka check` for a build with this version.
 pub(crate) fn check(current: &str, release: bool) -> Result<(), String> {
     let latest = latest_version()?;
     println!("{}", render(&status(current, release, &latest)?));
@@ -104,11 +104,14 @@ pub(crate) fn check(current: &str, release: bool) -> Result<(), String> {
 /// The release asset for this platform.
 fn asset_name() -> Result<&'static str, String> {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Ok("factory-linux-x86_64")
+        Ok("jidoka-linux-x86_64")
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Ok("factory-windows-x86_64.exe")
+        Ok("jidoka-windows-x86_64.exe")
     } else {
-        Err("'factory update' supports only Linux and Windows on x86-64. Build from source instead.".to_string())
+        Err(
+            "'jidoka update' supports only Linux and Windows on x86-64. Build from source instead."
+                .to_string(),
+        )
     }
 }
 
@@ -191,7 +194,7 @@ pub(crate) fn installed_agents(
         .collect()
 }
 
-/// The arguments of the `factory install` that update runs: the agents, and one `--config-dir` per folder.
+/// The arguments of the `jidoka install` that update runs: the agents, and one `--config-dir` per folder.
 pub(crate) fn install_args(agents: &str, claude_dirs: &[PathBuf]) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec!["install".into(), "--agent".into(), agents.into()];
     for dir in claude_dirs {
@@ -201,7 +204,7 @@ pub(crate) fn install_args(agents: &str, claude_dirs: &[PathBuf]) -> Vec<OsStrin
     args
 }
 
-/// Runs `factory update`: installs the latest release over this executable, then its skills.
+/// Runs `jidoka update`: installs the latest release over this executable, then its skills.
 pub(crate) fn update(
     current: &str,
     release: bool,
@@ -216,7 +219,7 @@ pub(crate) fn update(
     if status(current, release, &latest)? == Status::UpToDate {
         install::ensure_default_policy(|name| env::var_os(name))
             .map_err(|error| error.to_string())?;
-        println!("factory {current} is already the latest release.");
+        println!("jidoka {current} is already the latest release.");
         return Ok(());
     }
     let agents = match agents {
@@ -230,7 +233,7 @@ pub(crate) fn update(
         None => installed_agents(&home, config_dirs, |name| env::var_os(name)).join(","),
     };
     if !config_dirs.is_empty() && !agents.split(',').any(|agent| agent.trim() == "claude") {
-        return Err("--config-dir applies to the claude agent, which is not being updated; use --agent claude or run 'factory install --agent claude --config-dir <path>'.".into());
+        return Err("--config-dir applies to the claude agent, which is not being updated; use --agent claude or run 'jidoka install --agent claude --config-dir <path>'.".into());
     }
     let asset = asset_name()?;
     let exe =
@@ -239,10 +242,10 @@ pub(crate) fn update(
         .parent()
         .ok_or("Cannot find this executable's folder.")?;
     // Stage next to the executable so the final rename stays on one filesystem.
-    let staged: PathBuf = dir.join(format!(".factory-update-{}", std::process::id()));
+    let staged: PathBuf = dir.join(format!(".jidoka-update-{}", std::process::id()));
     let checksum = staged.with_extension("sha256");
     let result = (|| {
-        println!("Downloading factory {latest}...");
+        println!("Downloading jidoka {latest}...");
         download(&format!("{DOWNLOAD_URL}/{asset}"), &staged)?;
         download(&format!("{DOWNLOAD_URL}/{asset}.sha256"), &checksum)?;
         let data = fs::read(&staged).map_err(|error| error.to_string())?;
@@ -255,12 +258,12 @@ pub(crate) fn update(
     let _ = fs::remove_file(&staged);
     let _ = fs::remove_file(&checksum);
     result?;
-    println!("Updated {} to factory {latest}.", exe.display());
+    println!("Updated {} to Jidoka {latest}.", exe.display());
     if agents.is_empty() {
         install::ensure_default_policy(|name| env::var_os(name))
             .map_err(|error| error.to_string())?;
         println!(
-            "No installed skills found. Run 'factory install --agent <codex|claude|copilot>' to install them."
+            "No installed skills found. Run 'jidoka install --agent <codex|claude|copilot>' to install them."
         );
     } else {
         // The new binary carries the new skills, so it installs them.
@@ -272,10 +275,10 @@ pub(crate) fn update(
         let installed = Command::new(&exe)
             .args(install_args(&agents, forwarded))
             .status()
-            .map_err(|error| format!("Could not run the new factory: {error}"))?;
+            .map_err(|error| format!("Could not run the new jidoka: {error}"))?;
         if !installed.success() {
             return Err(format!(
-                "factory was updated, but installing the skills failed. Run 'factory install --agent {agents}' again, with the same --config-dir options."
+                "jidoka was updated, but installing the skills failed. Run 'jidoka install --agent {agents}' again, with the same --config-dir options."
             ));
         }
     }
@@ -290,12 +293,12 @@ mod tests {
     #[test]
     fn the_version_comes_from_the_release_url() {
         assert_eq!(
-            version_from_url("https://github.com/TDSchreur/tds-factory2/releases/tag/v0.5.1\n"),
+            version_from_url("https://github.com/TDSchreur/jidoka/releases/tag/v0.5.1\n"),
             Some("0.5.1".to_string())
         );
         for bad in [
-            "https://github.com/TDSchreur/tds-factory2/releases",
-            "https://github.com/TDSchreur/tds-factory2/releases/tag/nightly",
+            "https://github.com/TDSchreur/jidoka/releases",
+            "https://github.com/TDSchreur/jidoka/releases/tag/nightly",
             "https://github.com/x/releases/tag/v1.2",
             "",
         ] {
@@ -345,7 +348,7 @@ mod tests {
     #[test]
     fn a_matching_checksum_is_accepted_and_anything_else_is_not() {
         // SHA-256 of "abc".
-        let good = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  factory\n";
+        let good = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  jidoka\n";
         assert!(verify_checksum(b"abc", good).is_ok());
         assert!(verify_checksum(b"abd", good).is_err());
         assert!(verify_checksum(b"abc", "").is_err());
@@ -354,7 +357,7 @@ mod tests {
     #[test]
     fn replacing_the_executable_swaps_the_file() {
         let dir = tempfile::tempdir().unwrap();
-        let (current, new) = (dir.path().join("factory"), dir.path().join("staged"));
+        let (current, new) = (dir.path().join("jidoka"), dir.path().join("staged"));
         fs::write(&current, "old").unwrap();
         fs::write(&new, "new").unwrap();
         replace_executable(&current, &new).unwrap();

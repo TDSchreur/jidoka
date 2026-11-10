@@ -2,16 +2,16 @@
 
 ## Problem and outcome
 
-TDS Factory's dashboard server currently implements HTTP parsing and routing itself. Replace that server with Rocket to make the local server easier to extend, while preserving the CLI, dashboard, run API, existing saved runs and intended local trust boundary. Include the existing uncommitted GitHub Actions instruction, `AGENTS.md`, and `.gitignore` edits in this work.
+Jidoka's dashboard server currently implements HTTP parsing and routing itself. Replace that server with Rocket to make the local server easier to extend, while preserving the CLI, dashboard, run API, existing saved runs and intended local trust boundary. Include the existing uncommitted GitHub Actions instruction, `AGENTS.md`, and `.gitignore` edits in this work.
 
 ## Behavior
 
-- `factory dashboard` serves the existing dashboard on `127.0.0.1:4311` on Linux and Windows. It reports startup failures and retains existing CLI help, install and run commands. An existing run record remains readable and writable across upgrade and restart.
+- `jidoka dashboard` serves the existing dashboard on `127.0.0.1:4311` on Linux and Windows. It reports startup failures and retains existing CLI help, install and run commands. An existing run record remains readable and writable across upgrade and restart.
 - Preserve `GET /`, `GET /api/runs`, `POST /api/runs`, and `POST /api/runs/<id>` for the existing CLI and dashboard, including JSON field names, valid stage/status values, successful response codes and relevant invalid-input/not-found behavior. The CLI finds the CLI token on its own, so no workflow changes.
-- Keep the existing local security boundaries: reject untrusted Host values, reject POST requests with an Origin header or without JSON content type, and limit request body size. POST also needs the CLI token in `X-Factory-Token`; the page's session token does not work there. A missing or wrong CLI token gets 401; the other refusals stay 403. The CLI token is random per server process and written on each start, after the port is bound, to `session-token` (`session-token-<port>` for another port) next to `runs.json`, mode 0600 on Unix, in a folder made 0700 when the server is built, before `runs.json` is written (when the factory creates or owns the folder; a symlinked folder is left as it is, with a warning on stderr naming it and suggesting `chmod 700` when its target is group- or world-accessible, a dangling symlink stops the dashboard from starting, and a folder that cannot be made private stops the dashboard from starting; the file is created under a temporary name and renamed into place); on Windows it relies on the per-user ACL of `%LOCALAPPDATA%`. It is 32 bytes from the operating system's CSPRNG, hex-encoded. If it cannot be written the dashboard prints the path and error (never the token) and exits with a failure. It never appears in a response or an error. The `factory` CLI reads it on each POST. Other same-machine access to `GET` routes is not authenticated; do not imply otherwise. Reject malformed or oversized input without changing stored data.
+- Keep the existing local security boundaries: reject untrusted Host values, reject POST requests with an Origin header or without JSON content type, and limit request body size. POST also needs the CLI token in `X-Jidoka-Token`; the page's session token does not work there. A missing or wrong CLI token gets 401; the other refusals stay 403. The CLI token is random per server process and written on each start, after the port is bound, to `session-token` (`session-token-<port>` for another port) next to `runs.json`, mode 0600 on Unix, in a folder made 0700 when the server is built, before `runs.json` is written (when Jidoka creates or owns the folder; a symlinked folder is left as it is, with a warning on stderr naming it and suggesting `chmod 700` when its target is group- or world-accessible, a dangling symlink stops the dashboard from starting, and a folder that cannot be made private stops the dashboard from starting; the file is created under a temporary name and renamed into place); on Windows it relies on the per-user ACL of `%LOCALAPPDATA%`. It is 32 bytes from the operating system's CSPRNG, hex-encoded. If it cannot be written the dashboard prints the path and error (never the token) and exits with a failure. It never appears in a response or an error. The `jidoka` CLI reads it on each POST. Other same-machine access to `GET` routes is not authenticated; do not imply otherwise. Reject malformed or oversized input without changing stored data.
 - Rocket may serve multiple requests concurrently. Serialize each complete load-modify-save transaction so simultaneous creates and updates cannot lose existing runs, corrupt records, or reuse an ID.
 - Use Rocket's routing, request parsing, JSON support and limits instead of implementing HTTP parsing. Keep the runtime and dependency choices suitable for the existing single-binary release on Linux and Windows. Preserve the user-facing data paths and on-disk JSON format.
-- Add the copied GitHub Actions instruction as requested, link it from `AGENTS.md`, and ignore `.factory/`; retain the user's existing edits.
+- Add the copied GitHub Actions instruction as requested, link it from `AGENTS.md`, and ignore `.jidoka/`; retain the user's existing edits.
 
 ## Verification
 
@@ -19,7 +19,7 @@ Test at the HTTP boundary and through the CLI where practical: dashboard output,
 
 ## Documents
 
-Review and update applicable claims in `README.md`, `docs/specs/run-dashboard.md`, `docs/specs/run-dashboard-tickets.md`, `.agents/skills/factory-full/SKILL.md`, and the CLI help in `src/main.rs`. The currently requested `AGENTS.md`, `.gitignore`, and `.github/instructions/github-actions-ci-cd-best-practices.instructions.md` changes are also in scope. The sweep additionally listed `skills/rust/references/transform-over-mutate.md`, `skills/rust/type-design.md`, `skills/security-review/references/report-format.md`, and `skills/security-review/references/vuln-categories.md`; inspect hits and change them only if they describe this behavior.
+Review and update applicable claims in `README.md`, `docs/specs/run-dashboard.md`, `docs/specs/run-dashboard-tickets.md`, `.agents/skills/jidoka-full/SKILL.md`, and the CLI help in `src/main.rs`. The currently requested `AGENTS.md`, `.gitignore`, and `.github/instructions/github-actions-ci-cd-best-practices.instructions.md` changes are also in scope. The sweep additionally listed `skills/rust/references/transform-over-mutate.md`, `skills/rust/type-design.md`, `skills/security-review/references/report-format.md`, and `skills/security-review/references/vuln-categories.md`; inspect hits and change them only if they describe this behavior.
 
 ## Estimate and scope decision
 
@@ -30,7 +30,7 @@ Review and update applicable claims in `README.md`, `docs/specs/run-dashboard.md
 | Existing instructions, agent guide and ignore changes | 3 | 9 KB |
 | Total, excluding lockfiles | 7–9 | 37–48 KB |
 
-The user chose to keep the requested changes together after being told the run may exceed the size limit. If it grows further during Build, follow the Factory size gate.
+The user chose to keep the requested changes together after being told the run may exceed the size limit. If it grows further during Build, follow the Jidoka size gate.
 
 ## Out of scope
 

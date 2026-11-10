@@ -1,4 +1,4 @@
-//! Where a run's plan is saved: in the factory data dir, per run, so it outlives the run's worktree.
+//! Where a run's plan is saved: in the Jidoka data dir, per run, so it outlives the run's worktree.
 
 use crate::server::DEFAULT_PORT;
 use std::{
@@ -35,7 +35,7 @@ fn create_private(dir: &Path) -> io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     if std::fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(io::Error::other(format!(
-            "the plans folder {} is a symlink; remove it so plans stay in the factory data folder",
+            "the plans folder {} is a symlink; remove it so plans stay in the Jidoka data folder",
             dir.display()
         )));
     }
@@ -57,19 +57,19 @@ mod tests {
 
     #[test]
     fn the_default_runs_file_keeps_its_plans_in_a_plans_folder_beside_it() {
-        let runs = Path::new("/data/tds-factory/runs.json");
+        let runs = Path::new("/data/jidoka/runs.json");
         assert_eq!(
             plan_path(runs, DEFAULT_PORT, "7"),
-            Path::new("/data/tds-factory/plans/7.md")
+            Path::new("/data/jidoka/plans/7.md")
         );
     }
 
     #[test]
     fn another_port_keeps_its_plans_in_its_own_folder() {
-        let runs = Path::new("/data/tds-factory/runs-4400.json");
+        let runs = Path::new("/data/jidoka/runs-4400.json");
         assert_eq!(
             plan_path(runs, 4400, "7"),
-            Path::new("/data/tds-factory/plans-4400/7.md")
+            Path::new("/data/jidoka/plans-4400/7.md")
         );
     }
 
@@ -106,7 +106,7 @@ mod tests {
     fn the_plans_folder_is_private() {
         use std::os::unix::fs::PermissionsExt;
         let data = tempfile::tempdir().unwrap();
-        let runs = data.path().join("tds-factory/runs.json");
+        let runs = data.path().join("jidoka/runs.json");
         let ready = plan_path_ready(&runs, DEFAULT_PORT, "3").unwrap();
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(ready.parent().unwrap()), 0o700);
