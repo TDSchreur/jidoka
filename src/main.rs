@@ -321,7 +321,7 @@ fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Erro
     };
     let state =
         pr_state::read(&pr_wait::RealGh, url).map_err(|problem| inspect::shown(&problem.0))?;
-    let changed = apply_pr_state(id, &run, state)?;
+    let changed = apply_pr_state(id, state)?;
     if json {
         println!(
             "{}",
@@ -338,14 +338,11 @@ fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Erro
     Ok(0)
 }
 
-/// Applies what the state of the run's pull request means for the run (see `pr_state::follow_up`). Returns
-/// whether the run was changed.
-fn apply_pr_state(
-    id: &str,
-    run: &run::Run,
-    state: pr_state::PrState,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let Some(update) = pr_state::follow_up(run, state) else {
+/// Applies what the state of the run's pull request means for the run (see `pr_state::follow_up`), deciding
+/// from the run as it is now: the host may have taken seconds to answer. Returns whether the run was changed.
+fn apply_pr_state(id: &str, state: pr_state::PrState) -> Result<bool, Box<dyn std::error::Error>> {
+    let run = fetch_run(ADDRESS, id)?;
+    let Some(update) = pr_state::follow_up(&run, state) else {
         return Ok(false);
     };
     client::send_update(ADDRESS, &cli_token_file()?, id, &update)?;
@@ -505,7 +502,7 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     {
         // The wait only reports that the pull request is gone; the run follows what happened to it.
         match pr_state::read(&gh, url) {
-            Ok(state) => match apply_pr_state(id, &run, state) {
+            Ok(state) => match apply_pr_state(id, state) {
                 Ok(changed) => eprint!("{}", pr_state::describe(state, changed)),
                 Err(error) => eprintln!("The run could not be updated: {error}"),
             },

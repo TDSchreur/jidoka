@@ -1,6 +1,6 @@
 ## Added
 
-- `factory run sync <run-id>` and a "Check PR" button on the dashboard's run sheet read the run's pull request from its host and bring the run in line with it.
+- `factory run sync <run-id> [--json]` and a "Check PR" button on the dashboard's run sheet read the run's pull request from its host and bring the run in line with it.
 
 ## Fixed
 
