@@ -410,25 +410,47 @@ pub(crate) fn truncate(command: &str) -> &str {
     &command[..end]
 }
 
-/// The run ids in `ids` that a `jidoka run update <id>` in `command` names. Only a command that runs
-/// `jidoka` counts: `grep "jidoka run update 1 " notes.md`, an `echo` or the text of a here-document do not.
-/// An id is digits only. The id may be a variable that an earlier command of the same line sets to a literal
-/// (`R=123 && jidoka run update $R`); a value that comes from a file or another command is not known here.
+/// The shell variables an agent has set to a literal so far, by name.
+pub(crate) type Variables = HashMap<String, String>;
+
+/// The most distinct variable names kept; an assignment to a new name beyond it is ignored. 256 is far
+/// above the handful of variables a real agent command sets, and small enough to bound the memory a
+/// session holds against a crafted log that assigns endless names.
+pub(crate) const MAX_VARIABLES: usize = 256;
+
+/// The run ids in `ids` that a run command in `command` names; see `run_claims`.
 pub(crate) fn updated_runs(command: &str, ids: &HashSet<&str>) -> HashSet<String> {
+    run_claims(command, ids, &mut Variables::new())
+}
+
+/// The run ids in `ids` that a `jidoka run update <id>` or `jidoka run sync <id>` in `command` names: the
+/// commands that report on a run, as opposed to reading it. Only a command that runs `jidoka` counts: `grep "jidoka run update 1 "
+/// notes.md`, an `echo` or the text of a here-document do not. An id is digits only. The id may be a variable
+/// that an earlier command set to a literal (`R=123 && jidoka run update $R`, `export R=123`); `variables`
+/// carries those across the commands of one session, in order. A value that comes from a file or another
+/// command is not known here.
+pub(crate) fn run_claims(
+    command: &str,
+    ids: &HashSet<&str>,
+    variables: &mut Variables,
+) -> HashSet<String> {
     let mut found = HashSet::new();
-    let mut variables: HashMap<&str, &str> = HashMap::new();
     for segment in &segments(command) {
         let words = split_words(&segment.text);
+        let words = match words.first() {
+            Some(&"export") => &words[1..],
+            _ => &words[..],
+        };
         let assigned = words.iter().take_while(|word| is_assignment(word)).count();
-        if assigned == words.len() {
+        if assigned == words.len() && !words.is_empty() {
             // Only assignments: the variables hold these values for the commands after them.
-            for word in &words {
+            for word in words {
                 if let Some((name, value)) = word.split_once('=') {
                     let value = value.trim_matches(['"', '\'']);
                     if value.contains(SUBSTITUTION) {
                         variables.remove(name);
-                    } else {
-                        variables.insert(name, value);
+                    } else if variables.len() < MAX_VARIABLES || variables.contains_key(name) {
+                        variables.insert(name.to_string(), value.to_string());
                     }
                 }
             }
@@ -438,15 +460,16 @@ pub(crate) fn updated_runs(command: &str, ids: &HashSet<&str>) -> HashSet<String
         let program = words
             .first()
             .map(|word| word.rsplit('/').next().unwrap_or(word));
-        if let (Some("jidoka"), Some(&"run"), Some(&"update"), Some(id)) =
-            (program, words.get(1), words.get(2), words.get(3))
-        {
+        let names_a_run = matches!(
+            (words.get(1), words.get(2)),
+            (Some(&"run"), Some(&("update" | "sync")))
+        );
+        if let (Some("jidoka"), true, Some(id)) = (program, names_a_run, words.get(3)) {
             let id = id.trim_end_matches([')', '}', ';']);
             let id = match id.strip_prefix('$') {
                 Some(name) => variables
                     .get(name.trim_matches(['{', '}']))
-                    .copied()
-                    .unwrap_or(""),
+                    .map_or("", String::as_str),
                 None => id,
             };
             if ids.contains(id) {

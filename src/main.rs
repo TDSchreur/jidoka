@@ -132,7 +132,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                     title,
                     &dir.display().to_string(),
                     repository,
-                    current_session(),
+                    current_sessions().into_iter().next(),
                     resolution.selection
                 )?
             );
@@ -226,9 +226,9 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
         }
         ["run", "update", id, stage, status, options @ ..] => {
             // The agent's own session is recorded with every update, so its token usage can be attributed.
-            let session = current_session();
+            let sessions = current_sessions();
             let mut options = options.to_vec();
-            if let Some(session) = session.as_deref() {
+            for session in &sessions {
                 options.extend(["--session", session]);
             }
             report_run(
@@ -590,7 +590,7 @@ fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::erro
         &dir,
         &parsed,
         &ServerApi,
-        current_session(),
+        current_sessions().into_iter().next(),
         resolution.selection,
     ) {
         Ok(begun) => {
@@ -628,10 +628,27 @@ fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::erro
     }
 }
 
-/// The id of the agent session this command runs in, when the agent exposes it (Claude Code does).
-fn current_session() -> Option<String> {
-    let id = env::var("CLAUDE_CODE_SESSION_ID").ok()?;
-    run::check_session_id(&id).ok().map(|()| id)
+/// The ids of the agent sessions this command runs in, when the agent exposes them: Claude Code sets
+/// `CLAUDE_CODE_SESSION_ID`; Codex sets `CODEX_SESSION_ID` (the root session) and `CODEX_THREAD_ID`.
+fn current_sessions() -> Vec<String> {
+    sessions_from(&|name| env::var_os(name))
+}
+
+fn sessions_from(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<String> {
+    let mut sessions: Vec<String> = Vec::new();
+    for name in [
+        "CLAUDE_CODE_SESSION_ID",
+        "CODEX_SESSION_ID",
+        "CODEX_THREAD_ID",
+    ] {
+        let Some(id) = var(name).and_then(|value| value.into_string().ok()) else {
+            continue;
+        };
+        if run::check_session_id(&id).is_ok() && !sessions.contains(&id) {
+            sessions.push(id);
+        }
+    }
+    sessions
 }
 
 /// `[--port <port>] [--no-usage]` in any order. Usage collection is on unless `--no-usage` or `JIDOKA_USAGE=off`.
@@ -803,6 +820,34 @@ mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lookup<'a>(
+        pairs: &'a [(&'a str, &'a str)],
+    ) -> impl Fn(&str) -> Option<std::ffi::OsString> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).into())
+        }
+    }
+
+    #[test]
+    fn codex_sessions_are_recorded_from_the_environment() {
+        let id = "019e1f00-aaaa-7bbb-8ccc-000000000001";
+        let thread = "019e1f00-aaaa-7bbb-8ccc-000000000002";
+        let both = [("CODEX_SESSION_ID", id), ("CODEX_THREAD_ID", thread)];
+        assert_eq!(sessions_from(&lookup(&both)), [id, thread]);
+        let same = [("CODEX_SESSION_ID", id), ("CODEX_THREAD_ID", id)];
+        assert_eq!(sessions_from(&lookup(&same)), [id]);
+        let thread_only = [("CODEX_THREAD_ID", thread)];
+        assert_eq!(sessions_from(&lookup(&thread_only)), [thread]);
+        let claude = [("CLAUDE_CODE_SESSION_ID", id)];
+        assert_eq!(sessions_from(&lookup(&claude)), [id]);
+        let invalid = [("CODEX_SESSION_ID", "bad id!"), ("CODEX_THREAD_ID", "x")];
+        assert!(sessions_from(&lookup(&invalid)).is_empty());
+        assert!(sessions_from(&lookup(&[])).is_empty());
+    }
 
     #[test]
     fn build_label_shows_the_version_for_releases_and_the_commit_otherwise() {

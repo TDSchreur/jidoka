@@ -308,9 +308,9 @@ function UsageDetail({ usage }) {
               <caption class="visually-hidden">Token usage by stage, model and ticket</caption>
               <thead>
                 <tr>
-                  <th scope="col">Stage</th>
-                  <th scope="col">Model</th>
-                  <th scope="col">Ticket</th>
+                  <th scope="col" class="text">Stage</th>
+                  <th scope="col" class="text">Model</th>
+                  <th scope="col" class="text">Ticket</th>
                   <th scope="col">Fresh</th>
                   <th scope="col">Input</th>
                   <th scope="col">Cache read</th>
@@ -324,9 +324,9 @@ function UsageDetail({ usage }) {
               <tbody>
                 ${rows.map(
                   (row, index) => html`<tr key=${index}>
-                    <td>${stageName(row.stage)}</td>
-                    <td>${row.model}</td>
-                    <td><${TicketRef} value=${rowBucket(row)} /></td>
+                    <td class="text">${stageName(row.stage)}</td>
+                    <td class="text wrap">${row.model}</td>
+                    <td class="text wrap"><${TicketRef} value=${rowBucket(row)} /></td>
                     <td>${tokenCount(freshTokens(row))}</td>
                     <td>${tokenCount(row.input)}</td>
                     <td>${tokenCount(row.cache_read)}</td>
@@ -340,10 +340,10 @@ function UsageDetail({ usage }) {
               </tbody>
               <tfoot>
                 <tr>
-                  <th scope="row" colspan="3">Total fresh</th>
+                  <th scope="row" colspan="3" class="text">Total fresh</th>
                   <td>${tokenCount(total)}</td>
-                  <td colspan="5"></td>
-                  <td>${costText(usage.cost, true)}</td>
+                  <td colspan="6"></td>
+                  <td class="wrap">${costText(usage.cost, true)}</td>
                 </tr>
               </tfoot>
             </table>
@@ -354,7 +354,7 @@ function UsageDetail({ usage }) {
                   <caption class="visually-hidden">Token usage and estimated cost per model</caption>
                   <thead>
                     <tr>
-                      <th scope="col">Model</th>
+                      <th scope="col" class="text">Model</th>
                       <th scope="col">Fresh</th>
                       <th scope="col">Cache read</th>
                       <th scope="col">Est. cost</th>
@@ -363,7 +363,7 @@ function UsageDetail({ usage }) {
                   <tbody>
                     ${models.map(
                       ([model, tokens]) => html`<tr key=${model}>
-                        <td>${model}</td>
+                        <td class="text wrap">${model}</td>
                         <td>${tokenCount(tokens.fresh)}</td>
                         <td>${tokenCount(tokens.cache_read)}</td>
                         <td>${costText(usage.cost?.by_model?.[model])}</td>
@@ -375,8 +375,9 @@ function UsageDetail({ usage }) {
             : null}
           <p class="usage-note">
             Fresh tokens are input excluding cache reads, plus cache writes and output. Cache reads are shown beside
-            them, not inside. Reasoning is part of output. n/a means the log did not report it; it is not zero. Est. cost is an estimate
-            from Jidoka's price table; a model without a price is unknown, never zero, and a total that includes
+            them, not inside. Reasoning is part of output. n/a means the log did not report it; it is not zero. Est. cost is a token-based
+            estimate at API list prices (Claude and, where OpenAI publishes a price, Codex models), not what a
+            subscription is charged; a model without a price is unknown, never zero, and a total that includes
             one is marked partial.
           </p>`
       : null}
