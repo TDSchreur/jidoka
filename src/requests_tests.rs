@@ -177,7 +177,7 @@ fn each_command_lands_in_the_category_the_rules_give_it() {
             Category::Workspace,
         ),
         (
-            "factory run start \"A title\" --agent claude",
+            "jidoka run start \"A title\" --agent claude",
             Category::Workspace,
         ),
         ("git commit -m \"Add it\"", Category::Commit),
@@ -234,20 +234,20 @@ fn each_command_lands_in_the_category_the_rules_give_it() {
             Category::Verification,
         ),
         ("FOO=1 cargo test", Category::Verification),
-        ("factory run inspect 123", Category::ContinuationCheck),
-        ("factory run check 123 --json", Category::ContinuationCheck),
+        ("jidoka run inspect 123", Category::ContinuationCheck),
+        ("jidoka run check 123 --json", Category::ContinuationCheck),
         ("git worktree list --porcelain", Category::ContinuationCheck),
         (
-            "factory run update 1 build running --activity x",
+            "jidoka run update 1 build running --activity x",
             Category::StandaloneReporting,
         ),
         (
-            "cd /repo && factory run update 1 build running",
+            "cd /repo && jidoka run update 1 build running",
             Category::StandaloneReporting,
         ),
         ("ls -la", Category::ReadingEditingAnalysis),
         (
-            "factory run update 1 build running && ls",
+            "jidoka run update 1 build running && ls",
             Category::ReadingEditingAnalysis,
         ),
     ] {
@@ -264,14 +264,14 @@ fn words_inside_a_heredoc_do_not_decide_the_category() {
 #[test]
 fn a_session_claims_a_run_only_through_an_executed_update_command() {
     let world = World::new();
-    // Executed `factory run update <id>`: claims.
+    // Executed `jidoka run update <id>`: claims.
     world.session(
         "executed",
         &[
             one(
                 10,
                 "e1",
-                bash(&format!("factory run update {RUN_A} build running")),
+                bash(&format!("jidoka run update {RUN_A} build running")),
             ),
             one(20, "e2", text()),
         ],
@@ -281,11 +281,11 @@ fn a_session_claims_a_run_only_through_an_executed_update_command() {
         "mentioned",
         &[
             json!({"type": "user", "timestamp": iso(5), "message": {"content": [
-                {"type": "tool_result", "content": format!("factory run update {RUN_A} build running")}]}})
+                {"type": "tool_result", "content": format!("jidoka run update {RUN_A} build running")}]}})
             .to_string(),
-            json!({"type": "user", "timestamp": iso(6), "message": {"content": format!("factory run update {RUN_A}")}}).to_string(),
-            one(10, "n1", bash(&format!("factory run inspect {RUN_A}"))),
-            one(20, "n2", bash(&format!("cat notes.md # factory run stats {RUN_A}"))),
+            json!({"type": "user", "timestamp": iso(6), "message": {"content": format!("jidoka run update {RUN_A}")}}).to_string(),
+            one(10, "n1", bash(&format!("jidoka run inspect {RUN_A}"))),
+            one(20, "n2", bash(&format!("cat notes.md # jidoka run stats {RUN_A}"))),
         ],
     );
     let target = run(RUN_A, 0, Some(100), &[]);
@@ -395,10 +395,10 @@ fn chained_reporting_is_a_count_beside_the_categories() {
             one(
                 10,
                 "m1",
-                bash("cargo test && factory run update 1 build running"),
+                bash("cargo test && jidoka run update 1 build running"),
             ),
-            one(20, "m2", bash("factory run update 1 build running")),
-            one(30, "m3", bash("ls; factory run update 1 build running")),
+            one(20, "m2", bash("jidoka run update 1 build running")),
+            one(30, "m3", bash("ls; jidoka run update 1 build running")),
             one(40, "m4", bash("cargo test")),
         ],
     );
@@ -663,7 +663,7 @@ fn copilot_requests_are_categorized_by_their_tool_calls_and_subagents_shown_apar
                 &[copilot_call(
                     "t4",
                     "bash",
-                    json!({"command": format!("factory run update {RUN_A} build running")}),
+                    json!({"command": format!("jidoka run update {RUN_A} build running")}),
                 )],
             ),
             copilot_usage(31, "a3", false),
@@ -940,17 +940,17 @@ fn the_pool_options_come_in_any_order_and_refuse_the_rest() {
 // --- which run a command updates, and which subagent logs count ---------------------------------------
 
 #[test]
-fn only_a_factory_command_claims_a_run_not_a_command_that_names_one() {
+fn only_a_jidoka_command_claims_a_run_not_a_command_that_names_one() {
     let world = World::new();
     world.session(
         "named",
         &[
-            one(10, "n1", bash(&format!("grep -n \"factory run update {RUN_A}\" README.md"))),
-            one(20, "n2", bash(&format!("echo \"factory run update {RUN_A} build running\""))),
+            one(10, "n1", bash(&format!("grep -n \"jidoka run update {RUN_A}\" README.md"))),
+            one(20, "n2", bash(&format!("echo \"jidoka run update {RUN_A} build running\""))),
             one(
                 30,
                 "n3",
-                bash(&format!("gh pr create --body-file - <<'EOF'\nRun factory run update {RUN_A} to report\nEOF")),
+                bash(&format!("gh pr create --body-file - <<'EOF'\nRun jidoka run update {RUN_A} to report\nEOF")),
             ),
         ],
     );
@@ -960,7 +960,7 @@ fn only_a_factory_command_claims_a_run_not_a_command_that_names_one() {
             10,
             "r1",
             bash(&format!(
-                "cd /repo && factory run update {RUN_A} build running --activity x"
+                "cd /repo && jidoka run update {RUN_A} build running --activity x"
             )),
         )],
     );
@@ -1062,11 +1062,11 @@ fn text_inside_quotes_never_claims_a_run() {
     let id = RUN_A;
     assert!(
         claimed_by(&[
-            format!("echo \"done; factory run update {id} ok\""),
-            format!("git commit -m \"wip && factory run update {id}\""),
-            format!("gh pr create --body \"Summary\nfactory run update {id} check done\nmore\""),
-            format!("echo 'a | factory run update {id}'"),
-            format!("echo \"say \\\"x\\\"; factory run update {id}\""),
+            format!("echo \"done; jidoka run update {id} ok\""),
+            format!("git commit -m \"wip && jidoka run update {id}\""),
+            format!("gh pr create --body \"Summary\njidoka run update {id} check done\nmore\""),
+            format!("echo 'a | jidoka run update {id}'"),
+            format!("echo \"say \\\"x\\\"; jidoka run update {id}\""),
         ])
         .is_empty()
     );
@@ -1076,15 +1076,15 @@ fn text_inside_quotes_never_claims_a_run() {
 fn a_real_update_command_claims_however_it_is_wrapped() {
     let id = RUN_A;
     let commands: Vec<String> = [
-        "factory run update ID build running",
-        "/usr/local/bin/factory run update ID build running",
-        "cd /repo && factory run update ID build running",
-        "(factory run update ID build running)",
-        "if factory run update ID build running; then echo ok; fi",
-        "env X=1 factory run update ID build running",
-        "timeout 60 factory run update ID build running",
-        "X=1 sudo factory run update \"ID\" build running",
-        "ls | factory run update ID build running",
+        "jidoka run update ID build running",
+        "/usr/local/bin/jidoka run update ID build running",
+        "cd /repo && jidoka run update ID build running",
+        "(jidoka run update ID build running)",
+        "if jidoka run update ID build running; then echo ok; fi",
+        "env X=1 jidoka run update ID build running",
+        "timeout 60 jidoka run update ID build running",
+        "X=1 sudo jidoka run update \"ID\" build running",
+        "ls | jidoka run update ID build running",
     ]
     .iter()
     .map(|c| c.replace("ID", id))
@@ -1115,16 +1115,16 @@ fn words_inside_quotes_do_not_decide_the_category() {
 #[test]
 fn an_update_claims_after_comments_here_strings_and_wrappers_with_options() {
     let commands: Vec<String> = [
-        "cargo test # don't skip\nfactory run update ID b",
-        "cat <<< \"x\"\nfactory run update ID b",
-        "cat <<'EOF';\nhi\nEOF\nfactory run update ID b",
-        "echo $((1<<2))\nfactory run update ID b",
-        "(cd x && factory run update ID)",
-        "{ factory run update ID; }",
-        "timeout -s KILL 60 factory run update ID b",
-        "timeout -k 5 60 factory run update ID b",
-        "env -i factory run update ID b",
-        "env -u HOME X=1 factory run update ID b",
+        "cargo test # don't skip\njidoka run update ID b",
+        "cat <<< \"x\"\njidoka run update ID b",
+        "cat <<'EOF';\nhi\nEOF\njidoka run update ID b",
+        "echo $((1<<2))\njidoka run update ID b",
+        "(cd x && jidoka run update ID)",
+        "{ jidoka run update ID; }",
+        "timeout -s KILL 60 jidoka run update ID b",
+        "timeout -k 5 60 jidoka run update ID b",
+        "env -i jidoka run update ID b",
+        "env -u HOME X=1 jidoka run update ID b",
     ]
     .iter()
     .map(|c| c.replace("ID", RUN_A))
@@ -1142,10 +1142,10 @@ fn an_update_claims_after_comments_here_strings_and_wrappers_with_options() {
 fn text_that_is_not_a_command_never_claims_a_run() {
     assert!(
         claimed_by(&[
-            format!("cat <<\\EOF\nfactory run update {RUN_A} b\nEOF"),
-            format!("cat <<\"EOF\"\nfactory run update {RUN_A} b\nEOF"),
-            format!("ls # factory run update {RUN_A}"),
-            format!("# factory run update {RUN_A}\nls"),
+            format!("cat <<\\EOF\njidoka run update {RUN_A} b\nEOF"),
+            format!("cat <<\"EOF\"\njidoka run update {RUN_A} b\nEOF"),
+            format!("ls # jidoka run update {RUN_A}"),
+            format!("# jidoka run update {RUN_A}\nls"),
         ])
         .is_empty()
     );
@@ -1161,9 +1161,9 @@ fn text_that_is_not_a_command_never_claims_a_run() {
 #[test]
 fn a_report_behind_a_variable_and_a_directory_change_is_standalone_reporting() {
     for command in [
-        "R=$(cat /tmp/run-id) && cd /repo/wt && factory run update $R build running --activity x",
-        "R=`cat /tmp/run-id`; factory run update \"$R\" build running",
-        "S=/tmp/scratch R=$(cat $S/id) && factory run update ${R} build running",
+        "R=$(cat /tmp/run-id) && cd /repo/wt && jidoka run update $R build running --activity x",
+        "R=`cat /tmp/run-id`; jidoka run update \"$R\" build running",
+        "S=/tmp/scratch R=$(cat $S/id) && jidoka run update ${R} build running",
     ] {
         assert_eq!(
             category_of(command),
@@ -1212,9 +1212,9 @@ fn a_substitution_is_one_word_and_the_commands_inside_it_count() {
 fn a_literal_assignment_in_the_same_command_resolves_the_variable_that_names_the_run() {
     let id = RUN_A;
     let claiming: Vec<String> = [
-        "R=ID && factory run update $R build running",
-        "R=ID; cd /repo && factory run update \"$R\" build running",
-        "R='ID'\nfactory run update ${R} build running",
+        "R=ID && jidoka run update $R build running",
+        "R=ID; cd /repo && jidoka run update \"$R\" build running",
+        "R='ID'\njidoka run update ${R} build running",
     ]
     .iter()
     .map(|c| c.replace("ID", id))
@@ -1228,9 +1228,9 @@ fn a_literal_assignment_in_the_same_command_resolves_the_variable_that_names_the
     }
     // A value from a file or another command cannot be resolved, so nothing is claimed.
     for command in [
-        "R=$(cat /tmp/run-id) && factory run update $R build running".to_string(),
-        "factory run update $R build running".to_string(),
-        format!("R=other && factory run update $R build running # {id}"),
+        "R=$(cat /tmp/run-id) && jidoka run update $R build running".to_string(),
+        "jidoka run update $R build running".to_string(),
+        format!("R=other && jidoka run update $R build running # {id}"),
     ] {
         assert!(
             claimed_by(std::slice::from_ref(&command)).is_empty(),
@@ -1251,7 +1251,7 @@ fn thousands_of_open_substitutions_do_not_overflow_the_stack() {
 #[test]
 fn a_filter_after_a_pipe_is_plumbing_for_the_command_before_it() {
     assert_eq!(
-        category_of("factory run update 1 build running --activity x 2>&1 | tail -1"),
+        category_of("jidoka run update 1 build running --activity x 2>&1 | tail -1"),
         Category::StandaloneReporting
     );
     assert_eq!(
@@ -1264,7 +1264,7 @@ fn a_filter_after_a_pipe_is_plumbing_for_the_command_before_it() {
     );
     // A command that follows `&&` after a pipeline is work of its own again.
     assert_eq!(
-        category_of("factory run update 1 build running | tail -1 && ls"),
+        category_of("jidoka run update 1 build running | tail -1 && ls"),
         Category::ReadingEditingAnalysis
     );
 }
@@ -1275,8 +1275,8 @@ fn the_request_that_starts_a_run_counts_even_though_it_precedes_the_runs_first_m
     world.session(
         "s",
         &[
-            // 30 seconds before the run's first mark: it runs `factory run start` and makes the worktree.
-            one(370, "start", bash("git fetch -q origin develop && factory run start \"A title\" && git worktree add -b x ../y")),
+            // 30 seconds before the run's first mark: it runs `jidoka run start` and makes the worktree.
+            one(370, "start", bash("git fetch -q origin develop && jidoka run start \"A title\" && git worktree add -b x ../y")),
             // Also before the first mark, but not workspace work: not the run's.
             one(375, "before", text()),
             // Workspace work minutes before the first mark: another piece of work.
@@ -1297,7 +1297,7 @@ fn a_here_document_inside_a_substitution_does_not_swallow_the_rest_of_the_line()
     let id = RUN_A;
     // The usual Claude Code commit: the message sits in a here-document, with an apostrophe.
     let commit = format!(
-        "git commit -m \"$(cat <<'EOF'\nDon't (stop\nEOF\n)\" && factory run update {id} build running"
+        "git commit -m \"$(cat <<'EOF'\nDon't (stop\nEOF\n)\" && jidoka run update {id} build running"
     );
     assert_eq!(
         claimed_by(std::slice::from_ref(&commit)).len(),
@@ -1314,32 +1314,32 @@ fn a_here_document_inside_a_substitution_does_not_swallow_the_rest_of_the_line()
 fn only_read_only_filters_and_helpers_are_plumbing() {
     for (command, expected) in [
         (
-            "H=$(git rev-parse --short HEAD) && factory run update 1 build running",
+            "H=$(git rev-parse --short HEAD) && jidoka run update 1 build running",
             Category::StandaloneReporting,
         ),
         (
-            "factory run update 1 build running 2>&1 | grep -v x | head -3",
+            "jidoka run update 1 build running 2>&1 | grep -v x | head -3",
             Category::StandaloneReporting,
         ),
         (
-            "D=$(date +%s) && factory run update 1 build running",
+            "D=$(date +%s) && jidoka run update 1 build running",
             Category::StandaloneReporting,
         ),
         // Work that happens in a pipe or a substitution is still work.
         (
-            "echo x | git apply && factory run update 1 build running",
+            "echo x | git apply && jidoka run update 1 build running",
             Category::ReadingEditingAnalysis,
         ),
         (
-            "R=$(python3 make_edits.py) && factory run update 1 build running",
+            "R=$(python3 make_edits.py) && jidoka run update 1 build running",
             Category::ReadingEditingAnalysis,
         ),
         (
-            "factory run update 1 build running | tee out.txt",
+            "jidoka run update 1 build running | tee out.txt",
             Category::ReadingEditingAnalysis,
         ),
         (
-            "ls | xargs sed -i s/a/b/ && factory run update 1 build running",
+            "ls | xargs sed -i s/a/b/ && jidoka run update 1 build running",
             Category::ReadingEditingAnalysis,
         ),
     ] {
@@ -1366,11 +1366,11 @@ fn a_run_start_request_near_two_overlapping_runs_is_in_neither() {
 #[test]
 fn read_only_git_and_gh_forms_are_helpers_too() {
     for command in [
-        "H=$(git -C ../wt rev-parse HEAD) && factory run update 1 build running",
-        "B=$(git branch --show-current) && factory run update 1 build running",
-        "S=$(git status --short | head -3) && factory run update 1 build running",
-        "factory run update 1 finish done --summary finish=Shipped --activity \"Opened $(gh pr view --json url -q .url)\"",
-        "L=$(git log -1 --format=%s) && factory run update 1 build running",
+        "H=$(git -C ../wt rev-parse HEAD) && jidoka run update 1 build running",
+        "B=$(git branch --show-current) && jidoka run update 1 build running",
+        "S=$(git status --short | head -3) && jidoka run update 1 build running",
+        "jidoka run update 1 finish done --summary finish=Shipped --activity \"Opened $(gh pr view --json url -q .url)\"",
+        "L=$(git log -1 --format=%s) && jidoka run update 1 build running",
     ] {
         assert_eq!(
             category_of(command),
@@ -1380,10 +1380,10 @@ fn read_only_git_and_gh_forms_are_helpers_too() {
     }
     // Forms that change something are not helpers.
     for command in [
-        "B=$(git branch -D old) && factory run update 1 build running",
-        "U=$(gh pr merge 5) && factory run update 1 build running",
-        "X=$(git diff --output=/tmp/p) && factory run update 1 build running",
-        "X=$(git -C d log --output=/tmp/p) && factory run update 1 build running",
+        "B=$(git branch -D old) && jidoka run update 1 build running",
+        "U=$(gh pr merge 5) && jidoka run update 1 build running",
+        "X=$(git diff --output=/tmp/p) && jidoka run update 1 build running",
+        "X=$(git -C d log --output=/tmp/p) && jidoka run update 1 build running",
     ] {
         assert_ne!(
             category_of(command),
@@ -1396,7 +1396,7 @@ fn read_only_git_and_gh_forms_are_helpers_too() {
 #[test]
 fn a_here_string_inside_a_substitution_is_not_a_here_document() {
     assert_eq!(
-        category_of("X=$(tr a b <<<abc\ncat)\nfactory run update 1 build running"),
+        category_of("X=$(tr a b <<<abc\ncat)\njidoka run update 1 build running"),
         Category::StandaloneReporting
     );
 }
@@ -1609,7 +1609,7 @@ fn codex_tool_output_is_counted_on_the_request_that_made_the_call_even_when_it_a
 #[test]
 fn a_codex_session_claims_a_run_only_through_an_executed_update_or_a_recorded_id() {
     let world = World::new();
-    let update = format!("factory run update {RUN_A} build running --activity x");
+    let update = format!("jidoka run update {RUN_A} build running --activity x");
     world.file(
         "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-executed.jsonl",
         &[

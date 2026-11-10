@@ -25,6 +25,7 @@ mod run_reinstall;
 mod server;
 mod stats;
 mod token;
+mod uninstall;
 mod update;
 mod usage;
 mod usage_logs;
@@ -34,7 +35,7 @@ use run::UPDATE_HELP;
 use server::{ADDRESS, DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...] [--config-dir <path>]...\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr sync <run-id> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run check <run-id> [--json]\n  factory run sync <run-id> [--json]\n  factory run cleanup <run-id> [--reinstall] [--config-dir <path>]...\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install --agent <codex|claude|copilot>[,...] [--config-dir <path>]...\n  jidoka uninstall --agent <codex|claude|copilot>[,...] [--config-dir <path>]... [--keep-data]\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka check\n  jidoka update [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id> [--reinstall] [--config-dir <path>]...\n  jidoka run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  jidoka --help | --version";
 
 /// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
 const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
@@ -59,8 +60,8 @@ fn build_label(version: &str, release: bool, commit: &str) -> String {
 fn current_build() -> String {
     build_label(
         env!("CARGO_PKG_VERSION"),
-        env!("FACTORY_BUILD_RELEASE") == "true",
-        env!("FACTORY_BUILD_COMMIT"),
+        env!("JIDOKA_BUILD_RELEASE") == "true",
+        env!("JIDOKA_BUILD_COMMIT"),
     )
 }
 
@@ -85,25 +86,28 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
         .as_slice()
     {
         [] | ["--help" | "-h"] => println!("{HELP}\n\n{UPDATE_HELP}"),
-        ["--version" | "-V"] => println!("factory {}", current_build()),
+        ["--version" | "-V"] => println!("jidoka {}", current_build()),
         ["install", options @ ..] => match install::parse_options(options) {
             Ok((Some(agent), dirs)) => install::install(agent, &dirs)?,
             Ok((None, _)) => return Err(format!("install needs --agent.\n{HELP}").into()),
             Err(error) => return Err(format!("{error}\n{HELP}").into()),
         },
+        ["uninstall", options @ ..] => {
+            uninstall::run(options)?;
+        }
         ["update", options @ ..] => {
             let (agents, dirs) =
                 install::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
             update::update(
                 env!("CARGO_PKG_VERSION"),
-                env!("FACTORY_BUILD_RELEASE") == "true",
+                env!("JIDOKA_BUILD_RELEASE") == "true",
                 agents,
                 &dirs,
             )?
         }
         ["check"] => update::check(
             env!("CARGO_PKG_VERSION"),
-            env!("FACTORY_BUILD_RELEASE") == "true",
+            env!("JIDOKA_BUILD_RELEASE") == "true",
         )?,
         ["doctor", options @ ..] => {
             let args = doctor::parse_args(options).map_err(|error| format!("{error}\n{HELP}"))?;
@@ -111,7 +115,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
         }
         ["dashboard", options @ ..] => {
             let (port, usage) =
-                parse_dashboard_options(options, env::var("FACTORY_USAGE").ok().as_deref())?;
+                parse_dashboard_options(options, env::var("JIDOKA_USAGE").ok().as_deref())?;
             dashboard(port, usage)?;
         }
         ["run", "start", title, options @ ..] => {
@@ -257,7 +261,7 @@ impl pr_open::RunApi for ServerApi {
     }
 }
 
-/// `factory pr open <run-id> --title <title> --body-file <path>`: pushes the run's branch and opens its pull
+/// `jidoka pr open <run-id> --title <title> --body-file <path>`: pushes the run's branch and opens its pull
 /// request, or finds the one that is open, and records it on the run.
 fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
     let parsed = pr_open::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
@@ -288,7 +292,7 @@ fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     Ok(0)
 }
 
-/// `factory run check <run-id>`: compares the run's recorded workspace with the repository. It only reads.
+/// `jidoka run check <run-id>`: compares the run's recorded workspace with the repository. It only reads.
 /// The exit status is 0 when nothing differs, 2 when something does, and 1 for a problem.
 fn run_check_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
     let json = run_check::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
@@ -309,7 +313,7 @@ fn run_check_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::erro
     Ok(report.exit_code)
 }
 
-/// `factory run sync <run-id>`: reads the state of the run's pull request from its host and brings the run in
+/// `jidoka run sync <run-id>`: reads the state of the run's pull request from its host and brings the run in
 /// line with it: a merged pull request finishes the run, a closed one blocks it, and an open one changes nothing.
 fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Error>> {
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
@@ -317,7 +321,7 @@ fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Erro
     }
     let run = fetch_run(ADDRESS, id)?;
     let Some(url) = run.pr.as_deref() else {
-        return Err("The run has no pull request recorded. Record it with `factory run update <id> finish running --pr <url>`.".into());
+        return Err("The run has no pull request recorded. Record it with `jidoka run update <id> finish running --pr <url>`.".into());
     };
     let state =
         pr_state::read(&pr_wait::RealGh, url).map_err(|problem| inspect::shown(&problem.0))?;
@@ -349,7 +353,7 @@ fn apply_pr_state(id: &str, state: pr_state::PrState) -> Result<bool, Box<dyn st
     Ok(true)
 }
 
-/// `factory run cleanup <run-id>`: removes the worktree and local branch of a run whose pull request merged,
+/// `jidoka run cleanup <run-id>`: removes the worktree and local branch of a run whose pull request merged,
 /// then clears them from the run. It refuses, removing nothing, when work could be lost.
 fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
@@ -426,7 +430,7 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
     Ok(0)
 }
 
-/// `factory pr sync <run-id>`: brings the run's branch up to date with its base. The exit status is the
+/// `jidoka pr sync <run-id>`: brings the run's branch up to date with its base. The exit status is the
 /// outcome's; 1 is a problem.
 fn pr_sync_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
     let parsed = pr_sync::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
@@ -453,7 +457,7 @@ fn pr_sync_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     Ok(synced.exit_code)
 }
 
-/// `factory pr wait <run-id>`: watches the CI of the run's pull request and prints the outcome. The exit
+/// `jidoka pr wait <run-id>`: watches the CI of the run's pull request and prints the outcome. The exit
 /// status is the outcome's; 1 is a problem with the tools or the run.
 fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
     let (mut wait_options, json) =
@@ -530,7 +534,7 @@ fn resolve_routing(host: Option<routing::Host>) -> Result<routing::Resolution, S
     Ok(resolution)
 }
 
-/// The real factory server for `factory run begin`.
+/// The real jidoka server for `jidoka run begin`.
 struct ServerApi;
 
 impl run_begin::RunApi for ServerApi {
@@ -572,7 +576,7 @@ impl run_begin::RunApi for ServerApi {
     }
 }
 
-/// `factory run begin <title>`, or `--run <id>` to resume: creates a run and its workspace.
+/// `jidoka run begin <title>`, or `--run <id>` to resume: creates a run and its workspace.
 fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::error::Error>> {
     let host = parsed.agent.as_deref().and_then(routing::Host::parse);
     let dir = env::current_dir()?;
@@ -630,10 +634,10 @@ fn current_session() -> Option<String> {
     run::check_session_id(&id).ok().map(|()| id)
 }
 
-/// `[--port <port>] [--no-usage]` in any order. Usage collection is on unless `--no-usage` or `FACTORY_USAGE=off`.
+/// `[--port <port>] [--no-usage]` in any order. Usage collection is on unless `--no-usage` or `JIDOKA_USAGE=off`.
 fn parse_dashboard_options(
     options: &[&str],
-    factory_usage: Option<&str>,
+    jidoka_usage: Option<&str>,
 ) -> Result<(u16, bool), String> {
     let (mut port, mut usage) = (None, true);
     let mut args = options.iter();
@@ -648,7 +652,7 @@ fn parse_dashboard_options(
             other => return Err(format!("Invalid dashboard option {other:?}.\n{HELP}")),
         }
     }
-    if usage::switched_off_by(factory_usage) {
+    if usage::switched_off_by(jidoka_usage) {
         usage = false;
     }
     Ok((port.unwrap_or(DEFAULT_PORT), usage))
@@ -683,7 +687,7 @@ fn dashboard_url(port: u16, project: &str) -> String {
     )
 }
 
-/// Serves the dashboard, or, when a Factory dashboard already answers on the port, prints its URL.
+/// Serves the dashboard, or, when a Jidoka dashboard already answers on the port, prints its URL.
 fn dashboard(port: u16, usage: bool) -> Result<(), Box<dyn std::error::Error>> {
     // A Project is identified by its repository, so a linked worktree opens its main checkout's row.
     let dir = env::current_dir()?;
@@ -694,19 +698,19 @@ fn dashboard(port: u16, usage: bool) -> Result<(), Box<dyn std::error::Error>> {
         Probe::Running(info) => {
             println!("Dashboard already running (pid {}): {url}", info.pid);
             if !usage {
-                eprintln!("Note: --no-usage and FACTORY_USAGE only apply to a dashboard this command starts.");
+                eprintln!("Note: --no-usage and JIDOKA_USAGE only apply to a dashboard this command starts.");
             }
             let ours = current_build();
             if info.version != ours {
                 eprintln!(
-                    "Warning: the running dashboard is factory {}, this is factory {ours}. It was left running; stop it and run 'factory dashboard' again to use this version.",
+                    "Warning: the running dashboard is jidoka {}, this is jidoka {ours}. It was left running; stop it and run 'jidoka dashboard' again to use this version.",
                     info.version
                 );
             }
         }
         Probe::Foreign => {
             return Err(format!(
-                "Port {port} is in use by something that is not a Factory dashboard (it may be a dashboard from an older Factory; stop it and run 'factory dashboard' again). Or use 'factory dashboard --port <port>'."
+                "Port {port} is in use by something that is not a Jidoka dashboard (it may be a dashboard from an older Jidoka; stop it and run 'jidoka dashboard' again). Or use 'jidoka dashboard --port <port>'."
             )
             .into())
         }
@@ -735,11 +739,11 @@ fn report_to_dashboard(
     report_run(ADDRESS, &token_file, id, stage, status, options).map_err(|e| e.to_string())
 }
 
-/// The server `run update` talks to. Debug builds honor `FACTORY_TEST_ADDRESS`, so CLI tests can use a
+/// The server `run update` talks to. Debug builds honor `JIDOKA_TEST_ADDRESS`, so CLI tests can use a
 /// fake server on an OS-assigned port; release builds always use the default dashboard.
 fn cli_address() -> String {
     #[cfg(debug_assertions)]
-    if let Ok(address) = env::var("FACTORY_TEST_ADDRESS") {
+    if let Ok(address) = env::var("JIDOKA_TEST_ADDRESS") {
         return address;
     }
     ADDRESS.to_string()
@@ -774,7 +778,7 @@ fn data_path(port: u16) -> io::Result<PathBuf> {
     } else {
         format!("runs-{port}.json")
     };
-    Ok(base.join("tds-factory").join(file))
+    Ok(base.join("jidoka").join(file))
 }
 
 #[cfg(test)]
@@ -833,13 +837,9 @@ mod tests {
         assert!(
             data_path(DEFAULT_PORT)
                 .unwrap()
-                .ends_with("tds-factory/runs.json")
+                .ends_with("jidoka/runs.json")
         );
-        assert!(
-            data_path(4400)
-                .unwrap()
-                .ends_with("tds-factory/runs-4400.json")
-        );
+        assert!(data_path(4400).unwrap().ends_with("jidoka/runs-4400.json"));
     }
 
     #[test]

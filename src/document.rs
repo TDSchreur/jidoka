@@ -431,11 +431,11 @@ mod tests {
         let (_dir, repository, worktree, _) = setup("x.md");
         let in_repository = repository.join(".git/worktrees/x");
         fs::create_dir_all(&in_repository).unwrap();
-        fs::write(in_repository.join("factory-plan.md"), "# git plan").unwrap();
-        fs::write(worktree.join(".git/factory-plan.md"), "# git plan").unwrap();
+        fs::write(in_repository.join("jidoka-plan.md"), "# git plan").unwrap();
+        fs::write(worktree.join(".git/jidoka-plan.md"), "# git plan").unwrap();
         for reference in [
-            in_repository.join("factory-plan.md"),
-            worktree.join(".git/factory-plan.md"),
+            in_repository.join("jidoka-plan.md"),
+            worktree.join(".git/jidoka-plan.md"),
         ] {
             let reference = reference.to_string_lossy().into_owned();
             let run = run(&repository, &worktree, &reference);
@@ -491,6 +491,20 @@ mod tests {
     }
 
     #[test]
+    fn a_recorded_ticket_id_that_is_not_a_markdown_path_is_still_refused() {
+        let (_dir, _repository, worktree, mut run) = setup("docs/spec.md");
+        fs::write(worktree.join("05"), "# Ticket").unwrap();
+        run.tickets = serde_json::from_value(serde_json::json!([
+            {"reference": "05", "title": "AVM Bicep modules", "status": "pending"}
+        ]))
+        .unwrap();
+        assert_eq!(
+            read(&run, "05", &no_plan()).err(),
+            Some(DocumentError::NotMarkdown)
+        );
+    }
+
+    #[test]
     fn a_non_markdown_file_at_the_plan_location_is_refused() {
         let (_dir, plans, worktree, _) = plans_setup();
         let repository = worktree.parent().unwrap().parent().unwrap().join("repo");
@@ -518,7 +532,7 @@ mod tests {
     fn the_old_plan_beside_the_worktree_is_refused() {
         let (_dir, repository, worktree, _) = setup("x.md");
         let mut sibling = worktree.as_os_str().to_owned();
-        sibling.push(".factory-plan.md");
+        sibling.push(".jidoka-plan.md");
         let sibling = PathBuf::from(sibling);
         fs::write(&sibling, "# old plan").unwrap();
         let run = run(&repository, &worktree, &sibling.to_string_lossy());

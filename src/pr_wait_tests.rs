@@ -1,4 +1,4 @@
-//! `factory pr wait` against a scripted `gh` and a clock that never sleeps.
+//! `jidoka pr wait` against a scripted `gh` and a clock that never sleeps.
 
 use super::*;
 use serde_json::{Value, json};
@@ -706,8 +706,8 @@ fn the_text_says_nothing_about_the_base_when_the_pull_request_is_not_open() {
 fn the_run_and_repository_are_read_from_real_link_shapes() {
     let some = |link: &str| run_of_link(link).map(|(id, repo)| (id.to_string(), repo));
     assert_eq!(
-        some("https://github.com/TDSchreur/tds-factory2/actions/runs/42264460135/job/128054364602"),
-        Some(("42264460135".into(), "TDSchreur/tds-factory2".into()))
+        some("https://github.com/TDSchreur/jidoka/actions/runs/42264460135/job/128054364602"),
+        Some(("42264460135".into(), "TDSchreur/jidoka".into()))
     );
     // A repository whose name starts with a dot, and a link with a query or a fragment.
     assert_eq!(
@@ -1207,7 +1207,7 @@ fn the_pushed_head_is_known_only_while_the_worktree_is_on_the_branch_on_origin()
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env(
                 "GIT_CONFIG_GLOBAL",
-                std::env::temp_dir().join("factory-tests-no-such-gitconfig"),
+                std::env::temp_dir().join("jidoka-tests-no-such-gitconfig"),
             )
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")

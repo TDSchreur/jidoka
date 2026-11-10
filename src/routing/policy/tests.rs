@@ -303,8 +303,8 @@ fn an_old_format_file_fails_with_the_way_to_fix_it() {
             let error = load_text(text, host).unwrap_err();
             for expected in [
                 "old format",
-                "factory install",
-                "factory doctor --create-model-routing",
+                "jidoka install",
+                "jidoka doctor --create-model-routing",
             ] {
                 assert!(error.contains(expected), "{text} {host:?}: {error}");
             }
@@ -541,7 +541,7 @@ fn a_starter_for_one_agent_has_only_that_entry() {
 #[test]
 fn a_starter_is_created_with_its_folder_and_never_replaces_anything() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tds-factory").join("model-routing.json");
+    let path = dir.path().join("jidoka").join("model-routing.json");
     assert!(create_starter(&path, &[RoutingAgent::Claude]).unwrap());
     assert!(fs::read_to_string(&path).unwrap().contains("\"agents\""));
     // A second call, even for another agent, leaves the file alone.
@@ -568,7 +568,7 @@ fn a_link_at_the_policy_path_is_left_alone_even_when_it_points_nowhere() {
 
 #[cfg(not(windows))]
 #[test]
-fn the_policy_lives_in_the_factorys_config_directory_and_ignores_a_relative_one() {
+fn the_policy_lives_in_the_jidokas_config_directory_and_ignores_a_relative_one() {
     let path = |vars: &'static [(&'static str, &'static str)]| {
         policy_path_in(move |name| {
             vars.iter()
@@ -578,20 +578,16 @@ fn the_policy_lives_in_the_factorys_config_directory_and_ignores_a_relative_one(
     };
     assert_eq!(
         path(&[("XDG_CONFIG_HOME", "/cfg"), ("HOME", "/home/u")]),
-        Some(PathBuf::from("/cfg/tds-factory/model-routing.json"))
+        Some(PathBuf::from("/cfg/jidoka/model-routing.json"))
     );
     assert_eq!(
         path(&[("XDG_CONFIG_HOME", ""), ("HOME", "/home/u")]),
-        Some(PathBuf::from(
-            "/home/u/.config/tds-factory/model-routing.json"
-        ))
+        Some(PathBuf::from("/home/u/.config/jidoka/model-routing.json"))
     );
     // A relative XDG_CONFIG_HOME would put the file under whatever folder the command runs in.
     assert_eq!(
         path(&[("XDG_CONFIG_HOME", "relative/dir"), ("HOME", "/home/u")]),
-        Some(PathBuf::from(
-            "/home/u/.config/tds-factory/model-routing.json"
-        ))
+        Some(PathBuf::from("/home/u/.config/jidoka/model-routing.json"))
     );
     assert_eq!(
         path(&[("XDG_CONFIG_HOME", "relative/dir"), ("HOME", "home")]),
@@ -602,14 +598,14 @@ fn the_policy_lives_in_the_factorys_config_directory_and_ignores_a_relative_one(
 
 #[cfg(windows)]
 #[test]
-fn the_policy_lives_in_the_factorys_config_directory() {
+fn the_policy_lives_in_the_jidokas_config_directory() {
     let path =
         policy_path_in(|name| (name == "APPDATA").then(|| r"C:\Users\u\AppData\Roaming".into()));
     assert_eq!(
         path,
         Some(
             PathBuf::from(r"C:\Users\u\AppData\Roaming")
-                .join("tds-factory")
+                .join("jidoka")
                 .join("model-routing.json")
         )
     );

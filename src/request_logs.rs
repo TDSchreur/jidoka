@@ -1,7 +1,7 @@
-//! Reads the model requests of Claude Code session logs for `factory run requests`.
+//! Reads the model requests of Claude Code session logs for `jidoka run requests`.
 //!
 //! Of each request it keeps the time, the token counts and a category taken from the Bash commands of its
-//! tool calls; of each session, the runs that an executed `factory run update <id>` command names. The
+//! tool calls; of each session, the runs that an executed `jidoka run update <id>` command names. The
 //! command text, tool output, prompts and paths are dropped as soon as they are classified: nothing but
 //! categories, flags and counts leaves this module. The usage reader keeps its own promise that no tool
 //! text leaves it.
@@ -85,7 +85,7 @@ pub(crate) struct SessionRequests {
     pub(crate) id: String,
     /// Whether the session has subagent logs. Without them its figures cover the coordinator only.
     pub(crate) has_subagent_logs: bool,
-    /// The run ids an executed `factory run update <id>` command in this session names.
+    /// The run ids an executed `jidoka run update <id>` command in this session names.
     pub(crate) claims: HashSet<String>,
     pub(crate) requests: Vec<Request>,
 }
@@ -129,7 +129,7 @@ struct Pending {
     subagent: bool,
 }
 
-/// Reads the Claude Code logs under `root`: every session that executed `factory run update` for a run in
+/// Reads the Claude Code logs under `root`: every session that executed `jidoka run update` for a run in
 /// `ids`, or was recorded for one in `recorded`, together with the logs of its subagents.
 pub(crate) fn read_requests(
     root: &Path,
@@ -410,10 +410,10 @@ pub(crate) fn truncate(command: &str) -> &str {
     &command[..end]
 }
 
-/// The run ids in `ids` that a `factory run update <id>` in `command` names. Only a command that runs
-/// `factory` counts: `grep "factory run update 1 " notes.md`, an `echo` or the text of a here-document do not.
+/// The run ids in `ids` that a `jidoka run update <id>` in `command` names. Only a command that runs
+/// `jidoka` counts: `grep "jidoka run update 1 " notes.md`, an `echo` or the text of a here-document do not.
 /// An id is digits only. The id may be a variable that an earlier command of the same line sets to a literal
-/// (`R=123 && factory run update $R`); a value that comes from a file or another command is not known here.
+/// (`R=123 && jidoka run update $R`); a value that comes from a file or another command is not known here.
 pub(crate) fn updated_runs(command: &str, ids: &HashSet<&str>) -> HashSet<String> {
     let mut found = HashSet::new();
     let mut variables: HashMap<&str, &str> = HashMap::new();
@@ -438,7 +438,7 @@ pub(crate) fn updated_runs(command: &str, ids: &HashSet<&str>) -> HashSet<String
         let program = words
             .first()
             .map(|word| word.rsplit('/').next().unwrap_or(word));
-        if let (Some("factory"), Some(&"run"), Some(&"update"), Some(id)) =
+        if let (Some("jidoka"), Some(&"run"), Some(&"update"), Some(id)) =
             (program, words.get(1), words.get(2), words.get(3))
         {
             let id = id.trim_end_matches([')', '}', ';']);
@@ -927,9 +927,9 @@ fn hit(segment: &str) -> Hit {
         {
             Category::CiWatch
         }
-        ("factory", "run", "start") => Category::Workspace,
-        ("factory", "run", "update") => return Hit::Reporting,
-        ("factory", "run", "inspect" | "check") => Category::ContinuationCheck,
+        ("jidoka", "run", "start") => Category::Workspace,
+        ("jidoka", "run", "update") => return Hit::Reporting,
+        ("jidoka", "run", "inspect" | "check") => Category::ContinuationCheck,
         ("cargo", "test" | "fmt" | "clippy" | "build" | "check" | "nextest", _) => {
             Category::Verification
         }

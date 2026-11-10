@@ -1,4 +1,4 @@
-//! `factory run update` prints the server's warnings on stderr and still succeeds.
+//! `jidoka run update` prints the server's warnings on stderr and still succeeds.
 
 use std::{
     io::{Read, Write},
@@ -11,7 +11,7 @@ use std::{
 #[cfg(debug_assertions)]
 fn update_prints_each_warning_on_stderr_and_exits_zero() {
     let data = tempfile::tempdir().unwrap();
-    let token_dir = data.path().join("tds-factory");
+    let token_dir = data.path().join("jidoka");
     std::fs::create_dir_all(&token_dir).unwrap();
     std::fs::write(
         token_dir.join("session-token"),
@@ -49,9 +49,9 @@ fn update_prints_each_warning_on_stderr_and_exits_zero() {
         )
         .unwrap();
     });
-    let output = Command::new(env!("CARGO_BIN_EXE_factory"))
+    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
         .args(["run", "update", "1", "finish", "done"])
-        .env("FACTORY_TEST_ADDRESS", &address)
+        .env("JIDOKA_TEST_ADDRESS", &address)
         .env("XDG_DATA_HOME", data.path())
         .env("LOCALAPPDATA", data.path())
         .env_remove("CLAUDE_SESSION_ID")

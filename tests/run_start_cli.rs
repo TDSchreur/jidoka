@@ -1,4 +1,4 @@
-//! `factory run start` reads the model-routing policy before it contacts the dashboard, so a mistake in
+//! `jidoka run start` reads the model-routing policy before it contacts the dashboard, so a mistake in
 //! the file stops the start, and so does a policy for several agents without `--agent`. These tests only
 //! check starts that fail before the dashboard is contacted, so they never reach one.
 #![expect(
@@ -11,7 +11,7 @@ use std::{fs, process::Command};
 #[test]
 fn a_mistake_in_the_policy_stops_the_start_and_names_the_file() {
     let config = tempfile::tempdir().unwrap();
-    let folder = config.path().join("tds-factory");
+    let folder = config.path().join("jidoka");
     fs::create_dir(&folder).unwrap();
     let policy = folder.join("model-routing.json");
     fs::write(
@@ -19,7 +19,7 @@ fn a_mistake_in_the_policy_stops_the_start_and_names_the_file() {
         r#"{"agents":{"claude":{"stages":{"check":{"model":"son net"}}}}}"#,
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_factory"))
+    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
         .args(["run", "start", "never started"])
         .env("XDG_CONFIG_HOME", config.path())
         .env("APPDATA", config.path())
@@ -31,17 +31,17 @@ fn a_mistake_in_the_policy_stops_the_start_and_names_the_file() {
     assert!(error.contains("Model"), "{error}");
 }
 
-/// `factory run start` with a temporary configuration folder holding this policy.
+/// `jidoka run start` with a temporary configuration folder holding this policy.
 fn start(
     policy: &str,
     args: &[&str],
 ) -> (std::process::Output, std::path::PathBuf, tempfile::TempDir) {
     let config = tempfile::tempdir().unwrap();
-    let folder = config.path().join("tds-factory");
+    let folder = config.path().join("jidoka");
     fs::create_dir(&folder).unwrap();
     let path = folder.join("model-routing.json");
     fs::write(&path, policy).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_factory"))
+    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
         .args(["run", "start", "never started"])
         .args(args)
         .env("XDG_CONFIG_HOME", config.path())
@@ -99,8 +99,8 @@ fn an_old_format_policy_stops_the_start_and_says_how_to_replace_it() {
         for expected in [
             "model-routing.json",
             "old format",
-            "factory install",
-            "factory doctor --create-model-routing",
+            "jidoka install",
+            "jidoka doctor --create-model-routing",
         ] {
             assert!(error.contains(expected), "{policy}: {error}");
         }
@@ -123,7 +123,7 @@ fn a_bad_agent_option_is_refused_before_anything_is_read_or_started() {
         assert!(error.contains(expected), "{args:?}: {error}");
         // The usage text shows the option.
         assert!(
-            error.contains("factory run start <title> [--agent"),
+            error.contains("jidoka run start <title> [--agent"),
             "{error}"
         );
         assert!(

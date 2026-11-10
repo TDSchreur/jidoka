@@ -30,15 +30,15 @@ SHIPPED = {
     "summaries": {"define": "Gift cards are bought at checkout and redeemed once.", "check": "One review finding fixed."},
     "tickets": [{"reference": T1, "title": "Redeem a card", "status": "done"}, {"reference": T2, "title": "Buy a card", "status": "done"}],
     "ticket_reports": [
-        {"ticket": T1, "kind": "skill", "text": "factory-tdd", "stage": "build", "at": AT},
+        {"ticket": T1, "kind": "skill", "text": "jidoka-tdd", "stage": "build", "at": AT},
         {"ticket": T1, "kind": "activity", "text": "Redeem path covered by tests", "stage": "build", "at": AT},
     ],
     "run_reports": [
-        {"kind": "skill", "text": "factory-grilling", "stage": "define", "at": AT},
+        {"kind": "skill", "text": "jidoka-grilling", "stage": "define", "at": AT},
         {"kind": "activity", "text": "Agreed the scope with the user", "stage": "define", "at": AT},
-        {"kind": "skill", "text": "factory-implement-balanced", "stage": "build", "at": AT},
+        {"kind": "skill", "text": "jidoka-implement-balanced", "stage": "build", "at": AT},
         {"kind": "activity", "text": "Checkout form built", "stage": "build", "at": AT},
-        {"kind": "skill", "text": "factory-code-review", "stage": "check", "at": AT},
+        {"kind": "skill", "text": "jidoka-code-review", "stage": "check", "at": AT},
     ],
     # Costs come from the server; gpt-x has no price, so its cost is null.
     "usage": {"status": "tracked", "rows": [
@@ -254,17 +254,17 @@ return {shipped: await snap('run-shipped'), active: await snap('run-active'), bl
 
     def test_reports_and_tickets_sit_under_their_stage(self):
         define, build, check, finish = (self.stop(self.shipped, n) for n in ("Define", "Build", "Check", "Finish"))
-        self.assertEqual(define["skills"], ["factory-grilling"])
+        self.assertEqual(define["skills"], ["jidoka-grilling"])
         self.assertTrue(define["reports"][0].endswith("Agreed the scope with the user"))
         self.assertIn("Gift cards are bought at checkout", define["full"])
-        self.assertEqual(build["skills"], ["factory-implement-balanced"])
+        self.assertEqual(build["skills"], ["jidoka-implement-balanced"])
         self.assertTrue(build["reports"][0].endswith("Checkout form built"))
         self.assertEqual(len(build["tickets"]), 2)
-        self.assertTrue(any("Redeem a card" in t and "factory-tdd" in t and "Redeem path covered by tests" in t for t in build["tickets"]))
+        self.assertTrue(any("Redeem a card" in t and "jidoka-tdd" in t and "Redeem path covered by tests" in t for t in build["tickets"]))
         self.assertTrue(any("Buy a card" in t and "Done" in t for t in build["tickets"]))
-        self.assertEqual(check["skills"], ["factory-code-review"])
+        self.assertEqual(check["skills"], ["jidoka-code-review"])
         self.assertEqual(check["tickets"] + define["tickets"] + finish["tickets"], [])
-        self.assertNotIn("factory-tdd", define["full"] + check["full"] + finish["full"])
+        self.assertNotIn("jidoka-tdd", define["full"] + check["full"] + finish["full"])
 
     def test_unplaceable_reports_show_in_other_reports_only_when_present(self):
         other = self.stray["otherReports"]

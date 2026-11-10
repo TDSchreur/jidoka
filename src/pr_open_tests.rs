@@ -1,4 +1,4 @@
-//! `factory pr open` with real git in temporary repositories (a local bare remote) and a scripted `gh`.
+//! `jidoka pr open` with real git in temporary repositories (a local bare remote) and a scripted `gh`.
 
 use super::*;
 use std::{cell::RefCell, collections::VecDeque, fs};
@@ -18,7 +18,7 @@ fn isolated(command: &mut Command) -> &mut Command {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env(
             "GIT_CONFIG_GLOBAL",
-            std::env::temp_dir().join("factory-tests-no-such-gitconfig"),
+            std::env::temp_dir().join("jidoka-tests-no-such-gitconfig"),
         )
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -877,7 +877,7 @@ fn a_run_that_could_not_be_updated_is_told_how_to_record_the_pull_request() {
     // The command to run is complete: the run, its stage and status, and the pull request.
     assert!(
         text.contains(&format!(
-            "factory run update 100 finish done --summary finish=<what shipped> --pr {URL}"
+            "jidoka run update 100 finish done --summary finish=<what shipped> --pr {URL}"
         )),
         "{text}"
     );
@@ -1036,7 +1036,7 @@ fn azure_creation_retry_reuses_concurrent_pull_request() {
 #[test]
 fn github_enterprise_can_be_selected_explicitly() {
     let project = Project::new();
-    run_git(&project.repo, &["config", "factory.prProvider", "github"]);
+    run_git(&project.repo, &["config", "jidoka.prProvider", "github"]);
     let gh = FakeGh::new_pr(URL);
     *gh.remote_url.borrow_mut() = Some("git@git.example.com:team/repo.git".into());
     let opened = open(
@@ -1053,10 +1053,10 @@ fn github_enterprise_can_be_selected_explicitly() {
 fn azure_override_cannot_push_a_different_origin() {
     let project = Project::new();
     for (key, value) in [
-        ("factory.prProvider", "azure"),
-        ("factory.azureOrganization", "other"),
-        ("factory.azureProject", "Projects"),
-        ("factory.azureRepository", "Kahoot"),
+        ("jidoka.prProvider", "azure"),
+        ("jidoka.azureOrganization", "other"),
+        ("jidoka.azureProject", "Projects"),
+        ("jidoka.azureRepository", "Kahoot"),
     ] {
         run_git(&project.repo, &["config", key, value]);
     }
@@ -1125,11 +1125,11 @@ fn azure_missing_cli_and_malformed_list_fail_before_push() {
 fn azure_explicit_override_uses_confirmed_custom_origin() {
     let project = Project::new();
     for (key, value) in [
-        ("factory.prProvider", "azure"),
-        ("factory.azureOrganization", "dutchworkz"),
-        ("factory.azureProject", "Projects"),
-        ("factory.azureRepository", "Kahoot"),
-        ("factory.azureOrigin", "custom:repo"),
+        ("jidoka.prProvider", "azure"),
+        ("jidoka.azureOrganization", "dutchworkz"),
+        ("jidoka.azureProject", "Projects"),
+        ("jidoka.azureRepository", "Kahoot"),
+        ("jidoka.azureOrigin", "custom:repo"),
     ] {
         run_git(&project.repo, &["config", key, value]);
     }

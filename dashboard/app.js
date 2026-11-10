@@ -155,6 +155,9 @@ const ticketProgress = (run) => {
   return tickets.length ? { done: tickets.filter((t) => t.status === 'done').length, total: tickets.length } : null;
 };
 
+/** Whether a stored reference can open in the Reader: a local path to a Markdown file, which is all the server serves. */
+const isReadable = (value) => !httpUrl(value) && /\.md$/i.test(String(value));
+
 /** A link for a stored reference, only when it is an http(s) URL; nothing otherwise. */
 function RefLink({ value, label }) {
   const url = httpUrl(value);
@@ -373,7 +376,7 @@ function UsageDetail({ usage }) {
           <p class="usage-note">
             Fresh tokens are input excluding cache reads, plus cache writes and output. Cache reads are shown beside
             them, not inside. Reasoning is part of output. n/a means the log did not report it; it is not zero. Est. cost is an estimate
-            from the factory's price table; a model without a price is unknown, never zero, and a total that includes
+            from Jidoka's price table; a model without a price is unknown, never zero, and a total that includes
             one is marked partial.
           </p>`
       : null}
@@ -397,7 +400,9 @@ function ContextLinks({ run }) {
     ? null
     : httpUrl(run.spec)
       ? html`<${RefLink} value=${run.spec} label=${named('Spec')} />`
-      : html`<${ReaderLink} run=${run} reference=${run.spec} label=${`View spec of ${run.title}`}>View</${ReaderLink}>`;
+      : isReadable(run.spec)
+        ? html`<${ReaderLink} run=${run} reference=${run.spec} label=${`View spec of ${run.title}`}>View</${ReaderLink}>`
+        : null;
   return pr || spec
     ? html`<span class="links">${pr}${spec}</span>`
     : null;
@@ -724,9 +729,9 @@ function TicketList({ run, tickets, byTicket, now }) {
       return html`<li key=${ticket.reference} class=${ticket.status === 'done' ? 'ticket done' : 'ticket'}>
         <p class="ticket-line">
           <span class="ticket-status">${current ? TICKET_STATUS['in-progress'] : (TICKET_STATUS[ticket.status] ?? String(ticket.status))}</span>
-          <span class="ticket-name"><${TicketRef} value=${String(ticket.reference)} />${' '}${httpUrl(ticket.reference)
-            ? ticket.title
-            : html`<${ReaderLink} run=${run} reference=${String(ticket.reference)}>${ticket.title}</${ReaderLink}>`}</span>
+          <span class="ticket-name"><${TicketRef} value=${String(ticket.reference)} />${' '}${isReadable(ticket.reference)
+            ? html`<${ReaderLink} run=${run} reference=${String(ticket.reference)}>${ticket.title}</${ReaderLink}>`
+            : ticket.title}</span>
         </p>
         <${SkillChips} reports=${own} />
         <${ReportList} reports=${own} now=${now} />
@@ -937,7 +942,7 @@ function Detail({ run, now, onClose, onDelete, onSynced }) {
         <${PrLink} run=${run} />
         <${CheckPrButton} run=${run} onSynced=${onSynced} />
         ${spec ? html`<span class="status-item"><a href=${spec.href} target="_blank" rel="noopener noreferrer">Spec ${shortRef(spec)}</a></span>` : null}
-        ${localSpec ? html`<span class="status-item">Spec <${ReaderLink} run=${run} reference=${localSpec}>View</${ReaderLink}></span>` : null}
+        ${localSpec ? html`<span class="status-item">Spec ${isReadable(localSpec) ? html`<${ReaderLink} run=${run} reference=${localSpec}>View</${ReaderLink}>` : localSpec}</span>` : null}
         ${rework !== null ? html`<span class="status-item">Rework${' '}${reworkLabel(rework)}</span>` : null}
         ${ts !== null ? html`<span class="status-item status-updated">Updated${' '}<${SheetTime} at=${ts} now=${now} /></span>` : null}
         ${blocked && run.blocking_reason ? html`<p class="status-reason">${run.blocking_reason}</p>` : null}
@@ -1053,10 +1058,10 @@ function ShippedLog({ entries, now, onOpen, onClear }) {
 /** Shown instead of the board while there are no Runs. */
 function Welcome({ onHelp }) {
   return html`<section class="welcome" aria-labelledby="welcome-title">
-    <h2 id="welcome-title">Welcome to the factory</h2>
+    <h2 id="welcome-title">Welcome to Jidoka</h2>
     <p>
-      No Runs yet. In your project, ask your coding agent to run <code>/factory</code> to select a workflow, or choose
-      <code>/factory-full</code>, <code>/factory-balanced</code>, or <code>/factory-fast</code> directly. Its Run appears here and follows the work from Define to a pull
+      No Runs yet. In your project, ask your coding agent to run <code>/jidoka</code> to select a workflow, or choose
+      <code>/jidoka-full</code>, <code>/jidoka-balanced</code>, or <code>/jidoka-fast</code> directly. Its Run appears here and follows the work from Define to a pull
       request.
     </p>
     <p>Not sure what the Stages, Needs you or Rework mean? <button type="button" class="link" onClick=${onHelp}>Read the Help</button>.</p>
@@ -1188,7 +1193,7 @@ function useNow() {
   return now;
 }
 
-const TITLE = 'TDS Factory';
+const TITLE = 'Jidoka';
 /** A Run needs the user when it is blocked. */
 const needsYou = (run) => run.status === 'blocked';
 
@@ -1430,7 +1435,7 @@ function App() {
     document.querySelector('main')?.focus();
   };
   let text = 'Loading runs…';
-  if (failed) text = 'Unable to load runs. Check that the factory server is running.';
+  if (failed) text = 'Unable to load runs. Check that the Jidoka server is running.';
   else if (deleteError) text = deleteError;
   else if (runs) {
     if (!runs.length) text = '';

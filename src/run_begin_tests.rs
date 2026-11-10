@@ -1,4 +1,4 @@
-//! `factory run begin` with a fake server and real git in temporary repositories with a local bare remote.
+//! `jidoka run begin` with a fake server and real git in temporary repositories with a local bare remote.
 
 use super::*;
 use std::{cell::RefCell, fs, path::PathBuf, process::Command};
@@ -16,7 +16,7 @@ fn real_path(path: &Path) -> PathBuf {
 
 /// A user's own git settings (a signing key, hooks) must not reach the tests: this file never exists.
 fn no_global_config() -> PathBuf {
-    std::env::temp_dir().join("factory-tests-no-such-gitconfig")
+    std::env::temp_dir().join("jidoka-tests-no-such-gitconfig")
 }
 
 fn isolated(command: &mut Command) -> &mut Command {
@@ -218,7 +218,7 @@ fn a_fresh_run_gets_a_worktree_from_the_fetched_base_and_records_it() {
     let project = Project::new();
     let api = FakeApi::default();
     let mut opts = options("Add a thing");
-    opts.mode = Some("factory-full".into());
+    opts.mode = Some("jidoka-full".into());
     let begun = begin(&project.repo, &opts, &api, Some("sess-1".into()), None).unwrap();
 
     let expected_path = project.worktrees.join("add-a-thing");
@@ -244,7 +244,7 @@ fn a_fresh_run_gets_a_worktree_from_the_fetched_base_and_records_it() {
         (id.as_str(), stage.as_str(), status.as_str()),
         ("100", "define", "running")
     );
-    assert_eq!(value_after(args, "--mode").as_deref(), Some("factory-full"));
+    assert_eq!(value_after(args, "--mode").as_deref(), Some("jidoka-full"));
     assert_eq!(
         value_after(args, "--worktree").as_deref(),
         expected_path.to_str()
@@ -273,13 +273,13 @@ fn gitignore_of(worktree: &str) -> Option<String> {
 }
 
 #[test]
-fn begin_creates_a_gitignore_with_the_factory_and_scratch_folders() {
+fn begin_creates_a_gitignore_with_the_jidoka_and_scratch_folders() {
     let project = Project::new();
     let api = FakeApi::default();
     let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
     assert_eq!(
         gitignore_of(&begun.worktree).as_deref(),
-        Some(".factory/\n.scratch/\n")
+        Some(".jidoka/\n.scratch/\n")
     );
     // Only the new file differs from the base.
     assert_eq!(
@@ -293,7 +293,7 @@ fn begin_reports_the_added_ignore_entries() {
     let project = Project::new();
     let api = FakeApi::default();
     let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
-    assert_eq!(begun.gitignore_added, [".factory/", ".scratch/"]);
+    assert_eq!(begun.gitignore_added, [".jidoka/", ".scratch/"]);
     assert_eq!(begun.gitignore_warning, None);
     assert!(render(&begun, "/p/plans/100.md").contains("Added to .gitignore"));
 }
@@ -352,7 +352,7 @@ fn begin_appends_to_a_tracked_gitignore_and_shows_only_that_change() {
     let begun = begin(&project.repo, &options("Ignore"), &api, None, None).unwrap();
     assert_eq!(
         gitignore_of(&begun.worktree).as_deref(),
-        Some("/target/\n.factory/\n.scratch/\n")
+        Some("/target/\n.jidoka/\n.scratch/\n")
     );
     assert_eq!(
         git(Path::new(&begun.worktree), &["status", "--porcelain"]),
@@ -446,7 +446,7 @@ fn names_come_from_the_title() {
     let project = Project::new();
     let api = FakeApi::default();
     for (title, name) in [
-        ("Add `factory run begin`!", "add-factory-run-begin"),
+        ("Add `jidoka run begin`!", "add-jidoka-run-begin"),
         ("  Fix   the   BUG  ", "fix-the-bug"),
         (
             "Update the README, then rewrite the whole documentation tree thoroughly",
@@ -499,7 +499,7 @@ fn a_missing_origin_blocks_the_run_with_the_reason_and_the_retry() {
     ));
     assert_eq!(run, "100");
     assert!(reason.contains("origin"), "{reason}");
-    assert!(retry.starts_with("factory run begin --run 100"), "{retry}");
+    assert!(retry.starts_with("jidoka run begin --run 100"), "{retry}");
     assert_marked_blocked(&api, &reason);
     assert!(!project.worktrees.exists());
 }
@@ -593,7 +593,7 @@ fn the_output_has_the_run_first_and_the_same_fields_in_json() {
         branch: "x".into(),
         base: "develop".into(),
         base_commit: "abc123".into(),
-        gitignore_added: vec![".factory/".into()],
+        gitignore_added: vec![".jidoka/".into()],
         gitignore_warning: None,
         session_warning: None,
     };
@@ -605,7 +605,7 @@ fn the_output_has_the_run_first_and_the_same_fields_in_json() {
     let json = serde_json::to_value(&begun).unwrap();
     assert_eq!(json["run"], "100");
     assert_eq!(json["base_commit"], "abc123");
-    assert_eq!(json["gitignore_added"][0], ".factory/");
+    assert_eq!(json["gitignore_added"][0], ".jidoka/");
 }
 
 #[test]
@@ -637,7 +637,7 @@ fn the_options_are_checked_before_anything_is_created() {
         "T",
         &[
             "--mode",
-            "factory-fast",
+            "jidoka-fast",
             "--base",
             "main",
             "--branch",
@@ -646,7 +646,7 @@ fn the_options_are_checked_before_anything_is_created() {
         ],
     )
     .unwrap();
-    assert_eq!(ok.mode.as_deref(), Some("factory-fast"));
+    assert_eq!(ok.mode.as_deref(), Some("jidoka-fast"));
     assert_eq!(
         (ok.base.as_deref(), ok.branch.as_deref(), ok.json),
         (Some("main"), Some("b"), true)
@@ -1191,7 +1191,7 @@ fn git_is_asked_in_english_so_that_its_messages_can_be_told_apart() {
 /// The options a printed retry command stands for.
 fn parsed_retry(retry: &str) -> Options {
     let words: Vec<&str> = retry.split_whitespace().collect();
-    assert_eq!(&words[..4], ["factory", "run", "begin", "--run"], "{retry}");
+    assert_eq!(&words[..4], ["jidoka", "run", "begin", "--run"], "{retry}");
     parse_resume(words[4], &words[5..]).unwrap()
 }
 

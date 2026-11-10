@@ -38,13 +38,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("skills_dir", nargs="?", type=Path,
                         default=Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "skills",
-                        help="directory containing factory-pr/ (default: installed Claude skills)")
+                        help="directory containing jidoka-pr/ (default: installed Claude skills)")
     args = parser.parse_args()
     skills = args.skills_dir.expanduser().resolve()
-    if not (skills / "factory-pr" / "SKILL.md").is_file():
-        parser.error(f"missing factory-pr/SKILL.md in {skills}")
+    if not (skills / "jidoka-pr" / "SKILL.md").is_file():
+        parser.error(f"missing jidoka-pr/SKILL.md in {skills}")
     fixture = json.loads((HERE / "fixture.json").read_text())
-    prompt = (f"Read {skills / 'factory-pr' / 'SKILL.md'} and follow it to draft a pull request description. "
+    prompt = (f"Read {skills / 'jidoka-pr' / 'SKILL.md'} and follow it to draft a pull request description. "
               "Return only the finished description. Preserve the findings verbatim and every command and path.\n\n"
               + fixture["input"])
     try:

@@ -1,4 +1,4 @@
-/* Design tokens: the dashboard's own palette (from the TDS logo and andon practice), the Barlow typeface, a type scale and spacing.
+/* Design tokens: the dashboard's own palette (from andon practice: line blue, andon amber, stop red), the Barlow typeface, a type scale and spacing.
    Only the tokens this stylesheet uses are listed: add one here when a rule needs it, and remove it when no rule does (a test checks both).
    Colours and shadows differ per theme; every rule below the layer reads tokens only.
    Amber means "needs you" and always carries dark text. Red only means errors, offline and the confirm button of a delete.
@@ -109,10 +109,10 @@ body { box-sizing: border-box; min-height: 100vh; min-height: 100dvh; display: f
 /* The footer is one row: the theme buttons (small text, padding and border) plus the footer's own padding. */
 html { scroll-padding-top: calc(var(--top-height) + var(--space-4)); scroll-padding-bottom: calc(var(--leading-xs) + 2 * var(--space-2) + 2 * var(--stroke-thin) + 2 * var(--space-4)); }
 header.site-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) var(--space-8); margin-bottom: var(--space-8); }
-/* The logo is the visible heading; its text stays for screen readers. The dark parts follow the theme, the blue parts keep their colour. */
-.logo { display: block; height: 2.25rem; width: auto; }
-.logo .ink { fill: var(--color-slate); }
-h1 { font-size: var(--text-l); line-height: var(--leading-l); font-weight: var(--weight-strong); margin: 0; }
+/* The heading is the mark plus the wordmark as real text. The mark is a Kaizen loop with an andon light in its gap; it keeps its own colours in both themes. */
+h1 { display: flex; align-items: center; gap: var(--space-4); font-size: var(--text-l); line-height: var(--leading-l); font-weight: var(--weight-strong); margin: 0; }
+.logo { display: block; flex: none; height: 2.25rem; width: 2.25rem; }
+.wordmark { font-size: 1.75rem; color: var(--color-slate); letter-spacing: .01em; }
 p { color: var(--color-slate); margin: var(--space-2) 0; }
 .tagline { flex: 1 1 12rem; margin: 0; }
 .connection { display: inline-flex; align-items: center; gap: var(--space-2); margin: 0 0 0 auto; font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); }

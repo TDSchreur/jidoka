@@ -1,4 +1,4 @@
-//! `factory run sync` arguments, checked before any server is contacted.
+//! `jidoka run sync` arguments, checked before any server is contacted.
 #![expect(
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
@@ -6,8 +6,8 @@
 
 use std::process::Command;
 
-fn factory(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_factory"))
+fn jidoka(args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_jidoka"))
         .args(args)
         .output()
         .unwrap()
@@ -21,15 +21,15 @@ fn sync_refuses_bad_arguments_with_the_usage() {
         &["run", "sync", "1", "--bogus"],
         &["run", "sync", "1", "--json", "--json"],
     ] {
-        let output = factory(args);
+        let output = jidoka(args);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         assert!(output.stdout.is_empty(), "{args:?}");
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("factory run sync <run-id>"),
+            String::from_utf8_lossy(&output.stderr).contains("jidoka run sync <run-id>"),
             "{args:?}"
         );
     }
-    let output = factory(&["run", "sync", "12x"]);
+    let output = jidoka(&["run", "sync", "12x"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid run id"));
 }

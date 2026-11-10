@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Asks GitHub Copilot CLI, with the installed factory skills, what it would do next in each
+# Asks GitHub Copilot CLI, with the installed jidoka skills, what it would do next in each
 # flow case in cases.json, and prints how often the answer was accepted. See README.md.
 set -euo pipefail
 
@@ -37,7 +37,7 @@ action_of() {
 # Builds the analysis-only prompt for the case with id $1, skills in $2, cases in $3.
 prompt_for() {
   jq -r --arg skills "$2" --arg id "$1" '.[] | select(.id == $id) |
-    "Read \($skills)/factory-procedures/SKILL.md and the files under its references/ that apply, and follow them. Only answer the question: do not run any command or change any file.\n\nScenario: \(.scenario)\n\n\(.question) Choose exactly one:\n"
+    "Read \($skills)/jidoka-procedures/SKILL.md and the files under its references/ that apply, and follow them. Only answer the question: do not run any command or change any file.\n\nScenario: \(.scenario)\n\n\(.question) Choose exactly one:\n"
     + (.actions | to_entries | map("- \(.key): \(.value)") | join("\n"))
     + "\n\nEnd your answer with one final line that is exactly ACTION: <key>."' "$3"
 }
@@ -64,8 +64,8 @@ main() {
   for tool in copilot jq timeout; do
     command -v "$tool" >/dev/null 2>&1 || die "$tool is required but not on PATH"
   done
-  [ -f "$skills_dir/factory-procedures/SKILL.md" ] ||
-    die "no factory-procedures skill in $skills_dir; install the skills with factory install --agent copilot, or pass --skills-dir"
+  [ -f "$skills_dir/jidoka-procedures/SKILL.md" ] ||
+    die "no jidoka-procedures skill in $skills_dir; install the skills with jidoka install --agent copilot, or pass --skills-dir"
 
   local case_file="$here/cases.json"
   jq -e 'type == "array" and length > 0' "$case_file" >/dev/null || die "$case_file holds no cases"

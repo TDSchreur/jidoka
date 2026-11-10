@@ -1,11 +1,12 @@
 [package]
-name = "factory"
-version = "0.13.0"
+name = "jidoka"
+version = "0.14.0"
 edition = "2024"
-description = "A small software factory"
+description = "Jidoka — the AI software factory"
+license = "MIT"
 
 [[bin]]
-name = "factory"
+name = "jidoka"
 path = "src/main.rs"
 
 [dependencies]
@@ -30,3 +31,6 @@ allow_attributes = "warn"
 undocumented_unsafe_blocks = "warn"
 unwrap_used = "warn"
 missing_panics_doc = "warn"
+
+[target."cfg(windows)".build-dependencies]
+winresource = "0.1.34"

@@ -1,4 +1,4 @@
-//! `factory pr open`: pushes a run's branch and opens its pull request, or finds the one that is open.
+//! `jidoka pr open`: pushes a run's branch and opens its pull request, or finds the one that is open.
 
 use crate::{
     inspect::shown,
@@ -74,7 +74,7 @@ impl Gh for RealGh {
     }
 }
 
-/// The factory server, as far as this command needs it.
+/// The Jidoka server, as far as this command needs it.
 pub(crate) trait RunApi {
     fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String>;
 }
@@ -272,11 +272,11 @@ fn open_pull_request(
     }))
 }
 
-/// The pull request host a repository uses, as `factory pr open` and `factory doctor` see it.
+/// The pull request host a repository uses, as `jidoka pr open` and `jidoka doctor` see it.
 pub(crate) enum Host {
     GitHub,
     Azure(AzureRepo),
-    /// Neither the origin URL nor `factory.prProvider` names a supported host.
+    /// Neither the origin URL nor `jidoka.prProvider` names a supported host.
     Unknown,
 }
 
@@ -286,14 +286,14 @@ pub(crate) struct Origin {
     pub(crate) host: Host,
 }
 
-/// Works out the pull request host from origin and the `factory.prProvider` override. `git` answers a
+/// Works out the pull request host from origin and the `jidoka.prProvider` override. `git` answers a
 /// read-only git question in the repository, or `None` when git fails. A missing origin, an unknown
 /// override or an Azure override that does not match origin is an error.
 pub(crate) fn detect_host(git: &dyn Fn(&[&str]) -> Option<String>) -> Result<Origin, ToolProblem> {
     let remote = git(&["remote", "get-url", "origin"]).ok_or_else(|| {
         ToolProblem("Cannot identify the repository provider: origin is not configured.".into())
     })?;
-    let provider = git(&["config", "--get", "factory.prProvider"]);
+    let provider = git(&["config", "--get", "jidoka.prProvider"]);
     let azure = match provider.as_deref() {
         None => AzureRepo::from_remote(&remote)?,
         Some("github") => None,
@@ -305,9 +305,9 @@ pub(crate) fn detect_host(git: &dyn Fn(&[&str]) -> Option<String>) -> Result<Ori
                     ))
                 })
             };
-            let org = get("factory.azureOrganization")?;
-            let project = get("factory.azureProject")?;
-            let repo = get("factory.azureRepository")?;
+            let org = get("jidoka.azureOrganization")?;
+            let project = get("jidoka.azureProject")?;
+            let repo = get("jidoka.azureRepository")?;
             let url = format!(
                 "https://dev.azure.com/{}/{}/_git/{}",
                 AzureRepo::encoded(&org),
@@ -321,7 +321,7 @@ pub(crate) fn detect_host(git: &dyn Fn(&[&str]) -> Option<String>) -> Result<Ori
                         "Azure provider configuration does not match origin.".into(),
                     ));
                 }
-                None if get("factory.azureOrigin")? != remote => {
+                None if get("jidoka.azureOrigin")? != remote => {
                     return Err(ToolProblem(
                         "Azure provider configuration does not match origin.".into(),
                     ));
@@ -332,7 +332,7 @@ pub(crate) fn detect_host(git: &dyn Fn(&[&str]) -> Option<String>) -> Result<Ori
         }
         Some(_) => {
             return Err(ToolProblem(
-                "Unknown factory.prProvider; choose github or azure.".into(),
+                "Unknown jidoka.prProvider; choose github or azure.".into(),
             ));
         }
     };
@@ -652,7 +652,7 @@ pub(crate) fn open(
 ) -> Result<Opened, ToolProblem> {
     let worktree = run.worktree.as_deref().ok_or_else(|| {
         ToolProblem(format!(
-            "Run {} has no worktree recorded. Record it with `factory run update` (--worktree and --branch), or create the workspace with `factory run begin`.",
+            "Run {} has no worktree recorded. Record it with `jidoka run update` (--worktree and --branch), or create the workspace with `jidoka run begin`.",
             run.id
         ))
     })?;
@@ -667,7 +667,7 @@ pub(crate) fn open(
     let azure = match host {
         Host::Azure(repo) => Some(repo),
         Host::GitHub => None,
-        Host::Unknown => return Err(ToolProblem("Cannot identify the repository provider from origin; set git config factory.prProvider github for a GitHub Enterprise repository.".into())),
+        Host::Unknown => return Err(ToolProblem("Cannot identify the repository provider from origin; set git config jidoka.prProvider github for a GitHub Enterprise repository.".into())),
     };
     if let Some(selected) = &azure {
         let push_urls = gh
@@ -718,7 +718,7 @@ pub(crate) fn open(
         && *recorded != branch
     {
         return Err(ToolProblem(format!(
-            "The worktree is on {} but the run records {}. Switch it back, or record the right branch with `factory run update`.",
+            "The worktree is on {} but the run records {}. Switch it back, or record the right branch with `jidoka run update`.",
             shown(&branch),
             shown(recorded)
         )));
@@ -915,7 +915,7 @@ pub(crate) fn render(opened: &Opened, run: &PrRun) -> String {
             ""
         };
         text.push_str(&format!(
-            "  The run was not updated (it is {}). Record the pull request with `factory run update {} {} {}{} --pr {}`.\n",
+            "  The run was not updated (it is {}). Record the pull request with `jidoka run update {} {} {}{} --pr {}`.\n",
             shown(&run.status),
             shown(&run.id),
             shown(&run.stage),

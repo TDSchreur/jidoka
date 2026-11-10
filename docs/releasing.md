@@ -1,11 +1,11 @@
-# Releasing TDS Factory
+# Releasing Jidoka
 
 The [old project](https://github.com/TDSchreur/tds-factory) uses `develop` for daily work and its release branch for published code. This project follows the same flow, with `master` as its release branch.
 
-1. Open ordinary pull requests against `develop` and squash-merge them after `ci-ok` passes. `develop` requires an up-to-date branch, so a pull request that falls behind after another one lands needs the base merged in and CI run again. The factory's agents do this themselves; for your own branches use the Update branch button on the pull request (the repository allows it).
+1. Open ordinary pull requests against `develop` and squash-merge them after `ci-ok` passes. `develop` requires an up-to-date branch, so a pull request that falls behind after another one lands needs the base merged in and CI run again. Jidoka's agents do this themselves; for your own branches use the Update branch button on the pull request (the repository allows it).
 2. When ready to release, update the version in `Cargo.toml` and `Cargo.lock` on `develop`, through a pull request. Choose a version whose `v<version>` tag does not already exist.
 3. Open a pull request from `develop` to `master`. Once `ci-ok` passes, merge it with a merge commit so the branches retain their shared history.
-4. The release workflow runs from the resulting `master` commit, builds and tests Linux and Windows binaries, and creates the matching version tag and GitHub Release. Release runs do not interrupt one another; GitHub keeps at most one pending run, replacing an older pending run if another starts. Build artifacts expire after seven days. Check the release has both binaries, both checksums, and both installer scripts. For a transient failure before tag creation, rerun the workflow on `master`; if the tag already exists, investigate before retrying.
+4. The release workflow runs from the resulting `master` commit, builds and tests Linux and Windows binaries, and creates the matching version tag and GitHub Release. Release runs do not interrupt one another; GitHub keeps at most one pending run, replacing an older pending run if another starts. Build artifacts expire after seven days. Check the release has both binaries, both checksums, both installer scripts, and the Code signing policy link in its notes. For a transient failure before tag creation, rerun the workflow on `master`; if the tag already exists, investigate before retrying.
 
 Do not publish manually or push tags as a substitute for the release workflow. The installers need all release assets. A public one-line installer also requires the repository and release to be accessible to its users.
 
@@ -16,11 +16,11 @@ The matching rules from the old project are captured in `.github/rulesets/`: `de
 These rulesets are active on GitHub. If they need to be recreated, apply each file and verify the rules in GitHub:
 
 ```sh
-gh api --method POST repos/TDSchreur/tds-factory2/rulesets --input .github/rulesets/develop.json
-gh api --method POST repos/TDSchreur/tds-factory2/rulesets --input .github/rulesets/master.json
-gh api --method POST repos/TDSchreur/tds-factory2/rulesets --input .github/rulesets/release-tags.json
+gh api --method POST repos/TDSchreur/jidoka/rulesets --input .github/rulesets/develop.json
+gh api --method POST repos/TDSchreur/jidoka/rulesets --input .github/rulesets/master.json
+gh api --method POST repos/TDSchreur/jidoka/rulesets --input .github/rulesets/release-tags.json
 ```
 
 ## Clean Windows validation
 
-Validate Windows installer changes on a fresh Windows x64 machine without the Visual C++ Redistributable. Confirm the packaged executable starts with `--version`, then run the installer with Windows PowerShell 5.1 and PowerShell 7. Use isolated user profiles to check interactive selection, `FACTORY_AGENT`, installed skills, and PATH in the current and a new shell. Also check checksum rejection and startup failure reporting. The Windows CI runner includes development tools and does not replace this check.
+Validate Windows installer changes on a fresh Windows x64 machine without the Visual C++ Redistributable. Confirm the packaged executable starts with `--version`, then run the installer with Windows PowerShell 5.1 and PowerShell 7. Use isolated user profiles to check interactive selection, `JIDOKA_AGENT`, installed skills, and PATH in the current and a new shell. Also check checksum rejection and startup failure reporting. The Windows CI runner includes development tools and does not replace this check.

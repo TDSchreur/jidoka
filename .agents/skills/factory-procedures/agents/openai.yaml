@@ -1,5 +1,0 @@
-interface:
-  display_name: "Factory Procedures"
-  short_description: "Shared procedures read by the factory workflows"
-policy:
-  allow_implicit_invocation: false

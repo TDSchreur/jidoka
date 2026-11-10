@@ -34,18 +34,18 @@ function Flow({ reworkCap }) {
 
 function Overview({ reworkCap }) {
   return html`
-    <${Topic} title="What the factory is">
+    <${Topic} title="What Jidoka is">
       <p>
-        TDS Factory carries one piece of work, called a <strong>Run</strong>, from an idea to a pull request. You ask
+        Jidoka carries one piece of work, called a <strong>Run</strong>, from an idea to a pull request. You ask
         your coding agent (Codex, Claude Code or GitHub Copilot CLI) to run a workflow skill. The agent does the work in
-        its own git worktree and reports each step here with the <${Code}>factory<//> command. This dashboard only shows
+        its own git worktree and reports each step here with the <${Code}>jidoka<//> command. This dashboard only shows
         that progress. It does not start or control the agent.
       </p>
     <//>
     <${Topic} title="The flow">
       <${Flow} reworkCap=${reworkCap} />
       <p>
-        <${Code}>/factory-fast<//> skips Check. Every Run ends in a pull request, which only you merge. The Stages tab explains each step, and the Workflows tab explains how the three workflows
+        <${Code}>/jidoka-fast<//> skips Check. Every Run ends in a pull request, which only you merge. The Stages tab explains each step, and the Workflows tab explains how the three workflows
         differ.
       </p>
     <//>
@@ -61,8 +61,8 @@ function Overview({ reworkCap }) {
             'Runs the workflow skill: asks questions, writes the spec, implements, runs the checks, reviews, opens the pull request and watches its CI.',
           ],
           [
-            'The factory command',
-            html`Records every step. The agent runs <${Code}>factory run start<//> and <${Code}>factory run update<//>; you rarely need to.`,
+            'The jidoka command',
+            html`Records every step. The agent runs <${Code}>jidoka run start<//> and <${Code}>jidoka run update<//>; you rarely need to.`,
           ],
           [
             'The dashboard',
@@ -75,17 +75,17 @@ function Overview({ reworkCap }) {
       <ol>
         <li>Install the command and the skills for your agent. The README lists the steps for each system.</li>
         <li>
-          Once per repository, ask your agent to run <${Code}>/factory-setup<//>. It records the issue
-          tracker, the triage labels and where the domain docs live. <${Code}>/factory-full<//> needs it; the other
+          Once per repository, ask your agent to run <${Code}>/jidoka-setup<//>. It records the issue
+          tracker, the triage labels and where the domain docs live. <${Code}>/jidoka-full<//> needs it; the other
           workflows need it only when they read or publish specs or tickets in the tracker.
         </li>
         <li>
-          Start <${Code}>factory dashboard<//> and keep it running. It listens on${' '}
+          Start <${Code}>jidoka dashboard<//> and keep it running. It listens on${' '}
           <${Code}>http://127.0.0.1:4311<//> by default.
         </li>
         <li>
-          In your project, ask your agent to run <${Code}>/factory<//> to pick a workflow, or choose${' '}
-          <${Code}>/factory-full<//>, <${Code}>/factory-balanced<//> or <${Code}>/factory-fast<//> yourself.
+          In your project, ask your agent to run <${Code}>/jidoka<//> to pick a workflow, or choose${' '}
+          <${Code}>/jidoka-full<//>, <${Code}>/jidoka-balanced<//> or <${Code}>/jidoka-fast<//> yourself.
         </li>
         <li>Watch the Run here, answer when it needs you, and review the pull request when it is ready.</li>
       </ol>
@@ -110,8 +110,8 @@ function Stages({ reworkCap }) {
       </p>
       <ul>
         <li>
-          <strong>Full</strong> always interviews you (<${Code}>factory-grill-with-docs<//>), records domain decisions, writes a
-          spec (<${Code}>factory-to-spec<//>) and breaks it into tickets (<${Code}>factory-to-tickets<//>) in the issue tracker.
+          <strong>Full</strong> always interviews you (<${Code}>jidoka-grill-with-docs<//>), records domain decisions, writes a
+          spec (<${Code}>jidoka-to-spec<//>) and breaks it into tickets (<${Code}>jidoka-to-tickets<//>) in the issue tracker.
         </li>
         <li>
           <strong>Balanced</strong> uses a clear request as the spec and always writes acceptance criteria. It writes a
@@ -137,16 +137,16 @@ function Stages({ reworkCap }) {
       </p>
       <ul>
         <li>
-          <strong>Full</strong> builds each ticket test-first with red-green cycles (<${Code}>factory-implement<//> and${' '}
-          <${Code}>factory-tdd<//>) and runs the full verification after each ticket.
+          <strong>Full</strong> builds each ticket test-first with red-green cycles (<${Code}>jidoka-implement<//> and${' '}
+          <${Code}>jidoka-tdd<//>) and runs the full verification after each ticket.
         </li>
         <li>
           <strong>Balanced</strong> implements each ticket, then adds behavior tests through public interfaces
-          (<${Code}>factory-implement-balanced<//>), and runs the full verification once on the finished work.
+          (<${Code}>jidoka-implement-balanced<//>), and runs the full verification once on the finished work.
         </li>
         <li>
           <strong>Fast</strong> implements directly and writes tests only where they help
-          (<${Code}>factory-implement-fast<//>), with the full verification once at the end.
+          (<${Code}>jidoka-implement-fast<//>), with the full verification once at the end.
         </li>
       </ul>
     <//>
@@ -157,12 +157,12 @@ function Stages({ reworkCap }) {
       </p>
       <ul>
         <li>
-          <${Code}>factory-code-review<//> compares everything since the Run’s base commit with two questions, answered by
+          <${Code}>jidoka-code-review<//> compares everything since the Run’s base commit with two questions, answered by
           two reviewers in parallel: does the code follow the project’s standards, and does it do what the spec
           asked.
         </li>
         <li>
-          <${Code}>factory-security-review<//> looks for vulnerabilities by following the data. Full always runs it. Balanced
+          <${Code}>jidoka-security-review<//> looks for vulnerabilities by following the data. Full always runs it. Balanced
           runs it only when the change touches input parsing, authentication or secrets, network access, file or process
           handling, or dependencies.
         </li>
@@ -189,7 +189,7 @@ function Stages({ reworkCap }) {
     <//>
     <${Topic} title="Finish">
       <p>
-        The agent writes the pull request description (<${Code}>factory-pr<//>), verifies the final commit (reusing the latest
+        The agent writes the pull request description (<${Code}>jidoka-pr<//>), verifies the final commit (reusing the latest
         passing verification when nothing has changed), pushes the branch and opens the pull request against the base
         branch it chose at the start. Then it watches the pull request’s CI until every check has finished. When a
         check fails it reads the log, fixes the cause in a new commit, verifies again and pushes. When another pull
@@ -216,7 +216,7 @@ function Stages({ reworkCap }) {
         and its row on the line comes first, marked amber. Typical reasons:
       </p>
       <ul>
-        <li>The issue tracker is not set up yet. Run <${Code}>/factory-setup<//> and start again.</li>
+        <li>The issue tracker is not set up yet. Run <${Code}>/jidoka-setup<//> and start again.</li>
         <li>Check findings remain after the last Rework and the agent needs your decision.</li>
         <li>A tool, a permission or a check the agent cannot fix by itself, such as a failing CI check caused by infrastructure.</li>
         <li>An answer or a decision only you can give.</li>
@@ -233,7 +233,7 @@ function Workflows({ reworkCap }) {
   return html`
     <${Topic} title="Choosing a workflow">
       <p>
-        Ask for <${Code}>/factory<//> and the agent assesses the request and picks one, telling you which and why. An
+        Ask for <${Code}>/jidoka<//> and the agent assesses the request and picks one, telling you which and why. An
         explicit choice always wins. Each Run keeps its workflow, and a continued Run keeps it too.
       </p>
       <ul>
@@ -252,9 +252,9 @@ function Workflows({ reworkCap }) {
         </li>
       </ul>
       <p>
-        A request that only asks for analysis gets an assessment and no Run. <${Code}>/factory<//> used to run the
-        quality workflow directly; that workflow is now <${Code}>/factory-full<//>, and older Runs recorded as${' '}
-        <${Code}>factory<//> show as <${Code}>factory-full<//>.
+        A request that only asks for analysis gets an assessment and no Run. <${Code}>/jidoka<//> used to run the
+        quality workflow directly; that workflow is now <${Code}>/jidoka-full<//>, and older Runs recorded as${' '}
+        <${Code}>jidoka<//> show as <${Code}>jidoka-full<//>.
       </p>
     <//>
     <${Topic} title="How they differ">
@@ -272,9 +272,9 @@ function Workflows({ reworkCap }) {
           <tbody>
             <tr>
               <th scope="row">Command</th>
-              <td><${Code}>/factory-full<//></td>
-              <td><${Code}>/factory-balanced<//></td>
-              <td><${Code}>/factory-fast<//></td>
+              <td><${Code}>/jidoka-full<//></td>
+              <td><${Code}>/jidoka-balanced<//></td>
+              <td><${Code}>/jidoka-fast<//></td>
             </tr>
             <tr>
               <th scope="row">Define</th>
@@ -334,7 +334,7 @@ function Workflows({ reworkCap }) {
     <${Topic} title="Continuing a Run">
       <p>
         Start a new session and ask the agent to continue the Run, giving its id (shown in the Run detail). The agent
-        reads <${Code}>factory run inspect<//>, which holds the repository, worktree, branch, base commit, spec, tickets
+        reads <${Code}>jidoka run inspect<//>, which holds the repository, worktree, branch, base commit, spec, tickets
         and a summary per Stage, and checks them against reality. It reports every difference and never resets, cleans or
         discards anything to make them match. When everything fits, it continues from the Stage the Run was in, at the
         first ticket that is not done.
@@ -342,9 +342,9 @@ function Workflows({ reworkCap }) {
     <//>
     <${Topic} title="Agent notes">
       <p>
-        With Codex, start a new chat in Worktree mode on the intended base branch and tell the factory to use that
+        With Codex, start a new chat in Worktree mode on the intended base branch and tell Jidoka to use that
         worktree. Some sandboxes need permission for Git operations that write shared repository data, for network
-        access, and for the dashboard. The README has the details.
+        access, and for the dashboard. The workflows guide, docs/workflows.md, has the details.
       </p>
     <//>
   `;
@@ -367,29 +367,29 @@ function Skills() {
   return html`
     <p>
       Skills are instructions your agent loads when it needs them. Ask your agent to run one by name, for example${' '}
-      <${Code}>/factory<//>. These are the ones the factory uses, grouped by Stage.
+      <${Code}>/jidoka<//>. These are the ones Jidoka uses, grouped by Stage.
     </p>
     <${SkillGroup}
       title="Entry points"
       skills=${[
         [
-          '/factory',
+          '/jidoka',
           'Assesses the request and picks a workflow, then carries on in the same session with that workflow. Does not start a Run of its own.',
           null,
         ],
         [
-          '/factory-full',
+          '/jidoka-full',
           'The quality workflow: full interview, spec and tickets, test-first Build, code and security review, Reworks, pull request.',
           null,
         ],
         [
-          '/factory-balanced',
+          '/jidoka-balanced',
           'Lighter planning than Full, behavior tests after implementing, one code review, and a security review where it matters.',
           null,
         ],
-        ['/factory-fast', 'The speed workflow: light planning, direct implementation, no Check, and still a pull request with green CI.', null],
+        ['/jidoka-fast', 'The speed workflow: light planning, direct implementation, no Check, and still a pull request with green CI.', null],
         [
-          'factory-procedures',
+          'jidoka-procedures',
           'The rules the three workflows share: reporting to the dashboard, continuing a Run, the worktree, tracker setup, saving the plan, model routing, writing, and the pull request and CI. The workflows read it; you do not run it yourself.',
           'all workflows',
         ],
@@ -399,17 +399,17 @@ function Skills() {
       title="Define"
       skills=${[
         [
-          'factory-grill-with-docs',
-          'An interview that sharpens a plan or design one question at a time, and records the domain terms and decisions it settles in the glossary and in decision records. Builds on factory-grilling and factory-domain-modeling.',
+          'jidoka-grill-with-docs',
+          'An interview that sharpens a plan or design one question at a time, and records the domain terms and decisions it settles in the glossary and in decision records. Builds on jidoka-grilling and jidoka-domain-modeling.',
           'Full always; Balanced and Fast only when unclear requirements would get in the way of the work',
         ],
         [
-          'factory-to-spec',
+          'jidoka-to-spec',
           'Turns what has been discussed into a spec and publishes it as an issue in the project’s tracker, labelled ready for an agent. It does not interview you.',
           'Full always; Balanced when the request needs a written spec; Fast when the task needs a lasting one',
         ],
         [
-          'factory-to-tickets',
+          'jidoka-to-tickets',
           'Breaks a spec into small, vertical tickets that each name the tickets blocking them, and publishes them to the tracker with native blocking links where the tracker has them.',
           'Full always; Balanced and Fast for work with several dependent pieces',
         ],
@@ -419,18 +419,18 @@ function Skills() {
       title="Build"
       skills=${[
         [
-          'factory-implement',
-          'Implements the spec and its tickets on the feature branch, each ticket test-first with factory-tdd, and runs the project’s verification after each ticket.',
+          'jidoka-implement',
+          'Implements the spec and its tickets on the feature branch, each ticket test-first with jidoka-tdd, and runs the project’s verification after each ticket.',
           'Full',
         ],
         [
-          'factory-implement-balanced',
+          'jidoka-implement-balanced',
           'Implements each ticket, then covers it with behavior tests through public interfaces, without red-green cycles.',
           'Balanced',
         ],
-        ['factory-implement-fast', 'Implements the spec directly, with tests only where they help.', 'Fast'],
+        ['jidoka-implement-fast', 'Implements the spec directly, with tests only where they help.', 'Fast'],
         [
-          'factory-tdd',
+          'jidoka-tdd',
           'Test-driven development: write a failing test, make it pass, repeat, with rules for what a good test is and where tests belong.',
           'Full always; Balanced borrows its test-quality rules',
         ],
@@ -440,12 +440,12 @@ function Skills() {
       title="Check"
       skills=${[
         [
-          'factory-code-review',
+          'jidoka-code-review',
           'Reviews the changes since a fixed commit along two axes, standards and spec, with two reviewers in parallel, and reports them side by side. Takes the model and effort a routing policy names.',
           'Full and Balanced',
         ],
         [
-          'factory-security-review',
+          'jidoka-security-review',
           'Reads the code the way a security researcher would: it follows data flows, checks for exposed secrets and unsafe dependencies, double-checks its own findings and rates them by severity.',
           'Full always; Balanced for sensitive changes',
         ],
@@ -455,7 +455,7 @@ function Skills() {
       title="Finish"
       skills=${[
         [
-          'factory-pr',
+          'jidoka-pr',
           'Writes the pull request description: a summary, the evidence that it works, and how risky the merge is.',
           'all workflows',
         ],
@@ -465,14 +465,14 @@ function Skills() {
       title="Everywhere"
       skills=${[
         [
-          'factory-setup',
+          'jidoka-setup',
           'Run once per repository, in your normal checkout. Records which issue tracker the repository uses, its triage labels and where the domain docs live, and adds a short section to the agent instructions. Later Runs pick the output up.',
           'before the first Run',
         ],
       ]}
     />
     <p>
-      Most skills come from <${Code}>mattpocock/skills<//> and <${Code}>github/awesome-copilot<//>; the workflow skills are the factory’s own. <${Code}>skills/README.md<//> in the TDS Factory repository lists where each one started.
+      Most skills come from <${Code}>mattpocock/skills<//> and <${Code}>github/awesome-copilot<//>; the workflow skills are Jidoka’s own. <${Code}>skills/README.md<//> in the Jidoka repository lists where each one started.
     </p>
   `;
 }
@@ -546,7 +546,7 @@ function Dashboard({ reworkCap }) {
     <//>
     <${Topic} title="The Run detail">
       <p>
-        A panel on the right that follows the Run along its route. <${Code}>factory run inspect<//> prints the full record, including the worktree and base commit, and a new session reads it to continue the Run. The header shows the title, project, workflow mode and branch, then one status row: the status, the pull request and its state, the spec, the Rework count when there is any, and when the Run was last updated. A blocked Run turns that row amber and shows the full status reason.
+        A panel on the right that follows the Run along its route. <${Code}>jidoka run inspect<//> prints the full record, including the worktree and base commit, and a new session reads it to continue the Run. The header shows the title, project, workflow mode and branch, then one status row: the status, the pull request and its state, the spec, the Rework count when there is any, and when the Run was last updated. A blocked Run turns that row amber and shows the full status reason.
       </p>
       <p>
         Below it, the route shows one entry per stage pass from the Run's timeline. Each Rework gets its own Build entry labelled <em>Build · Rework N</em>, and a Check that sent work back says so. Each entry shows when it started, how long it took, the activity it started with, when the Run was blocked or resumed during it, and the reports filed under its stage: a report goes in the last pass of its stage that had started by then, or in the nearest pass of that stage. Reports from older Runs that name no stage go in the pass that was running when they came in. Stage summaries sit on the last pass of their stage. Tokens are not shown per pass; the Token usage table has them per stage. The first ordinary Build pass (not a Rework) lists the tickets it started and every ticket no pass has started yet, with their own reports, and the current ticket is marked In progress. A Rework Build pass lists only the tickets it started. Tickets that have not started appear in a Tickets group when the Run has no ordinary Build pass, even if it has Rework Build passes. Other reports holds reports outside every pass, reports for tickets that are not listed and summaries of stages without a pass.
@@ -573,7 +573,7 @@ function Dashboard({ reworkCap }) {
         </li>
         <li>
           Subagent usage is included once, and shown as its own share. Usage is read from Claude Code, Codex and
-          Copilot logs. You can turn it off with <${Code}>factory dashboard --no-usage<//> or by starting the dashboard with <${Code}>FACTORY_USAGE=off<//>.
+          Copilot logs. You can turn it off with <${Code}>jidoka dashboard --no-usage<//> or by starting the dashboard with <${Code}>JIDOKA_USAGE=off<//>.
         </li>
       </ul>
     <//>
@@ -588,19 +588,19 @@ function Commands() {
     <${Topic} title="Look at Runs">
       <${Terms}
         items=${[
-          [html`<${Code}>factory dashboard<//>`, html`Starts this dashboard on <${Code}>127.0.0.1:4311<//>. Use <${Code}>--port<//> for a separate dashboard with its own data, and <${Code}>--no-usage<//> to leave token usage off.`],
-          [html`<${Code}>factory run inspect ${'<id>'}<//>`, html`Prints what a Run has recorded, the same as the Run detail. Add <${Code}>--json<//> for the stored record.`],
-          [html`<${Code}>factory run stats ${'<id>'}<//>`, html`Prints the token usage by Stage, model and ticket. <${Code}>--all<//> shows the totals for every Run.`],
+          [html`<${Code}>jidoka dashboard<//>`, html`Starts this dashboard on <${Code}>127.0.0.1:4311<//>. Use <${Code}>--port<//> for a separate dashboard with its own data, and <${Code}>--no-usage<//> to leave token usage off.`],
+          [html`<${Code}>jidoka run inspect ${'<id>'}<//>`, html`Prints what a Run has recorded, the same as the Run detail. Add <${Code}>--json<//> for the stored record.`],
+          [html`<${Code}>jidoka run stats ${'<id>'}<//>`, html`Prints the token usage by Stage, model and ticket. <${Code}>--all<//> shows the totals for every Run.`],
         ]}
       />
     <//>
     <${Topic} title="Report a Run by hand">
       <${Terms}
         items=${[
-          [html`<${Code}>factory run start "title"<//>`, 'Creates a Run and prints its id. Run it from the Run’s worktree.'],
+          [html`<${Code}>jidoka run start "title"<//>`, 'Creates a Run and prints its id. Run it from the Run’s worktree.'],
           [
-            html`<${Code}>factory run update ${'<id>'} ${'<stage>'} ${'<status>'}<//>`,
-            html`Stages are define, build, check and finish. Statuses are running, blocked and done. Options leave a field alone when omitted, and most have a <${Code}>--clear-${'<name>'}<//> form (tickets clear with <${Code}>--clear-tickets<//>, and a summary with <${Code}>--clear-summary<//> and a Stage name): <${Code}>--activity<//>, <${Code}>--blocking-reason<//>, <${Code}>--rework<//>, <${Code}>--mode<//>, <${Code}>--worktree<//>, <${Code}>--branch<//>, <${Code}>--base-commit<//>, <${Code}>--spec<//>, <${Code}>--pr<//>, <${Code}>--ticket<//>, <${Code}>--summary<//> and more. <${Code}>factory --help<//> lists them.`,
+            html`<${Code}>jidoka run update ${'<id>'} ${'<stage>'} ${'<status>'}<//>`,
+            html`Stages are define, build, check and finish. Statuses are running, blocked and done. Options leave a field alone when omitted, and most have a <${Code}>--clear-${'<name>'}<//> form (tickets clear with <${Code}>--clear-tickets<//>, and a summary with <${Code}>--clear-summary<//> and a Stage name): <${Code}>--activity<//>, <${Code}>--blocking-reason<//>, <${Code}>--rework<//>, <${Code}>--mode<//>, <${Code}>--worktree<//>, <${Code}>--branch<//>, <${Code}>--base-commit<//>, <${Code}>--spec<//>, <${Code}>--pr<//>, <${Code}>--ticket<//>, <${Code}>--summary<//> and more. <${Code}>jidoka --help<//> lists them.`,
           ],
         ]}
       />
@@ -608,11 +608,11 @@ function Commands() {
     <${Topic} title="Set up and repair">
       <${Terms}
         items=${[
-          [html`<${Code}>factory install --agent codex|claude|copilot<//>`, 'Installs the skills for an agent, or for several, separated by commas. It replaces the factory’s own skill folders and leaves other skills alone.'],
-          [html`<${Code}>factory doctor<//>`, html`Checks whether the repository and your machine are ready, and says how to fix each problem. <${Code}>--agent<//> checks one agent, <${Code}>--json<//> prints JSON, and <${Code}>--create-model-routing<//> writes a starter model routing policy.`],
-          [html`<${Code}>factory check<//>`, 'Looks up the latest release and says whether you are up to date.'],
-          [html`<${Code}>factory update<//>`, 'Downloads the latest release, verifies its checksum, replaces the installed command and reinstalls the skills for the agents that already have them. Restart the dashboard afterwards.'],
-          [html`<${Code}>factory --version<//>`, 'Prints the version and the build it came from.'],
+          [html`<${Code}>jidoka install --agent codex|claude|copilot<//>`, 'Installs the skills for an agent, or for several, separated by commas. It replaces Jidoka’s own skill folders and leaves other skills alone.'],
+          [html`<${Code}>jidoka doctor<//>`, html`Checks whether the repository and your machine are ready, and says how to fix each problem. <${Code}>--agent<//> checks one agent, <${Code}>--json<//> prints JSON, and <${Code}>--create-model-routing<//> writes a starter model routing policy.`],
+          [html`<${Code}>jidoka check<//>`, 'Looks up the latest release and says whether you are up to date.'],
+          [html`<${Code}>jidoka update<//>`, 'Downloads the latest release, verifies its checksum, replaces the installed command and reinstalls the skills for the agents that already have them. Restart the dashboard afterwards.'],
+          [html`<${Code}>jidoka --version<//>`, 'Prints the version and the build it came from.'],
         ]}
       />
     <//>
@@ -624,7 +624,7 @@ function ModelRouting() {
     <${Topic} title="What it does">
       <p>
         Model routing lets you say which model and effort each Stage should use, apart from the workflow. When a
-        Run starts, the factory reads your policy once and records the choice on the Run, so editing the file later does
+        Run starts, Jidoka reads your policy once and records the choice on the Run, so editing the file later does
         not change a Run in progress. Every Stage can be routed: your own session keeps its model and talks to you, and
         each routed Stage’s work is handed to fresh agents on that Stage’s model and effort. A Stage you leave out, and
         a Run without a policy, run as they always did.
@@ -632,13 +632,13 @@ function ModelRouting() {
     <//>
     <${Topic} title="The policy file">
       <p>
-        One file, <${Code}>model-routing.json<//>, in the factory’s config folder: <${Code}>$XDG_CONFIG_HOME/tds-factory/<//>
-        ${' '}(or <${Code}>~/.config/tds-factory/<//>) on Linux, and <${Code}>%APPDATA%\\tds-factory\\<//> on Windows. It has an
+        One file, <${Code}>model-routing.json<//>, in Jidoka’s config folder: <${Code}>$XDG_CONFIG_HOME/jidoka/<//>
+        ${' '}(or <${Code}>~/.config/jidoka/<//>) on Linux, and <${Code}>%APPDATA%\\jidoka\\<//> on Windows. It has an
         entry for each agent under <${Code}>agents<//> (<${Code}>claude<//>, <${Code}>codex<//> and <${Code}>copilot<//>), and each entry has${' '}
         <${Code}>stages<//> that map <${Code}>define<//>, <${Code}>build<//>, <${Code}>check<//> and${' '}
         <${Code}>finish<//> to a model and an optional effort. A file in the earlier format (roles and tasks) stops a Run from starting
-        until <${Code}>factory install<//> replaces it. A run records only the entry of
-        the agent it started in, which the workflow names with <${Code}>factory run start --agent<//>. Set${' '}
+        until <${Code}>jidoka install<//> replaces it. A run records only the entry of
+        the agent it started in, which the workflow names with <${Code}>jidoka run start --agent<//>. Set${' '}
         <${Code}>"enabled": false<//> at the top, or inside an entry, to switch routing off without deleting anything.
       </p>
       <pre class="help-code"><code>{
@@ -663,25 +663,25 @@ function ModelRouting() {
   }
 }</code></pre>
       <p>
-        <${Code}>factory doctor --agent claude --create-model-routing<//> writes this starter with an entry for each agent (add${' '}
+        <${Code}>jidoka doctor --agent claude --create-model-routing<//> writes this starter with an entry for each agent (add${' '}
         <${Code}>--agent claude<//>, <${Code}>--agent codex<//> or <${Code}>--agent copilot<//> for one). It replaces only a file in the earlier format, keeping a switched-off policy or agent switched off (install, update and doctor name what is off, and that removing its <${Code}>"enabled": false<//> switches it on), and never overwrites any other file.
       </p>
     <//>
     <${Topic} title="Checking that it works">
       <ul>
         <li>
-          <${Code}>factory doctor<//> has a Model routing section. It checks that the file loads, that your agent
+          <${Code}>jidoka doctor<//> has a Model routing section. It checks that the file loads, that your agent
           supports routing, and for Claude Code that the models and efforts are ones it accepts and that nothing in the
           environment or settings overrides them. For Codex it reports what it cannot check as skipped. The section
           appears only when a policy file exists and is switched on.
         </li>
         <li>
-          <${Code}>factory run inspect ${'<id>'}<//> shows, per Stage, the requested model and effort next to the models and
+          <${Code}>jidoka run inspect ${'<id>'}<//> shows, per Stage, the requested model and effort next to the models and
           efforts the Run’s logs show. When usage is fully tracked, a model that was never observed reads <${Code}>MISMATCH<//>, and so does an effort that differs from the one requested. With partial usage it reads "not observed", because the data may be missing, and a log that records no effort reads "effort not recorded".
         </li>
         <li>
           To give one Stage another model for one Run, use${' '}
-          <${Code}>factory run update ${'<id>'} ${'<stage>'} ${'<status>'} --model-routing check=sonnet:medium<//>
+          <${Code}>jidoka run update ${'<id>'} ${'<stage>'} ${'<status>'} --model-routing check=sonnet:medium<//>
           (<${Code}>${'<stage>'}=${'<model>'}[:${'<effort>'}]<//>).
         </li>
       </ul>
@@ -723,7 +723,7 @@ const TABS = [
 ];
 
 /**
- * The dashboard's help: what the factory does, Stage by Stage, which workflows and skills it uses, how to read
+ * The dashboard's help: what Jidoka does, Stage by Stage, which workflows and skills it uses, how to read
  * the board and which commands exist. A native modal, so focus moves into it and back to what opened it on close.
  * The tabs follow the WAI-ARIA tabs pattern: arrow keys, Home and End move and select, and only the selected tab
  * is in the tab order. Each tab's content scrolls inside the window.

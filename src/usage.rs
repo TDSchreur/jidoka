@@ -709,9 +709,9 @@ impl UsageSettings {
 
 /// The reason shown when the user switched collection off.
 pub(crate) const SWITCHED_OFF: &str =
-    "usage collection is switched off (FACTORY_USAGE=off or factory dashboard --no-usage)";
+    "usage collection is switched off (JIDOKA_USAGE=off or jidoka dashboard --no-usage)";
 
-/// Whether `FACTORY_USAGE` asks for collection to be off.
+/// Whether `JIDOKA_USAGE` asks for collection to be off.
 pub(crate) fn switched_off_by(value: Option<&str>) -> bool {
     value.is_some_and(|v| {
         matches!(

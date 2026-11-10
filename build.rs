@@ -30,10 +30,10 @@ fn git(args: &[&str]) -> Option<String> {
     Some(text.trim().to_string()).filter(|text| !text.is_empty())
 }
 
-/// Records what the binary was built from: official releases set `FACTORY_RELEASE=1`;
+/// Records what the binary was built from: official releases set `JIDOKA_RELEASE=1`;
 /// every other build is identified by its commit, when git can tell.
 fn build_identity() {
-    println!("cargo:rerun-if-env-changed=FACTORY_RELEASE");
+    println!("cargo:rerun-if-env-changed=JIDOKA_RELEASE");
     if let Some(head) = git(&["rev-parse", "--git-path", "HEAD"]) {
         println!("cargo:rerun-if-changed={head}");
     }
@@ -45,32 +45,52 @@ fn build_identity() {
     let commit = git(&["rev-parse", "--short=7", "HEAD"])
         .filter(|commit| commit.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .unwrap_or_default();
-    let release = env::var("FACTORY_RELEASE").is_ok_and(|value| value == "1");
-    println!("cargo:rustc-env=FACTORY_BUILD_COMMIT={commit}");
-    println!("cargo:rustc-env=FACTORY_BUILD_RELEASE={release}");
+    let release = env::var("JIDOKA_RELEASE").is_ok_and(|value| value == "1");
+    println!("cargo:rustc-env=JIDOKA_BUILD_COMMIT={commit}");
+    println!("cargo:rustc-env=JIDOKA_BUILD_RELEASE={release}");
 }
+
+/// Gives the Windows executable product and version information. Unsigned executables
+/// without it are more likely to be flagged by antivirus heuristics.
+#[cfg(windows)]
+fn windows_version_info() {
+    if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows") {
+        let mut resource = winresource::WindowsResource::new();
+        resource
+            .set("ProductName", "Jidoka")
+            .set("FileDescription", "Jidoka command line and dashboard")
+            .set("OriginalFilename", "jidoka.exe");
+        resource
+            .compile()
+            .expect("embed Windows version information");
+    }
+}
+
+#[cfg(not(windows))]
+fn windows_version_info() {}
 
 fn main() {
     build_identity();
+    windows_version_info();
     println!("cargo:rerun-if-changed=skills");
     println!("cargo:rerun-if-changed=.agents/skills");
     println!("cargo:rerun-if-changed=third-party");
     let mut output = Vec::new();
     for name in [
-        "factory-grill-with-docs",
-        "factory-grilling",
-        "factory-domain-modeling",
-        "factory-codebase-design",
-        "factory-to-spec",
-        "factory-to-tickets",
-        "factory-implement",
-        "factory-implement-fast",
-        "factory-implement-balanced",
-        "factory-tdd",
-        "factory-code-review",
-        "factory-security-review",
-        "factory-pr",
-        "factory-setup",
+        "jidoka-grill-with-docs",
+        "jidoka-grilling",
+        "jidoka-domain-modeling",
+        "jidoka-codebase-design",
+        "jidoka-to-spec",
+        "jidoka-to-tickets",
+        "jidoka-implement",
+        "jidoka-implement-fast",
+        "jidoka-implement-balanced",
+        "jidoka-tdd",
+        "jidoka-code-review",
+        "jidoka-security-review",
+        "jidoka-pr",
+        "jidoka-setup",
     ] {
         files(
             Path::new("skills"),
@@ -79,12 +99,12 @@ fn main() {
         );
     }
     for name in [
-        "factory",
-        "factory-full",
-        "factory-fast",
-        "factory-balanced",
-        "factory-procedures",
-        "factory-triage",
+        "jidoka",
+        "jidoka-full",
+        "jidoka-fast",
+        "jidoka-balanced",
+        "jidoka-procedures",
+        "jidoka-triage",
     ] {
         files(
             Path::new(".agents/skills"),
