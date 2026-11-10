@@ -9,12 +9,12 @@
 
 use crate::{
     request_logs::{
-        classify, result_bytes, truncate, Category, Request, RequestRead, SessionRequests,
+        Category, Request, RequestRead, SessionRequests, classify, result_bytes, truncate,
     },
     usage::Tokens,
     usage_logs::{
-        copilot_tokens, mentioned_runs, merge_largest, model_name, modified_ms, read_text,
-        sub_dirs, timestamp, LogFile, ReadLimits, MTIME_SLACK_MS,
+        LogFile, MTIME_SLACK_MS, ReadLimits, copilot_tokens, mentioned_runs, merge_largest,
+        model_name, modified_ms, read_text, sub_dirs, timestamp,
     },
 };
 use serde_json::Value;
@@ -80,10 +80,9 @@ fn parse_events(text: &str, session: &str) -> (BTreeMap<String, Request>, usize)
             Some("tool.execution_complete") => {
                 if let (Some(id), content) =
                     (body["toolCallId"].as_str(), &body["result"]["content"])
+                    && !content.is_null()
                 {
-                    if !content.is_null() {
-                        results.insert(id.to_string(), result_bytes(content));
-                    }
+                    results.insert(id.to_string(), result_bytes(content));
                 }
             }
             Some("session.usage_record") => {

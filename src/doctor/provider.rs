@@ -2,8 +2,8 @@
 //! host's command line tool is installed, and whether it is signed in, as far as a read-only command shows.
 //! None of these checks blocks readiness: a missing tool or sign-in is a warning.
 
-use super::{find_program, git_output, Check, Machine};
-use crate::pr_open::{detect_host, Host};
+use super::{Check, Machine, find_program, git_output};
+use crate::pr_open::{Host, detect_host};
 use std::{
     path::Path,
     process::{Command, Stdio},
@@ -25,9 +25,12 @@ pub(super) fn checks(project: &Path, machine: &Machine) -> Vec<Check> {
         Err(problem) => {
             return vec![Check::warning(
                 "host",
-                format!("the pull request host is not supported as configured: {}", problem.0),
+                format!(
+                    "the pull request host is not supported as configured: {}",
+                    problem.0
+                ),
                 "Fix origin or the factory.prProvider git config, or open pull requests with the host's own tooling and record them with `factory run update <id> <stage> <status> --pr <url>`.",
-            )]
+            )];
         }
     };
     let (host_check, tool_checks) = match host {
@@ -50,7 +53,7 @@ pub(super) fn checks(project: &Path, machine: &Machine) -> Vec<Check> {
                 "host",
                 "origin is not on a host the factory opens pull requests on (GitHub or Azure Repos)",
                 "Open pull requests and watch CI with the host's own tooling, and record the pull request with `factory run update <id> <stage> <status> --pr <url>`. For GitHub Enterprise, run `git config factory.prProvider github`.",
-            )]
+            )];
         }
     };
     let mut checks = vec![host_check];

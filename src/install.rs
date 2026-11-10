@@ -707,8 +707,10 @@ mod tests {
                 "{skill} does not point to Using the bundled skills"
             );
         }
-        assert!(bundled_text("factory-full/SKILL.md")
-            .contains("`factory-implement` can also only be invoked by the user"));
+        assert!(
+            bundled_text("factory-full/SKILL.md")
+                .contains("`factory-implement` can also only be invoked by the user")
+        );
     }
 
     #[test]
@@ -1521,9 +1523,11 @@ mod tests {
         fs::create_dir_all(root.join("my-skill")).unwrap();
         fs::write(root.join("my-skill/SKILL.md"), "user skill").unwrap();
         install_to(root).unwrap();
-        assert!(fs::read_to_string(root.join("factory/SKILL.md"))
-            .unwrap()
-            .contains("name: factory"));
+        assert!(
+            fs::read_to_string(root.join("factory/SKILL.md"))
+                .unwrap()
+                .contains("name: factory")
+        );
         assert!(!root.join("factory/stale.md").exists());
         for old in LEGACY_SKILLS {
             assert!(!root.join(old).exists(), "{old}");
@@ -1543,15 +1547,17 @@ mod tests {
             fs::read_to_string(root.join("my-skill/SKILL.md")).unwrap(),
             "user skill"
         );
-        assert!(root
-            .join("factory-security-review/references/language-patterns.md")
-            .is_file());
+        assert!(
+            root.join("factory-security-review/references/language-patterns.md")
+                .is_file()
+        );
         assert!(root.join("factory-security-review/LICENSE").is_file());
         assert!(root.join("factory-setup/SKILL.md").is_file());
         assert!(root.join("factory-setup/issue-tracker-github.md").is_file());
-        assert!(root
-            .join("factory-setup/issue-tracker-azure-boards.md")
-            .is_file());
+        assert!(
+            root.join("factory-setup/issue-tracker-azure-boards.md")
+                .is_file()
+        );
         assert!(root.join("factory-setup/LICENSE").is_file());
         assert!(root.join("factory-to-spec/SKILL.md").is_file());
         assert!(root.join("factory-full/SKILL.md").is_file());
@@ -1564,12 +1570,14 @@ mod tests {
         assert!(root.join("factory-implement-balanced/SKILL.md").is_file());
         assert!(!root.join("factory-balanced/LICENSE").exists());
         assert!(root.join("factory-procedures/SKILL.md").is_file());
-        assert!(root
-            .join("factory-procedures/references/model-routing.md")
-            .is_file());
-        assert!(root
-            .join("factory-procedures/references/pull-request-and-ci.md")
-            .is_file());
+        assert!(
+            root.join("factory-procedures/references/model-routing.md")
+                .is_file()
+        );
+        assert!(
+            root.join("factory-procedures/references/pull-request-and-ci.md")
+                .is_file()
+        );
         assert!(!root.join("factory-procedures/LICENSE").exists());
         assert!(!root.join("factory-implement-balanced/LICENSE").exists());
         assert!(!root.join("factory-implement-fast/LICENSE").exists());

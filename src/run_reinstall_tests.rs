@@ -178,9 +178,10 @@ fn off_a_terminal_the_commands_are_printed_and_nothing_runs() {
         "cargo install --path {} --locked --force",
         quote(&fx.repo.display().to_string(), false)
     )));
-    assert!(io
-        .said
-        .contains("factory install --agent codex,claude --config-dir /c"));
+    assert!(
+        io.said
+            .contains("factory install --agent codex,claude --config-dir /c")
+    );
 }
 
 #[test]

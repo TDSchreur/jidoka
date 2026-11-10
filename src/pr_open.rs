@@ -2,7 +2,7 @@
 
 use crate::{
     inspect::shown,
-    pr_wait::{problem, GhError, GhOutput, ToolProblem},
+    pr_wait::{GhError, GhOutput, ToolProblem, problem},
     run_begin::{first_line, git, last_line, valid_branch_name},
 };
 use serde::Serialize;
@@ -133,7 +133,7 @@ pub(crate) fn parse_options(options: &[&str]) -> Result<Options, String> {
                 base = Some(name.to_string());
             }
             "--json" | "--title" | "--body-file" | "--base" => {
-                return Err(format!("{arg} was given twice."))
+                return Err(format!("{arg} was given twice."));
             }
             other => return Err(format!("Unexpected option {other:?}.")),
         }
@@ -319,12 +319,12 @@ pub(crate) fn detect_host(git: &dyn Fn(&[&str]) -> Option<String>) -> Result<Ori
                 Some(actual) if Some(&actual) != selected.as_ref() => {
                     return Err(ToolProblem(
                         "Azure provider configuration does not match origin.".into(),
-                    ))
+                    ));
                 }
                 None if get("factory.azureOrigin")? != remote => {
                     return Err(ToolProblem(
                         "Azure provider configuration does not match origin.".into(),
-                    ))
+                    ));
                 }
                 _ => {}
             }
@@ -333,7 +333,7 @@ pub(crate) fn detect_host(git: &dyn Fn(&[&str]) -> Option<String>) -> Result<Ori
         Some(_) => {
             return Err(ToolProblem(
                 "Unknown factory.prProvider; choose github or azure.".into(),
-            ))
+            ));
         }
     };
     let host = match azure {
@@ -567,7 +567,9 @@ fn open_azure(
         let text = std::fs::read_to_string(&options.body_file)
             .map_err(|_| ToolProblem("The pull request body could not be read as UTF-8.".into()))?;
         if text.chars().count() > AZURE_DESCRIPTION_LIMIT || text.contains('\0') {
-            return Err(ToolProblem(format!("Azure pull request descriptions must be at most {AZURE_DESCRIPTION_LIMIT} characters and contain no NUL bytes.")));
+            return Err(ToolProblem(format!(
+                "Azure pull request descriptions must be at most {AZURE_DESCRIPTION_LIMIT} characters and contain no NUL bytes."
+            )));
         }
         Some(format!("--description={text}"))
     } else {
@@ -633,7 +635,7 @@ fn open_azure(
                     false,
                 ),
                 _ => Err(error),
-            }
+            };
         }
     };
     let id = data["pullRequestId"].as_u64().ok_or_else(|| ToolProblem("Azure PR creation returned no pull request ID; check for an existing PR before retrying.".into()))?;
@@ -712,14 +714,14 @@ pub(crate) fn open(
             shown(&branch)
         )));
     }
-    if let Some(recorded) = &run.branch {
-        if *recorded != branch {
-            return Err(ToolProblem(format!(
-                "The worktree is on {} but the run records {}. Switch it back, or record the right branch with `factory run update`.",
-                shown(&branch),
-                shown(recorded)
-            )));
-        }
+    if let Some(recorded) = &run.branch
+        && *recorded != branch
+    {
+        return Err(ToolProblem(format!(
+            "The worktree is on {} but the run records {}. Switch it back, or record the right branch with `factory run update`.",
+            shown(&branch),
+            shown(recorded)
+        )));
     }
     let base = match &options.base {
         Some(base) => base.clone(),

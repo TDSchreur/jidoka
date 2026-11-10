@@ -7,7 +7,7 @@
 
 use crate::{
     run::{Run, Stage},
-    usage_logs::{read_sessions, ReadLimits, Roots, RunSession},
+    usage_logs::{ReadLimits, Roots, RunSession, read_sessions},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -304,11 +304,7 @@ pub(crate) fn parse_timestamp(text: &str) -> Option<u64> {
         b'Z' | b'z' if at + 1 == bytes.len() => 0,
         sign @ (b'+' | b'-') if at + 6 == bytes.len() && bytes[at + 3] == b':' => {
             let minutes = digits(at + 1, 2)? * 60 + digits(at + 4, 2)?;
-            if *sign == b'+' {
-                minutes
-            } else {
-                -minutes
-            }
+            if *sign == b'+' { minutes } else { -minutes }
         }
         _ => return None,
     };
@@ -441,10 +437,10 @@ pub(crate) fn attribute(
                     subagents: Tokens::default(),
                     efforts: BTreeSet::new(),
                 });
-            if let Some(effort) = &entry.effort {
-                if row.efforts.len() < MAX_EFFORTS_PER_ROW || row.efforts.contains(effort) {
-                    row.efforts.insert(effort.clone());
-                }
+            if let Some(effort) = &entry.effort
+                && (row.efforts.len() < MAX_EFFORTS_PER_ROW || row.efforts.contains(effort))
+            {
+                row.efforts.insert(effort.clone());
             }
             row.tokens.add(&entry.tokens);
             if entry.subagent {
@@ -795,7 +791,7 @@ impl Collection {
         let _guard = match self.lock.try_lock() {
             Ok(guard) => guard,
             Err(std::sync::TryLockError::Poisoned(error)) => {
-                return Err(crate::run::lock_error(error))
+                return Err(crate::run::lock_error(error));
             }
             Err(std::sync::TryLockError::WouldBlock) => {
                 waiting();

@@ -64,8 +64,10 @@ fn help_lists_doctor() {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let output = factory(&["--help"], dir.path(), home.path());
-    assert!(String::from_utf8_lossy(&output.stdout)
-        .contains("factory doctor [--agent <codex|claude|copilot>] [--json]"));
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("factory doctor [--agent <codex|claude|copilot>] [--json]")
+    );
 }
 
 /// The folder holding `git`, so a run can use git and still see no agent on `PATH`.
@@ -89,13 +91,15 @@ fn doctor_reads_the_repository_it_runs_in() {
             "refs/remotes/origin/main",
         ],
     ] {
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(repo.path())
-            .args(args)
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
     }
     let output = Command::new(env!("CARGO_BIN_EXE_factory"))
         .args(["doctor", "--json"])
@@ -257,11 +261,13 @@ fn doctor_creates_one_file_for_every_agent_and_checks_each_of_them() {
         home.path(),
     );
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(report["model_routing"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|check| check["agent"].is_null() || check["agent"] == "codex"));
+    assert!(
+        report["model_routing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|check| check["agent"].is_null() || check["agent"] == "codex")
+    );
 }
 
 #[test]

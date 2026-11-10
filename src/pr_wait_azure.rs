@@ -1,7 +1,7 @@
 //! Read-only Azure DevOps Services pull request status watching.
 use super::{
-    BaseState, CheckResult, Clock, Failure, Gh, GhError, Options, Outcome, ToolProblem, Waited,
-    GRACE, POLL,
+    BaseState, CheckResult, Clock, Failure, GRACE, Gh, GhError, Options, Outcome, POLL,
+    ToolProblem, Waited,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;

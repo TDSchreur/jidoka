@@ -365,7 +365,7 @@ fn check_worktree(
             return (
                 entry(name, State::Unknown, None, "never recorded".into()),
                 false,
-            )
+            );
         }
         Worktree::Missing => return differs("the directory does not exist".into()),
         Worktree::NotGit(error) => return differs(format!("not a git worktree: {error}")),

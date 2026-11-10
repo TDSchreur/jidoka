@@ -1,7 +1,7 @@
 //! `factory pr wait` against a scripted `gh` and a clock that never sleeps.
 
 use super::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{cell::RefCell, collections::VecDeque};
 
 const PR: &str = "https://github.com/o/r/pull/7";
@@ -48,7 +48,8 @@ fn checks(list: &[(&str, &str)]) -> Result<GhOutput, GhError> {
 
 fn next(queue: &RefCell<VecDeque<Result<GhOutput, GhError>>>) -> Result<GhOutput, GhError> {
     let mut queue = queue.borrow_mut();
-    let answer = if queue.len() > 1 {
+
+    if queue.len() > 1 {
         queue.pop_front().unwrap()
     } else {
         match queue.front().expect("the script has an answer") {
@@ -56,8 +57,7 @@ fn next(queue: &RefCell<VecDeque<Result<GhOutput, GhError>>>) -> Result<GhOutput
             Err(GhError::NotInstalled) => Err(GhError::NotInstalled),
             Err(GhError::Other(text)) => Err(GhError::Other(text.clone())),
         }
-    };
-    answer
+    }
 }
 
 impl Gh for FakeGh {
@@ -159,11 +159,13 @@ fn pending_checks_are_waited_for_one_poll_at_a_time() {
     let (result, _, clock) = run_wait(&gh);
     assert_eq!(result.unwrap().outcome, Outcome::Passed);
     assert_eq!(clock.sleeps.borrow().len(), 2);
-    assert!(clock
-        .sleeps
-        .borrow()
-        .iter()
-        .all(|d| *d == Duration::from_secs(15)));
+    assert!(
+        clock
+            .sleeps
+            .borrow()
+            .iter()
+            .all(|d| *d == Duration::from_secs(15))
+    );
 }
 
 #[test]
@@ -223,11 +225,12 @@ fn a_merged_or_closed_pull_request_is_not_watched() {
             (Outcome::NotOpen, 7),
             "{state}"
         );
-        assert!(gh
-            .calls
-            .borrow()
-            .iter()
-            .all(|c| !c.starts_with("pr checks")));
+        assert!(
+            gh.calls
+                .borrow()
+                .iter()
+                .all(|c| !c.starts_with("pr checks"))
+        );
     }
 }
 
@@ -257,11 +260,13 @@ fn the_base_state_is_reported_and_unknown_is_asked_again() {
     );
     let (result, _, clock) = run_wait(&gh);
     assert_eq!(result.unwrap().base, BaseState::Behind);
-    assert!(clock
-        .sleeps
-        .borrow()
-        .iter()
-        .any(|d| *d == Duration::from_secs(3)));
+    assert!(
+        clock
+            .sleeps
+            .borrow()
+            .iter()
+            .any(|d| *d == Duration::from_secs(3))
+    );
     // UNKNOWN for good gives unknown after five more asks.
     let gh = FakeGh::script(
         vec![view("aaa", "OPEN", "CLEAN"), view("aaa", "OPEN", "UNKNOWN")],
@@ -429,10 +434,12 @@ fn a_check_that_never_ends_gives_timeout_with_the_pending_checks() {
     assert_eq!((waited.outcome, waited.exit_code), (Outcome::Timeout, 4));
     assert!(clock.elapsed() >= Duration::from_secs(300));
     assert!(clock.elapsed() < Duration::from_secs(330));
-    assert!(waited
-        .checks
-        .iter()
-        .any(|c| c.name == "build" && c.bucket == "pending"));
+    assert!(
+        waited
+            .checks
+            .iter()
+            .any(|c| c.name == "build" && c.bucket == "pending")
+    );
     assert_eq!(activity.last().unwrap(), "CI timed out");
     assert!(render(&waited).contains("build"));
 }
@@ -457,10 +464,12 @@ fn fail_fast_returns_at_the_first_failure_and_lists_what_still_runs() {
     let waited = result.unwrap();
     assert_eq!(waited.outcome, Outcome::Failed);
     assert_eq!(clock.sleeps.borrow().len(), 1);
-    assert!(waited
-        .checks
-        .iter()
-        .any(|c| c.name == "b" && c.bucket == "pending"));
+    assert!(
+        waited
+            .checks
+            .iter()
+            .any(|c| c.name == "b" && c.bucket == "pending")
+    );
 
     // Without it the wait goes on until every check has ended.
     let (result, _, clock) = run_wait(&script());
@@ -1279,10 +1288,10 @@ fn azure_names_keep_unreserved_characters_in_the_organization_and_build_links() 
         waited.checks[0].link,
         "https://dev.azure.com/my-org/My%20Project/_build/results?buildId=42"
     );
-    assert!(gh
-        .0
-        .borrow()
-        .iter()
-        .all(|call| !call.contains("--organization")
-            || call.contains("--organization https://dev.azure.com/my-org")));
+    assert!(
+        gh.0.borrow()
+            .iter()
+            .all(|call| !call.contains("--organization")
+                || call.contains("--organization https://dev.azure.com/my-org"))
+    );
 }

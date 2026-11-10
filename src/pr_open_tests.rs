@@ -399,25 +399,29 @@ fn nothing_is_pushed_when_a_check_fails_first() {
     let project = Project::new();
     let mut run = run_of(&project);
     run.worktree = None;
-    assert!(open(
-        &run,
-        &options(&project),
-        &FakeGh::new_pr(URL),
-        &FakeApi::default()
-    )
-    .unwrap_err()
-    .0
-    .contains("no worktree"));
+    assert!(
+        open(
+            &run,
+            &options(&project),
+            &FakeGh::new_pr(URL),
+            &FakeApi::default()
+        )
+        .unwrap_err()
+        .0
+        .contains("no worktree")
+    );
     run.worktree = Some(project.wt.join("gone").display().to_string());
-    assert!(open(
-        &run,
-        &options(&project),
-        &FakeGh::new_pr(URL),
-        &FakeApi::default()
-    )
-    .unwrap_err()
-    .0
-    .contains("does not exist"));
+    assert!(
+        open(
+            &run,
+            &options(&project),
+            &FakeGh::new_pr(URL),
+            &FakeApi::default()
+        )
+        .unwrap_err()
+        .0
+        .contains("does not exist")
+    );
 }
 
 #[test]
@@ -564,15 +568,17 @@ fn the_url_is_the_last_url_gh_printed() {
     let gh = FakeGh::default();
     gh.list.borrow_mut().push_back(ok("[]"));
     gh.create.borrow_mut().push_back(ok("no url here\n"));
-    assert!(open(
-        &run_of(&project),
-        &options(&project),
-        &gh,
-        &FakeApi::default()
-    )
-    .unwrap_err()
-    .0
-    .contains("URL"));
+    assert!(
+        open(
+            &run_of(&project),
+            &options(&project),
+            &gh,
+            &FakeApi::default()
+        )
+        .unwrap_err()
+        .0
+        .contains("URL")
+    );
 }
 
 #[test]
@@ -603,13 +609,15 @@ fn the_options_are_checked_before_anything_runs() {
     let long = "x".repeat(300);
     assert!(parse_options(&["--title", &long, "--body-file", b]).is_err());
     // A folder is not a body file.
-    assert!(parse_options(&[
-        "--title",
-        "T",
-        "--body-file",
-        std::env::temp_dir().to_str().unwrap()
-    ])
-    .is_err());
+    assert!(
+        parse_options(&[
+            "--title",
+            "T",
+            "--body-file",
+            std::env::temp_dir().to_str().unwrap()
+        ])
+        .is_err()
+    );
 }
 
 #[test]
@@ -660,9 +668,11 @@ fn assert_pushes_without_forcing_or_changing_the_work(gh: &FakeGh) {
         "merge",
     ];
     let git_calls = gh.git_calls.borrow();
-    assert!(git_calls
-        .iter()
-        .any(|c| c.first().map(String::as_str) == Some("push")));
+    assert!(
+        git_calls
+            .iter()
+            .any(|c| c.first().map(String::as_str) == Some("push"))
+    );
     for command in git_calls.iter() {
         for argument in command {
             assert!(!forbidden.contains(&argument.as_str()), "{command:?}");

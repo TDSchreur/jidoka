@@ -8,7 +8,7 @@
 
 use crate::{
     install::{agent_home, expand_config_dir},
-    usage::{parse_timestamp, Entry, PauseKind, Tokens},
+    usage::{Entry, PauseKind, Tokens, parse_timestamp},
 };
 use serde_json::Value;
 use std::{

@@ -1,8 +1,8 @@
 //! The readable form of a run, for `factory run inspect`: everything a new session needs to continue it.
 
-use crate::routing::{model_matches, ModelChoice, ModelRouting};
+use crate::routing::{ModelChoice, ModelRouting, model_matches};
 use crate::run::{Mode, Run, RunEventKind, RunStatus, Stage, TicketStatus};
-use crate::usage::{format_timestamp, Usage, UsageStatus};
+use crate::usage::{Usage, UsageStatus, format_timestamp};
 use std::collections::BTreeSet;
 
 const UNKNOWN: &str = "unknown (not recorded)";
@@ -182,7 +182,9 @@ fn verdict(requested: &ModelChoice, seen: &[Seen], partial: bool) -> String {
         } else if !efforts.iter().any(|e| e.eq_ignore_ascii_case(want)) {
             let (want, got) = (shown(want), join_efforts(efforts.iter().copied()));
             return if partial {
-                format!("effort {want} not observed, only {got} (usage is partial, so it may be missing)")
+                format!(
+                    "effort {want} not observed, only {got} (usage is partial, so it may be missing)"
+                )
             } else {
                 format!("MISMATCH: effort {want} was requested, observed {got}")
             };

@@ -4,16 +4,16 @@ use crate::{
     pr_state,
     pr_wait::{self, RealGh},
     run::{NewRun, Run, RunStore, UpdateRun},
-    usage::{collect_and_store, UsageSettings},
+    usage::{UsageSettings, collect_and_store},
 };
 use rocket::{
+    Build, Rocket, State,
     data::{Limits, ToByteUnit},
     figment::Figment,
     http::{ContentType, Status as HttpStatus},
     request::{FromRequest, Outcome, Request},
     response::content::RawHtml,
     serde::json::Json,
-    Build, Rocket, State,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -716,10 +716,10 @@ impl Collector {
                 })
                 .await;
             }
-            if let Ok(mut chains) = chains.lock() {
-                if chains.get(&id) == Some(&generation) {
-                    chains.remove(&id);
-                }
+            if let Ok(mut chains) = chains.lock()
+                && chains.get(&id) == Some(&generation)
+            {
+                chains.remove(&id);
             }
         });
         if let Ok(mut pending) = self.pending.lock() {
@@ -955,7 +955,7 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
 mod tests {
     use super::*;
     use crate::{
-        run::{load_runs, updated_now, RunStatus, Stage},
+        run::{RunStatus, Stage, load_runs, updated_now},
         test_support::TestDir,
     };
     use rocket::{http::Header, local::asynchronous::Client};
@@ -1538,8 +1538,11 @@ mod tests {
             2,
             "one definition, one use"
         );
-        assert!(script
-            .contains("The repository, worktrees, branches and pull requests stay as they are."));
+        assert!(
+            script.contains(
+                "The repository, worktrees, branches and pull requests stay as they are."
+            )
+        );
         // No row on the board has a Delete of its own.
         assert!(!script.contains("now=${now} onOpen=${onOpen} onDelete=${onDelete} />"));
     }
@@ -1800,11 +1803,13 @@ mod tests {
         let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
         let response = report(&api, &run.id, r#"{"stage":"finish","status":"done"}"#).await;
         assert_eq!(response.status(), HttpStatus::BadRequest);
-        assert!(response
-            .into_string()
-            .await
-            .unwrap()
-            .contains("--summary finish="));
+        assert!(
+            response
+                .into_string()
+                .await
+                .unwrap()
+                .contains("--summary finish=")
+        );
         let stored = fetch(&api, &run.id).await.1.unwrap();
         assert!(stored.finished_at.is_none());
     }
@@ -2103,13 +2108,14 @@ mod tests {
                 .await;
             assert_eq!(response.status(), HttpStatus::BadRequest, "{routing}");
         }
-        assert!(api
-            .rocket()
-            .state::<RunStore>()
-            .unwrap()
-            .list()
-            .unwrap()
-            .is_empty());
+        assert!(
+            api.rocket()
+                .state::<RunStore>()
+                .unwrap()
+                .list()
+                .unwrap()
+                .is_empty()
+        );
         let run = start(
             &api,
             &with(
@@ -2140,13 +2146,14 @@ mod tests {
                 .await;
             assert_eq!(response.status(), HttpStatus::BadRequest, "{body}");
         }
-        assert!(api
-            .rocket()
-            .state::<RunStore>()
-            .unwrap()
-            .list()
-            .unwrap()
-            .is_empty());
+        assert!(
+            api.rocket()
+                .state::<RunStore>()
+                .unwrap()
+                .list()
+                .unwrap()
+                .is_empty()
+        );
         let run = start(
             &api,
             r#"{"title":"t","project":"C:\\work\\repo","repository":"C:\\work\\repo"}"#,
@@ -2160,8 +2167,11 @@ mod tests {
         let script = asset("/assets/app.js").await;
         let css = asset("/assets/style.css").await;
         // The card chip: fresh tokens, marked partial, and none at all when nothing is tracked.
-        assert!(script
-            .contains("const freshTokens = (t) => (t.input == null && t.output == null ? null :"));
+        assert!(
+            script.contains(
+                "const freshTokens = (t) => (t.input == null && t.output == null ? null :"
+            )
+        );
         assert!(script.contains("if (!usage || usage.status === 'not-tracked'"));
         assert!(script.contains("run.usage.status === 'partial' ? ' (partial)' : ''"));
         assert!(script.contains("tokens !== null"));
@@ -3110,8 +3120,8 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn the_detail_shows_the_status_reason_only_while_blocked_and_the_activity_only_while_active(
-    ) {
+    async fn the_detail_shows_the_status_reason_only_while_blocked_and_the_activity_only_while_active()
+     {
         // The workflows clear the reason when work resumes; a Run that is not blocked shows none, and a shipped Run no activity.
         let script = asset("/assets/app.js").await;
         assert!(script.contains(
@@ -3186,10 +3196,14 @@ mod tests {
         // Above the footer, so the Projects menu panel is never covered.
         assert!(sticky.contains("z-index: 3"));
         // Focus rings inside the scrolling lists sit inside their control, where the list cannot clip them.
-        assert!(rule(".andon-run:focus-visible")
-            .contains("outline-offset: calc(-2 * var(--stroke-thick))"));
-        assert!(rule(".line-open:focus-visible::after")
-            .contains("outline-offset: calc(-1 * var(--stroke-thick))"));
+        assert!(
+            rule(".andon-run:focus-visible")
+                .contains("outline-offset: calc(-2 * var(--stroke-thick))")
+        );
+        assert!(
+            rule(".line-open:focus-visible::after")
+                .contains("outline-offset: calc(-1 * var(--stroke-thick))")
+        );
         assert!(rule(".line-row .meta a:focus-visible").contains("outline-offset: 0"));
         // Narrow screens: the toolbar scrolls away, the andon strip and the line stay.
         let narrow = rules
@@ -3276,8 +3290,11 @@ mod tests {
     #[rocket::async_test]
     async fn the_page_has_a_favicon_and_a_decorative_logo_with_a_readable_heading() {
         let page = dashboard_page().await;
-        assert!(page
-            .contains("<link rel=\"icon\" href=\"/assets/favicon.svg\" type=\"image/svg+xml\">"));
+        assert!(
+            page.contains(
+                "<link rel=\"icon\" href=\"/assets/favicon.svg\" type=\"image/svg+xml\">"
+            )
+        );
         // The logo is drawn inline, hidden from assistive technology, and the heading keeps its text.
         let heading = page
             .split("<h1>")
@@ -3960,10 +3977,12 @@ mod tests {
             post_status(&api, "/api/runs", Some(&cli)).await,
             HttpStatus::Created
         );
-        assert!(load_runs(&dir.0.path().join("runs.json"))
-            .unwrap()
-            .iter()
-            .all(|run| run.title == "x"));
+        assert!(
+            load_runs(&dir.0.path().join("runs.json"))
+                .unwrap()
+                .iter()
+                .all(|run| run.title == "x")
+        );
     }
 
     #[rocket::async_test]

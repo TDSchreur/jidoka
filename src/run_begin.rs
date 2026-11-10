@@ -720,8 +720,12 @@ fn workspace(
             if !is_unused(main, &branch, &base) {
                 return Err(own_commits());
             }
-            let status = git(&path, &["status", "--porcelain"])
-                .map_err(|error| fail(format!("{path_text} could not be read: {}", first_line(&error))))?;
+            let status = git(&path, &["status", "--porcelain"]).map_err(|error| {
+                fail(format!(
+                    "{path_text} could not be read: {}",
+                    first_line(&error)
+                ))
+            })?;
             if !status.is_empty() {
                 return Err(fail(format!(
                     "The worktree {path_text} has uncommitted changes, so it is not an unused workspace. Keep working in it by hand, or pick another name with --branch."

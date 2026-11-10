@@ -134,17 +134,16 @@ pub(crate) fn cleanup(
             shown(&entry.path)
         ));
     }
-    if let Some(branch) = run.branch.as_deref() {
-        if entries
+    if let Some(branch) = run.branch.as_deref()
+        && entries
             .iter()
             .filter(|entry| Some(*entry) != own)
             .any(|entry| entry.branch.as_deref() == Some(branch))
-        {
-            return refuse(format!(
-                "The branch {} is checked out in another worktree (the main checkout included). Nothing was removed.",
-                shown(branch)
-            ));
-        }
+    {
+        return refuse(format!(
+            "The branch {} is checked out in another worktree (the main checkout included). Nothing was removed.",
+            shown(branch)
+        ));
     }
     let worktree = run
         .worktree
@@ -246,16 +245,15 @@ pub(crate) fn cleanup(
         cleaned.worktree = Step::Removed;
     }
     // The pre-checks already ran, so this re-check only guards against a race since then.
-    if let Some(branch) = run.branch.as_deref().filter(|_| checked.is_some()) {
-        if worktrees(git, repository)?
+    if let Some(branch) = run.branch.as_deref().filter(|_| checked.is_some())
+        && worktrees(git, repository)?
             .iter()
             .any(|entry| entry.branch.as_deref() == Some(branch))
-        {
-            return refuse(format!(
-                "The branch {} is still checked out in a worktree. The branch was kept.",
-                shown(branch)
-            ));
-        }
+    {
+        return refuse(format!(
+            "The branch {} is still checked out in a worktree. The branch was kept.",
+            shown(branch)
+        ));
     }
     if let (Some(oid), Some(branch)) = (checked, run.branch.as_deref()) {
         // Deleting only at the checked commit keeps a branch that moved since the check.

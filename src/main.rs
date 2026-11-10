@@ -29,9 +29,9 @@ mod update;
 mod usage;
 mod usage_logs;
 
-use client::{fetch_run, fetch_runs, probe_dashboard, report_run, start_run, Probe};
+use client::{Probe, fetch_run, fetch_runs, probe_dashboard, report_run, start_run};
 use run::UPDATE_HELP;
-use server::{serve, ADDRESS, DEFAULT_PORT};
+use server::{ADDRESS, DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
 const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...] [--config-dir <path>]...\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr sync <run-id> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run check <run-id> [--json]\n  factory run cleanup <run-id> [--reinstall] [--config-dir <path>]...\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
@@ -426,13 +426,12 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     let running = matches!(run.status, run::RunStatus::Running);
     let mut reported_failure = false;
     let mut activity = |text: &str| {
-        if running {
-            if let Err(error) = report_to_dashboard(id, &stage, "running", &["--activity", text]) {
-                if !reported_failure {
-                    reported_failure = true;
-                    eprintln!("The run's activity could not be updated: {error}");
-                }
-            }
+        if running
+            && let Err(error) = report_to_dashboard(id, &stage, "running", &["--activity", text])
+            && !reported_failure
+        {
+            reported_failure = true;
+            eprintln!("The run's activity could not be updated: {error}");
         }
     };
     // Only GitHub can lag behind a push in what it reports; the Azure wait does not use the hint.
@@ -762,12 +761,16 @@ mod tests {
 
     #[test]
     fn a_separate_port_keeps_its_own_data_file() {
-        assert!(data_path(DEFAULT_PORT)
-            .unwrap()
-            .ends_with("tds-factory/runs.json"));
-        assert!(data_path(4400)
-            .unwrap()
-            .ends_with("tds-factory/runs-4400.json"));
+        assert!(
+            data_path(DEFAULT_PORT)
+                .unwrap()
+                .ends_with("tds-factory/runs.json")
+        );
+        assert!(
+            data_path(4400)
+                .unwrap()
+                .ends_with("tds-factory/runs-4400.json")
+        );
     }
 
     #[test]

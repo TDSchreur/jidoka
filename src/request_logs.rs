@@ -9,8 +9,8 @@
 use crate::{
     usage::Tokens,
     usage_logs::{
-        count, files_in, merge_largest, model_name, modified_ms, read_text, sub_dirs, timestamp,
-        LogFile, ReadLimits, MTIME_SLACK_MS,
+        LogFile, MTIME_SLACK_MS, ReadLimits, count, files_in, merge_largest, model_name,
+        modified_ms, read_text, sub_dirs, timestamp,
     },
 };
 use serde::Serialize;
@@ -313,12 +313,11 @@ fn parse_session(
             if let Some(key) = block["tool_use_id"]
                 .as_str()
                 .and_then(|id| owners.remove(id))
+                && let Some(request) = pending.get_mut(&key)
             {
-                if let Some(request) = pending.get_mut(&key) {
-                    request.tool_output_bytes = request
-                        .tool_output_bytes
-                        .saturating_add(result_bytes(&block["content"]));
-                }
+                request.tool_output_bytes = request
+                    .tool_output_bytes
+                    .saturating_add(result_bytes(&block["content"]));
             }
         }
         let usage = &message["usage"];
@@ -902,7 +901,7 @@ fn hit(segment: &str) -> Hit {
     let has = |text: &str| words.iter().any(|w| w.contains(text));
     let category = match (program, word(1), word(2)) {
         ("cd" | "pushd" | "popd" | "echo" | "export" | "set" | "true" | ":" | "printf", _, _) => {
-            return Hit::Neutral
+            return Hit::Neutral;
         }
         ("git", "worktree", "list") => Category::ContinuationCheck,
         ("git", "worktree" | "clone" | "symbolic-ref", _) => Category::Workspace,

@@ -1152,9 +1152,11 @@ fn the_text_output_is_printable_whatever_the_folder_is_called() {
         gitignore_warning: Some("bad \u{1b}[2J".into()),
         session_warning: None,
     };
-    assert!(!render(&begun, "/p/plans/100.md")
-        .chars()
-        .any(|c| c.is_control() && c != '\n'));
+    assert!(
+        !render(&begun, "/p/plans/100.md")
+            .chars()
+            .any(|c| c.is_control() && c != '\n')
+    );
 }
 
 #[test]
