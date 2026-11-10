@@ -325,6 +325,17 @@ pub(crate) fn create_default_policy(
     Ok((path, done))
 }
 
+/// Splits a comma-separated `--agent` value into trimmed names without duplicates.
+pub(crate) fn agent_names(agents: &str) -> Vec<&str> {
+    let mut names: Vec<&str> = Vec::new();
+    for name in agents.split(',').map(str::trim) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
 /// Resolves the skills folder of every listed agent before anything is installed.
 pub(crate) fn skills_roots(
     agents: &str,
@@ -332,12 +343,7 @@ pub(crate) fn skills_roots(
     home: &Path,
     var: impl Fn(&str) -> Option<OsString>,
 ) -> io::Result<Vec<PathBuf>> {
-    let mut names: Vec<&str> = Vec::new();
-    for name in agents.split(',').map(str::trim) {
-        if !names.contains(&name) {
-            names.push(name);
-        }
-    }
+    let names = agent_names(agents);
     if !config_dirs.is_empty() && !names.contains(&"claude") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

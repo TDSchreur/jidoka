@@ -79,14 +79,11 @@ fn install(home: &Path, agents: &str, dir: &Path) {
 }
 
 #[test]
-fn a_partial_uninstall_keeps_the_record_minus_the_agent_and_keeps_the_binary() {
+fn a_partial_uninstall_keeps_the_record_minus_the_agent() {
     let home = tempfile::tempdir().unwrap();
     let dir = home.path().join("cc");
     install(home.path(), "claude,codex", &dir);
     let record = home.path().join("config/jidoka/install.json");
-    let binary = home.path().join(".local/bin/jidoka");
-    std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
-    std::fs::write(&binary, "binary").unwrap();
     let output = jidoka(home.path(), &["uninstall", "--agent", "codex"]);
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -97,7 +94,6 @@ fn a_partial_uninstall_keeps_the_record_minus_the_agent_and_keeps_the_binary() {
     let text = std::fs::read_to_string(&record).unwrap();
     assert!(text.contains("claude") && !text.contains("codex"), "{text}");
     assert!(dir.join("skills/jidoka").exists());
-    assert!(binary.exists());
 }
 
 #[test]
@@ -152,5 +148,28 @@ fn removing_the_last_agent_removes_the_record() {
     );
     assert!(last.status.success(), "{last:?}");
     assert!(!record.exists());
-    assert!(String::from_utf8_lossy(&last.stdout).contains("package manager"));
+    let note = if cfg!(windows) {
+        "winget uninstall"
+    } else {
+        "package manager"
+    };
+    assert!(String::from_utf8_lossy(&last.stdout).contains(note));
+}
+
+#[test]
+fn an_agent_that_is_not_recorded_leaves_the_record_and_says_so() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join("cc");
+    install(home.path(), "claude", &dir);
+    let record = home.path().join("config/jidoka/install.json");
+    let before = std::fs::read_to_string(&record).unwrap();
+    let output = jidoka(home.path(), &["uninstall", "--agent", "codex"]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Not recorded") && stdout.contains("codex"),
+        "{stdout}"
+    );
+    assert_eq!(std::fs::read_to_string(&record).unwrap(), before);
+    assert!(dir.join("skills/jidoka").exists());
 }

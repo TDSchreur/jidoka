@@ -96,6 +96,16 @@ impl Lock {
         age: impl Fn(&Path) -> Option<Duration>,
         after_rename: impl Fn(),
     ) -> Option<Self> {
+        Self::take_linking(path, age, after_rename, |from, to| fs::hard_link(from, to))
+    }
+
+    /// `take_hooked` with the function that puts a moved-aside lock back injected.
+    fn take_linking(
+        path: PathBuf,
+        age: impl Fn(&Path) -> Option<Duration>,
+        after_rename: impl Fn(),
+        link: impl Fn(&Path, &Path) -> io::Result<()>,
+    ) -> Option<Self> {
         let is_stale = |file: &Path| age(file).is_some_and(|age| age > STALE_LOCK);
         for _ in 0..2 {
             match fs::OpenOptions::new()
@@ -123,7 +133,17 @@ impl Lock {
                     }
                     after_rename();
                     if !is_stale(&aside) {
-                        let _ = fs::hard_link(&aside, &path);
+                        match link(&aside, &path) {
+                            Ok(()) => {}
+                            // A lock created since is never replaced.
+                            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                            // Links are unsupported here: move the lock back if the path is
+                            // still free. A tiny window remains, as described above.
+                            Err(_) if !path.exists() => {
+                                let _ = fs::rename(&aside, &path);
+                            }
+                            Err(_) => {}
+                        }
                         let _ = fs::remove_file(&aside);
                         return None;
                     }
@@ -468,6 +488,26 @@ mod tests {
             })
         };
         assert!(Lock::take_with(path.clone(), age).is_none());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "other");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_fresh_lock_is_put_back_by_rename_when_links_are_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("install.lock");
+        fs::write(&path, "other").unwrap();
+        let calls = std::cell::Cell::new(0);
+        let age = |_: &Path| {
+            calls.set(calls.get() + 1);
+            Some(if calls.get() == 1 {
+                STALE_LOCK * 2
+            } else {
+                Duration::ZERO
+            })
+        };
+        let no_links = |_: &Path, _: &Path| Err(io::Error::from(io::ErrorKind::Unsupported));
+        assert!(Lock::take_linking(path.clone(), age, || {}, no_links).is_none());
         assert_eq!(fs::read_to_string(&path).unwrap(), "other");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
