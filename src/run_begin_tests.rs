@@ -58,33 +58,69 @@ struct Project {
     worktrees: PathBuf,
 }
 
+/// Copies `from` to `to`, creating directories as needed.
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// Builds the remote and its clone once. Starting git is slow on Windows, so each test copies this instead.
+fn template() -> &'static Path {
+    static TEMPLATE: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+    TEMPLATE
+        .get_or_init(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let root = real_path(dir.path());
+            let remote = root.join("remote.git");
+            fs::create_dir(&remote).unwrap();
+            git(&remote, &["init", "-q", "--bare", "-b", "develop"]);
+            let seed = root.join("seed");
+            fs::create_dir(&seed).unwrap();
+            git(&seed, &["init", "-q", "-b", "develop"]);
+            git(&seed, &["commit", "-q", "--allow-empty", "-m", "first"]);
+            git(
+                &seed,
+                &["remote", "add", "origin", remote.to_str().unwrap()],
+            );
+            git(&seed, &["push", "-q", "origin", "develop"]);
+            git(&seed, &["branch", "release"]);
+            git(&seed, &["commit", "-q", "--allow-empty", "-m", "second"]);
+            git(&seed, &["push", "-q", "origin", "develop", "release"]);
+            fs::remove_dir_all(&seed).unwrap();
+            let mut clone_command = Command::new("git");
+            clone_command
+                .args(["clone", "-q"])
+                .arg(&remote)
+                .arg(root.join("repo"));
+            let clone = isolated(&mut clone_command).output().unwrap();
+            assert!(
+                clone.status.success(),
+                "{}",
+                String::from_utf8_lossy(&clone.stderr)
+            );
+            dir
+        })
+        .path()
+}
+
 impl Project {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = real_path(dir.path());
+        copy_tree(&real_path(template()), &root);
         let remote = root.join("remote.git");
-        fs::create_dir(&remote).unwrap();
-        git(&remote, &["init", "-q", "--bare", "-b", "develop"]);
-        let seed = root.join("seed");
-        fs::create_dir(&seed).unwrap();
-        git(&seed, &["init", "-q", "-b", "develop"]);
-        git(&seed, &["commit", "-q", "--allow-empty", "-m", "first"]);
-        git(
-            &seed,
-            &["remote", "add", "origin", remote.to_str().unwrap()],
-        );
-        git(&seed, &["push", "-q", "origin", "develop"]);
-        git(&seed, &["branch", "release"]);
-        git(&seed, &["commit", "-q", "--allow-empty", "-m", "second"]);
-        git(&seed, &["push", "-q", "origin", "develop", "release"]);
         let repo = root.join("repo");
-        let mut clone_command = Command::new("git");
-        clone_command.args(["clone", "-q"]).arg(&remote).arg(&repo);
-        let clone = isolated(&mut clone_command).output().unwrap();
-        assert!(
-            clone.status.success(),
-            "{}",
-            String::from_utf8_lossy(&clone.stderr)
+        git(
+            &repo,
+            &["remote", "set-url", "origin", remote.to_str().unwrap()],
         );
         let worktrees = root.join("repo.worktrees");
         Self {
