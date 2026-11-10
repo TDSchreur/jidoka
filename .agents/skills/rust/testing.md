@@ -281,6 +281,14 @@ cargo test --doc
 - `#[should_panic]` must include `expected = "…"` so unrelated panics don’t pass the test.
 - `#[ignore]` is for slow/environment-dependent tests. Run them explicitly: `cargo test -- --ignored`.
 
+## More Testing Rules
+
+- Test observable behavior and properties (monotonic, round-trips, idempotent), not restated constants or mirrored implementation branches; do not write tests only to satisfy mutation testing.
+- Anything doing I/O, time, randomness, or network must be mockable: `new_mocked() -> (Self, MockCtrl)` behind a `test-util` feature, not a `Default` that performs I/O.
+- Write a failing test before fixing a bug. Cover each feature combination and each platform-specific path.
+- Assertions get context so failures read well: `assert_eq!(got, want, "input {input:?}")`.
+- Types holding secrets get a test asserting the secret never appears in `Debug` or `Display` output.
+
 ## Common Mistakes (Agent Failure Modes)
 
 - **Shared mutable state between tests** → tests are parallel by default; isolate setup per test.

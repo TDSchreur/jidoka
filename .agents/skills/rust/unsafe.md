@@ -105,6 +105,13 @@ A practical UB checklist with concrete examples: [references/ub-and-validity.md]
 
 Miri workflow and CI patterns: [references/miri-and-unsafe-testing.md](references/miri-and-unsafe-testing.md).
 
+## More Unsafe and FFI Rules
+
+- Mark a function `unsafe` only when misuse can cause undefined behavior, not because it is dangerous (`delete_database()` is a safe function). A safe function that can cause UB through any sequence of safe calls is unsound, and unsound code is never acceptable. Soundness boundaries are module boundaries.
+- No `transmute` to cast enums or dodge lifetimes, and no `unsafe impl Send` to silence the compiler.
+- Enable `unsafe_op_in_unsafe_fn`. Benchmark before using `unsafe` for performance.
+- FFI: `#[repr(C)]` on shared structs, sized integer types, `CString`/`CStr` for strings, allocate and free on the same side, wrap C-owned pointers in an RAII type whose `Drop` frees them, check for null and return `Result`, stop panics at the boundary with `catch_unwind`. Generate bindings with `bindgen` in a `foo-sys` crate, keep business logic in a safe core crate, and document which call patterns the bindings permit. Across DLL boundaries share only `#[repr(C)]` data with no statics, thread-locals, or `TypeId`. See [interop.md](interop.md).
+
 ## 8) Common mistakes (agent failure modes)
 
 - Using `unsafe` to “fix” borrow-checker friction. Redesign with ownership/lifetimes; see [ownership.md](ownership.md).

@@ -145,6 +145,15 @@ Minimum:
 4. **Enable link checking for rustdoc.** Add `#![deny(broken_intra_doc_links)]` in library crates so link rot fails CI (Effective Rust Item 27).
 5. **Use `examples/` for larger usage samples.** Use `required-features` in `Cargo.toml` to avoid broken examples when optional features are off.
 
+## More Crate and Dependency Rules
+
+- Prefer small, single-purpose crates in a flat `crates/` workspace; never nest a crate inside another crate's `src/`. Split when a crate grows a second purpose. Share versions and lints through `[workspace.dependencies]` (with `default-features = false`) and `[workspace.lints]`, and list every crate as a workspace member.
+- Name a leaf module after its primary item (`Foo` in `foo.rs`). Non-leaf modules contain only `mod` declarations and re-exports. Put essential items at the crate root and group the rest by use case (`account`, `network`), not by kind (`traits`, `errors`).
+- Every dependency costs compile time, binary size, and supply-chain exposure, including `build.rs` and proc macros. Use ranges (`"1"`, `"1.4"`), never `"*"` or a needless `"="`. Commit `Cargo.lock` for binaries. Audit with `cargo tree --duplicates`, `cargo deny`, `cargo udeps`, `cargo audit`.
+- Features are additive and bare-named (`std`, `serde`, `alloc`, `test-util`); never `no-std`, and never a feature that removes or changes a public item or gates struct fields or trait methods. Put mocks and fakes behind `test-util`.
+- Use the latest stable edition for new crates, set an MSRV deliberately, and raise it conservatively in minor releases. Do not run code before `main()` (no `ctor`-style crates) or use unstable features on a stable toolchain.
+- Avoid statics and thread-locals where a consistent value matters: two semver-incompatible copies of a crate get separate statics.
+
 ## Common Mistakes (Agent Failure Modes)
 
 - **“Workspace = folders”**: splitting into crates with no boundary. Fix: stay single-crate until you can name the boundary (reusability, compile-time isolation, optional heavy deps, proc-macro companion).
