@@ -1,6 +1,13 @@
 //! Startup check: adopts skills installed before the install record existed, or hints at `jidoka install`.
+use crate::install::Selection;
 use crate::install_record::{self, InstallRecord};
-use std::{ffi::OsString, io::Write, path::Path};
+use std::{
+    ffi::OsString,
+    fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 /// Commands that manage or report on Setup themselves, plus help and version output.
 fn is_exempt(args: &[&str]) -> bool {
@@ -27,8 +34,15 @@ pub(crate) fn check(
     let Some(path) = install_record::path_in(&var) else {
         return;
     };
-    if !matches!(install_record::read(&path), Ok(None)) {
-        return;
+    match install_record::read(&path) {
+        Ok(None) => {}
+        Ok(Some(record)) => {
+            if record.version != env!("CARGO_PKG_VERSION") {
+                refresh(&path, record, &var, home, err);
+            }
+            return;
+        }
+        Err(_) => return,
     }
     let adopted: Vec<String> = ["claude", "codex", "copilot"]
         .into_iter()
@@ -49,6 +63,82 @@ pub(crate) fn check(
         err,
         "jidoka: skills are not set up; run `jidoka install` to install them."
     );
+}
+
+/// A lock older than this is left by a process that died.
+const STALE_LOCK: Duration = Duration::from_secs(300);
+
+/// Holds `install.lock` next to the record until dropped.
+struct Lock(PathBuf);
+
+impl Lock {
+    /// `None` when another process holds a fresh lock or the lock cannot be created.
+    fn take(path: PathBuf) -> Option<Self> {
+        for _ in 0..2 {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => return Some(Self(path)),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    let stale = fs::metadata(&path)
+                        .and_then(|meta| meta.modified())
+                        .is_ok_and(|time| time.elapsed().is_ok_and(|age| age > STALE_LOCK));
+                    if !stale || fs::remove_file(&path).is_err() {
+                        return None;
+                    }
+                }
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Reinstalls the skills for the recorded agents without prompting, then records this version and
+/// prints one line. A failure warns once and keeps the old version so the next command retries.
+fn refresh(
+    path: &Path,
+    record: InstallRecord,
+    var: &impl Fn(&str) -> Option<OsString>,
+    home: &Path,
+    err: &mut impl Write,
+) {
+    let Some(_lock) = Lock::take(path.with_file_name("install.lock")) else {
+        return;
+    };
+    let selection = Selection {
+        agents: record.agents.clone(),
+        config_dirs: record.claude_config_dirs.clone(),
+    };
+    let result =
+        crate::install::install_skills(&selection, home, var, &mut io::sink()).and_then(|()| {
+            let current = InstallRecord::current(record.agents.clone(), record.claude_config_dirs);
+            install_record::write(path, &current)
+        });
+    match result {
+        Ok(()) => {
+            let _ = writeln!(
+                err,
+                "jidoka: updated skills to {} for {}",
+                env!("CARGO_PKG_VERSION"),
+                record.agents.join(", ")
+            );
+        }
+        Err(error) => {
+            let _ = writeln!(
+                err,
+                "jidoka: could not update skills ({error}); run `jidoka install` to fix it."
+            );
+        }
+    }
 }
 
 fn has_bundled(root: &Path) -> bool {
@@ -131,7 +221,7 @@ mod tests {
         assert_ne!(record.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(record.version, "");
         assert!(record.claude_config_dirs.is_empty());
-        assert_eq!(env.run(&["check"]), "");
+        assert!(env.run(&["check"]).contains("updated skills"));
     }
 
     #[test]
@@ -151,5 +241,106 @@ mod tests {
             install_record::read(&env.record_path()).unwrap(),
             Some(record)
         );
+    }
+
+    fn old_record(env: &Env, version: &str, agents: &[&str]) {
+        let record = InstallRecord {
+            version: version.into(),
+            agents: agents.iter().map(|a| (*a).into()).collect(),
+            claude_config_dirs: vec![],
+        };
+        install_record::write(&env.record_path(), &record).unwrap();
+    }
+
+    fn lock_path(env: &Env) -> std::path::PathBuf {
+        env.record_path().with_file_name("install.lock")
+    }
+
+    #[test]
+    fn an_older_record_refreshes_every_recorded_agent_and_prints_one_line() {
+        let env = Env::new();
+        old_record(&env, "0.0.1", &["claude", "codex"]);
+        let err = env.run(&["run", "inspect", "1"]);
+        let expected = format!(
+            "jidoka: updated skills to {} for claude, codex\n",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(err, expected);
+        assert!(has_bundled(&env.home.path().join(".claude/skills")));
+        assert!(has_bundled(&env.home.path().join("codex-home/skills")));
+        let record = install_record::read(&env.record_path()).unwrap().unwrap();
+        assert_eq!(record.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(record.agents, ["claude", "codex"]);
+        assert_eq!(env.run(&["run", "inspect", "1"]), "");
+        assert!(!lock_path(&env).exists());
+    }
+
+    #[test]
+    fn an_adopted_record_with_an_empty_version_is_refreshed() {
+        let env = Env::new();
+        old_record(&env, "", &["copilot"]);
+        assert!(env.run(&["check"]).contains("for copilot"));
+    }
+
+    #[test]
+    fn recorded_claude_config_dirs_are_refreshed() {
+        let env = Env::new();
+        let dir = env.home.path().join("work-claude");
+        let record = InstallRecord {
+            version: "0.0.1".into(),
+            agents: vec!["claude".into()],
+            claude_config_dirs: vec![dir.display().to_string()],
+        };
+        install_record::write(&env.record_path(), &record).unwrap();
+        assert!(env.run(&["check"]).contains("claude"));
+        assert!(has_bundled(&dir.join("skills")));
+        assert!(!env.home.path().join(".claude/skills").exists());
+    }
+
+    #[test]
+    fn exempt_commands_do_not_refresh() {
+        let env = Env::new();
+        old_record(&env, "0.0.1", &["claude"]);
+        assert_eq!(env.run(&["doctor"]), "");
+        let record = install_record::read(&env.record_path()).unwrap().unwrap();
+        assert_eq!(record.version, "0.0.1");
+    }
+
+    #[test]
+    fn a_failed_refresh_warns_once_keeps_the_old_version_and_releases_the_lock() {
+        let env = Env::new();
+        old_record(&env, "0.0.1", &["claude"]);
+        fs::write(env.home.path().join(".claude"), "a file, not a folder").unwrap();
+        let err = env.run(&["check"]);
+        assert_eq!(err.lines().count(), 1, "{err}");
+        assert!(err.contains("jidoka install"));
+        let record = install_record::read(&env.record_path()).unwrap().unwrap();
+        assert_eq!(record.version, "0.0.1");
+        assert!(!lock_path(&env).exists());
+        fs::remove_file(env.home.path().join(".claude")).unwrap();
+        assert!(env.run(&["check"]).contains("updated skills"));
+    }
+
+    #[test]
+    fn a_held_lock_skips_the_refresh_silently() {
+        let env = Env::new();
+        old_record(&env, "0.0.1", &["claude"]);
+        fs::write(lock_path(&env), "").unwrap();
+        assert_eq!(env.run(&["check"]), "");
+        assert!(!env.home.path().join(".claude/skills").exists());
+        let record = install_record::read(&env.record_path()).unwrap().unwrap();
+        assert_eq!(record.version, "0.0.1");
+        assert!(lock_path(&env).exists());
+    }
+
+    #[test]
+    fn a_stale_lock_is_ignored() {
+        let env = Env::new();
+        old_record(&env, "0.0.1", &["claude"]);
+        let file = fs::File::create(lock_path(&env)).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+            .unwrap();
+        assert!(env.run(&["check"]).contains("updated skills"));
+        assert!(!lock_path(&env).exists());
     }
 }

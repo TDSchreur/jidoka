@@ -214,16 +214,7 @@ pub(crate) fn run(options: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
 /// The config dirs need `claude` among the agents.
 pub(crate) fn install(selection: &Selection) -> io::Result<()> {
     let var = |name: &str| env::var_os(name);
-    let roots = skills_roots(
-        &selection.agents.join(","),
-        &selection.config_dirs,
-        &home_dir()?,
-        var,
-    )?;
-    for root in roots {
-        install_to(&root)?;
-    }
-    ensure_default_policy(var)?;
+    install_skills(selection, &home_dir()?, var, &mut io::stdout())?;
     let path = crate::install_record::path_in(var).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -239,9 +230,31 @@ pub(crate) fn install(selection: &Selection) -> io::Result<()> {
     )
 }
 
+/// The skills and the default policy of an install, without the install record; policy messages go to `out`.
+pub(crate) fn install_skills(
+    selection: &Selection,
+    home: &Path,
+    var: impl Fn(&str) -> Option<OsString>,
+    out: &mut impl io::Write,
+) -> io::Result<()> {
+    let roots = skills_roots(
+        &selection.agents.join(","),
+        &selection.config_dirs,
+        home,
+        &var,
+    )?;
+    for root in roots {
+        install_to_reporting(&root, out)?;
+    }
+    ensure_default_policy(var, out)
+}
+
 /// Create the initial routing policy. Only a file in the old format is replaced; any other existing
 /// configuration is kept.
-pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> io::Result<()> {
+fn ensure_default_policy(
+    var: impl Fn(&str) -> Option<OsString>,
+    out: &mut impl io::Write,
+) -> io::Result<()> {
     let path = crate::routing::policy_path_in(var).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -265,8 +278,10 @@ pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> i
     })?;
     let shown = path.display().to_string();
     match created {
-        Starter::Created => println!("{}", Starter::created_message(&shown, None)),
-        Starter::Replaced(off) => println!("{}", Starter::replaced_message(&shown, off, None)),
+        Starter::Created => writeln!(out, "{}", Starter::created_message(&shown, None))?,
+        Starter::Replaced(off) => {
+            writeln!(out, "{}", Starter::replaced_message(&shown, off, None))?;
+        }
         Starter::Left => {}
     }
     Ok(())
@@ -423,7 +438,13 @@ pub(crate) fn bundled_skill_names() -> Vec<&'static str> {
     names
 }
 
+#[cfg(test)]
 fn install_to(root: &Path) -> io::Result<()> {
+    install_to_reporting(root, &mut io::stdout())
+}
+
+/// Installs the bundled skills into `root`, reporting each change on `out`.
+fn install_to_reporting(root: &Path, out: &mut impl io::Write) -> io::Result<()> {
     fs::create_dir_all(root)?;
     for name in bundled_skill_names() {
         let dir = root.join(name);
@@ -438,7 +459,7 @@ fn install_to(root: &Path) -> io::Result<()> {
                 format!("cannot install skill {}: {error}", dir.display()),
             ));
         }
-        println!("Installed: {}", dir.display());
+        writeln!(out, "Installed: {}", dir.display())?;
     }
     for name in LEGACY_SKILLS {
         let dir = root.join(name);
@@ -449,10 +470,10 @@ fn install_to(root: &Path) -> io::Result<()> {
                     format!("cannot remove legacy skill {}: {error}", dir.display()),
                 )
             })?;
-            println!("Removed: {}", dir.display());
+            writeln!(out, "Removed: {}", dir.display())?;
         }
     }
-    remove_retired_humanizer(root);
+    remove_retired_humanizer(root, out);
     Ok(())
 }
 
@@ -470,13 +491,15 @@ const RETIRED_HUMANIZER_FILES: [(&str, &[u8]); 3] = [
 /// Removes a `humanizer` skill folder Jidoka installed earlier. Only an exact, unmodified
 /// copy goes: the same files and nothing else, none of them a symlink. Anything else is the
 /// user's own and stays. A failure to remove it is a warning, not an install failure.
-fn remove_retired_humanizer(root: &Path) {
+fn remove_retired_humanizer(root: &Path, out: &mut impl io::Write) {
     let dir = root.join("humanizer");
     if !is_retired_humanizer(&dir) {
         return;
     }
     match fs::remove_dir_all(&dir) {
-        Ok(()) => println!("Removed: {}", dir.display()),
+        Ok(()) => {
+            let _ = writeln!(out, "Removed: {}", dir.display());
+        }
         Err(error) => eprintln!(
             "warning: cannot remove retired skill {}: {error}. It may be partly deleted and will not be retried, so remove the folder by hand.",
             dir.display()
