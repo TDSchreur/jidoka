@@ -211,13 +211,29 @@ fn codex_context_with_effort(model: &str, effort: &str) -> String {
     json!({"type": "turn_context", "timestamp": iso(0), "payload": {"model": model, "effort": effort, "turn_id": "turn-1"}}).to_string()
 }
 
+/// A `session_meta` line as Codex 0.167 writes it: a subagent rollout names its root session and the
+/// `thread_spawn` that created it.
 fn codex_meta_line(id: &str, root: Option<&str>) -> String {
-    let mut payload = json!({"id": id, "source": "cli"});
+    let mut payload = json!({"id": id, "session_id": id, "source": "cli", "thread_source": "user"});
     if let Some(root) = root {
         payload["session_id"] = json!(root);
-        payload["source"] = json!({"subagent": {"name": "reviewer"}});
+        payload["thread_source"] = json!("subagent");
+        payload["source"] = json!({"subagent": {"thread_spawn": {"parent_thread_id": root, "depth": 1,
+            "agent_path": "/root/reviewer", "agent_nickname": "Rev", "agent_role": "reviewer"}}});
     }
     json!({"type": "session_meta", "timestamp": iso(0), "payload": payload}).to_string()
+}
+
+/// A command the agent ran, as Codex writes an executed command.
+fn codex_command_line(script: &str, output: &str) -> String {
+    json!({"type": "event_msg", "timestamp": iso(0), "payload": {"type": "item_completed", "item": {
+        "type": "CommandExecution", "command": ["/usr/bin/bash", "-lc", script],
+        "parsed_cmd": [{"type": "unknown", "cmd": script}], "aggregated_output": output}}})
+    .to_string()
+}
+
+fn codex_command(run_id: &str) -> String {
+    codex_command_line(&format!("jidoka run update {run_id} build running"), "")
 }
 
 fn codex_context(model: &str) -> String {
@@ -575,7 +591,7 @@ fn codex_efforts_follow_the_turn_and_a_subagent_rollout_has_its_own() {
         &[
             codex_meta_line("root-1", None),
             codex_context_with_effort("gpt-main", "medium"),
-            mention(RUN_A),
+            codex_command(RUN_A),
             codex_usage(10, "resp-1", 100, 0, 0, 10, 0),
         ],
     );
@@ -624,7 +640,7 @@ fn codex_effort_follows_each_turn_and_an_unknown_turn_takes_the_last_one() {
         "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-abc.jsonl",
         &[
             codex_meta_line("root-1", None),
-            mention(RUN_A),
+            codex_command(RUN_A),
             codex_turn_context("turn-1", "gpt-a", Some("medium")),
             codex_turn_context("turn-2", "gpt-b", Some("high")),
             // Each usage record belongs to its own turn, whatever came last.
@@ -660,7 +676,7 @@ fn codex_effort_follows_each_turn_and_an_unknown_turn_takes_the_last_one() {
 fn a_log_cannot_make_a_row_hold_more_than_a_handful_of_efforts() {
     let world = World::new();
     let target = full_run(RUN_A);
-    let mut lines = vec![mention(RUN_A)];
+    let mut lines = vec![codex_command(RUN_A)];
     for n in 0..20 {
         lines.push(with_effort(
             claude_line(
@@ -692,7 +708,7 @@ fn copilot_rows_carry_the_effort_of_each_call() {
     world.write(
         "copilot/session-state/c1/events.jsonl",
         &[
-            mention(RUN_A),
+            codex_command(RUN_A),
             copilot_usage(10, "call-1", "gpt-copilot", 100, 10, 0, 5, false),
         ],
     );
@@ -724,7 +740,7 @@ fn codex_cached_input_moves_to_cache_read_and_reasoning_stays_inside_output() {
         &[
             codex_meta_line("root-1", None),
             codex_context("gpt-test"),
-            mention(RUN_A),
+            codex_command(RUN_A),
             codex_usage(10, "resp-1", 1000, 600, 100, 50, 20),
             codex_usage(10, "resp-1", 1000, 600, 100, 50, 20),
             codex_usage(20, "resp-2", 200, 0, 0, 10, 0),
@@ -1852,4 +1868,322 @@ fn an_unreadable_recorded_log_says_why() {
         "{:?}",
         read.notes
     );
+}
+
+// --- Codex attribution ------------------------------------------------------------------------------
+
+const CODEX_ROOT_FILE: &str = "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-root-1.jsonl";
+const CODEX_SUB_FILE: &str = "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-30-sub-1.jsonl";
+
+/// The sessions a Codex rollout with these lines is attributed to, for a run that records no session.
+fn codex_sessions_claimed_by(lines: &[String]) -> Vec<String> {
+    let world = World::new();
+    let target = full_run(RUN_A);
+    let mut all = vec![codex_meta_line("root-1", None), codex_context("gpt-test")];
+    all.extend_from_slice(lines);
+    all.push(codex_usage(10, "resp-1", 100, 0, 0, 10, 0));
+    world.write(CODEX_ROOT_FILE, &all);
+    world
+        .collect(&target, std::slice::from_ref(&target))
+        .sessions
+        .to_vec()
+}
+
+#[test]
+fn codex_commands_name_the_run_literally_or_through_shell_variables() {
+    let scripts = [
+        format!("jidoka run update {RUN_A} build running"),
+        format!("R={RUN_A}; jidoka run update $R build running"),
+        format!("RUN_ID=\"{RUN_A}\" && jidoka run update \"${{RUN_ID}}\" build running"),
+        format!("jidoka run sync {RUN_A}"),
+    ];
+    for script in scripts {
+        let claimed = codex_sessions_claimed_by(&[codex_command_line(&script, "")]);
+        assert_eq!(claimed, ["root-1"], "{script}");
+    }
+    // The export is an earlier command of the same rollout.
+    let claimed = codex_sessions_claimed_by(&[
+        codex_command_line(&format!("export JIDOKA_RUN={RUN_A}"), ""),
+        codex_command_line("jidoka run update \"$JIDOKA_RUN\" build running", ""),
+    ]);
+    assert_eq!(claimed, ["root-1"]);
+}
+
+#[test]
+fn codex_exec_snippets_and_older_call_shapes_name_the_run() {
+    let snippet = json!({"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec",
+        "call_id": "call_x", "input": format!("const r = await tools.exec_command({{cmd:\"jidoka run update {RUN_A} build running\",workdir:\"/w\"}});")}});
+    let function = json!({"type": "response_item", "payload": {"type": "function_call", "name": "exec_command",
+        "arguments": json!({"cmd": format!("jidoka run update {RUN_A} build running")}).to_string()}});
+    let shell = json!({"type": "response_item", "payload": {"type": "local_shell_call",
+        "action": {"type": "exec", "command": ["bash", "-lc", format!("jidoka run update {RUN_A} build running")]}}});
+    for line in [snippet, function, shell] {
+        assert_eq!(
+            codex_sessions_claimed_by(&[line.to_string()]),
+            ["root-1"],
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_run_command_only_in_output_or_messages_does_not_claim_a_codex_session() {
+    let text = format!("jidoka run update {RUN_A} build running");
+    let not_commands = [
+        // The command was something else; its output printed the run command.
+        codex_command_line("cat notes.md", &text),
+        // A bare assignment names nothing.
+        codex_command_line(&format!("R={RUN_A}"), ""),
+        json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c", "output": text}}).to_string(),
+        json!({"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "c", "output": text}}).to_string(),
+        json!({"type": "response_item", "payload": {"type": "message", "role": "assistant",
+            "content": [{"type": "output_text", "text": text}]}})
+        .to_string(),
+        json!({"type": "event_msg", "payload": {"type": "agent_message", "message": text}}).to_string(),
+        json!({"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": text}}).to_string(),
+    ];
+    for line in not_commands {
+        assert!(
+            codex_sessions_claimed_by(std::slice::from_ref(&line)).is_empty(),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_subagent_rollout_follows_its_root_session_recorded_on_the_run() {
+    let world = World::new();
+    let target = run(RUN_A, &[(0, "build", None, None)], Some(500), &["root-1"]);
+    world.write(
+        CODEX_ROOT_FILE,
+        &[
+            codex_meta_line("root-1", None),
+            codex_context("gpt-test"),
+            codex_usage(10, "resp-1", 100, 0, 0, 10, 0),
+        ],
+    );
+    world.write(
+        CODEX_SUB_FILE,
+        &[
+            codex_meta_line("sub-1", Some("root-1")),
+            codex_context("gpt-test"),
+            codex_usage(20, "resp-2", 40, 0, 0, 4, 0),
+        ],
+    );
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert_eq!(usage.sessions.len(), 1);
+    assert_eq!(usage.sessions[0], "root-1");
+    let rows = rows_of(&usage, Stage::Build);
+    let row = rows.iter().find(|r| r.model == "gpt-test").unwrap();
+    assert_eq!(row.tokens.input, Some(140));
+    assert_eq!(row.subagents.input, Some(40));
+    assert_eq!(row.subagents.output, Some(4));
+}
+
+#[test]
+fn a_forked_subagent_that_replays_its_parent_history_counts_each_response_once() {
+    let world = World::new();
+    let target = run(RUN_A, &[(0, "build", None, None)], Some(500), &["root-1"]);
+    world.write(
+        CODEX_ROOT_FILE,
+        &[
+            codex_meta_line("root-1", None),
+            codex_context("gpt-test"),
+            codex_usage(10, "resp-1", 100, 0, 0, 10, 0),
+        ],
+    );
+    let mut meta: serde_json::Value =
+        serde_json::from_str(&codex_meta_line("sub-1", Some("root-1"))).unwrap();
+    meta["payload"]["forked_from_id"] = json!("root-1");
+    world.write(
+        CODEX_SUB_FILE,
+        &[
+            meta.to_string(),
+            codex_context("gpt-test"),
+            // The replayed parent response, then the subagent's own.
+            codex_usage(10, "resp-1", 100, 0, 0, 10, 0),
+            codex_usage(20, "resp-2", 40, 0, 0, 4, 0),
+        ],
+    );
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    let rows = rows_of(&usage, Stage::Build);
+    let input: u64 = rows.iter().filter_map(|r| r.tokens.input).sum();
+    let output: u64 = rows.iter().filter_map(|r| r.tokens.output).sum();
+    assert_eq!((input, output), (140, 14));
+}
+
+#[test]
+fn a_subagent_rollout_is_flagged_by_its_thread_source_or_spawn_source() {
+    let spawn = codex_meta_line("sub-1", Some("root-1"));
+    assert_eq!(
+        crate::usage_logs::codex_meta(&spawn),
+        Some(("sub-1".into(), "root-1".into(), true))
+    );
+    let by_source =
+        json!({"type": "session_meta", "payload": {"id": "s", "thread_source": "subagent"}});
+    assert_eq!(
+        crate::usage_logs::codex_meta(&by_source.to_string()),
+        Some(("s".into(), "s".into(), true))
+    );
+    assert_eq!(
+        crate::usage_logs::codex_meta(&codex_meta_line("root-1", None)),
+        Some(("root-1".into(), "root-1".into(), false))
+    );
+}
+
+// --- cost of Codex usage ------------------------------------------------------------------------------
+
+fn priced_row(model: &str, tokens: serde_json::Value, long: serde_json::Value) -> UsageRow {
+    serde_json::from_value(
+        json!({"stage": "build", "model": model, "long_context": long, "tokens": 0}),
+    )
+    .map(|mut row: UsageRow| {
+        row.tokens = serde_json::from_value(tokens).unwrap();
+        row
+    })
+    .unwrap()
+}
+
+fn cost_of(row: &UsageRow) -> Option<f64> {
+    crate::cost::row_cost(row, crate::cost::PRICES)
+}
+
+#[test]
+fn a_short_context_codex_row_is_priced_at_the_standard_rates() {
+    // gpt-6.1-terra: 1.00 input, 0.05 cached, 5.00 output per 1M.
+    // 100,000 * 1.00 + 1,000,000 * 0.05 + 10,000 * 5.00 = 0.10 + 0.05 + 0.05 = $0.20
+    let row = priced_row(
+        "gpt-6.1-terra",
+        json!({"input": 100_000, "cache_read": 1_000_000, "output": 10_000, "reasoning": 4_000}),
+        json!({}),
+    );
+    assert!((cost_of(&row).unwrap() - 0.20).abs() < 1e-9);
+}
+
+#[test]
+fn long_context_tokens_are_priced_at_the_long_rates_and_the_rest_at_the_short_rates() {
+    // gpt-5.5: short 5/0.5/30, long 10/1/45 per 1M.
+    let all_long = priced_row(
+        "gpt-5.5",
+        json!({"input": 100_000, "cache_read": 200_000, "output": 1_000}),
+        json!({"input": 100_000, "cache_read": 200_000, "output": 1_000}),
+    );
+    // 0.1M*10 + 0.2M*1 + 0.001M*45 = 1.0 + 0.2 + 0.045
+    assert!((cost_of(&all_long).unwrap() - 1.245).abs() < 1e-9);
+    // Add a short request of 10,000 input, 20,000 cached, 500 output: 0.05 + 0.01 + 0.015 = 0.075
+    let mixed = priced_row(
+        "gpt-5.5",
+        json!({"input": 110_000, "cache_read": 220_000, "output": 1_500}),
+        json!({"input": 100_000, "cache_read": 200_000, "output": 1_000}),
+    );
+    assert!((cost_of(&mixed).unwrap() - 1.32).abs() < 1e-9);
+}
+
+#[test]
+fn a_model_without_a_long_tier_ignores_the_long_context_split() {
+    // gpt-5.4-mini: 0.75 input, 4.50 output per 1M; 1M input + 100,000 output = 0.75 + 0.45
+    let row = priced_row(
+        "gpt-5.4-mini",
+        json!({"input": 1_000_000, "output": 100_000}),
+        json!({"input": 1_000_000, "output": 100_000}),
+    );
+    assert!((cost_of(&row).unwrap() - 1.20).abs() < 1e-9);
+}
+
+#[test]
+fn a_dotted_codex_model_id_finds_its_price_and_not_a_neighbour() {
+    // gpt-5.4 (2.5 input) must not be gpt-5.4-mini (0.75) or gpt-5 (1.25); 1M input.
+    let tokens = json!({"input": 1_000_000, "output": 0});
+    assert!(
+        (cost_of(&priced_row("gpt-5.4", tokens.clone(), json!({}))).unwrap() - 2.5).abs() < 1e-9
+    );
+    assert!(
+        (cost_of(&priced_row("gpt-5.4-mini", tokens.clone(), json!({}))).unwrap() - 0.75).abs()
+            < 1e-9
+    );
+    assert!(
+        (cost_of(&priced_row("gpt-5", tokens.clone(), json!({}))).unwrap() - 1.25).abs() < 1e-9
+    );
+    assert!((cost_of(&priced_row("gpt-6.1-sol", tokens, json!({}))).unwrap() - 2.0).abs() < 1e-9);
+}
+
+#[test]
+fn codex_models_without_an_official_price_stay_unknown_and_make_totals_partial() {
+    let known = priced_row(
+        "gpt-5.2",
+        json!({"input": 1_000_000, "output": 0}),
+        json!({}),
+    );
+    let unknown = priced_row(
+        "codex-auto-review",
+        json!({"input": 10, "output": 10}),
+        json!({}),
+    );
+    for model in [
+        "gpt-5-codex",
+        "gpt-5.1-codex-max",
+        "gpt-5.2-codex",
+        "codex-mini-latest",
+    ] {
+        assert_eq!(
+            cost_of(&priced_row(
+                model,
+                json!({"input": 1, "output": 1}),
+                json!({})
+            )),
+            None
+        );
+    }
+    assert_eq!(cost_of(&unknown), None);
+    let total = crate::cost::total([&known, &unknown], crate::cost::PRICES);
+    assert!((total.usd.unwrap() - 1.75).abs() < 1e-9);
+    assert!(total.partial);
+    assert_eq!(total.unpriced_models, ["codex-auto-review"]);
+}
+
+#[test]
+fn an_openai_row_with_cache_writes_is_unknown_but_zero_writes_are_priced() {
+    let written = priced_row(
+        "gpt-6.1-terra",
+        json!({"input": 1_000, "cache_write": 500, "output": 10}),
+        json!({}),
+    );
+    assert_eq!(cost_of(&written), None);
+    let zero = priced_row(
+        "gpt-6.1-terra",
+        json!({"input": 1_000_000, "cache_write": 0, "output": 0}),
+        json!({}),
+    );
+    assert!((cost_of(&zero).unwrap() - 1.0).abs() < 1e-9);
+    let total = crate::cost::total([&written], crate::cost::PRICES);
+    assert_eq!(total.usd, None);
+}
+
+#[test]
+fn a_collected_codex_rollout_is_priced_with_its_long_context_requests_split_out() {
+    let world = World::new();
+    let target = full_run(RUN_A);
+    world.write(
+        "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-abc.jsonl",
+        &[
+            codex_meta_line("root-1", None),
+            codex_context("gpt-5.5"),
+            codex_command(RUN_A),
+            // Short request: 20,000 input of which 10,000 cached -> 10,000 fresh, 10,000 cached, 500 out.
+            codex_usage(10, "resp-1", 20_000, 10_000, 0, 500, 100),
+            // Long request: 300,000 input (> 272,000) of which 200,000 cached -> 100,000 fresh, 1,000 out.
+            codex_usage(20, "resp-2", 300_000, 200_000, 0, 1_000, 0),
+        ],
+    );
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    let rows = rows_of(&usage, Stage::Define);
+    assert_eq!(rows.len(), 1);
+    let row = rows[0];
+    assert_eq!(row.long_context.input, Some(100_000));
+    assert_eq!(row.long_context.cache_read, Some(200_000));
+    assert_eq!(row.long_context.output, Some(1_000));
+    // gpt-5.5 short 5/0.5/30, long 10/1/45 per 1M:
+    // short: 0.01*5 + 0.01*0.5 + 0.0005*30 = 0.05 + 0.005 + 0.015 = 0.07
+    // long: 0.1*10 + 0.2*1 + 0.001*45 = 1.0 + 0.2 + 0.045 = 1.245
+    assert!((cost_of(row).unwrap() - 1.315).abs() < 1e-9);
 }

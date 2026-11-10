@@ -175,17 +175,18 @@ pub(crate) fn read_text(path: &Path) -> io::Result<LogFile> {
 }
 
 /// The run ids a log names *in a command on the run*: a known run id right after `run update`,
-/// `run inspect`, `run stats`, `run check`, `pr open`, `pr sync` or `pr wait`, as `jidoka run update <id>`
+/// `run inspect`, `run stats`, `run check`, `run sync`, `pr open`, `pr sync` or `pr wait`, as `jidoka run update <id>`
 /// is written. The command word must start the text or follow whitespace, so `xpr open <id>` does not count.
 /// Run ids also appear in tool output and in files an agent reads (a session that listed every run would
 /// otherwise claim them all), so a bare number does not count. A run id is digits only, so a number inside
 /// a longer number does not match.
 pub(crate) fn mentioned_runs(text: &str, ids: &HashSet<&str>) -> HashSet<String> {
-    const COMMANDS: [&str; 7] = [
+    const COMMANDS: [&str; 8] = [
         "run update",
         "run inspect",
         "run stats",
         "run check",
+        "run sync",
         "pr open",
         "pr sync",
         "pr wait",
@@ -476,6 +477,7 @@ pub(crate) fn codex_meta(text: &str) -> Option<(String, String, bool)> {
     let subagent = payload
         .pointer("/source/subagent")
         .is_some_and(|v| !v.is_null() && *v != Value::Bool(false))
+        || payload["thread_source"] == "subagent"
         || root != id;
     Some((id, root, subagent))
 }
@@ -611,7 +613,11 @@ fn read_codex(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
                     let Some((id, root, subagent)) = codex_meta(&text) else {
                         continue;
                     };
-                    let mentions = mentioned_runs(&text, pass.ids);
+                    let mentions = if subagent {
+                        HashSet::new()
+                    } else {
+                        crate::codex_requests::codex_claims(&text, pass.ids)
+                    };
                     rollouts.push(Rollout {
                         path,
                         id,

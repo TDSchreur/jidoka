@@ -111,10 +111,17 @@ pub(crate) struct UsageRow {
     /// The part of `tokens` that subagents used.
     #[serde(default, skip_serializing_if = "Tokens::is_empty")]
     pub(crate) subagents: Tokens,
+    /// The part of `tokens` from requests whose total input (input, cache reads and cache writes) was above
+    /// `LONG_CONTEXT_INPUT_TOKENS`, which some models bill at higher rates.
+    #[serde(default, skip_serializing_if = "Tokens::is_empty")]
+    pub(crate) long_context: Tokens,
     /// The reasoning efforts the agent's log recorded for these calls, sorted. Empty when it recorded none.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub(crate) efforts: BTreeSet<String>,
 }
+
+/// A request with more input than this (cache reads and writes included) is in the long-context tier.
+pub(crate) const LONG_CONTEXT_INPUT_TOKENS: u64 = 272_000;
 
 /// Most distinct efforts one row keeps. Real logs show a handful; a made-up log must not grow the record.
 pub(crate) const MAX_EFFORTS_PER_ROW: usize = 8;
@@ -435,6 +442,7 @@ pub(crate) fn attribute(
                     rework,
                     tokens: Tokens::default(),
                     subagents: Tokens::default(),
+                    long_context: Tokens::default(),
                     efforts: BTreeSet::new(),
                 });
             if let Some(effort) = &entry.effort
@@ -445,6 +453,16 @@ pub(crate) fn attribute(
             row.tokens.add(&entry.tokens);
             if entry.subagent {
                 row.subagents.add(&entry.tokens);
+            }
+            let request_input = [
+                entry.tokens.input,
+                entry.tokens.cache_read,
+                entry.tokens.cache_write,
+            ]
+            .iter()
+            .fold(0u64, |sum, n| sum.saturating_add(n.unwrap_or(0)));
+            if request_input > LONG_CONTEXT_INPUT_TOKENS {
+                row.long_context.add(&entry.tokens);
             }
             used = true;
         }

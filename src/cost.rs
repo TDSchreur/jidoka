@@ -1,5 +1,7 @@
 //! Estimated cost of a run's token usage, computed from a price table at read time and never stored.
 //!
+//! A token-based estimate at API list prices, not what a ChatGPT/Codex or Claude subscription is charged.
+//!
 //! A model without a price has an unknown cost, never zero. A total that mixes priced and unpriced models
 //! is partial: the sum of what is known, marked as a lower bound.
 
@@ -10,13 +12,24 @@ use crate::{
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Rates for requests whose input is above `LONG_CONTEXT_INPUT_TOKENS`, USD per million tokens.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LongRates {
+    pub(crate) input: f64,
+    pub(crate) output: f64,
+    pub(crate) cache_read: f64,
+}
+
 /// US dollars per million tokens.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Price {
     pub(crate) input: f64,
     pub(crate) output: f64,
     pub(crate) cache_read: f64,
-    pub(crate) cache_write: f64,
+    /// `None` when the price of a cache write is not known: tokens written to the cache make the cost unknown.
+    pub(crate) cache_write: Option<f64>,
+    /// Rates for a request above the long-context threshold, when the model has them.
+    pub(crate) long: Option<LongRates>,
 }
 
 const fn price(input: f64, output: f64, cache_read: f64, cache_write: f64) -> Price {
@@ -24,24 +37,96 @@ const fn price(input: f64, output: f64, cache_read: f64, cache_write: f64) -> Pr
         input,
         output,
         cache_read,
-        cache_write,
+        cache_write: Some(cache_write),
+        long: None,
     }
 }
 
-/// Built-in prices by exact model id, USD per million tokens (cache write is the 5-minute price).
+/// An OpenAI price as the pricing page lists it: input, cached input, output.
+const fn openai(input: f64, cached: f64, output: f64) -> Price {
+    Price {
+        input,
+        output,
+        cache_read: cached,
+        cache_write: None,
+        long: None,
+    }
+}
+
+/// An OpenAI price with a long-context column: short input, cached, output, then long input, cached, output.
+const fn openai_long(short: [f64; 3], long: [f64; 3]) -> Price {
+    Price {
+        long: Some(LongRates {
+            input: long[0],
+            output: long[2],
+            cache_read: long[1],
+        }),
+        ..openai(short[0], short[1], short[2])
+    }
+}
+
+/// Built-in prices by model id (dots written as dashes), USD per million tokens. This is a token-based
+/// estimate at API list prices, not what a ChatGPT/Codex or Claude subscription is charged.
 ///
-/// Source: Anthropic's published API prices, as given in the claude-api skill's pricing reference (model
-/// table, models guide and prompt-caching guide), read on 2026-11-08. Cache reads are listed explicitly for
-/// Fable 5.1 ($0.25), Opus 5.5 and Sonnet 5.5 ($0.20). The claude-opus-4-8 cache prices are derived from
-/// Anthropic's documented multipliers: 0.1x input for a cache read, 1.25x input for a 5-minute cache write.
-/// Other cache writes are the documented 1.25x input price. Haiku 5.5 is left out (its reference lists
-/// tiered input/output prices and no cache prices). No OpenAI, Codex or Copilot prices are listed: those
-/// models show as unknown.
+/// Claude source: Anthropic's published API prices, as given in the claude-api skill's pricing reference
+/// (model table, models guide and prompt-caching guide), read on 2026-11-08. Cache reads are listed
+/// explicitly for Fable 5.1 ($0.25), Opus 5.5 and Sonnet 5.5 ($0.20). The claude-opus-4-8 cache prices are
+/// derived from Anthropic's documented multipliers: 0.1x input for a cache read, 1.25x input for a
+/// 5-minute cache write. Other cache writes are the documented 1.25x input price. Haiku 5.5 is left out
+/// (its reference lists tiered input/output prices and no cache prices). Claude prices have no long tier.
+///
+/// OpenAI source: the Standard tier of https://developers.openai.com/api/docs/pricing (input, cached input,
+/// output) and https://developers.openai.com/api/docs/guides/reasoning (reasoning tokens are billed as
+/// output), read on 2026-11-10. Assumptions: Codex `input_tokens` include the cached tokens, which Jidoka
+/// splits out; a request with more than `LONG_CONTEXT_INPUT_TOKENS` input tokens (cached included) is
+/// billed at the long-context rates of the models that list them; Codex does not say which cache retention
+/// a cache write used, so OpenAI models have no cache-write price and a row with cache writes is unknown;
+/// models the page does not list (such as codex-auto-review, gpt-5-codex, gpt-5.1-codex, gpt-5.2-codex and
+/// codex-mini-latest) are unknown; Priority, Flex, Batch and regional uplifts are not applied.
 pub(crate) const PRICES: &[(&str, Price)] = &[
     ("claude-fable-5-1", price(10.0, 50.0, 0.25, 12.5)),
     ("claude-opus-5-5", price(4.0, 20.0, 0.20, 5.0)),
     ("claude-sonnet-5-5", price(2.0, 10.0, 0.20, 2.5)),
     ("claude-opus-4-8", price(5.0, 25.0, 0.50, 6.25)),
+    (
+        "gpt-6-1-terra",
+        openai_long([1.0, 0.05, 5.0], [2.0, 0.10, 7.5]),
+    ),
+    (
+        "gpt-6-1-sol",
+        openai_long([2.0, 0.10, 10.0], [4.0, 0.20, 15.0]),
+    ),
+    (
+        "gpt-6-astra",
+        openai_long([10.0, 1.0, 50.0], [20.0, 2.0, 75.0]),
+    ),
+    (
+        "gpt-6-luna",
+        openai_long([0.10, 0.01, 0.50], [0.20, 0.02, 0.75]),
+    ),
+    (
+        "gpt-6-sol",
+        openai_long([2.0, 0.20, 10.0], [4.0, 0.40, 15.0]),
+    ),
+    (
+        "gpt-5-6-sol",
+        openai_long([4.0, 0.40, 20.0], [8.0, 0.80, 30.0]),
+    ),
+    (
+        "gpt-5-6-terra",
+        openai_long([2.0, 0.20, 12.0], [4.0, 0.40, 18.0]),
+    ),
+    (
+        "gpt-5-6-luna",
+        openai_long([0.20, 0.02, 1.20], [0.40, 0.04, 1.80]),
+    ),
+    ("gpt-5-5", openai_long([5.0, 0.50, 30.0], [10.0, 1.0, 45.0])),
+    ("gpt-5-4", openai_long([2.5, 0.25, 15.0], [5.0, 0.50, 22.5])),
+    ("gpt-5-4-mini", openai(0.75, 0.075, 4.5)),
+    ("gpt-5-3-codex", openai(1.75, 0.175, 14.0)),
+    ("gpt-5-2", openai(1.75, 0.175, 14.0)),
+    ("gpt-5-1", openai(1.25, 0.125, 10.0)),
+    ("gpt-5", openai(1.25, 0.125, 10.0)),
 ];
 
 pub(crate) type Table<'a> = &'a [(&'a str, Price)];
@@ -53,20 +138,49 @@ fn lookup(table: Table, model: &str) -> Option<Price> {
     table.iter().find(|(id, _)| *id == model).map(|(_, p)| *p)
 }
 
-/// The cost of one set of tokens in dollars. `None` when neither input nor output was reported; counts
+fn minus(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    a.map(|a| a.saturating_sub(b.unwrap_or(0)))
+}
+
+/// The cost of one set of tokens in dollars; `long_context` is the part of them from requests above the
+/// long-context threshold, priced at the long rates when the model has them. `None` when neither input nor
+/// output was reported, or when cache writes were reported and the model has no cache-write price; counts
 /// that were not reported otherwise add nothing.
-pub(crate) fn tokens_cost(tokens: &Tokens, price: &Price) -> Option<f64> {
+pub(crate) fn tokens_cost(tokens: &Tokens, long_context: &Tokens, price: &Price) -> Option<f64> {
     if tokens.input.is_none() && tokens.output.is_none() {
         return None;
     }
+    let written = tokens.cache_write.unwrap_or(0);
+    let write_price = match price.cache_write {
+        Some(p) => p,
+        None if written > 0 => return None,
+        None => 0.0,
+    };
     let part = |count: Option<u64>, per_million: f64| count.unwrap_or(0) as f64 * per_million;
-    Some(
-        (part(tokens.input, price.input)
-            + part(tokens.output, price.output)
-            + part(tokens.cache_read, price.cache_read)
-            + part(tokens.cache_write, price.cache_write))
-            / 1e6,
-    )
+    let (short, long) = match &price.long {
+        Some(_) => (
+            Tokens {
+                input: minus(tokens.input, long_context.input),
+                cache_read: minus(tokens.cache_read, long_context.cache_read),
+                cache_write: minus(tokens.cache_write, long_context.cache_write),
+                output: minus(tokens.output, long_context.output),
+                reasoning: None,
+            },
+            *long_context,
+        ),
+        None => (*tokens, Tokens::default()),
+    };
+    let mut total = part(short.input, price.input)
+        + part(short.output, price.output)
+        + part(short.cache_read, price.cache_read)
+        + part(short.cache_write, write_price);
+    if let Some(rates) = &price.long {
+        total += part(long.input, rates.input)
+            + part(long.output, rates.output)
+            + part(long.cache_read, rates.cache_read)
+            + part(long.cache_write, write_price);
+    }
+    Some(total / 1e6)
 }
 
 /// A cost, or what is known of it.
@@ -80,9 +194,10 @@ pub(crate) struct Cost {
     pub(crate) unpriced_models: Vec<String>,
 }
 
-/// The cost of a row, `None` when its model has no price or it reported no input and output.
+/// The cost of a row, `None` when its model has no price, it reported no input and output, or it has cache
+/// writes the model's price does not cover.
 pub(crate) fn row_cost(row: &UsageRow, table: Table) -> Option<f64> {
-    tokens_cost(&row.tokens, &lookup(table, &row.model)?)
+    tokens_cost(&row.tokens, &row.long_context, &lookup(table, &row.model)?)
 }
 
 /// The summed cost of rows.
@@ -208,9 +323,14 @@ mod tests {
         assert_eq!(ids.len(), PRICES.len());
         for (id, p) in PRICES {
             assert!(
-                [p.input, p.output, p.cache_read, p.cache_write]
-                    .iter()
-                    .all(|v| *v >= 0.0),
+                [
+                    p.input,
+                    p.output,
+                    p.cache_read,
+                    p.cache_write.unwrap_or(0.0)
+                ]
+                .iter()
+                .all(|v| *v >= 0.0),
                 "{id}"
             );
         }

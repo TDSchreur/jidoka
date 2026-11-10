@@ -8,8 +8,8 @@
 
 use crate::{
     request_logs::{
-        MAX_COMMAND_BYTES, Request, RequestRead, SessionRequests, classify, result_bytes,
-        updated_runs,
+        MAX_COMMAND_BYTES, Request, RequestRead, SessionRequests, Variables, classify,
+        result_bytes, run_claims, truncate,
     },
     usage_logs::{
         DAY_MS, LogFile, MTIME_SLACK_MS, ReadLimits, civil_day, codex_meta, codex_tokens, files_in,
@@ -335,6 +335,80 @@ struct Open {
     tool_output_bytes: u64,
 }
 
+/// The commands the agent ran, in order: `exec` snippets, `CommandExecution` items, and the older
+/// `function_call` and `local_shell_call` shapes. Tool output, messages and file contents are not commands.
+fn commands_of(data: &Value) -> Vec<String> {
+    let payload = &data["payload"];
+    let words = |value: &Value| match value {
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" "),
+        Value::String(text) => text.clone(),
+        _ => String::new(),
+    };
+    let last_word = |value: &Value| match value {
+        Value::Array(parts) => parts
+            .last()
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        other => words(other),
+    };
+    match (data["type"].as_str(), payload["type"].as_str()) {
+        (Some("event_msg"), Some("item_started" | "item_completed"))
+            if payload["item"]["type"] == "CommandExecution" =>
+        {
+            // The last element of the command array is the script; the others are the shell and its flags.
+            vec![last_word(&payload["item"]["command"])]
+        }
+        (Some("response_item"), Some("custom_tool_call")) if payload["name"] == "exec" => {
+            read_snippet(payload["input"].as_str().unwrap_or("")).commands
+        }
+        (Some("response_item"), Some("function_call")) => {
+            let arguments: Value =
+                serde_json::from_str(payload["arguments"].as_str().unwrap_or(""))
+                    .unwrap_or_default();
+            let command = if arguments["cmd"].is_null() {
+                &arguments["command"]
+            } else {
+                &arguments["cmd"]
+            };
+            vec![words(command)]
+        }
+        (Some("response_item"), Some("local_shell_call")) => {
+            vec![last_word(&payload["action"]["command"])]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The run ids in `ids` that the commands of a Codex rollout name, with shell variables carried across the
+/// commands in order. Both Codex readers decide from this which runs a session belongs to.
+pub(crate) fn codex_claims(text: &str, ids: &HashSet<&str>) -> HashSet<String> {
+    const MARKERS: [&str; 4] = [
+        "CommandExecution",
+        "custom_tool_call",
+        "function_call",
+        "local_shell_call",
+    ];
+    let mut claims = HashSet::new();
+    let mut variables = Variables::new();
+    for line in text
+        .lines()
+        .filter(|line| MARKERS.iter().any(|marker| line.contains(marker)))
+    {
+        let Ok(data) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        for command in commands_of(&data) {
+            claims.extend(run_claims(truncate(&command), ids, &mut variables));
+        }
+    }
+    claims
+}
+
 /// What one rollout file gave.
 struct Rollout {
     /// The responses, by key.
@@ -353,6 +427,9 @@ fn parse_rollout(text: &str, session: &str, subagent: bool, ids: &HashSet<&str>)
         claims: HashSet::new(),
         malformed: 0,
     };
+    if !subagent {
+        rollout.claims = codex_claims(text, ids);
+    }
     let mut open = Open::default();
     // The calls of the open response, and the index in `requests` of a closed response that made a call.
     let mut open_calls: HashSet<String> = HashSet::new();
@@ -383,9 +460,6 @@ fn parse_rollout(text: &str, session: &str, subagent: bool, ids: &HashSet<&str>)
                     if payload["name"] == "exec" {
                         let snippet = read_snippet(payload["input"].as_str().unwrap_or(""));
                         for command in snippet.commands {
-                            if !subagent {
-                                rollout.claims.extend(updated_runs(&command, ids));
-                            }
                             open.commands.push(command);
                         }
                         open.other_tool |= snippet.other_tool;

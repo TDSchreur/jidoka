@@ -8,7 +8,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
-const EXPLANATION: &str = "Fresh tokens are input excluding cache reads, plus cache writes and output. Cache reads are shown beside them, not inside. Reasoning is part of output and is not added again. n/a means the log did not report it; it is never zero.\nEst. cost is an estimate from the built-in price table (USD per million tokens); a model without a price is unknown, never zero, and a total that includes one is marked partial.";
+const EXPLANATION: &str = "Fresh tokens are input excluding cache reads, plus cache writes and output. Cache reads are shown beside them, not inside. Reasoning is part of output and is not added again. n/a means the log did not report it; it is never zero.\nEst. cost is a token-based estimate at API list prices (USD per million tokens), not what a subscription is charged; a model without a price, or OpenAI usage with cache writes, is unknown, never zero, and a total that includes one is marked partial.";
 
 /// `12,345`, or `n/a` for a count that was not reported.
 pub(crate) fn number(value: Option<u64>) -> String {
