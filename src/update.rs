@@ -162,9 +162,11 @@ fn replace_executable(current: &Path, new: &Path) -> io::Result<()> {
 #[cfg(windows)]
 fn replace_executable(current: &Path, new: &Path) -> io::Result<()> {
     let old = current.with_extension("old");
+    // A stale copy from an earlier update may not exist; the rename below reports real failures.
     let _ = fs::remove_file(&old);
     fs::rename(current, &old)?;
     fs::rename(new, current).inspect_err(|_| {
+        // Best-effort rollback; the rename error is the one returned.
         let _ = fs::rename(&old, current);
     })
 }
@@ -249,6 +251,7 @@ pub(crate) fn update(
         replace_executable(&exe, &staged)
             .map_err(|error| format!("Cannot replace {}: {error}", exe.display()))
     })();
+    // Best-effort cleanup of temporary files; the update result is reported below.
     let _ = fs::remove_file(&staged);
     let _ = fs::remove_file(&checksum);
     result?;

@@ -21,6 +21,9 @@ mod routing;
 pub(crate) const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
 /// Project files are not trusted: anything larger is not read.
 const MAX_DOC_BYTES: u64 = 1 << 20;
+/// How much of an agent's `--version` output doctor shows: a version line is short, so this only guards against
+/// a program that prints something huge.
+const VERSION_OUTPUT_CHARS: usize = 200;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -677,7 +680,7 @@ fn agent_version(program: &Path) -> Option<String> {
     output.status.success().then(|| {
         String::from_utf8_lossy(&output.stdout)
             .chars()
-            .take(200)
+            .take(VERSION_OUTPUT_CHARS)
             .collect()
     })
 }

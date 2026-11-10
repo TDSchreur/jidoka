@@ -81,7 +81,7 @@ pub(crate) trait RunApi {
 
 /// What the command needs to know about the run.
 #[derive(Clone, Debug)]
-pub(crate) struct RunInfo {
+pub(crate) struct PrRun {
     pub(crate) id: String,
     pub(crate) worktree: Option<String>,
     pub(crate) branch: Option<String>,
@@ -90,14 +90,17 @@ pub(crate) struct RunInfo {
     pub(crate) status: String,
 }
 
-impl RunInfo {
+impl PrRun {
     pub(crate) fn running(&self) -> bool {
         self.status == "running"
     }
 }
 
-/// The longest title and body file that are accepted.
+/// Azure DevOps rejects a pull request description longer than this many characters.
+const AZURE_DESCRIPTION_LIMIT: usize = 4000;
+/// A title longer than this is rejected, which keeps it a short one-line heading.
 const MAX_TITLE_CHARS: usize = 256;
+/// A body file larger than this is rejected, so the whole file is never read into memory.
 const MAX_BODY_BYTES: u64 = 256 * 1024;
 
 #[derive(Clone, Debug)]
@@ -546,7 +549,7 @@ struct PreparedPr {
 }
 
 fn open_azure(
-    run: &RunInfo,
+    run: &PrRun,
     options: &Options,
     gh: &dyn Gh,
     api: &dyn RunApi,
@@ -563,8 +566,8 @@ fn open_azure(
     let description = if existing.is_none() {
         let text = std::fs::read_to_string(&options.body_file)
             .map_err(|_| ToolProblem("The pull request body could not be read as UTF-8.".into()))?;
-        if text.chars().count() > 4000 || text.contains('\0') {
-            return Err(ToolProblem("Azure pull request descriptions must be at most 4000 characters and contain no NUL bytes.".into()));
+        if text.chars().count() > AZURE_DESCRIPTION_LIMIT || text.contains('\0') {
+            return Err(ToolProblem(format!("Azure pull request descriptions must be at most {AZURE_DESCRIPTION_LIMIT} characters and contain no NUL bytes.")));
         }
         Some(format!("--description={text}"))
     } else {
@@ -586,6 +589,11 @@ fn open_azure(
         );
     }
     let org = repo.org_url();
+    let Some(description) = description else {
+        return Err(ToolProblem(
+            "The new Azure pull request has no description.".into(),
+        ));
+    };
     let result = az_json(
         gh,
         dir,
@@ -604,9 +612,7 @@ fn open_azure(
             "--target-branch",
             &base,
             &format!("--title={}", options.title),
-            description
-                .as_deref()
-                .expect("new Azure PR has a description"),
+            &description,
             "--output",
             "json",
             "--detect",
@@ -637,7 +643,7 @@ fn open_azure(
 /// Pushes the run's branch and opens its pull request, or finds the open one, and records its URL on the run.
 /// Nothing is pushed unless the checks pass and `gh` can see the repository. It never forces a push.
 pub(crate) fn open(
-    run: &RunInfo,
+    run: &PrRun,
     options: &Options,
     gh: &dyn Gh,
     api: &dyn RunApi,
@@ -854,7 +860,7 @@ pub(crate) fn open(
 
 /// Records the pull request on a running run and returns the result.
 fn finish(
-    run: &RunInfo,
+    run: &PrRun,
     api: &dyn RunApi,
     branch: String,
     base: String,
@@ -887,7 +893,7 @@ fn finish(
 }
 
 /// The result as text.
-pub(crate) fn render(opened: &Opened, run: &RunInfo) -> String {
+pub(crate) fn render(opened: &Opened, run: &PrRun) -> String {
     let mut text = format!(
         "{}: {}\n  Branch: {}\n  Base: {}\n  Pushed commit: {}\n",
         if opened.created {

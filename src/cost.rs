@@ -108,11 +108,14 @@ pub(crate) fn total<'a>(rows: impl IntoIterator<Item = &'a UsageRow>, table: Tab
     }
 }
 
+/// Below this many dollars, `{:.2}` formatting would show `$0.00`.
+const HALF_A_CENT: f64 = 0.005;
+
 /// `$1.23`, `<$0.01` for a positive amount that rounds to nothing, or `unknown` for `None`.
 pub(crate) fn format_usd(usd: Option<f64>) -> String {
     match usd {
         None => "unknown".into(),
-        Some(usd) if usd > 0.0 && usd < 0.005 => "<$0.01".into(),
+        Some(usd) if usd > 0.0 && usd < HALF_A_CENT => "<$0.01".into(),
         Some(usd) => format!("${usd:.2}"),
     }
 }

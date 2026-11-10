@@ -22,8 +22,27 @@ use std::{
     sync::Mutex,
 };
 
-pub(crate) const DEFAULT_PORT: u16 = 4311;
-pub(crate) const ADDRESS: &str = "127.0.0.1:4311";
+/// The one place the loopback host is spelled, as a macro so `concat!` can build `ADDRESS` from it.
+macro_rules! loopback_host {
+    () => {
+        "127.0.0.1"
+    };
+}
+/// The one place the default port is spelled, as a macro so `concat!` can build `ADDRESS` from it.
+macro_rules! default_port {
+    () => {
+        4311
+    };
+}
+
+/// The host the dashboard server binds to and the CLI talks to: loopback only, so nothing outside this machine
+/// can reach it.
+const LOOPBACK_HOST: &str = loopback_host!();
+/// The port the dashboard server listens on unless told otherwise; a fixed, uncommon port so the CLI and the
+/// dashboard find each other without configuration.
+pub(crate) const DEFAULT_PORT: u16 = default_port!();
+/// The dashboard server's default address, `LOOPBACK_HOST:DEFAULT_PORT`.
+pub(crate) const ADDRESS: &str = concat!(loopback_host!(), ":", default_port!());
 const DASHBOARD: &str = include_str!("../dashboard/index.html");
 /// The files the dashboard page may load from `/assets/`; any other path is a 404.
 const ASSETS: &[(&str, ContentType, &[u8])] = &[
@@ -88,7 +107,7 @@ const BODY_LIMIT: u64 = 64 * 1024;
 
 fn is_local_authority(authority: &str, port: u16) -> bool {
     authority.rsplit_once(':').is_some_and(|(host, given)| {
-        matches!(host, "localhost" | "127.0.0.1") && given == port.to_string()
+        matches!(host, "localhost" | LOOPBACK_HOST) && given == port.to_string()
     })
 }
 
@@ -97,8 +116,8 @@ fn is_local_authority(authority: &str, port: u16) -> bool {
 struct SessionToken(String);
 
 impl SessionToken {
-    fn new() -> Self {
-        Self(crate::token::random())
+    fn new() -> Result<Self, String> {
+        crate::token::random().map(Self)
     }
 }
 
@@ -176,6 +195,7 @@ fn write_token_file_from(path: &Path, token: &str, first_counter: u32) -> io::Re
             Ok(()) => {
                 let renamed = std::fs::rename(&temp, path);
                 if renamed.is_err() {
+                    // Best-effort cleanup; the rename error is the one returned.
                     let _ = std::fs::remove_file(&temp);
                 }
                 return renamed;
@@ -252,6 +272,7 @@ fn write_new_file_with(
     let written = write(&mut file, content.as_bytes());
     if written.is_err() {
         drop(file);
+        // Best-effort cleanup; the write error is the one returned.
         let _ = std::fs::remove_file(path);
     }
     written
@@ -378,17 +399,17 @@ fn asset(request: Security, path: PathBuf) -> Result<(ContentType, &'static [u8]
 
 /// What a client needs to recognise a running Factory dashboard and compare its build with its own.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub(crate) struct Info {
+pub(crate) struct DashboardIdentity {
     pub(crate) pid: u32,
     pub(crate) version: String,
 }
 
 #[rocket::get("/api/info")]
-fn info(request: Security) -> Result<Json<Info>, HttpStatus> {
+fn info(request: Security) -> Result<Json<DashboardIdentity>, HttpStatus> {
     if !request.local {
         return Err(HttpStatus::BadRequest);
     }
-    Ok(Json(Info {
+    Ok(Json(DashboardIdentity {
         pid: std::process::id(),
         version: current_build(),
     }))
@@ -723,7 +744,7 @@ impl Collector {
 
 #[cfg(test)]
 pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> {
-    build_rocket_with(path, port, Collector::new(None))
+    build_rocket_with_tokens(path, port, Collector::new(None), new_tokens()?)
 }
 
 /// The runs file the CLI token is kept next to.
@@ -732,13 +753,30 @@ struct TokenFile(PathBuf);
 /// Set at liftoff when the CLI token could not be written; the server shuts down and `serve` reports it.
 struct TokenWriteFailure(std::sync::Mutex<Option<String>>);
 
+#[cfg(test)]
 pub(crate) fn build_rocket_with(
     path: &Path,
     port: u16,
     collector: Collector,
 ) -> io::Result<Rocket<Build>> {
+    build_rocket_with_tokens(path, port, collector, new_tokens()?)
+}
+
+/// The session token and the CLI token, or why the operating system could not provide them.
+fn new_tokens() -> io::Result<(SessionToken, String)> {
+    let session_token = SessionToken::new().map_err(io::Error::other)?;
+    let cli_token = crate::token::random().map_err(io::Error::other)?;
+    Ok((session_token, cli_token))
+}
+
+fn build_rocket_with_tokens(
+    path: &Path,
+    port: u16,
+    collector: Collector,
+    (session_token, cli_token): (SessionToken, String),
+) -> io::Result<Rocket<Build>> {
     let config = Figment::from(rocket::Config::default())
-        .merge(("address", "127.0.0.1"))
+        .merge(("address", LOOPBACK_HOST))
         .merge(("port", port))
         .merge(("limits", Limits::new().limit("json", BODY_LIMIT.bytes())));
     #[cfg(unix)]
@@ -748,8 +786,8 @@ pub(crate) fn build_rocket_with(
     Ok(rocket::custom(config)
         .manage(RunStore::open(path)?)
         .manage(collector)
-        .manage(SessionToken::new())
-        .manage(CliToken(crate::token::random()))
+        .manage(session_token)
+        .manage(CliToken(cli_token))
         .manage(TokenFile(path.to_path_buf()))
         .manage(TokenWriteFailure(std::sync::Mutex::new(None)))
         .attach(rocket::fairing::AdHoc::on_liftoff(
@@ -810,7 +848,8 @@ pub(crate) fn build_rocket_with(
         )))
 }
 
-/// How often the dashboard server looks for pull requests whose state is due to be read again.
+/// How often the dashboard server looks for pull requests whose state is due to be read again. Every 20 seconds
+/// keeps the dashboard fresh while each pass only reads the pull requests that are due, so hosts are not hammered.
 const PR_STATE_PASS: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Reads the state of the Runs' pull requests from their hosts, one pass every `pass`, on a blocking thread so
@@ -838,7 +877,8 @@ fn watch_pr_states(
     })
 }
 
-/// How often the dashboard server looks in the logs of working runs for a usage limit or compaction.
+/// How often the dashboard server looks in the logs of working runs for a usage limit or compaction. A minute is
+/// frequent enough to notice a pause promptly and rare enough that reading the logs stays cheap.
 const PAUSE_PASS: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Collects the runs that are working or paused on their own every `pass`, on a blocking thread, so a
@@ -875,7 +915,9 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
     println!("Dashboard: {url} (press Ctrl+C to stop)");
     runtime.block_on(async {
         let pause_settings = usage.clone();
-        build_rocket_with(path, port, Collector::new(Some(usage)))
+        // Made before the run-storage step so a token failure keeps its own message.
+        let tokens = new_tokens()?;
+        build_rocket_with_tokens(path, port, Collector::new(Some(usage)), tokens)
             .map_err(|error| {
                 io::Error::new(error.kind(), format!("could not open run storage: {error}"))
             })?
@@ -1563,7 +1605,7 @@ mod tests {
             .dispatch()
             .await;
         assert_eq!(response.status(), HttpStatus::Ok);
-        let info: Info = response.into_json().await.unwrap();
+        let info: DashboardIdentity = response.into_json().await.unwrap();
         assert_eq!(info.pid, std::process::id());
         assert_eq!(info.version, current_build());
         let foreign = api
@@ -2303,11 +2345,6 @@ mod tests {
         assert!(!script.contains("Activity: ${run.activity}"));
         // Stage descriptions live in Help, not on the board.
         assert!(!script.contains("group-description") && !script.contains("compact-description"));
-    }
-
-    #[test]
-    fn the_address_constant_matches_the_default_port() {
-        assert_eq!(ADDRESS, format!("127.0.0.1:{DEFAULT_PORT}"));
     }
 
     #[rocket::async_test]

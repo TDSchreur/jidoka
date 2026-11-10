@@ -263,6 +263,7 @@ fn install_to(root: &Path) -> io::Result<()> {
         remove_if_exists(&staging)?;
         fs::create_dir(&staging)?;
         if let Err(error) = write_skill(name, &staging).and_then(|()| replace_dir(&staging, &dir)) {
+            // Best-effort cleanup; the install error is the one returned.
             let _ = fs::remove_dir_all(&staging);
             return Err(io::Error::new(
                 error.kind(),
@@ -387,6 +388,7 @@ fn replace_dir(staging: &Path, dir: &Path) -> io::Result<()> {
     remove_if_exists(&previous)?;
     fs::rename(dir, &previous)?;
     if let Err(error) = fs::rename(staging, dir) {
+        // Best-effort rollback; the rename error is the one returned.
         let _ = fs::rename(&previous, dir);
         return Err(error);
     }
@@ -405,7 +407,10 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
         .iter()
         .filter(|(path, _)| path.split('/').next() == Some(name))
     {
-        let relative = path.split_once('/').expect("bundled path has a '/'").1;
+        let relative = path
+            .split_once('/')
+            .unwrap_or_else(|| panic!("bundled skill file `{path}` has no directory in its path"))
+            .1;
         let destination = dir.join(relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;

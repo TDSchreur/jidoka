@@ -119,6 +119,8 @@ struct FakeGh {
     list: RefCell<VecDeque<Result<GhOutput, GhError>>>,
     create: RefCell<VecDeque<Result<GhOutput, GhError>>>,
     calls: RefCell<Vec<(PathBuf, String)>>,
+    /// The arguments of every git command the code ran.
+    git_calls: RefCell<Vec<Vec<String>>>,
     remote_url: RefCell<Option<String>>,
     push_url: RefCell<Option<String>>,
     az_missing: std::cell::Cell<bool>,
@@ -163,6 +165,9 @@ impl Gh for FakeGh {
     }
     /// The code under test runs git; the user's own git settings must not reach it.
     fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
+        self.git_calls
+            .borrow_mut()
+            .push(args.iter().map(|a| a.to_string()).collect());
         if args == ["remote", "get-url", "--push", "--all", "origin"] {
             return Ok(self
                 .push_url
@@ -251,8 +256,8 @@ impl RunApi for FakeApi {
     }
 }
 
-fn run_of(project: &Project) -> RunInfo {
-    RunInfo {
+fn run_of(project: &Project) -> PrRun {
+    PrRun {
         id: "100".into(),
         worktree: Some(project.wt.display().to_string()),
         branch: Some("feature".into()),
@@ -639,23 +644,94 @@ fn the_text_and_the_json_say_the_same_and_are_printable() {
     assert!(render(&again, &run_of(&Project::new())).starts_with("Pull request already open: "));
 }
 
+/// Asserts that the git commands and the `gh`/`az` calls of one `open` push the branch and never force, reset,
+/// switch, clean, commit, add, fetch or merge.
+fn assert_pushes_without_forcing_or_changing_the_work(gh: &FakeGh) {
+    let forbidden = [
+        "--force",
+        "-f",
+        "--force-with-lease",
+        "reset",
+        "checkout",
+        "clean",
+        "commit",
+        "add",
+        "fetch",
+        "merge",
+    ];
+    let git_calls = gh.git_calls.borrow();
+    assert!(git_calls
+        .iter()
+        .any(|c| c.first().map(String::as_str) == Some("push")));
+    for command in git_calls.iter() {
+        for argument in command {
+            assert!(!forbidden.contains(&argument.as_str()), "{command:?}");
+            assert!(!argument.starts_with('+'), "{command:?}");
+        }
+    }
+    for (_, command) in gh.calls.borrow().iter() {
+        for word in command.split_whitespace() {
+            assert!(!forbidden.contains(&word), "{command}");
+        }
+    }
+}
+
+/// Builds the fake `gh`/`az` of one scenario.
+type GhScript = Box<dyn Fn() -> FakeGh>;
+
 #[test]
 fn nothing_in_the_command_forces_a_push_or_changes_the_work() {
-    let source = include_str!("pr_open.rs");
-    for forbidden in [
-        "\"--force\"",
-        "\"-f\"",
-        "\"--force-with-lease\"",
-        "\"+",
-        "\"reset\"",
-        "\"checkout\"",
-        "\"clean\"",
-        "\"commit\"",
-        "\"add\"",
-        "\"fetch\"",
-        "\"merge\"",
-    ] {
-        assert!(!source.contains(forbidden), "{forbidden}");
+    let azure_url = "https://dev.azure.com/dutchworkz/Projects/_git/Kahoot";
+    let scenarios: [(&str, GhScript); 4] = [
+        (
+            "a new GitHub pull request",
+            Box::new(|| FakeGh::new_pr(URL)),
+        ),
+        (
+            "an open GitHub pull request",
+            Box::new(|| {
+                let gh = FakeGh::default();
+                gh.list.borrow_mut().push_back(ok(&format!(
+                    r#"[{{"url":"{URL}","baseRefName":"develop"}}]"#
+                )));
+                gh
+            }),
+        ),
+        (
+            "a new Azure pull request",
+            Box::new(move || {
+                let gh = FakeGh::default();
+                *gh.remote_url.borrow_mut() = Some(azure_url.into());
+                gh.list.borrow_mut().push_back(ok("[]"));
+                gh.create.borrow_mut().push_back(ok(
+                    r#"{"pullRequestId":17,"repository":{"id":"96a543bd-0277-4ba4-acc6-2e45294010fe"}}"#,
+                ));
+                gh
+            }),
+        ),
+        (
+            "an open Azure pull request",
+            Box::new(move || {
+                let gh = FakeGh::default();
+                *gh.remote_url.borrow_mut() = Some(azure_url.into());
+                gh.list.borrow_mut().push_back(ok(
+                    r#"[{"pullRequestId":3,"repository":{"id":"target"},"targetRefName":"refs/heads/develop"}]"#,
+                ));
+                gh
+            }),
+        ),
+    ];
+    for (name, make) in scenarios {
+        let project = Project::new();
+        let gh = make();
+        open(
+            &run_of(&project),
+            &options(&project),
+            &gh,
+            &FakeApi::default(),
+        )
+        .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+        assert_pushes_without_forcing_or_changing_the_work(&gh);
     }
 }
 

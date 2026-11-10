@@ -178,7 +178,9 @@ pub(crate) enum BeginError {
 
 /// Reasons are kept short: the dashboard shows one on the run's card.
 const MAX_REASON_CHARS: usize = 300;
-/// The longest branch name derived from a title.
+/// The highest numeric suffix tried when a derived run name is taken: a hundred clashes means something is wrong.
+const MAX_NAME_SUFFIX: u32 = 99;
+/// A derived branch name is cut to this length, so it stays short to type and read.
 const MAX_NAME_CHARS: usize = 40;
 /// What every run's worktree keeps out of git: the factory's own folder and the local tracker.
 const RUN_IGNORED: &[&str] = &[".factory/", ".scratch/"];
@@ -633,10 +635,11 @@ fn workspace(
             let mut number = 1;
             while taken(&candidate) {
                 number += 1;
-                if number > 99 {
-                    return Err(
-                        format!("Every name from {derived} to {derived}-99 is taken.").into(),
-                    );
+                if number > MAX_NAME_SUFFIX {
+                    return Err(format!(
+                        "Every name from {derived} to {derived}-{MAX_NAME_SUFFIX} is taken."
+                    )
+                    .into());
                 }
                 candidate = format!("{derived}-{number}");
             }

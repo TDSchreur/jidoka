@@ -40,7 +40,7 @@ struct Usage {
 }
 
 /// A session's id, the runs it claims and its requests with their keys.
-type Parsed = (String, HashSet<String>, Vec<(String, Request)>);
+type ParsedSession = (String, HashSet<String>, Vec<(String, Request)>);
 
 /// The requests of one log, keyed by `apiCallId` (or by line when a record has none).
 fn parse_events(text: &str, session: &str) -> (BTreeMap<String, Request>, usize) {
@@ -176,7 +176,7 @@ pub(crate) fn read_copilot_requests(
     }
     let (mut files, mut bytes) = (0usize, 0u64);
     let mut malformed = 0;
-    let mut sessions: Vec<Parsed> = Vec::new();
+    let mut sessions: Vec<ParsedSession> = Vec::new();
     for dir in sub_dirs(root) {
         let session = dir.file_name().to_string_lossy().into_owned();
         let path = dir.path().join("events.jsonl");
