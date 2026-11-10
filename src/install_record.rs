@@ -32,13 +32,6 @@ pub(crate) fn path_in(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf>
     Some(policy.with_file_name("install.json"))
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by the refresh, uninstall and doctor tickets"
-    )
-)]
 /// No file is `None`; a file that cannot be read or parsed is an error naming the path.
 pub(crate) fn read(path: &Path) -> io::Result<Option<InstallRecord>> {
     let bytes = match fs::read(path) {

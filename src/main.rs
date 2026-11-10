@@ -24,6 +24,7 @@ mod run_begin;
 mod run_check;
 mod run_cleanup;
 mod server;
+mod setup;
 mod stats;
 mod token;
 mod uninstall;
@@ -79,6 +80,10 @@ fn main() -> ExitCode {
 /// Runs the command and returns its exit status; a non-zero one means it already reported why.
 fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args().skip(1).collect();
+    if let Ok(home) = install::home_dir() {
+        let words: Vec<&str> = args.iter().map(String::as_str).collect();
+        setup::check(&words, |name| env::var_os(name), &home, &mut io::stderr());
+    }
     match args
         .iter()
         .map(String::as_str)
