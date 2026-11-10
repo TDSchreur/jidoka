@@ -531,3 +531,50 @@ fn on_windows_a_path_outside_the_allowlist_gets_the_by_hand_message() {
         );
     }
 }
+
+#[test]
+fn only_agents_with_installed_skills_are_updated() {
+    let home = tempfile::tempdir().unwrap();
+    let none = |_: &str| None;
+    assert!(installed_agents(home.path(), &[], none).is_empty());
+    let file = install::bundled_skill_files().next().unwrap();
+    let path = home.path().join(".claude/skills").join(file);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, "x").unwrap();
+    assert_eq!(installed_agents(home.path(), &[], none), ["claude"]);
+}
+
+#[test]
+fn config_dirs_decide_whether_claude_is_installed() {
+    let home = tempfile::tempdir().unwrap();
+    let work = home.path().join(".claude-work");
+    let file = install::bundled_skill_files().next().unwrap();
+    let path = work.join("skills").join(file);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, "x").unwrap();
+    let none = |_: &str| None;
+    let dirs = [work.display().to_string()];
+    assert!(installed_agents(home.path(), &[], none).is_empty());
+    assert_eq!(installed_agents(home.path(), &dirs, none), ["claude"]);
+}
+
+#[test]
+fn the_child_install_gets_one_config_dir_per_folder() {
+    let dirs = [install::test_abs("a"), install::test_abs("b")];
+    let args = install_args("codex,claude", &dirs);
+    let expected: Vec<OsString> = [
+        "install".into(),
+        "--agent".into(),
+        "codex,claude".into(),
+        "--config-dir".into(),
+        dirs[0].clone().into_os_string(),
+        "--config-dir".into(),
+        dirs[1].clone().into_os_string(),
+    ]
+    .into();
+    assert_eq!(args, expected);
+    assert_eq!(
+        install_args("claude", &[]),
+        ["install", "--agent", "claude"]
+    );
+}
