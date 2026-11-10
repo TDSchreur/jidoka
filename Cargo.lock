@@ -551,6 +551,7 @@ dependencies = [
  "tempfile",
  "time",
  "ureq",
+ "windows-sys 0.61.2",
  "winresource",
 ]
 
