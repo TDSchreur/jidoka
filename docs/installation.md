@@ -2,6 +2,8 @@
 
 How to install, update and configure Jidoka. The [README](../README.md#install) has the short version.
 
+See the [Code signing policy](../README.md#code-signing-policy).
+
 ## Requirements
 
 You need Linux x86-64 or Windows x86-64, `git`, and a supported coding agent (Codex, Claude Code, or GitHub Copilot). To open pull requests and watch CI, the workflows need the `gh` CLI on GitHub, or the Azure CLI (`az`) with its `azure-devops` extension on Azure Repos. Building from source also needs a Rust toolchain with Cargo.
@@ -53,6 +55,16 @@ A leading `~` means your home folder. A relative path is rejected before anythin
 The installers, `scripts/update-local.sh` and `scripts/switch-jidoka.sh` read an optional `JIDOKA_CLAUDE_CONFIG_DIRS` and pass each entry as `--config-dir`. Separate entries with `:` on Linux and `;` in PowerShell. Empty entries are skipped.
 
 The dashboard and `jidoka run requests` read the same variable, with your system's path separator. They read Claude Code session logs from `projects` in the resolved folder and in every listed folder. Project-level `.claude/` folders are not affected.
+
+## Uninstall
+
+Stop the dashboard first. Remove only the Jidoka skill directories (the `jidoka-*` directories and `jidoka`), leaving other skills in place. They are under `~/.codex/skills`, `~/.claude/skills`, and `~/.copilot/skills` by default. If set, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or `COPILOT_HOME` replaces the corresponding default folder; also check every Claude folder supplied with `--config-dir` or `JIDOKA_CLAUDE_CONFIG_DIRS`.
+
+On Linux, remove `~/.local/bin/jidoka`. Remove `~/.local/share/jidoka/` (or `$XDG_DATA_HOME/jidoka/` when set), `~/.local/state/jidoka/` (or `$XDG_STATE_HOME/jidoka/` when set), and `~/.config/jidoka/` (or `$XDG_CONFIG_HOME/jidoka/` when set) to delete run data and configuration.
+
+On Windows, remove `%LOCALAPPDATA%\Programs\jidoka\jidoka.exe`, `%LOCALAPPDATA%\jidoka\`, and `%APPDATA%\jidoka\` to delete the binary, run data, and configuration. In Windows Settings, search for **Edit environment variables for your account**, edit the user `Path`, and remove the `%LOCALAPPDATA%\Programs\jidoka` entry. Restart terminals to pick up the change.
+
+Deleting data and configuration removes saved runs and settings. If you installed with Cargo, also run `cargo uninstall jidoka` and remove any separate release binary as above.
 
 ## Build from source
 

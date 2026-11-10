@@ -91,6 +91,22 @@ Run `jidoka --help` for every command.
 | [Checking readiness](docs/doctor.md) | What `jidoka doctor` checks |
 | [Glossary](GLOSSARY.md) | The terms Jidoka uses |
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)
+
+- **Authors:** T.D. Schreur may change the source without further review.
+- **Reviewers:** T.D. Schreur reviews every change from outside the team, including pull requests.
+- **Approvers:** T.D. Schreur approves every signing request in SignPath.
+
+This program will not transfer any information to other networked systems unless specifically requested by the user.
+
+- `jidoka check` and `jidoka update` use `curl` to contact GitHub Releases; the release installers download from GitHub Releases too.
+- `jidoka run begin` fetches the chosen base from the repository's configured Git remote. `jidoka pr open` and `jidoka pr sync` fetch or push to that remote as needed.
+- `jidoka pr open`, `jidoka pr sync`, `jidoka pr wait`, `jidoka run sync`, `jidoka run cleanup`, and the dashboard use `gh` or `az` to access the user's pull requests and CI on GitHub or Azure DevOps. The dashboard may refresh recorded pull request status while running. `jidoka doctor` checks the selected provider's CLI and authentication status.
+
+These services have their own privacy policies: [GitHub](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement) and [Microsoft (Azure DevOps)](https://privacy.microsoft.com/en-us/privacystatement). A configured Git remote may use another host with its own policy. Coding agents and tools invoked by them operate separately under their own policies and user configuration.
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch model and how to verify a change, and [SECURITY.md](SECURITY.md) to report a vulnerability.

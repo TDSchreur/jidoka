@@ -125,4 +125,4 @@ jobs:
             echo 'Could not check release tags.' >&2
             exit "$status"
           fi
-          gh release create '${{ steps.version.outputs.tag }}' --target "$GITHUB_SHA" dist/* scripts/install.sh scripts/install.ps1 --generate-notes
+          gh release create '${{ steps.version.outputs.tag }}' --target "$GITHUB_SHA" dist/* scripts/install.sh scripts/install.ps1 --notes '[Code signing policy](https://github.com/TDSchreur/jidoka#code-signing-policy)' --generate-notes

@@ -115,6 +115,7 @@ function Install-Jidoka {
         if ($null -eq $userPath) { $userPath = '' }
         if (($userPath -split ';') -notcontains $bin) {
             [Environment]::SetEnvironmentVariable('Path', (($userPath.TrimEnd(';') + ';' + $bin).TrimStart(';')), 'User')
+            Write-Host "Added $bin to your user PATH. To undo this, edit the user Path in Windows environment variables and remove that entry."
         }
         if (($env:Path -split ';') -notcontains $bin) { $env:Path += ';' + $bin }
         Write-Host 'Installed jidoka. Run jidoka dashboard.'

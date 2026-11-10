@@ -18,14 +18,16 @@ try {
     function Read-Host { param($Prompt) return '2' }
 
     $env:JIDOKA_AGENT = 'codex'
-    . (Join-Path $root 'scripts/install.ps1')
+    $output = . (Join-Path $root 'scripts/install.ps1') 6>&1
+    if (-not ($output | Where-Object { $_.ToString() -like '*Added * to your user PATH*remove that entry*' })) { throw 'PATH change and undo instructions were not reported' }
     if (-not (Get-ChildItem -LiteralPath (Join-Path $env:CODEX_HOME 'skills'))) { throw 'Codex skills were not installed' }
     $bin = Join-Path $env:LOCALAPPDATA 'Programs\jidoka'
     if (($env:Path -split ';') -notcontains $bin) { throw 'Current shell PATH was not updated' }
     if (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -notcontains $bin) { throw 'User PATH was not updated' }
 
     Remove-Item Env:JIDOKA_AGENT
-    . (Join-Path $root 'scripts/install.ps1')
+    $output = . (Join-Path $root 'scripts/install.ps1') 6>&1
+    if ($output | Where-Object { $_.ToString() -like '*Added * to your user PATH*' }) { throw 'Installer reported an unchanged user PATH as added' }
     if (-not (Get-ChildItem -LiteralPath (Join-Path $env:CLAUDE_CONFIG_DIR 'skills'))) { throw 'Interactive selection did not install Claude skills' }
 
     $first = Join-Path $tempRoot 'claude work'
