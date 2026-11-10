@@ -1,4 +1,11 @@
 //! Behavior of `scripts/verify.sh`, run against a fake `cargo` so no real check executes.
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::unwrap_used,
+        reason = "integration test helpers fail the test by panicking"
+    )
+)]
 #![cfg(unix)]
 
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};

@@ -405,7 +405,7 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
         .iter()
         .filter(|(path, _)| path.split('/').next() == Some(name))
     {
-        let relative = path.split_once('/').unwrap().1;
+        let relative = path.split_once('/').expect("bundled path has a '/'").1;
         let destination = dir.join(relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;

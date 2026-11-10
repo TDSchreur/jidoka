@@ -1,4 +1,8 @@
 //! `factory run begin` arguments, checked before any run is created.
+#![expect(
+    clippy::unwrap_used,
+    reason = "integration test helpers fail the test by panicking"
+)]
 
 use std::process::Command;
 

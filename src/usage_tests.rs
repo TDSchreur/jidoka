@@ -171,7 +171,10 @@ impl World {
 
 // --- fixture lines ----------------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)] // a fixture line: every field is its own argument
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a fixture line: every field is its own argument"
+)]
 fn claude_line(
     session: &str,
     at: u64,
@@ -234,7 +237,10 @@ fn codex_usage(
     .to_string()
 }
 
-#[allow(clippy::too_many_arguments)] // a fixture line: every field is its own argument
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a fixture line: every field is its own argument"
+)]
 fn copilot_usage(
     at: u64,
     call: &str,
