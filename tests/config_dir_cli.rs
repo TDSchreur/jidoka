@@ -166,3 +166,73 @@ fn doctor_reports_each_config_dir_by_path() {
             .contains(b.to_str().unwrap())
     );
 }
+
+fn record(home: &Path) -> serde_json::Value {
+    let text = std::fs::read(home.join("config/jidoka/install.json")).unwrap();
+    serde_json::from_slice(&text).unwrap()
+}
+
+#[test]
+fn install_with_an_agent_writes_the_skills_and_the_record() {
+    let home = tempfile::tempdir().unwrap();
+    let output = jidoka(home.path(), &["install", "--agent", "claude"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(home.path().join(".claude/skills/jidoka/SKILL.md").is_file());
+    let record = record(home.path());
+    assert_eq!(record["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(record["agents"], serde_json::json!(["claude"]));
+    assert_eq!(record["claude_config_dirs"], serde_json::json!([]));
+}
+
+#[test]
+fn install_reads_agents_and_config_dirs_from_the_environment() {
+    let home = tempfile::tempdir().unwrap();
+    let (a, b) = (home.path().join("a"), home.path().join("b"));
+    let list = std::env::join_paths([&a, &b]).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
+        .arg("install")
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join("config"))
+        .env("APPDATA", home.path().join("config"))
+        .env("JIDOKA_AGENT", "claude")
+        .env("JIDOKA_CLAUDE_CONFIG_DIRS", &list)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    for dir in [&a, &b] {
+        assert!(dir.join("skills/jidoka/SKILL.md").is_file());
+    }
+    assert_eq!(
+        record(home.path())["claude_config_dirs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn install_without_a_terminal_or_agents_names_the_flag_and_the_variable() {
+    let home = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
+        .arg("install")
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join("config"))
+        .env("APPDATA", home.path().join("config"))
+        .env_remove("JIDOKA_AGENT")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let message = stderr(&output);
+    assert!(
+        message.contains("--agent") && message.contains("JIDOKA_AGENT"),
+        "{message}"
+    );
+    assert!(!home.path().join("config/jidoka/install.json").exists());
+}
