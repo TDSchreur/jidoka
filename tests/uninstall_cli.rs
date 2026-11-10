@@ -91,7 +91,10 @@ fn custom_claude_selection_and_noninteractive_input_preserve_data() {
         .spawn()
         .unwrap();
     use std::io::Write;
-    child.stdin.take().unwrap().write_all(b"yes\n").unwrap();
+    // Non-interactive input is never read, so the child may exit before the write.
+    if let Err(error) = child.stdin.take().unwrap().write_all(b"yes\n") {
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
+    }
     assert!(child.wait().unwrap().success());
     assert!(!selected.exists());
     assert!(default.exists());
