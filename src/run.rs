@@ -35,7 +35,8 @@ const MAX_BRANCH_BYTES: usize = 255;
 /// Shortest and longest agent session id, in characters: a UUID is 36, and 8 rules out accidental short values.
 const SESSION_ID_LENGTH: std::ops::RangeInclusive<usize> = 8..=100;
 /// Shortest and longest base commit a run update accepts, in hex digits.
-/// 7 is git's default abbreviation and 64 a full SHA-256 id. Stricter than `run_check`'s `ACCEPTED_COMMIT_ID_LENGTH`, which must also read older records.
+/// 7 is git's default abbreviation and 64 a full SHA-256 id. Stricter than `run_check`'s `ACCEPTED_COMMIT_ID_LENGTH`,
+/// which must also read older records.
 const BASE_COMMIT_LENGTH: std::ops::RangeInclusive<usize> = 7..=64;
 /// Ticket reports or run reports one update may submit; matches `MAX_TICKETS`, one report per ticket.
 const MAX_REPORTS_PER_UPDATE: usize = 100;

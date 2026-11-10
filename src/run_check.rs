@@ -200,7 +200,8 @@ fn display(path: &Path) -> String {
 }
 
 /// The lengths of a commit id that `is_commit_id` accepts when checking a run.
-/// Git abbreviates to 4 digits at least, and SHA-256 ids have 64. Looser than `run`'s `BASE_COMMIT_LENGTH`, which bounds what an update may set.
+/// Git abbreviates to 4 digits at least, and SHA-256 ids have 64. Looser than `run`'s `BASE_COMMIT_LENGTH`, which
+/// bounds what an update may set.
 const ACCEPTED_COMMIT_ID_LENGTH: std::ops::RangeInclusive<usize> = 4..=64;
 
 /// A full or abbreviated commit id: 4 to 64 hexadecimal digits.
