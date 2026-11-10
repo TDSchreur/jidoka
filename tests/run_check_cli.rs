@@ -4,13 +4,11 @@
     reason = "integration test helpers fail the test by panicking"
 )]
 
-use std::process::Command;
+mod common;
 
 fn jidoka(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_jidoka"))
-        .args(args)
-        .output()
-        .unwrap()
+    let home = tempfile::tempdir().unwrap();
+    common::jidoka_in(home.path()).args(args).output().unwrap()
 }
 
 #[test]

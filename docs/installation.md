@@ -58,7 +58,7 @@ The dashboard and `jidoka run requests` read the same variable, with your system
 
 ## Uninstall
 
-Stop the dashboard, then run `jidoka uninstall --agent codex,claude,copilot` with the agents whose bundled skills you installed. Use the same `--config-dir <path>` options as installation to select custom Claude configuration directories. Other skills and configuration are preserved.
+Stop the dashboard, then run `jidoka uninstall`. It uses the agents and Claude configuration directories recorded by `jidoka install`; pass `--agent` and `--config-dir <path>` to override them. It also removes the install record, and with the run data the model routing policy (`--keep-data` keeps both). The binary is deleted only when the install script put it in place; otherwise remove it with your package manager (for example `winget uninstall TDSchreur.Jidoka`). Other skills and configuration are preserved.
 
 The command removes the executable at the installer-managed location. On Windows it also removes the install directory from the user PATH. If you run the installed `jidoka.exe`, it is left in place and the command prints a PowerShell command that deletes it after Jidoka exits. Run data is retained unless you confirm its removal interactively; pass `--keep-data` to skip the prompt. Unattended invocations retain run data. Run workspaces and repositories are preserved.
 

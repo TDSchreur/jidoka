@@ -4,11 +4,11 @@
     reason = "integration test helpers fail the test by panicking"
 )]
 
-use std::process::Command;
+mod common;
 
 fn jidoka_in(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
     // The user's own settings must not reach the test.
-    Command::new(env!("CARGO_BIN_EXE_jidoka"))
+    common::jidoka_in(dir)
         .current_dir(dir)
         .env("HOME", dir)
         .env("USERPROFILE", dir)

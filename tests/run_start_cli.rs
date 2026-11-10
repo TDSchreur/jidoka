@@ -6,7 +6,9 @@
     reason = "integration test helpers fail the test by panicking"
 )]
 
-use std::{fs, process::Command};
+mod common;
+
+use std::fs;
 
 #[test]
 fn a_mistake_in_the_policy_stops_the_start_and_names_the_file() {
@@ -19,7 +21,7 @@ fn a_mistake_in_the_policy_stops_the_start_and_names_the_file() {
         r#"{"agents":{"claude":{"stages":{"check":{"model":"son net"}}}}}"#,
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
+    let output = common::jidoka_in(config.path())
         .args(["run", "start", "never started"])
         .env("XDG_CONFIG_HOME", config.path())
         .env("APPDATA", config.path())
@@ -41,7 +43,7 @@ fn start(
     fs::create_dir(&folder).unwrap();
     let path = folder.join("model-routing.json");
     fs::write(&path, policy).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
+    let output = common::jidoka_in(config.path())
         .args(["run", "start", "never started"])
         .args(args)
         .env("XDG_CONFIG_HOME", config.path())

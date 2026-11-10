@@ -36,7 +36,7 @@ use run::UPDATE_HELP;
 use server::{ADDRESS, DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...   (asks which agents when none are given on a terminal; else JIDOKA_AGENT, JIDOKA_CLAUDE_CONFIG_DIRS)\n  jidoka uninstall --agent <codex|claude|copilot>[,...] [--config-dir <path>]... [--keep-data]\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka check\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  jidoka --help | --version";
+const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...   (asks which agents when none are given on a terminal; else JIDOKA_AGENT, JIDOKA_CLAUDE_CONFIG_DIRS)\n  jidoka uninstall [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]... [--keep-data]   (uses the install record when no agent is given)\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka check\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  jidoka --help | --version";
 
 /// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
 const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
@@ -736,12 +736,19 @@ fn plan_path(id: &str) -> io::Result<PathBuf> {
 
 /// The default dashboard keeps `runs.json`; one on another port keeps its own file and shares nothing.
 fn data_path(port: u16) -> io::Result<PathBuf> {
+    data_path_in(port, &|name| env::var_os(name))
+}
+
+fn data_path_in(
+    port: u16,
+    var: &impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> io::Result<PathBuf> {
     #[cfg(windows)]
-    let base = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let base = var("LOCALAPPDATA").map(PathBuf::from);
     #[cfg(not(windows))]
-    let base = env::var_os("XDG_DATA_HOME")
+    let base = var("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
+        .or_else(|| var("HOME").map(|home| PathBuf::from(home).join(".local/share")));
     let base = base.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,

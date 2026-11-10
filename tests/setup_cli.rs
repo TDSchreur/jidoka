@@ -3,13 +3,12 @@
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
 )]
-use std::{
-    path::Path,
-    process::{Command, Output},
-};
+mod common;
+
+use std::{path::Path, process::Output};
 
 fn jidoka(home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_jidoka"))
+    common::jidoka_in(home)
         .args(args)
         .current_dir(home)
         .env("HOME", home)

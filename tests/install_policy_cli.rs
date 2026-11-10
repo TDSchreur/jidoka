@@ -3,14 +3,16 @@
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
 )]
-use std::{fs, process::Command};
+mod common;
+
+use std::fs;
 
 #[test]
 fn install_creates_the_two_agent_policy_and_preserves_existing_content() {
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config");
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_jidoka"))
+        common::jidoka_in(home.path())
             .args(["install", "--agent", "codex"])
             .env("HOME", home.path())
             .env("USERPROFILE", home.path())
@@ -73,7 +75,7 @@ fn install_over(existing: &str) -> (String, String, std::path::PathBuf) {
     let path = config.join("jidoka").join("model-routing.json");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, existing).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
+    let output = common::jidoka_in(home.path())
         .args(["install", "--agent", "codex"])
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())

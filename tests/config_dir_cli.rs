@@ -3,13 +3,12 @@
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
 )]
-use std::{
-    path::Path,
-    process::{Command, Output},
-};
+mod common;
+
+use std::{path::Path, process::Output};
 
 fn jidoka(home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_jidoka"))
+    common::jidoka_in(home)
         .args(args)
         .current_dir(home)
         .env("HOME", home)
@@ -189,7 +188,7 @@ fn install_reads_agents_and_config_dirs_from_the_environment() {
     let home = tempfile::tempdir().unwrap();
     let (a, b) = (home.path().join("a"), home.path().join("b"));
     let list = std::env::join_paths([&a, &b]).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
+    let output = common::jidoka_in(home.path())
         .arg("install")
         .current_dir(home.path())
         .env("HOME", home.path())
@@ -217,7 +216,7 @@ fn install_reads_agents_and_config_dirs_from_the_environment() {
 #[test]
 fn install_without_a_terminal_or_agents_names_the_flag_and_the_variable() {
     let home = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
+    let output = common::jidoka_in(home.path())
         .arg("install")
         .current_dir(home.path())
         .env("HOME", home.path())

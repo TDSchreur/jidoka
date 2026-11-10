@@ -1,42 +1,121 @@
 //! Remove selected bundled skills and the installer-managed command.
 use std::{
-    env, fs,
+    env,
+    ffi::OsString,
+    fs,
     io::{self, IsTerminal, Write},
     path::Path,
 };
 
 pub(crate) fn run(options: &[&str]) -> Result<(), String> {
+    let home = crate::install::home_dir().map_err(|error| error.to_string())?;
+    let current_exe = env::current_exe().ok();
+    uninstall(
+        options,
+        |name| env::var_os(name),
+        &home,
+        current_exe.as_deref(),
+        confirm_run_data,
+    )
+}
+
+fn confirm_run_data() -> Result<bool, String> {
+    if !io::stdin().is_terminal() {
+        return Ok(false);
+    }
+    print!("Remove Jidoka run data and the model routing policy? [y/N] ");
+    io::stdout()
+        .flush()
+        .map_err(|error| format!("cannot display confirmation: {error}"))?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| format!("cannot read confirmation: {error}"))?;
+    Ok(answer.trim().eq_ignore_ascii_case("y") || answer.trim().eq_ignore_ascii_case("yes"))
+}
+
+fn uninstall(
+    options: &[&str],
+    var: impl Fn(&str) -> Option<OsString>,
+    home: &Path,
+    current_exe: Option<&Path>,
+    confirm: impl FnOnce() -> Result<bool, String>,
+) -> Result<(), String> {
     let keep_data = options.contains(&"--keep-data");
     let filtered: Vec<_> = options
         .iter()
         .copied()
         .filter(|option| *option != "--keep-data")
         .collect();
-    let (agents, dirs) = crate::install::parse_options(&filtered)?;
-    let agents = agents.ok_or("uninstall needs --agent")?;
-    let home = crate::install::home_dir().map_err(|error| error.to_string())?;
-    let roots = crate::install::skills_roots(agents, &dirs, &home, |name| env::var_os(name))
+    let (agent_flag, dir_flags) = crate::install::parse_options(&filtered)?;
+    let record_path = crate::install_record::path_in(&var);
+    let record = match &record_path {
+        Some(path) => crate::install_record::read(path).map_err(|error| error.to_string())?,
+        None => None,
+    };
+    let (agents, dirs) = match (agent_flag, record) {
+        (Some(agent), _) => (agent.to_string(), dir_flags),
+        (None, Some(record)) => {
+            let dirs = if dir_flags.is_empty() {
+                record.claude_config_dirs
+            } else {
+                dir_flags
+            };
+            (record.agents.join(","), dirs)
+        }
+        (None, None) => return Err("uninstall needs --agent (no install record found)".into()),
+    };
+    let roots = crate::install::skills_roots(&agents, &dirs, home, &var)
         .map_err(|error| format!("cannot select skills: {error}"))?;
     for root in roots {
         for name in crate::install::bundled_skill_names() {
             remove(&root.join(name))?;
         }
     }
-    if !keep_data && io::stdin().is_terminal() {
-        print!("Remove Jidoka run data? [y/N] ");
-        io::stdout()
-            .flush()
-            .map_err(|error| format!("cannot display confirmation: {error}"))?;
-        let mut answer = String::new();
-        io::stdin()
-            .read_line(&mut answer)
-            .map_err(|error| format!("cannot read confirmation: {error}"))?;
-        if answer.trim().eq_ignore_ascii_case("y") || answer.trim().eq_ignore_ascii_case("yes") {
-            remove_run_data()?;
+    if !keep_data && confirm()? {
+        remove_run_data(&var)?;
+        if let Some(policy) = crate::routing::policy_path_in(&var) {
+            remove(&policy)?;
         }
     }
-    remove_executable(&home)?;
+    if let Some(record_path) = record_path {
+        remove(&record_path)?;
+        remove(&record_path.with_file_name("install.lock"))?;
+    }
+    let target = script_location(home, &var)?;
+    if current_exe.is_some_and(|current| same_file(current, &target)) {
+        remove_executable(&target)?;
+    } else {
+        println!(
+            "Jidoka was not installed by the install script; remove the binary with your package manager (e.g. `winget uninstall TDSchreur.Jidoka`)."
+        );
+    }
     Ok(())
+}
+
+/// Where the install scripts put the executable.
+#[cfg(not(windows))]
+fn script_location(
+    home: &Path,
+    _var: &impl Fn(&str) -> Option<OsString>,
+) -> Result<std::path::PathBuf, String> {
+    Ok(home.join(".local/bin/jidoka"))
+}
+
+#[cfg(windows)]
+fn script_location(
+    _home: &Path,
+    var: &impl Fn(&str) -> Option<OsString>,
+) -> Result<std::path::PathBuf, String> {
+    let base = var("LOCALAPPDATA").ok_or("cannot find LOCALAPPDATA")?;
+    Ok(std::path::PathBuf::from(base)
+        .join("Programs")
+        .join("jidoka")
+        .join("jidoka.exe"))
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
 }
 
 fn inspect(path: &Path) -> Result<Option<fs::Metadata>, String> {
@@ -63,8 +142,8 @@ fn remove(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn remove_run_data() -> Result<(), String> {
-    let path = crate::data_path(crate::server::DEFAULT_PORT)
+fn remove_run_data(var: &impl Fn(&str) -> Option<OsString>) -> Result<(), String> {
+    let path = crate::data_path_in(crate::server::DEFAULT_PORT, var)
         .map_err(|error| format!("cannot find run data: {error}"))?;
     let dir = path.parent().ok_or("cannot find run data directory")?;
     if inspect(dir)?.is_some_and(|metadata| metadata.file_type().is_symlink()) {
@@ -98,13 +177,8 @@ fn remove_run_data() -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn remove_executable(home: &Path) -> Result<(), String> {
-    let target = home.join(".local/bin/jidoka");
-    // Only the fixed installer destination is eligible, never a command found on PATH.
-    if inspect(&target)?.is_some_and(|metadata| metadata.file_type().is_file()) {
-        remove(&target)?;
-    }
-    Ok(())
+fn remove_executable(target: &Path) -> Result<(), String> {
+    remove(target)
 }
 
 /// Removes entries equal to `bin` (ignoring case and trailing backslashes) from a
@@ -138,31 +212,17 @@ fn delete_command(path: &str) -> String {
 }
 
 #[cfg(windows)]
-fn remove_executable(_home: &Path) -> Result<(), String> {
-    let base = env::var_os("LOCALAPPDATA").ok_or("cannot find LOCALAPPDATA")?;
-    let bin = std::path::PathBuf::from(base)
-        .join("Programs")
-        .join("jidoka");
-    let target = bin.join("jidoka.exe");
-    let current =
-        env::current_exe().map_err(|error| format!("cannot locate running command: {error}"))?;
-    let running_installed = match fs::canonicalize(&target) {
-        Ok(path) => path == current || fs::canonicalize(&current).is_ok_and(|c| c == path),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-        Err(error) => return Err(format!("cannot inspect {}: {error}", target.display())),
-    };
+fn remove_executable(target: &Path) -> Result<(), String> {
+    let bin = target.parent().ok_or("cannot find the install directory")?;
     if registry::remove_from_user_path(registry::ENVIRONMENT_SUBKEY, &bin.to_string_lossy())? {
         registry::broadcast_environment_change();
     }
-    if running_installed {
-        println!(
-            "jidoka.exe is still running and was left in place: {}\nDelete it after this command exits by running this in PowerShell:\n  {}",
-            target.display(),
-            delete_command(&target.to_string_lossy())
-        );
-    } else if inspect(&target)?.is_some_and(|metadata| metadata.file_type().is_file()) {
-        remove(&target)?;
-    }
+    // The running executable cannot delete itself on Windows.
+    println!(
+        "jidoka.exe is still running and was left in place: {}\nDelete it after this command exits by running this in PowerShell:\n  {}",
+        target.display(),
+        delete_command(&target.to_string_lossy())
+    );
     Ok(())
 }
 
@@ -396,7 +456,79 @@ mod registry {
 
 #[cfg(test)]
 mod tests {
-    use super::{delete_command, filter_path_entries};
+    use super::{delete_command, filter_path_entries, uninstall};
+    use crate::install_record::{self, InstallRecord};
+    use std::{
+        ffi::OsString,
+        fs,
+        path::{Path, PathBuf},
+    };
+
+    struct Env {
+        dir: tempfile::TempDir,
+    }
+
+    impl Env {
+        fn new() -> Self {
+            Self {
+                dir: tempfile::tempdir().unwrap(),
+            }
+        }
+        fn home(&self) -> PathBuf {
+            self.dir.path().join("home")
+        }
+        fn var(&self, name: &str) -> Option<OsString> {
+            let base = self.dir.path();
+            match name {
+                "HOME" | "USERPROFILE" => Some(self.home().into()),
+                "XDG_CONFIG_HOME" | "APPDATA" => Some(base.join("config").into()),
+                "XDG_DATA_HOME" | "LOCALAPPDATA" => Some(base.join("data").into()),
+                _ => None,
+            }
+        }
+        fn record_path(&self) -> PathBuf {
+            install_record::path_in(|name| self.var(name)).unwrap()
+        }
+        fn policy_path(&self) -> PathBuf {
+            self.record_path().with_file_name("model-routing.json")
+        }
+        fn runs_path(&self) -> PathBuf {
+            crate::data_path_in(crate::server::DEFAULT_PORT, &|name| self.var(name)).unwrap()
+        }
+        fn write(path: &Path) {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "x").unwrap();
+        }
+        fn record(&self, agents: &[&str], dirs: &[&PathBuf]) {
+            let agents = agents.iter().map(ToString::to_string).collect();
+            let dirs = dirs
+                .iter()
+                .map(|d| d.to_str().unwrap().to_string())
+                .collect();
+            install_record::write(&self.record_path(), &InstallRecord::current(agents, dirs))
+                .unwrap();
+        }
+        fn skill(&self, config_dir: &Path) -> PathBuf {
+            let name = crate::install::bundled_skill_names()[0];
+            let skill = config_dir.join("skills").join(name).join("SKILL.md");
+            Self::write(&skill);
+            skill
+        }
+        fn run(
+            &self,
+            options: &[&str],
+            current_exe: Option<&Path>,
+            answer: bool,
+        ) -> Result<(), String> {
+            uninstall(
+                options,
+                |name| self.var(name),
+                &self.home(),
+                current_exe,
+                || Ok(answer),
+            )
+        }
+    }
 
     #[test]
     fn filters_only_matching_path_entries() {
@@ -440,5 +572,79 @@ mod tests {
             delete_command("C:\\Users\\O\u{2019}Neil\\jidoka.exe"),
             "Remove-Item -LiteralPath 'C:\\Users\\O\u{2019}\u{2019}Neil\\jidoka.exe'"
         );
+    }
+
+    #[test]
+    fn without_flags_the_record_decides_and_is_removed_with_its_lock() {
+        let env = Env::new();
+        let dir = env.dir.path().join("cc");
+        let skill = env.skill(&dir);
+        env.record(&["claude"], &[&dir]);
+        Env::write(&env.record_path().with_file_name("install.lock"));
+        env.run(&[], None, false).unwrap();
+        assert!(!skill.exists());
+        assert!(!env.record_path().exists());
+        assert!(!env.record_path().with_file_name("install.lock").exists());
+    }
+
+    #[test]
+    fn flags_override_the_record() {
+        let env = Env::new();
+        let dir = env.dir.path().join("cc");
+        let skill = env.skill(&dir);
+        env.record(&["claude"], &[&dir]);
+        env.run(&["--agent", "codex"], None, false).unwrap();
+        assert!(skill.exists());
+        assert!(!env.record_path().exists());
+    }
+
+    #[test]
+    fn without_record_and_agent_it_is_an_error_naming_the_flag() {
+        let env = Env::new();
+        let error = env.run(&[], None, false).unwrap_err();
+        assert!(error.contains("--agent"), "{error}");
+    }
+
+    #[test]
+    fn the_policy_follows_the_run_data_answer() {
+        let env = Env::new();
+        for (answer, kept) in [(true, false), (false, true)] {
+            Env::write(&env.policy_path());
+            Env::write(&env.runs_path());
+            env.run(&["--agent", "codex"], None, answer).unwrap();
+            assert_eq!(env.policy_path().exists(), kept);
+            assert_eq!(env.runs_path().exists(), kept);
+        }
+    }
+
+    #[test]
+    fn keep_data_keeps_the_policy_without_asking() {
+        let env = Env::new();
+        Env::write(&env.policy_path());
+        uninstall(
+            &["--agent", "codex", "--keep-data"],
+            |name| env.var(name),
+            &env.home(),
+            None,
+            || panic!("must not ask"),
+        )
+        .unwrap();
+        assert!(env.policy_path().exists());
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn only_the_executable_at_the_script_location_is_deleted() {
+        let env = Env::new();
+        let installed = env.home().join(".local/bin/jidoka");
+        Env::write(&installed);
+        let other = env.dir.path().join("pkg/jidoka");
+        Env::write(&other);
+        env.run(&["--agent", "codex"], Some(&other), false).unwrap();
+        assert!(installed.exists());
+        assert!(other.exists());
+        env.run(&["--agent", "codex"], Some(&installed), false)
+            .unwrap();
+        assert!(!installed.exists());
     }
 }
