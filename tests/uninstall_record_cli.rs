@@ -8,22 +8,7 @@ mod common;
 use std::{path::Path, process::Output};
 
 fn jidoka(home: &Path, args: &[&str]) -> Output {
-    common::jidoka_in(home)
-        .args(args)
-        .current_dir(home)
-        .env("HOME", home)
-        .env("USERPROFILE", home)
-        .env("XDG_CONFIG_HOME", home.join("config"))
-        .env("APPDATA", home.join("config"))
-        .env("XDG_DATA_HOME", home.join("data"))
-        .env("LOCALAPPDATA", home.join("data"))
-        .env_remove("CLAUDE_CONFIG_DIR")
-        .env_remove("CODEX_HOME")
-        .env_remove("COPILOT_HOME")
-        .env_remove("JIDOKA_AGENT")
-        .env_remove("JIDOKA_CLAUDE_CONFIG_DIRS")
-        .output()
-        .unwrap()
+    common::jidoka_in(home).args(args).output().unwrap()
 }
 
 #[test]
@@ -46,7 +31,8 @@ fn uninstall_without_flags_uses_the_record_and_leaves_a_foreign_binary() {
     assert!(!record.exists());
     assert!(!dir.join("skills/jidoka").exists());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("winget uninstall"), "{stdout}");
+    assert!(stdout.contains("package manager"), "{stdout}");
+    assert_eq!(stdout.contains("winget"), cfg!(windows), "{stdout}");
 }
 
 #[test]
@@ -55,4 +41,25 @@ fn uninstall_without_record_or_agent_names_the_flag() {
     let output = jidoka(home.path(), &["uninstall"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("--agent"));
+}
+
+#[test]
+fn a_corrupt_record_does_not_block_uninstall_with_an_agent() {
+    let home = tempfile::tempdir().unwrap();
+    let record = home.path().join("config/jidoka/install.json");
+    std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+    std::fs::write(&record, "{").unwrap();
+    let blocked = jidoka(home.path(), &["uninstall", "--keep-data"]);
+    let stderr = String::from_utf8_lossy(&blocked.stderr);
+    assert!(!blocked.status.success());
+    assert!(
+        stderr.contains("install.json") && stderr.contains("--agent"),
+        "{stderr}"
+    );
+    let output = jidoka(
+        home.path(),
+        &["uninstall", "--agent", "claude", "--keep-data"],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(!record.exists());
 }

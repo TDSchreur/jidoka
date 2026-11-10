@@ -56,11 +56,15 @@ The installers, `scripts/update-local.sh` and `scripts/switch-jidoka.sh` read an
 
 The dashboard and `jidoka run requests` read the same variable, with your system's path separator. They read Claude Code session logs from `projects` in the resolved folder and in every listed folder. Project-level `.claude/` folders are not affected.
 
+## Automatic skills setup and refresh
+
+Ordinary commands can write outside the repository. When no install record exists, a command that finds the bundled skills already in an agent's default skills folder adopts them: it writes the install record and refreshes the skills. After an upgrade, the first command reinstalls the skills for the recorded agents and writes the new version to the record. Both write to the agents' skills folders and the Jidoka configuration directory, print one line on stderr, and never prompt. `jidoka install`, `jidoka uninstall`, `jidoka doctor`, `--help` and `--version` do not do this.
+
 ## Uninstall
 
-Stop the dashboard, then run `jidoka uninstall`. It uses the agents and Claude configuration directories recorded by `jidoka install`; pass `--agent` and `--config-dir <path>` to override them. It also removes the install record, and with the run data the model routing policy (`--keep-data` keeps both). The binary is deleted only when the install script put it in place; otherwise remove it with your package manager (for example `winget uninstall TDSchreur.Jidoka`). Other skills and configuration are preserved.
+Stop the dashboard, then run `jidoka uninstall`. It uses the agents and Claude configuration directories recorded by `jidoka install`; pass `--agent` and `--config-dir <path>` to override them. It also removes the install record, and with the run data the model routing policy (`--keep-data` keeps both). The binary is deleted only when the running executable is at the location the install script uses; otherwise remove it with the package manager that installed it (on Windows, `winget uninstall TDSchreur.Jidoka`). Other skills and configuration are preserved.
 
-The command removes the executable at the installer-managed location. On Windows it also removes the install directory from the user PATH. If you run the installed `jidoka.exe`, it is left in place and the command prints a PowerShell command that deletes it after Jidoka exits. Run data is retained unless you confirm its removal interactively; pass `--keep-data` to skip the prompt. Unattended invocations retain run data. Run workspaces and repositories are preserved.
+When the running executable is at the installer-managed location, the command removes it. On Windows it also removes the install directory from the user PATH. If you run the installed `jidoka.exe`, it is left in place and the command prints a PowerShell command that deletes it after Jidoka exits. Run data is retained unless you confirm its removal interactively; pass `--keep-data` to skip the prompt. Unattended invocations retain run data. Run workspaces and repositories are preserved.
 
 If you installed with Cargo, also run `cargo uninstall jidoka`. To remove your configuration separately, delete the Jidoka configuration directory under `~/.config` (or `$XDG_CONFIG_HOME`) on Linux, or `%APPDATA%` on Windows.
 

@@ -1,12 +1,13 @@
 //! Startup check: adopts skills installed before the install record existed, or hints at `jidoka install`.
 use crate::install::Selection;
 use crate::install_record::{self, InstallRecord};
+use crate::routing::Starter;
 use std::{
     ffi::OsString,
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 /// Commands that manage or report on Setup themselves, plus help and version output.
@@ -42,9 +43,15 @@ pub(crate) fn check(
             }
             return;
         }
-        Err(_) => return,
+        Err(error) => {
+            let _ = writeln!(
+                err,
+                "jidoka: cannot read the install record ({error}); run `jidoka install` to fix it."
+            );
+            return;
+        }
     }
-    let adopted: Vec<String> = ["claude", "codex", "copilot"]
+    let adopted: Vec<String> = crate::install::AGENTS
         .into_iter()
         .filter(|agent| {
             crate::install::skills_root(agent, home, &var).is_ok_and(|root| has_bundled(&root))
@@ -57,6 +64,7 @@ pub(crate) fn check(
         claude_config_dirs: Vec::new(),
     };
     if !record.agents.is_empty() && install_record::write(&path, &record).is_ok() {
+        refresh(&path, record, &var, home, err);
         return;
     }
     let _ = writeln!(
@@ -85,9 +93,19 @@ impl Lock {
                     let stale = fs::metadata(&path)
                         .and_then(|meta| meta.modified())
                         .is_ok_and(|time| time.elapsed().is_ok_and(|age| age > STALE_LOCK));
-                    if !stale || fs::remove_file(&path).is_err() {
+                    if !stale {
                         return None;
                     }
+                    // Rename first: only one process can move the stale file away, and a lock
+                    // another process created in the meantime is never deleted by mistake.
+                    let nanos = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_or(0, |age| age.as_nanos());
+                    let aside = path.with_extension(format!("lock.{}.{nanos}", std::process::id()));
+                    if fs::rename(&path, &aside).is_err() {
+                        return None;
+                    }
+                    let _ = fs::remove_file(&aside);
                 }
                 Err(_) => return None,
             }
@@ -118,8 +136,15 @@ fn refresh(
         agents: record.agents.clone(),
         config_dirs: record.claude_config_dirs.clone(),
     };
-    let result =
-        crate::install::install_skills(&selection, home, var, &mut io::sink()).and_then(|()| {
+    let result = crate::install::install_skill_files(&selection, home, var, &mut io::sink())
+        .and_then(|()| crate::install::create_default_policy(var))
+        .map(|(path, done)| {
+            if let Starter::Replaced(off) = done {
+                let shown = path.display().to_string();
+                let _ = writeln!(err, "{}", Starter::replaced_message(&shown, off, None));
+            }
+        })
+        .and_then(|()| {
             let current = InstallRecord::current(record.agents.clone(), record.claude_config_dirs);
             install_record::write(path, &current)
         });
@@ -215,13 +240,66 @@ mod tests {
         let env = Env::new();
         env.bundle(&env.home.path().join(".claude/skills"));
         env.bundle(&env.home.path().join("codex-home/skills"));
-        assert_eq!(env.run(&["check"]), "");
+        let err = env.run(&["check"]);
+        assert_eq!(
+            err,
+            format!(
+                "jidoka: updated skills to {} for codex, claude\n",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
         let record = install_record::read(&env.record_path()).unwrap().unwrap();
-        assert_eq!(record.agents, ["claude", "codex"]);
-        assert_ne!(record.version, env!("CARGO_PKG_VERSION"));
-        assert_eq!(record.version, "");
+        assert_eq!(record.agents, ["codex", "claude"]);
+        assert_eq!(record.version, env!("CARGO_PKG_VERSION"));
         assert!(record.claude_config_dirs.is_empty());
-        assert!(env.run(&["check"]).contains("updated skills"));
+        assert_eq!(env.run(&["check"]), "");
+        assert!(!lock_path(&env).exists());
+    }
+
+    #[test]
+    fn an_unreadable_record_warns_once_naming_the_file_and_the_fix() {
+        let env = Env::new();
+        let path = env.record_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "{").unwrap();
+        let err = env.run(&["check"]);
+        assert_eq!(err.lines().count(), 1, "{err}");
+        assert!(err.contains("install.json"), "{err}");
+        assert!(err.contains("jidoka install"), "{err}");
+    }
+
+    #[test]
+    fn a_refresh_that_replaces_the_policy_says_so_on_stderr() {
+        let env = Env::new();
+        old_record(&env, "0.0.1", &["claude"]);
+        let policy = crate::routing::policy_path_in(|n| env.var(n)).unwrap();
+        fs::write(&policy, r#"{"agents":{"claude":{"roles":{}}}}"#).unwrap();
+        let err = env.run(&["check"]);
+        assert_eq!(err.lines().count(), 2, "{err}");
+        assert!(
+            err.contains("Replaced old-format model routing policy"),
+            "{err}"
+        );
+        assert!(err.contains("updated skills"), "{err}");
+    }
+
+    #[test]
+    fn taking_over_a_stale_lock_leaves_no_files_behind() {
+        let env = Env::new();
+        old_record(&env, "0.0.1", &["claude"]);
+        let file = fs::File::create(lock_path(&env)).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+            .unwrap();
+        env.run(&["check"]);
+        let names: Vec<_> = fs::read_dir(env.record_path().parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().all(|n| !n.starts_with("install.lock")),
+            "{names:?}"
+        );
+        assert!(names.iter().all(|n| !n.contains(".tmp")), "{names:?}");
     }
 
     #[test]

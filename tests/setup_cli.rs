@@ -8,18 +8,7 @@ mod common;
 use std::{path::Path, process::Output};
 
 fn jidoka(home: &Path, args: &[&str]) -> Output {
-    common::jidoka_in(home)
-        .args(args)
-        .current_dir(home)
-        .env("HOME", home)
-        .env("USERPROFILE", home)
-        .env("XDG_CONFIG_HOME", home.join("config"))
-        .env("APPDATA", home.join("config"))
-        .env_remove("CLAUDE_CONFIG_DIR")
-        .env_remove("CODEX_HOME")
-        .env_remove("COPILOT_HOME")
-        .output()
-        .unwrap()
+    common::jidoka_in(home).args(args).output().unwrap()
 }
 
 #[test]
@@ -70,4 +59,18 @@ fn an_older_record_refreshes_the_skills_with_one_stderr_line_and_no_stdout() {
     let again = jidoka(home.path(), &["run", "inspect", "x"]);
     assert!(!String::from_utf8_lossy(&again.stderr).contains("updated skills"));
     assert_eq!(again.stdout, before.stdout);
+}
+
+#[test]
+fn the_shared_helper_clears_the_variables_that_choose_agents() {
+    let home = tempfile::tempdir().unwrap();
+    let command = common::jidoka_in(home.path());
+    for name in ["JIDOKA_AGENT", "JIDOKA_CLAUDE_CONFIG_DIRS"] {
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == name && value.is_none()),
+            "{name} must be removed"
+        );
+    }
 }

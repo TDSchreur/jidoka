@@ -49,13 +49,16 @@ fn uninstall(
         .collect();
     let (agent_flag, dir_flags) = crate::install::parse_options(&filtered)?;
     let record_path = crate::install_record::path_in(&var);
-    let record = match &record_path {
-        Some(path) => crate::install_record::read(path).map_err(|error| error.to_string())?,
-        None => None,
-    };
-    let (agents, dirs) = match (agent_flag, record) {
-        (Some(agent), _) => (agent.to_string(), dir_flags),
-        (None, Some(record)) => {
+    let (agents, dirs) = match agent_flag {
+        Some(agent) => (agent.to_string(), dir_flags),
+        None => {
+            let record = match &record_path {
+                Some(path) => crate::install_record::read(path).map_err(|error| {
+                    format!("{error}; fix or delete that file, or pass --agent")
+                })?,
+                None => None,
+            };
+            let record = record.ok_or("uninstall needs --agent (no install record found)")?;
             let dirs = if dir_flags.is_empty() {
                 record.claude_config_dirs
             } else {
@@ -63,7 +66,6 @@ fn uninstall(
             };
             (record.agents.join(","), dirs)
         }
-        (None, None) => return Err("uninstall needs --agent (no install record found)".into()),
     };
     let roots = crate::install::skills_roots(&agents, &dirs, home, &var)
         .map_err(|error| format!("cannot select skills: {error}"))?;
@@ -86,12 +88,16 @@ fn uninstall(
     if current_exe.is_some_and(|current| same_file(current, &target)) {
         remove_executable(&target)?;
     } else {
-        println!(
-            "Jidoka was not installed by the install script; remove the binary with your package manager (e.g. `winget uninstall TDSchreur.Jidoka`)."
-        );
+        println!("{FOREIGN_BINARY_NOTE}");
     }
     Ok(())
 }
+
+/// Printed when the running binary is not the one the install script placed.
+#[cfg(windows)]
+const FOREIGN_BINARY_NOTE: &str = "Jidoka was not installed by the install script; remove the binary with `winget uninstall TDSchreur.Jidoka`.";
+#[cfg(not(windows))]
+const FOREIGN_BINARY_NOTE: &str = "Jidoka was not installed by the install script; remove the binary with the package manager that installed it.";
 
 /// Where the install scripts put the executable.
 #[cfg(not(windows))]
@@ -630,6 +636,43 @@ mod tests {
         )
         .unwrap();
         assert!(env.policy_path().exists());
+    }
+
+    #[test]
+    fn the_package_manager_note_fits_the_platform() {
+        assert_eq!(super::FOREIGN_BINARY_NOTE.contains("winget"), cfg!(windows));
+    }
+
+    #[test]
+    fn a_broken_record_does_not_stop_uninstall_with_an_agent() {
+        let env = Env::new();
+        let dir = env.dir.path().join("cc");
+        let skill = env.skill(&dir);
+        Env::write(&env.record_path());
+        fs::write(env.record_path(), "{").unwrap();
+        let error = env.run(&[], None, false).unwrap_err();
+        assert!(error.contains("install.json"), "{error}");
+        assert!(error.contains("--agent"), "{error}");
+        env.run(
+            &["--agent", "claude", "--config-dir", dir.to_str().unwrap()],
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(!skill.exists());
+        assert!(!env.record_path().exists());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn the_script_location_is_under_localappdata() {
+        let env = Env::new();
+        let expected = env.dir.path().join("data/Programs/jidoka/jidoka.exe");
+        assert_eq!(
+            super::script_location(&env.home(), &|name| env.var(name)).unwrap(),
+            expected
+        );
+        assert!(super::script_location(&env.home(), &|_| None).is_err());
     }
 
     #[test]

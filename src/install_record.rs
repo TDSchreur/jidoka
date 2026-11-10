@@ -49,7 +49,14 @@ pub(crate) fn write(path: &Path, record: &InstallRecord) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| with_path(parent, error))?;
     }
-    fs::write(path, json + "\n").map_err(|error| with_path(path, error))
+    let temp = path.with_file_name(format!("install.json.{}.tmp", std::process::id()));
+    fs::write(&temp, json + "\n")
+        .and_then(|()| fs::rename(&temp, path))
+        .map_err(|error| {
+            // Best-effort cleanup; the write error is the one returned.
+            let _ = fs::remove_file(&temp);
+            with_path(path, error)
+        })
 }
 
 fn with_path(path: &Path, error: io::Error) -> io::Error {

@@ -1,3 +1,4 @@
+use crate::routing::Starter;
 use std::{
     env,
     ffi::OsString,
@@ -87,7 +88,23 @@ pub(crate) struct Selection {
     pub config_dirs: Vec<String>,
 }
 
-const AGENT_CHOICES: [&str; 3] = ["codex", "claude", "copilot"];
+/// The agents Jidoka installs skills for, in the order the install menu lists them.
+pub(crate) const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
+
+/// Fails with the list of valid agents when `name` is not one of them.
+pub(crate) fn validate_agent(name: &str) -> io::Result<()> {
+    if AGENTS.contains(&name) {
+        return Ok(());
+    }
+    Err(unknown_agent(name))
+}
+
+fn unknown_agent(name: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("unknown agent {name:?}; use codex, claude, or copilot"),
+    )
+}
 
 /// Turns an answer such as `1,claude`, `2 3` or `all` into agent names, in the order given, without
 /// duplicates. `None` when any entry is not a number, name or `all`.
@@ -98,11 +115,11 @@ pub(crate) fn parse_agent_choice(answer: &str) -> Option<Vec<String>> {
         .filter(|entry| !entry.is_empty())
     {
         let chosen: Vec<&str> = match entry {
-            "all" => AGENT_CHOICES.to_vec(),
+            "all" => AGENTS.to_vec(),
             "1" => vec!["codex"],
             "2" => vec!["claude"],
             "3" => vec!["copilot"],
-            name if AGENT_CHOICES.contains(&name) => vec![name],
+            name if AGENTS.contains(&name) => vec![name],
             _ => return None,
         };
         for name in chosen {
@@ -133,11 +150,7 @@ pub(crate) fn select(
         Some(list) => {
             let mut agents = Vec::new();
             for name in list.split(',').map(str::trim) {
-                if !AGENT_CHOICES.contains(&name) {
-                    return Err(invalid(format!(
-                        "unknown agent {name:?}; use codex, claude, or copilot"
-                    )));
-                }
+                validate_agent(name)?;
                 if !agents.iter().any(|known| known == name) {
                     agents.push(name.to_string());
                 }
@@ -237,24 +250,48 @@ pub(crate) fn install_skills(
     var: impl Fn(&str) -> Option<OsString>,
     out: &mut impl io::Write,
 ) -> io::Result<()> {
+    install_skill_files(selection, home, &var, out)?;
+    ensure_default_policy(var, out)
+}
+
+/// Only the skills of an install: no policy, no record.
+pub(crate) fn install_skill_files(
+    selection: &Selection,
+    home: &Path,
+    var: &impl Fn(&str) -> Option<OsString>,
+    out: &mut impl io::Write,
+) -> io::Result<()> {
     let roots = skills_roots(
         &selection.agents.join(","),
         &selection.config_dirs,
         home,
-        &var,
+        var,
     )?;
     for root in roots {
         install_to_reporting(&root, out)?;
     }
-    ensure_default_policy(var, out)
+    Ok(())
 }
 
-/// Create the initial routing policy. Only a file in the old format is replaced; any other existing
-/// configuration is kept.
+/// Create the initial routing policy and report what happened on `out`.
 fn ensure_default_policy(
     var: impl Fn(&str) -> Option<OsString>,
     out: &mut impl io::Write,
 ) -> io::Result<()> {
+    let (path, done) = create_default_policy(var)?;
+    let shown = path.display().to_string();
+    match done {
+        Starter::Created => writeln!(out, "{}", Starter::created_message(&shown, None)),
+        Starter::Replaced(off) => writeln!(out, "{}", Starter::replaced_message(&shown, off, None)),
+        Starter::Left => Ok(()),
+    }
+}
+
+/// Create the initial routing policy. Only a file in the old format is replaced; any other existing
+/// configuration is kept.
+pub(crate) fn create_default_policy(
+    var: impl Fn(&str) -> Option<OsString>,
+) -> io::Result<(PathBuf, Starter)> {
     let path = crate::routing::policy_path_in(var).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -266,8 +303,7 @@ fn ensure_default_policy(
         crate::routing::RoutingAgent::Codex,
         crate::routing::RoutingAgent::Copilot,
     ];
-    use crate::routing::Starter;
-    let created = crate::routing::install_starter(&path, &agents).map_err(|error| {
+    let done = crate::routing::install_starter(&path, &agents).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!(
@@ -276,15 +312,7 @@ fn ensure_default_policy(
             ),
         )
     })?;
-    let shown = path.display().to_string();
-    match created {
-        Starter::Created => writeln!(out, "{}", Starter::created_message(&shown, None))?,
-        Starter::Replaced(off) => {
-            writeln!(out, "{}", Starter::replaced_message(&shown, off, None))?;
-        }
-        Starter::Left => {}
-    }
-    Ok(())
+    Ok((path, done))
 }
 
 /// Resolves the skills folder of every listed agent before anything is installed.
@@ -401,10 +429,7 @@ pub(crate) fn agent_home(
         "codex" => Ok(config_dir("CODEX_HOME", ".codex")),
         "claude" => Ok(config_dir("CLAUDE_CONFIG_DIR", ".claude")),
         "copilot" => Ok(config_dir("COPILOT_HOME", ".copilot")),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("unknown agent {agent:?}; use codex, claude, or copilot"),
-        )),
+        _ => Err(unknown_agent(agent)),
     }
 }
 

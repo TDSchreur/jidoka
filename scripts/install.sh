@@ -5,8 +5,9 @@
 set -eu
 
 # Runs `jidoka install`, which asks for the agents itself. JIDOKA_AGENT and JIDOKA_CLAUDE_CONFIG_DIRS reach it
-# through the environment. When the script is piped into sh, stdin is not a terminal, so the binary reads its
-# prompt from /dev/tty when there is one; without a terminal the binary reports that itself.
+# through the environment. When the script is piped into sh, stdin is not a terminal, so the shell redirects
+# the binary's stdin from /dev/tty when a terminal can be opened; otherwise stdin stays as it is and the binary
+# reports that it has no terminal to ask on.
 install_skills() {
   if [ -t 0 ] || ! (: </dev/tty) 2>/dev/null; then
     "$1" install

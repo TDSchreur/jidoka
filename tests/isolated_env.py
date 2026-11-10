@@ -14,5 +14,7 @@ def isolated_env(home, **overrides):
                APPDATA=str(home / "config"), XDG_DATA_HOME=str(home / "data"), LOCALAPPDATA=str(home / "data"),
                CLAUDE_CONFIG_DIR=str(home / ".claude"), CODEX_HOME=str(home / ".codex"),
                COPILOT_HOME=str(home / ".copilot"))
+    env.pop("JIDOKA_AGENT", None)
+    env.pop("JIDOKA_CLAUDE_CONFIG_DIRS", None)
     env.update(overrides)
     return env

@@ -5,6 +5,12 @@
     reason = "integration test helpers fail the test by panicking"
 )]
 
+#[expect(
+    dead_code,
+    reason = "this test uses only `isolate` from the shared helpers"
+)]
+mod common;
+
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
@@ -39,26 +45,20 @@ fn run(home: &Path, agent: Option<&str>, dirs: Option<&str>) -> Output {
             served.display()
         ),
     );
-    let mut command = Command::new("sh");
-    command
-        .arg(SCRIPT)
-        .current_dir(home)
-        .env(
-            "PATH",
-            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
-        )
-        .env("HOME", home)
-        .env("USERPROFILE", home)
-        .env("XDG_CONFIG_HOME", home.join("config"))
-        .env("APPDATA", home.join("config"))
-        .env("XDG_DATA_HOME", home.join("data"))
-        .env("LOCALAPPDATA", home.join("data"))
-        .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
-        .env("CODEX_HOME", home.join(".codex"))
-        .env("COPILOT_HOME", home.join(".copilot"))
-        .env_remove("JIDOKA_AGENT")
-        .env_remove("JIDOKA_CLAUDE_CONFIG_DIRS")
-        .stdin(Stdio::null());
+    // Without a controlling terminal `(: </dev/tty)` fails like in CI; `setsid` detaches it.
+    let mut command = if Command::new("setsid").arg("--version").output().is_ok() {
+        let mut command = Command::new("setsid");
+        command.args(["--wait", "sh"]);
+        command
+    } else {
+        Command::new("sh")
+    };
+    command.arg(SCRIPT).env(
+        "PATH",
+        format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+    );
+    common::isolate(&mut command, home);
+    command.stdin(Stdio::null());
     if let Some(agent) = agent {
         command.env("JIDOKA_AGENT", agent);
     }
