@@ -9,7 +9,7 @@ Take the user's request through these stages in order. Keep stage updates brief.
 
 ## Shared procedures
 
-Follow Run reporting, Continuing a run (to continue an existing run) and Workspace in [factory-procedures](../factory-procedures/SKILL.md). Report with `--mode factory-balanced`; this workflow has the stages define, build, check and finish. Every run gets its own fresh worktree, and the PR base branch chosen in Workspace is used in Finish.
+Follow Run ownership, Run reporting, Continuing a run (to continue an existing run) and Workspace in [factory-procedures](../factory-procedures/SKILL.md). Report with `--mode factory-balanced`; this workflow has the stages define, build, check and finish. Every run gets its own fresh worktree, and the PR base branch chosen in Workspace is used in Finish.
 
 ## Define
 

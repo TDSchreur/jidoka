@@ -557,10 +557,22 @@ mod tests {
             .unwrap();
         for needle in [
             "--spec",
-            "git rev-parse --absolute-git-dir",
+            "factory run begin",
+            "factory run inspect",
             "acceptance criteria",
         ] {
             assert!(saving.contains(needle), "saving the plan lacks {needle}");
+        }
+        for old in [
+            "git directory",
+            "git-dir",
+            ".factory-plan.md",
+            "beside the worktree",
+        ] {
+            assert!(
+                !saving.contains(old),
+                "saving the plan still mentions {old}"
+            );
         }
         // Continuing: inspect first, verify the recorded state, and never discard work.
         let continuing = text
@@ -738,6 +750,26 @@ mod tests {
         assert!(procedures.contains("--ticket-report \"<reference>\" skill"));
         assert!(procedures.contains("--ticket-report \"<reference>\" activity"));
         assert!(procedures.contains("may be incomplete"));
+    }
+
+    #[test]
+    fn bundled_skills_keep_the_run_in_the_starting_session() {
+        let procedures = bundled_text("factory-procedures/SKILL.md");
+        for phrase in [
+            "## Run ownership",
+            "never the whole run or several stages to one agent",
+            "even when other instructions say to delegate",
+        ] {
+            assert!(procedures.contains(phrase), "procedures: {phrase}");
+        }
+        for path in [
+            "factory/SKILL.md",
+            "factory-full/SKILL.md",
+            "factory-balanced/SKILL.md",
+            "factory-fast/SKILL.md",
+        ] {
+            assert!(bundled_text(path).contains("Run ownership"), "{path}");
+        }
     }
 
     #[test]

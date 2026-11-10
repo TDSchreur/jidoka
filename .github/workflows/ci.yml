@@ -41,10 +41,11 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
       # Uses the Chrome or Chromium preinstalled on ubuntu-latest; the tests look it up on PATH.
-      # Runs every tests/dashboard-*.py in name order, as scripts/verify.sh does.
+      # Runs the harness self-test (tests/test_*.py), then every tests/dashboard-*.py in name order, as scripts/verify.sh does.
       - name: Test the dashboard in a browser
         if: runner.os == 'Linux'
         run: |
+          python3 -m unittest discover -s tests -p 'test_*.py'
           for test in tests/dashboard-*.py; do
             python3 "$test"
           done

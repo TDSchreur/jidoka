@@ -454,7 +454,7 @@ fn update_run(
     update: Json<UpdateRun>,
     store: &State<RunStore>,
     collector: &State<Collector>,
-) -> Result<Json<Run>, (HttpStatus, String)> {
+) -> Result<Json<serde_json::Value>, (HttpStatus, String)> {
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err((HttpStatus::BadRequest, "Invalid run id".into()));
     }
@@ -473,7 +473,16 @@ fn update_run(
         })?
         .ok_or((HttpStatus::NotFound, "Not found".into()))?;
     collector.after_update(store, &updated.run.id);
-    Ok(Json(updated.run))
+    // The run's own fields stay as they were; `warnings` is added beside them (empty when none).
+    let mut body = serde_json::to_value(&updated.run).map_err(|error| {
+        eprintln!("Run serialization error: {error}");
+        (
+            HttpStatus::InternalServerError,
+            "Internal server error".into(),
+        )
+    })?;
+    body["warnings"] = updated.warnings.into();
+    Ok(Json(body))
 }
 
 #[rocket::get("/api/runs/<id>")]
@@ -551,6 +560,8 @@ async fn get_document(
     id: &str,
     reference: &str,
     store: &State<RunStore>,
+    runs_file: &State<TokenFile>,
+    config: &rocket::Config,
 ) -> Result<Json<serde_json::Value>, DocumentFailure> {
     if !request.local {
         return Err(refused(HttpStatus::BadRequest, "Bad request"));
@@ -566,7 +577,8 @@ async fn get_document(
         })?
         .ok_or_else(|| refused(HttpStatus::NotFound, "Not found"))?;
     let reference = reference.to_owned();
-    let read = rocket::tokio::task::spawn_blocking(move || document::read(&run, &reference))
+    let plan = crate::plans::plan_path(&runs_file.0, config.port, &run.id);
+    let read = rocket::tokio::task::spawn_blocking(move || document::read(&run, &reference, &plan))
         .await
         .map_err(|error| {
             eprintln!("Document read stopped: {error}");
@@ -1091,20 +1103,50 @@ mod tests {
         assert!(body["html"].as_str().unwrap().contains("repo only"));
     }
 
+    /// A run with a plan file written in the plans folder beside `runs.json`, recorded as its spec.
+    fn plan_run(dir: &TestDir, own: bool) -> (String, String) {
+        let worktree = dir.0.path().join("wt");
+        let runs = dir.0.path().join("runs.json");
+        let repository = dir.0.path().join("repo");
+        let id = document_run(&runs, &worktree, &repository, "x.md", &[]);
+        let other = document_run(&runs, &worktree, &repository, "x.md", &[]);
+        let plans = crate::plans::plans_dir(&runs, DEFAULT_PORT);
+        fs::create_dir_all(&plans).unwrap();
+        fs::write(plans.join(format!("{id}.md")), "own plan").unwrap();
+        fs::write(plans.join(format!("{other}.md")), "other plan").unwrap();
+        let wanted = if own { &id } else { &other };
+        let plan = plans
+            .join(format!("{wanted}.md"))
+            .to_string_lossy()
+            .into_owned();
+        RunStore::open(&runs)
+            .unwrap()
+            .update(
+                &id,
+                serde_json::from_value(
+                    serde_json::json!({ "stage": "build", "status": "running", "spec": plan }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        (id, plan)
+    }
+
     #[rocket::async_test]
-    async fn the_saved_plan_beside_the_worktree_is_served() {
-        let (dir, _, worktree, _) = document_setup("x.md", &[]);
-        let plan = format!("{}.factory-plan.md", worktree.display());
-        fs::write(&plan, "plan").unwrap();
-        let id = document_run(
-            &dir.0.path().join("runs.json"),
-            &worktree,
-            &dir.0.path().join("repo"),
-            &plan,
-            &[],
-        );
+    async fn the_runs_own_plan_is_served_without_a_worktree() {
+        let dir = TestDir::new();
+        let (id, plan) = plan_run(&dir, true);
         let (status, body, _) = fetch_document(&dir, &id, &plan).await;
         assert_eq!(status, HttpStatus::Ok, "{body}");
+        assert!(body["html"].as_str().unwrap().contains("own plan"));
+    }
+
+    #[rocket::async_test]
+    async fn another_runs_plan_is_refused_even_when_recorded() {
+        let dir = TestDir::new();
+        let (id, plan) = plan_run(&dir, false);
+        let (status, body, _) = fetch_document(&dir, &id, &plan).await;
+        assert_eq!(status, HttpStatus::Forbidden, "{body}");
     }
 
     #[rocket::async_test]
@@ -3639,6 +3681,34 @@ mod tests {
             .body(body)
             .dispatch()
             .await
+    }
+
+    #[rocket::async_test]
+    async fn update_response_carries_warnings_beside_the_run() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        fs::write(
+            &path,
+            r#"[{"id":"42","title":"old","project":"/work","stage":"define","status":"running"}]"#,
+        )
+        .unwrap();
+        let api = client(&dir).await;
+        let response = report(&api, "42", r#"{"stage":"build","status":"running"}"#).await;
+        let body: serde_json::Value = response.into_json().await.unwrap();
+        assert_eq!(body["warnings"], serde_json::json!([]));
+        assert_eq!(body["id"], "42");
+        let response = report(
+            &api,
+            "42",
+            r#"{"stage":"finish","status":"done","summaries":{"finish":"Shipped"}}"#,
+        )
+        .await;
+        assert_eq!(response.status(), HttpStatus::Ok);
+        let body: serde_json::Value = response.into_json().await.unwrap();
+        let warnings = body["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].as_str().unwrap().contains("never entered"));
+        assert_eq!(body["stage"], "finish");
     }
 
     #[rocket::async_test]

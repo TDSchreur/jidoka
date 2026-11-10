@@ -52,6 +52,7 @@ main() {
     printf '\n==> Skipped Windows clippy: no Windows target is installed. Add one with: rustup target add x86_64-pc-windows-gnu\n'
   fi
   step cargo test --locked
+  step python3 -m unittest discover -s tests -p 'test_*.py'
   for test in tests/dashboard-*.py; do
     step python3 "$test"
   done

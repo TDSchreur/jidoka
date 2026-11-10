@@ -8,6 +8,9 @@ cold browser start, which renders and fetches the first page slowly, and well in
 (`WAIT_SECONDS`). A browser that exits without posting a result fails at once
 with its exit code and stderr tail; one that keeps running without a result fails at the wait limit.
 
+Both are `BrowserFailure`s, and `run_with_retry` reruns the browser once after one, logging the reason on stderr.
+A posted result is never retried, so a page that reports a failed check fails the test at once.
+
 Written for Linux and macOS, run on Linux in CI, and untested on Windows (set CHROMIUM elsewhere).
 """
 import http.server
@@ -18,6 +21,7 @@ import queue
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -27,6 +31,23 @@ ROOT = pathlib.Path(__file__).resolve().parents[1] / "dashboard"
 WAIT_SECONDS = 120
 PAGE_WAIT_MS = 60000
 POLL_SECONDS = 0.5
+
+
+class BrowserFailure(RuntimeError):
+    """The browser crashed, exited or gave no result in time; `reason` says which, for the retry log."""
+
+    def __init__(self, reason, detail):
+        super().__init__(detail)
+        self.reason = reason
+
+
+def run_with_retry(attempt):
+    """Calls `attempt` and, after a BrowserFailure, once more; a returned result (pass or fail) is never retried."""
+    try:
+        return attempt()
+    except BrowserFailure as failure:
+        print(f"Browser failure ({failure.reason}); retrying once. First attempt: {failure}", file=sys.stderr, flush=True)
+        return attempt()
 
 
 def find_browser():
@@ -111,31 +132,44 @@ def stop(process):
 
 
 def run_dashboard(runs, check, size=(1100, 700), handler=Handler, env=None, extra_args=()):
-    """Opens the dashboard with `runs` and the `check` script in a headless browser; returns the page's /result."""
-    results = queue.Queue()
+    """Opens the dashboard with `runs` and the `check` script in a headless browser; returns the page's /result.
+
+    Each attempt gets its own server and result queue, so a late result from a timed-out first browser
+    can never be taken as the retry's result.
+    """
     check = f"<script>window.PAGE_WAIT_MS = {PAGE_WAIT_MS};</script>" + check
-    handler = type("TestHandler", (handler,), {"runs": runs, "check": check, "results": results})
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever)
-    thread.start()
-    try:
-        return wait_for_result(server, results, size, env, extra_args)
-    finally:
-        server.shutdown()
-        thread.join()
-        server.server_close()
+
+    def attempt():
+        results = queue.Queue()
+        attempt_handler = type("TestHandler", (handler,), {"runs": runs, "check": check, "results": results})
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), attempt_handler)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            return wait_for_result(server, results, size, env, extra_args)
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+
+    return run_with_retry(attempt)
 
 
-def wait_for_result(server, results, size, env, extra_args):
-    """One browser run with a fresh profile: the page's result, or a RuntimeError with the exit code and stderr tail."""
+def wait_for_result(server, results, size, env, extra_args, command=None):
+    """One browser run with a fresh profile: the page's result, or a BrowserFailure with the exit code and stderr tail.
+
+    `command` replaces the browser command line, so a self-test can use a stub process.
+    """
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile, \
             tempfile.TemporaryFile(mode="w+", errors="replace") as log:
         # On POSIX the browser gets its own session, so `stop` can end its helper processes with it.
+        if command is None:
+            command = [find_browser(), "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+                       "--no-first-run", "--no-default-browser-check", "--disable-extensions",
+                       f"--window-size={size[0]},{size[1]}", *extra_args, "--user-data-dir=" + profile,
+                       f"http://127.0.0.1:{server.server_port}/"]
         process = subprocess.Popen(
-            [find_browser(), "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
-             "--no-first-run", "--no-default-browser-check", "--disable-extensions",
-             f"--window-size={size[0]},{size[1]}", *extra_args, "--user-data-dir=" + profile,
-             f"http://127.0.0.1:{server.server_port}/"],
+            command,
             stdout=subprocess.DEVNULL, stderr=log, env=env, start_new_session=os.name != "nt",
         )
         try:
@@ -155,7 +189,7 @@ def wait_for_result(server, results, size, env, extra_args):
             tail = "".join(log.readlines()[-40:])
             code = process.poll()
             if code is not None:
-                raise RuntimeError(f"The browser exited without a result (exit code {code}). Browser stderr:\n{tail}")
-            raise RuntimeError(f"No result from the browser within {WAIT_SECONDS}s. Browser stderr:\n{tail}")
+                raise BrowserFailure("exited without a result", f"The browser exited without a result (exit code {code}). Browser stderr:\n{tail}")
+            raise BrowserFailure("no result in time", f"No result from the browser within {WAIT_SECONDS}s. Browser stderr:\n{tail}")
         finally:
             stop(process)
