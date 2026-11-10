@@ -491,6 +491,20 @@ mod tests {
     }
 
     #[test]
+    fn a_recorded_ticket_id_that_is_not_a_markdown_path_is_still_refused() {
+        let (_dir, _repository, worktree, mut run) = setup("docs/spec.md");
+        fs::write(worktree.join("05"), "# Ticket").unwrap();
+        run.tickets = serde_json::from_value(serde_json::json!([
+            {"reference": "05", "title": "AVM Bicep modules", "status": "pending"}
+        ]))
+        .unwrap();
+        assert_eq!(
+            read(&run, "05", &no_plan()).err(),
+            Some(DocumentError::NotMarkdown)
+        );
+    }
+
+    #[test]
     fn a_non_markdown_file_at_the_plan_location_is_refused() {
         let (_dir, plans, worktree, _) = plans_setup();
         let repository = worktree.parent().unwrap().parent().unwrap().join("repo");
