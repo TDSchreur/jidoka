@@ -160,23 +160,24 @@ fn asset_name() -> Result<&'static str, String> {
 /// A newly created file that is removed on drop unless it was moved into place.
 struct StagedFile {
     path: PathBuf,
-    file: fs::File,
     armed: bool,
 }
 
 impl StagedFile {
-    /// Creates `path` for writing, failing when it already exists so no existing file is touched.
-    fn create(path: &Path) -> Result<Self, String> {
+    /// Creates `path` and opens it for writing; fails when it already exists, touching nothing.
+    ///
+    /// The caller closes the returned handle before the file is renamed or run.
+    fn create(path: &Path) -> Result<(Self, fs::File), String> {
         let file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(path)
             .map_err(|error| format!("Cannot write {}: {error}", path.display()))?;
-        Ok(Self {
+        let staged = Self {
             path: path.to_path_buf(),
-            file,
             armed: true,
-        })
+        };
+        Ok((staged, file))
     }
 
     /// Leaves the file on disk, for when it has been renamed or is otherwise no longer ours to remove.
@@ -196,19 +197,18 @@ impl Drop for StagedFile {
 
 /// Downloads `url` to the new file `target`, following redirects and accepting at most `limit` bytes.
 ///
-/// Fails when `target` already exists, leaving it untouched. The returned file is removed on drop.
+/// Fails when `target` already exists, leaving it untouched. The returned guard removes the file on
+/// drop; the file itself is closed.
 fn download(url: &str, target: &Path, limit: u64) -> Result<StagedFile, String> {
     let mut response = http_agent(ureq::Agent::config_builder())
         .get(url)
         .call()
         .map_err(|error| request_error(&format!("download {url}"), &error))?;
-    let mut staged = StagedFile::create(target)?;
-    copy_limited(
-        &mut response.body_mut().as_reader(),
-        &mut staged.file,
-        limit,
-    )
-    .map_err(|error| format!("Could not download {url}: {error}"))?;
+    let (staged, mut file) = StagedFile::create(target)?;
+    copy_limited(&mut response.body_mut().as_reader(), &mut file, limit)
+        .map_err(|error| format!("Could not download {url}: {error}"))?;
+    // The handle closes here, so the file can be renamed over the executable and run.
+    drop(file);
     Ok(staged)
 }
 
@@ -396,7 +396,8 @@ mod tests {
     fn a_staged_file_is_removed_when_dropped() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("staged");
-        let staged = StagedFile::create(&path).unwrap();
+        let (staged, file) = StagedFile::create(&path).unwrap();
+        drop(file);
         assert!(path.exists());
         drop(staged);
         assert!(!path.exists());
@@ -406,7 +407,7 @@ mod tests {
     fn a_kept_staged_file_is_left_alone() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("staged");
-        StagedFile::create(&path).unwrap().keep();
+        StagedFile::create(&path).unwrap().0.keep();
         assert!(path.exists());
     }
 
