@@ -299,8 +299,6 @@ pub(crate) fn offer(
     Ok(())
 }
 
-const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
-
 /// The agents that already have bundled skills installed.
 pub(crate) fn installed_agents(
     home: &Path,
@@ -309,7 +307,7 @@ pub(crate) fn installed_agents(
 ) -> Vec<&'static str> {
     let has_skills =
         |root: PathBuf| install::bundled_skill_files().any(|file| root.join(file).is_file());
-    AGENTS
+    crate::doctor::AGENTS
         .into_iter()
         .filter(|agent| {
             if *agent == "claude" {

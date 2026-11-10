@@ -533,7 +533,7 @@ fn on_windows_a_path_outside_the_allowlist_gets_the_by_hand_message() {
 }
 
 #[test]
-fn only_agents_with_installed_skills_are_updated() {
+fn only_agents_with_installed_skills_are_reinstalled() {
     let home = tempfile::tempdir().unwrap();
     let none = |_: &str| None;
     assert!(installed_agents(home.path(), &[], none).is_empty());
