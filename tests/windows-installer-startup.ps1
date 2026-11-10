@@ -28,6 +28,13 @@ try {
         }
         if (Test-Path (Join-Path $tempRoot 'Programs/factory/factory.exe')) { throw 'Installer copied a failed download' }
     }
+    foreach ($blocked in @('Operation did not complete successfully because the file contains a virus or potentially unwanted software.', 'Exception 0x800700E1')) {
+        function Invoke-WebRequest { param($Uri, $OutFile) throw $blocked }
+        try { . (Join-Path $root 'scripts/install.ps1'); throw 'Expected failure' }
+        catch {
+            if ($_.Exception.Message -notmatch '(?s)Defender.*blocked.*Nothing was installed.*filesubmission') { throw "Antivirus advice absent: $_" }
+        }
+    }
     try { Assert-FactoryExitCode -1073741515 'startup'; throw 'Expected failure' }
     catch {
         if ($_.Exception.Message -notmatch '0xC0000135.*DLL') { throw "Missing DLL diagnostic absent: $_" }
