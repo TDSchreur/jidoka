@@ -23,11 +23,6 @@ jobs:
       # Line tables are enough for test backtraces; full debug info makes Windows (PDB) builds much slower.
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
-      # Many tests start git and the factory binary; Defender scanning each new process is slow on Windows.
-      - name: Exclude the workspace and Cargo from Defender scans
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup", "$env:RUNNER_TEMP"
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
