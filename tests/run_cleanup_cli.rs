@@ -19,7 +19,8 @@ fn cleanup_refuses_bad_arguments_with_the_usage() {
         &["run", "cleanup"][..],
         &["run", "cleanup", "--force"],
         &["run", "cleanup", "1", "--force"],
-        &["run", "cleanup", "1", "--reinstall", "--force"],
+        &["run", "cleanup", "1", "--reinstall"],
+        &["run", "cleanup", "1", "--config-dir", "/tmp"],
         &["run", "cleanup", "1", "--config-dir"],
     ] {
         let output = jidoka(args);
@@ -30,6 +31,8 @@ fn cleanup_refuses_bad_arguments_with_the_usage() {
             "{args:?}"
         );
     }
+    let output = jidoka(&["run", "cleanup", "1", "--reinstall"]);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown option: --reinstall"));
     let output = jidoka(&["run", "cleanup", "12x"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid run id"));

@@ -22,7 +22,6 @@ mod run;
 mod run_begin;
 mod run_check;
 mod run_cleanup;
-mod run_reinstall;
 mod server;
 mod stats;
 mod token;
@@ -35,7 +34,7 @@ use run::UPDATE_HELP;
 use server::{ADDRESS, DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install --agent <codex|claude|copilot>[,...] [--config-dir <path>]...\n  jidoka uninstall --agent <codex|claude|copilot>[,...] [--config-dir <path>]... [--keep-data]\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka check\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id> [--reinstall] [--config-dir <path>]...\n  jidoka run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  jidoka --help | --version";
+const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install --agent <codex|claude|copilot>[,...] [--config-dir <path>]...\n  jidoka uninstall --agent <codex|claude|copilot>[,...] [--config-dir <path>]... [--keep-data]\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka check\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  jidoka --help | --version";
 
 /// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
 const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
@@ -349,18 +348,8 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
         return Err("Invalid run id".into());
     }
-    let mut reinstall = false;
-    let mut config_dirs: Vec<String> = Vec::new();
-    let mut rest = options.iter();
-    while let Some(option) = rest.next() {
-        match *option {
-            "--reinstall" => reinstall = true,
-            "--config-dir" => match rest.next() {
-                Some(dir) if !dir.starts_with('-') => config_dirs.push((*dir).to_string()),
-                _ => return Err(format!("--config-dir needs a path\n{HELP}").into()),
-            },
-            other => return Err(format!("Unknown option: {other}\n{HELP}").into()),
-        }
+    if let Some(other) = options.first() {
+        return Err(format!("Unknown option: {other}\n{HELP}").into());
     }
     let run = fetch_run(ADDRESS, id)?;
     let recorded = run_cleanup::Recorded {
@@ -393,29 +382,6 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
                 "Cleaned up worktree and branch",
             ],
         )?;
-    }
-    if let (Some(repository), Some(pr)) = (recorded.repository.as_deref(), recorded.pr.as_deref()) {
-        let home = install::home_dir()?;
-        let var = |name: &str| env::var_os(name);
-        let agents = run_reinstall::installed_agents(&home, &config_dirs, var);
-        let claude_dirs = install::claude_config_dirs(&config_dirs, &home, var)?;
-        let input = run_reinstall::Inputs {
-            repository: std::path::Path::new(repository),
-            pr,
-            agents: &agents,
-            claude_dirs: &claude_dirs,
-            tty: std::io::IsTerminal::is_terminal(&std::io::stdin())
-                && std::io::IsTerminal::is_terminal(&std::io::stdout()),
-            reinstall,
-            windows: cfg!(windows),
-        };
-        run_reinstall::offer(
-            &input,
-            &pr_wait::RealGh,
-            &pr_sync::RealGit,
-            &mut run_reinstall::RealIo,
-        )
-        .map_err(|problem| inspect::shown(&problem.0))?;
     }
     Ok(0)
 }
