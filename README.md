@@ -68,6 +68,16 @@ The dashboard page is plain files in `dashboard/` (`index.html`, `app.js`, `help
 
 The dashboard footer and `factory --version` show which build is running: the version number, such as `0.3.1`, for an official release, and `dev <commit>`, such as `dev 1a2b3c4`, for any other build, including builds from a checkout. A build without git information, such as from a source archive, shows `dev (unknown commit)`. Official release builds set `FACTORY_RELEASE=1`.
 
+### Windows Defender blocks the download
+
+The Windows release is not code-signed yet. Windows Defender can therefore flag `factory.exe` as a false positive (for example `Trojan:Win32/Bearfoos.A!ml`; the `!ml` suffix marks a machine-learning heuristic, not a known malware signature) and remove it. The installer then stops with a message that names the antivirus block, and nothing is installed.
+
+1. Check the file. Download `factory-windows-x86_64.exe` and `factory-windows-x86_64.exe.sha256` from the [latest release](https://github.com/TDSchreur/tds-factory2/releases/latest), and compare the hash: `(Get-FileHash -Algorithm SHA256 .\factory-windows-x86_64.exe).Hash` must equal the value in the `.sha256` file. Do not continue when it differs.
+2. Report the false positive to Microsoft at <https://www.microsoft.com/wdsi/filesubmission> as a software developer, with the detection name from Windows Security > Protection history.
+3. Once the hash matches, restore the file from Windows Security > Protection history (Allow on device), or ask your administrator to allow it, and run the installer again. Prefer allowing this one file over excluding a whole folder such as `%TEMP%`.
+
+Each new release has a new hash, so it can be flagged again until the executable is signed.
+
 ## Use
 
 1. Start the dashboard and keep it running in a separate terminal: `factory dashboard`. Open <http://127.0.0.1:4311> to follow your runs. The dashboard follows your system's light or dark setting; use the Theme control (System, Light, Dark) at the bottom of the page to override it. The choice is remembered in your browser. While you scroll, the andon strip (what needs you) and the active runs stay at the top of the page. When the dashboard server restarts, for example after an update, an open dashboard page reloads itself within a few seconds, once no dialog or menu is open, so it always shows the running version.
