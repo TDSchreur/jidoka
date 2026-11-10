@@ -1,4 +1,6 @@
 //! Uninstall operates on selected installed skills and preserves unattended data.
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::{fs, process::Command};
 
 // The Windows command updates the user PATH through PowerShell. Replace that
@@ -56,8 +58,8 @@ fn removes_selected_skills_and_preserves_other_files_and_data() {
     );
     #[cfg(windows)]
     assert_eq!(
-        fs::read_to_string(fixture.path().join("invocation")).unwrap(),
-        home.path().join("data/Programs/jidoka").to_string_lossy()
+        PathBuf::from(fs::read_to_string(fixture.path().join("invocation")).unwrap()),
+        home.path().join("data/Programs/jidoka")
     );
     assert!(!skills.join("jidoka").exists());
     assert!(skills.join("other/SKILL.md").exists());
@@ -149,8 +151,8 @@ fn removes_installer_copy_and_preserves_unrelated_command() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
-        fs::read_to_string(fixture.path().join("invocation")).unwrap(),
-        installed.parent().unwrap().to_string_lossy(),
+        PathBuf::from(fs::read_to_string(fixture.path().join("invocation")).unwrap()),
+        installed.parent().unwrap(),
         "PowerShell received the wrong installer directory"
     );
     assert!(
