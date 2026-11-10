@@ -31,7 +31,12 @@ fn uninstall_without_flags_uses_the_record_and_leaves_a_foreign_binary() {
     assert!(!record.exists());
     assert!(!dir.join("skills/jidoka").exists());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("package manager"), "{stdout}");
+    let note = if cfg!(windows) {
+        "winget uninstall"
+    } else {
+        "package manager"
+    };
+    assert!(stdout.contains(note), "{stdout}");
     assert_eq!(stdout.contains("winget"), cfg!(windows), "{stdout}");
 }
 
