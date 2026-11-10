@@ -12,6 +12,8 @@ use std::{
 
 const LATEST_URL: &str = "https://github.com/TDSchreur/jidoka/releases/latest";
 const DOWNLOAD_URL: &str = "https://github.com/TDSchreur/jidoka/releases/latest/download";
+/// The largest release download accepted, as a guard against an unbounded response body.
+const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
 
 /// How the running build compares with the latest release.
@@ -28,9 +30,10 @@ pub(crate) enum Status {
     },
 }
 
-/// An agent with the platform's TLS: Schannel and the Windows certificate store on Windows,
+/// An https-only agent with the platform's TLS: Schannel and the Windows certificate store on Windows,
 /// rustls elsewhere.
-fn agent(config: ureq::config::ConfigBuilder<ureq::typestate::AgentScope>) -> ureq::Agent {
+fn http_agent(config: ureq::config::ConfigBuilder<ureq::typestate::AgentScope>) -> ureq::Agent {
+    let config = config.https_only(true);
     #[cfg(windows)]
     let config = config.tls_config(
         ureq::tls::TlsConfig::builder()
@@ -87,7 +90,7 @@ pub(crate) fn render(status: &Status) -> String {
 
 /// The version of the latest release, read from where GitHub redirects `releases/latest`.
 pub(crate) fn latest_version() -> Result<String, String> {
-    let agent = agent(
+    let agent = http_agent(
         ureq::Agent::config_builder()
             .max_redirects(0)
             .http_status_as_error(false),
@@ -148,14 +151,33 @@ fn asset_name() -> Result<&'static str, String> {
 
 /// Downloads `url` to `target`, following redirects.
 fn download(url: &str, target: &Path) -> Result<(), String> {
-    let mut response = agent(ureq::Agent::config_builder())
+    let mut response = http_agent(ureq::Agent::config_builder())
         .get(url)
         .call()
         .map_err(|error| request_error(&format!("download {url}"), &error))?;
-    let mut file = fs::File::create(target)
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
         .map_err(|error| format!("Cannot write {}: {error}", target.display()))?;
-    io::copy(&mut response.body_mut().as_reader(), &mut file)
-        .map_err(|error| format!("Could not download {url}: {error}"))?;
+    copy_limited(
+        &mut response.body_mut().as_reader(),
+        &mut file,
+        MAX_DOWNLOAD_BYTES,
+    )
+    .map_err(|error| format!("Could not download {url}: {error}"))
+}
+
+/// Copies `source` to `sink`, failing when it holds more than `limit` bytes.
+fn copy_limited(
+    source: &mut impl io::Read,
+    sink: &mut impl io::Write,
+    limit: u64,
+) -> io::Result<()> {
+    let copied = io::copy(&mut io::Read::take(source, limit + 1), sink)?;
+    if copied > limit {
+        return Err(io::Error::other(format!("larger than {limit} bytes")));
+    }
     Ok(())
 }
 
@@ -309,6 +331,14 @@ pub(crate) fn update(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_body_over_the_limit_is_an_error_and_one_at_the_limit_is_copied() {
+        let mut sink = Vec::new();
+        super::copy_limited(&mut &[7u8; 4][..], &mut sink, 4).unwrap();
+        assert_eq!(sink.len(), 4);
+        assert!(super::copy_limited(&mut &[7u8; 5][..], &mut Vec::new(), 4).is_err());
+    }
+
     use super::*;
 
     #[test]

@@ -17,6 +17,9 @@ $info = (Get-Item -LiteralPath $Executable).VersionInfo
 if ($info.ProductName -ne 'Jidoka' -or -not $info.FileDescription -or -not $info.FileVersion) {
     throw 'Executable has no Windows version information'
 }
+if ($info.InternalName -ne 'jidoka' -or $info.OriginalFilename -ne 'jidoka.exe') {
+    throw 'Executable has the wrong internal name or original filename'
+}
 if (-not $info.CompanyName -or -not $info.LegalCopyright) {
     throw 'Executable has no company name or copyright'
 }
