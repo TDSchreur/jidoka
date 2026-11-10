@@ -17,5 +17,12 @@ $info = (Get-Item -LiteralPath $Executable).VersionInfo
 if ($info.ProductName -ne 'Jidoka' -or -not $info.FileDescription -or -not $info.FileVersion) {
     throw 'Executable has no Windows version information'
 }
+if (-not $info.CompanyName -or -not $info.LegalCopyright) {
+    throw 'Executable has no company name or copyright'
+}
+$text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $Executable)))
+if ($text -notmatch 'requestedExecutionLevel level="asInvoker"') {
+    throw 'Executable has no asInvoker manifest'
+}
 & $Executable --version
 if ($LASTEXITCODE -ne 0) { throw "Release executable failed with exit code $LASTEXITCODE" }

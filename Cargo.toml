@@ -19,6 +19,12 @@ time = { version = "0.3", features = ["parsing"] }
 sha2 = "0.11.1"
 pulldown-cmark = { version = "0.13.6", default-features = false, features = ["html"] }
 
+[target.'cfg(not(windows))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[target.'cfg(windows)'.dependencies]
+ureq = { version = "3", default-features = false, features = ["native-tls-no-default"] }
+
 [dev-dependencies]
 tempfile = "3"
 

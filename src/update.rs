@@ -28,6 +28,19 @@ pub(crate) enum Status {
     },
 }
 
+/// An agent with the platform's TLS: Schannel and the Windows certificate store on Windows,
+/// rustls elsewhere.
+fn agent(config: ureq::config::ConfigBuilder<ureq::typestate::AgentScope>) -> ureq::Agent {
+    #[cfg(windows)]
+    let config = config.tls_config(
+        ureq::tls::TlsConfig::builder()
+            .provider(ureq::tls::TlsProvider::NativeTls)
+            .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+            .build(),
+    );
+    config.build().into()
+}
+
 /// The version in a release URL such as `.../releases/tag/v0.5.1`.
 pub(crate) fn version_from_url(url: &str) -> Option<String> {
     let tag = url.trim().rsplit_once("/releases/tag/")?.1;
@@ -74,24 +87,42 @@ pub(crate) fn render(status: &Status) -> String {
 
 /// The version of the latest release, read from where GitHub redirects `releases/latest`.
 pub(crate) fn latest_version() -> Result<String, String> {
-    let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
-    let output = Command::new("curl")
-        .args(["-fsSL", "-o", null, "-w", "%{url_effective}", LATEST_URL])
-        .output()
-        .map_err(|error| match error.kind() {
-            io::ErrorKind::NotFound => {
-                "curl is required to look up releases but was not found.".to_string()
-            }
-            _ => format!("Could not run curl: {error}"),
-        })?;
-    if !output.status.success() {
+    let agent = agent(
+        ureq::Agent::config_builder()
+            .max_redirects(0)
+            .http_status_as_error(false),
+    );
+    let response = agent
+        .get(LATEST_URL)
+        .call()
+        .map_err(|error| request_error("look up the latest release", &error))?;
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok());
+    version_from_redirect(response.status().as_u16(), location)
+}
+
+/// The release version in a `releases/latest` response, given its status and `Location` header.
+fn version_from_redirect(status: u16, location: Option<&str>) -> Result<String, String> {
+    if !(300..400).contains(&status) {
         return Err(format!(
-            "Could not look up the latest release: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            "Could not look up the latest release: GitHub answered with status {status}."
         ));
     }
-    let url = String::from_utf8_lossy(&output.stdout);
-    version_from_url(&url).ok_or_else(|| format!("Could not read a release version from {url}."))
+    let location = location.ok_or("Could not look up the latest release: no redirect location.")?;
+    version_from_url(location)
+        .ok_or_else(|| format!("Could not read a release version from {location}."))
+}
+
+/// A readable message for a failed request while trying to `action`.
+fn request_error(action: &str, error: &ureq::Error) -> String {
+    match error {
+        ureq::Error::StatusCode(status) => {
+            format!("Could not {action}: the server answered with status {status}.")
+        }
+        other => format!("Could not {action}: network error: {other}."),
+    }
 }
 
 /// Runs `jidoka check` for a build with this version.
@@ -115,27 +146,17 @@ fn asset_name() -> Result<&'static str, String> {
     }
 }
 
-/// Downloads `url` to `target` with curl.
+/// Downloads `url` to `target`, following redirects.
 fn download(url: &str, target: &Path) -> Result<(), String> {
-    let output = Command::new("curl")
-        .args(["-fsSL", "-o"])
-        .arg(target)
-        .arg(url)
-        .output()
-        .map_err(|error| match error.kind() {
-            io::ErrorKind::NotFound => {
-                "curl is required to download releases but was not found.".to_string()
-            }
-            _ => format!("Could not run curl: {error}"),
-        })?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Could not download {url}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
-    }
+    let mut response = agent(ureq::Agent::config_builder())
+        .get(url)
+        .call()
+        .map_err(|error| request_error(&format!("download {url}"), &error))?;
+    let mut file = fs::File::create(target)
+        .map_err(|error| format!("Cannot write {}: {error}", target.display()))?;
+    io::copy(&mut response.body_mut().as_reader(), &mut file)
+        .map_err(|error| format!("Could not download {url}: {error}"))?;
+    Ok(())
 }
 
 /// Checks `data` against the first word of a `.sha256` file.
@@ -304,6 +325,42 @@ mod tests {
         ] {
             assert_eq!(version_from_url(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn a_redirect_to_a_release_gives_its_version() {
+        let location = "https://github.com/TDSchreur/jidoka/releases/tag/v0.15.2";
+        assert_eq!(
+            version_from_redirect(302, Some(location)),
+            Ok("0.15.2".to_string())
+        );
+    }
+
+    #[test]
+    fn a_missing_or_unrelated_redirect_is_an_error() {
+        assert!(version_from_redirect(302, None).is_err());
+        let error = version_from_redirect(302, Some("https://github.com/login")).unwrap_err();
+        assert!(error.contains("https://github.com/login"), "{error}");
+    }
+
+    #[test]
+    fn a_non_redirect_status_is_an_error_naming_the_status() {
+        let location = "https://github.com/TDSchreur/jidoka/releases/tag/v0.15.2";
+        for status in [200, 404, 503] {
+            let error = version_from_redirect(status, Some(location)).unwrap_err();
+            assert!(error.contains(&status.to_string()), "{error}");
+        }
+    }
+
+    #[test]
+    fn request_failures_say_what_went_wrong() {
+        let status = request_error("download x", &ureq::Error::StatusCode(404));
+        assert!(
+            status.contains("404") && status.contains("download x"),
+            "{status}"
+        );
+        let network = request_error("download x", &ureq::Error::HostNotFound);
+        assert!(network.contains("network error"), "{network}");
     }
 
     #[test]
