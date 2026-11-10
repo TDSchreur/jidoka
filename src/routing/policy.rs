@@ -302,7 +302,10 @@ struct Agents {
 struct File {
     /// Read from the raw text first (see `read`); accepted here so the file may spell it out.
     #[serde(default = "enabled_by_default")]
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "read from the raw text in `read`; the field only lets serde accept it"
+    )]
     enabled: bool,
     agents: Agents,
 }
