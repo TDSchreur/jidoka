@@ -3,7 +3,7 @@
 use crate::{
     inspect::shown,
     request_logs::Category,
-    requests::{analyze, cells, Counts, RunRequests},
+    requests::{Counts, RunRequests, analyze, cells},
     run::{Run, RunStatus},
     stats::{number, table_with},
     usage::UsageStatus,

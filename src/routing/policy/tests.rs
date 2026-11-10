@@ -127,10 +127,12 @@ fn an_agent_without_an_entry_is_not_routed_and_is_told_how_to_add_one() {
         "{notice}"
     );
     // Claude's own entry is untouched by that.
-    assert!(load_text(only_claude, Some(Host::Claude))
-        .unwrap()
-        .selection
-        .is_some());
+    assert!(
+        load_text(only_claude, Some(Host::Claude))
+            .unwrap()
+            .selection
+            .is_some()
+    );
 }
 
 #[test]
@@ -142,10 +144,12 @@ fn a_disabled_entry_routes_nothing_and_is_not_checked() {
         load_text(text, Some(Host::Codex)).unwrap(),
         Resolution::default()
     );
-    assert!(load_text(text, Some(Host::Claude))
-        .unwrap()
-        .selection
-        .is_some());
+    assert!(
+        load_text(text, Some(Host::Claude))
+            .unwrap()
+            .selection
+            .is_some()
+    );
 }
 
 const COPILOT: &str = r#"{"agents":{"copilot":{"stages":{
@@ -176,9 +180,11 @@ fn a_copilot_run_records_the_copilot_entry_and_not_another_agents() {
     assert_eq!(resolution.selection, None);
     assert!(resolution.notice.unwrap().contains("no entry for claude"));
     // Several configured agents still need `--agent`.
-    assert!(load_text(&both, None)
-        .unwrap_err()
-        .contains("--agent copilot"));
+    assert!(
+        load_text(&both, None)
+            .unwrap_err()
+            .contains("--agent copilot")
+    );
 }
 
 #[test]
@@ -370,9 +376,11 @@ fn a_problem_in_one_entry_names_the_entry_and_is_found_whichever_agent_the_run_i
     let error = read_error(broken_codex);
     assert!(error.contains("agents.codex"), "{error}");
     // A run in Claude stops too: a typo is found early, not only when that agent next starts a run.
-    assert!(load_text(broken_codex, Some(Host::Claude))
-        .unwrap_err()
-        .contains("agents.codex"));
+    assert!(
+        load_text(broken_codex, Some(Host::Claude))
+            .unwrap_err()
+            .contains("agents.codex")
+    );
     let too_long = format!(
         r#"{{"agents":{{"claude":{{"stages":{{"check":{{"model":"{}"}}}}}}}}}}"#,
         "m".repeat(65)
@@ -685,8 +693,8 @@ fn a_switched_off_agent_in_an_old_file_stays_off_in_the_starter() {
 }
 
 #[test]
-fn a_switched_on_old_file_gives_a_switched_on_starter_and_the_old_single_form_carries_only_the_top_switch(
-) {
+fn a_switched_on_old_file_gives_a_switched_on_starter_and_the_old_single_form_carries_only_the_top_switch()
+ {
     let value = replaced_starter(r#"{"enabled":true,"roles":{}}"#, &BOTH);
     assert_eq!(value["enabled"], true);
     // The single-agent form has no agent entries to carry.
@@ -724,10 +732,12 @@ fn a_link_to_an_old_format_file_is_not_followed_into_replacement() {
         Starter::Left
     );
     assert_eq!(fs::read_to_string(&target).unwrap(), old);
-    assert!(fs::symlink_metadata(&path)
-        .unwrap()
-        .file_type()
-        .is_symlink());
+    assert!(
+        fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 }
 
 #[test]

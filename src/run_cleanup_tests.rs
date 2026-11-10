@@ -373,10 +373,10 @@ fn listed(fx: &Fixture) -> Vec<Listed> {
                 path: path.to_string(),
                 locked: false,
             });
-        } else if line.starts_with("locked") {
-            if let Some(entry) = entries.last_mut() {
-                entry.locked = true;
-            }
+        } else if line.starts_with("locked")
+            && let Some(entry) = entries.last_mut()
+        {
+            entry.locked = true;
         }
     }
     entries

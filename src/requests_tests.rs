@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::{request_logs::Category, run::Run, usage_logs::Roots};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{fs, time::Duration};
 use tempfile::TempDir;
 
@@ -717,10 +717,12 @@ fn copilot_requests_are_categorized_by_their_tool_calls_and_subagents_shown_apar
     assert_eq!(sizes, [Some(12), Some(11), Some(0), Some(16), Some(0)]);
     assert_eq!(result.subagents.requests, 1);
     assert!(result.coordinator_only_sessions.is_empty());
-    assert!(!result
-        .notes
-        .iter()
-        .any(|n| n.contains("no matching assistant message")));
+    assert!(
+        !result
+            .notes
+            .iter()
+            .any(|n| n.contains("no matching assistant message"))
+    );
 }
 
 fn codex_usage(at: u64, response: &str) -> String {
@@ -739,7 +741,7 @@ fn copilot_usage(at: u64, call: &str, sub: bool) -> String {
 
 // --- the pooled view --------------------------------------------------------------------------------
 
-use crate::requests_pool::{pool, render_pool, Class, PoolOptions};
+use crate::requests_pool::{Class, PoolOptions, pool, render_pool};
 
 fn run_id(n: u64) -> String {
     format!("17938728000000000{n:02}")
@@ -1058,14 +1060,16 @@ fn claimed_by(commands: &[String]) -> Vec<String> {
 #[test]
 fn text_inside_quotes_never_claims_a_run() {
     let id = RUN_A;
-    assert!(claimed_by(&[
-        format!("echo \"done; factory run update {id} ok\""),
-        format!("git commit -m \"wip && factory run update {id}\""),
-        format!("gh pr create --body \"Summary\nfactory run update {id} check done\nmore\""),
-        format!("echo 'a | factory run update {id}'"),
-        format!("echo \"say \\\"x\\\"; factory run update {id}\""),
-    ])
-    .is_empty());
+    assert!(
+        claimed_by(&[
+            format!("echo \"done; factory run update {id} ok\""),
+            format!("git commit -m \"wip && factory run update {id}\""),
+            format!("gh pr create --body \"Summary\nfactory run update {id} check done\nmore\""),
+            format!("echo 'a | factory run update {id}'"),
+            format!("echo \"say \\\"x\\\"; factory run update {id}\""),
+        ])
+        .is_empty()
+    );
 }
 
 #[test]
@@ -1136,13 +1140,15 @@ fn an_update_claims_after_comments_here_strings_and_wrappers_with_options() {
 
 #[test]
 fn text_that_is_not_a_command_never_claims_a_run() {
-    assert!(claimed_by(&[
-        format!("cat <<\\EOF\nfactory run update {RUN_A} b\nEOF"),
-        format!("cat <<\"EOF\"\nfactory run update {RUN_A} b\nEOF"),
-        format!("ls # factory run update {RUN_A}"),
-        format!("# factory run update {RUN_A}\nls"),
-    ])
-    .is_empty());
+    assert!(
+        claimed_by(&[
+            format!("cat <<\\EOF\nfactory run update {RUN_A} b\nEOF"),
+            format!("cat <<\"EOF\"\nfactory run update {RUN_A} b\nEOF"),
+            format!("ls # factory run update {RUN_A}"),
+            format!("# factory run update {RUN_A}\nls"),
+        ])
+        .is_empty()
+    );
     // `#` inside a word is not a comment.
     assert_eq!(
         category_of("echo a#b; git push"),

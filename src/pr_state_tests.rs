@@ -90,10 +90,12 @@ fn problems_say_what_to_do() {
         4,
         "To get started with GitHub CLI, please run:  gh auth login",
     )]);
-    assert!(read(&signed_out, PR)
-        .unwrap_err()
-        .0
-        .contains("not signed in"));
+    assert!(
+        read(&signed_out, PR)
+            .unwrap_err()
+            .0
+            .contains("not signed in")
+    );
     let odd = ScriptedGh::new(vec![view("SOMETHING", false)]);
     assert!(read(&odd, PR).unwrap_err().0.contains("SOMETHING"));
     let not_json = ScriptedGh::new(vec![Ok(GhOutput {
@@ -286,7 +288,9 @@ fn an_azure_repos_pull_request_reads_as_open_draft_merged_or_closed() {
         );
         assert_eq!(
             az.calls(),
-            ["az repos pr show --id 535 --organization https://dev.azure.com/org --output json --detect false"]
+            [
+                "az repos pr show --id 535 --organization https://dev.azure.com/org --output json --detect false"
+            ]
         );
     }
 }
@@ -294,15 +298,19 @@ fn an_azure_repos_pull_request_reads_as_open_draft_merged_or_closed() {
 #[test]
 fn azure_problems_say_what_to_do() {
     let missing = ScriptedGh::new(vec![Err(GhError::NotInstalled)]);
-    assert!(read(&missing, AZURE_PR)
-        .unwrap_err()
-        .0
-        .contains("azure-devops extension"));
+    assert!(
+        read(&missing, AZURE_PR)
+            .unwrap_err()
+            .0
+            .contains("azure-devops extension")
+    );
     let signed_out = ScriptedGh::new(vec![failed(1, "Please run 'az login' to setup account.")]);
-    assert!(read(&signed_out, AZURE_PR)
-        .unwrap_err()
-        .0
-        .contains("az login"));
+    assert!(
+        read(&signed_out, AZURE_PR)
+            .unwrap_err()
+            .0
+            .contains("az login")
+    );
     let odd = ScriptedGh::new(vec![azure("notSet", false)]);
     assert!(read(&odd, AZURE_PR).unwrap_err().0.contains("notSet"));
     // A pull request from another repository than the URL names is not trusted.
@@ -311,10 +319,12 @@ fn azure_problems_say_what_to_do() {
         stdout: r#"{"pullRequestId":535,"status":"active","isDraft":false,"repository":{"name":"Other","project":{"name":"Proj"}},"forkSource":null}"#.into(),
         stderr: String::new(),
     })]);
-    assert!(read(&elsewhere, AZURE_PR)
-        .unwrap_err()
-        .0
-        .contains("does not match"));
+    assert!(
+        read(&elsewhere, AZURE_PR)
+            .unwrap_err()
+            .0
+            .contains("does not match")
+    );
     // Azure output is never echoed: it can hold credentials.
     let secret = ScriptedGh::new(vec![failed(1, "token=abc123 rejected")]);
     assert!(!read(&secret, AZURE_PR).unwrap_err().0.contains("abc123"));

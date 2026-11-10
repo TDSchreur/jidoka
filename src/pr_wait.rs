@@ -497,15 +497,16 @@ fn failures(gh: &dyn Gh, checks: &[CheckResult]) -> Vec<Failure> {
     let mut out = Vec::new();
     for check in checks.iter().filter(|check| check.bucket == "fail") {
         let mut text = None;
-        if let Some((id, repository)) = run_of_link(&check.link) {
-            if !fetched.contains(&id) && fetched.len() < MAX_LOGS {
-                fetched.push(id);
-                text = gh
-                    .run(&["run", "view", id, "--repo", &repository, "--log-failed"])
-                    .ok()
-                    .filter(|output| output.code == Some(0))
-                    .and_then(|output| excerpt(&output.stdout));
-            }
+        if let Some((id, repository)) = run_of_link(&check.link)
+            && !fetched.contains(&id)
+            && fetched.len() < MAX_LOGS
+        {
+            fetched.push(id);
+            text = gh
+                .run(&["run", "view", id, "--repo", &repository, "--log-failed"])
+                .ok()
+                .filter(|output| output.code == Some(0))
+                .and_then(|output| excerpt(&output.stdout));
         }
         out.push(Failure {
             name: check.name.clone(),

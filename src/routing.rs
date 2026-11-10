@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 
 mod policy;
 pub(crate) use policy::{
-    install_starter, load, parse_start_options, policy_path_in, read, Coverage, Host, Policy,
-    Resolution, Starter,
+    Coverage, Host, Policy, Resolution, Starter, install_starter, load, parse_start_options,
+    policy_path_in, read,
 };
 
 /// The coding agent a selection is for.

@@ -1,7 +1,7 @@
 use crate::{
     routing::ModelRouting,
-    run::{parse_update, NewRun, Run},
-    server::{DashboardIdentity, CLI_TOKEN_HEADER},
+    run::{NewRun, Run, parse_update},
+    server::{CLI_TOKEN_HEADER, DashboardIdentity},
 };
 use std::{
     io::{self, Read, Write},
@@ -101,7 +101,7 @@ pub(crate) fn probe_dashboard(server: &str) -> io::Result<Probe> {
                 io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut
             ) =>
         {
-            return Ok(Probe::Absent)
+            return Ok(Probe::Absent);
         }
         Err(error) => return Err(error),
     };
@@ -175,7 +175,11 @@ fn api_request(
     stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
     match post {
         Some((cli_token, body)) => {
-            write!(stream, "POST {route} HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\n{CLI_TOKEN_HEADER}: {cli_token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
+            write!(
+                stream,
+                "POST {route} HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\n{CLI_TOKEN_HEADER}: {cli_token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )?;
             stream.write_all(body)?;
         }
         None => write!(
@@ -748,11 +752,12 @@ mod tests {
         )
         .unwrap();
         let run = fetch_run(&server.address, &id).unwrap();
-        assert!(run
-            .model_routing
-            .unwrap()
-            .overrides
-            .contains_key(&Stage::Check));
+        assert!(
+            run.model_routing
+                .unwrap()
+                .overrides
+                .contains_key(&Stage::Check)
+        );
         // A run started now reads the new file, and a Claude run gets the Claude entry, never Codex's.
         let codex = crate::routing::load(&policy, Some(Host::Codex))
             .unwrap()

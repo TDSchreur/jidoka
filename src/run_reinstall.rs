@@ -146,10 +146,8 @@ pub(crate) fn is_factory(repository: &Path) -> bool {
     for line in manifest.lines().map(str::trim) {
         if line.starts_with('[') {
             in_package = line == "[package]";
-        } else if in_package {
-            if let Some((key, value)) = line.split_once('=') {
-                named |= key.trim() == "name" && value.trim().trim_matches('"') == "factory";
-            }
+        } else if in_package && let Some((key, value)) = line.split_once('=') {
+            named |= key.trim() == "name" && value.trim().trim_matches('"') == "factory";
         }
     }
     named

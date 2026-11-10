@@ -374,10 +374,12 @@ fn the_checks_stop_the_command_before_anything_changes() {
     project.base_moves("b.txt", "b changed\n");
     fs::write(project.wt.join("b.txt"), "mine\n").unwrap();
     let head = project.head();
-    assert!(sync_now(&project, &FakeApi::default())
-        .unwrap_err()
-        .0
-        .contains("uncommitted"));
+    assert!(
+        sync_now(&project, &FakeApi::default())
+            .unwrap_err()
+            .0
+            .contains("uncommitted")
+    );
     assert_eq!(project.head(), head);
 
     // The base branch, a wrong branch, a name that is not safe, no worktree, a worktree that is gone.
@@ -392,15 +394,17 @@ fn the_checks_stop_the_command_before_anything_changes() {
     );
     let mut base = options();
     base.base = Some("feature".into());
-    assert!(sync(
-        &run_of(&project),
-        &base,
-        &TestGit::default(),
-        &FakeApi::default()
-    )
-    .unwrap_err()
-    .0
-    .contains("base branch"));
+    assert!(
+        sync(
+            &run_of(&project),
+            &base,
+            &TestGit::default(),
+            &FakeApi::default()
+        )
+        .unwrap_err()
+        .0
+        .contains("base branch")
+    );
     let mut run = run_of(&project);
     run.worktree = None;
     assert!(

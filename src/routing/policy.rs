@@ -10,7 +10,7 @@
 
 use super::{ModelChoice, ModelRouting, RoutingAgent};
 use crate::run::Stage;
-use serde::{de, Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -406,7 +406,7 @@ pub(crate) fn read(path: &Path) -> Result<Policy, String> {
         Ok(_) => {
             return Err(fail(
                 "the model-routing policy is not a regular file".into(),
-            ))
+            ));
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Policy::Off),
         Err(error) => return Err(cannot(error)),

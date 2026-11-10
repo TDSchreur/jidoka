@@ -2,8 +2,8 @@
 //! (GitHub with `gh`, Azure Repos with `az`) and kept on the Run so the dashboard can show it.
 
 use crate::pr_wait::{
-    azure_pr_head, azure_pr_merge_commit, azure_pr_status, is_azure_pr_url, problem, run_gh, Gh,
-    ToolProblem,
+    Gh, ToolProblem, azure_pr_head, azure_pr_merge_commit, azure_pr_status, is_azure_pr_url,
+    problem, run_gh,
 };
 use crate::run::RunStore;
 use serde::{Deserialize, Serialize};

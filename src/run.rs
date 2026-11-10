@@ -302,7 +302,9 @@ impl NewRun {
                 || repository.chars().any(char::is_control)
                 || !is_absolute_path(repository)
         }) {
-            return Err(io_invalid(format!("Repository must be an absolute path of at most {MAX_PATH_BYTES} bytes without control characters")));
+            return Err(io_invalid(format!(
+                "Repository must be an absolute path of at most {MAX_PATH_BYTES} bytes without control characters"
+            )));
         }
         Ok(())
     }
@@ -389,10 +391,10 @@ impl<T> FieldUpdate<T> {
 
 impl FieldUpdate {
     pub(crate) fn validate(&self, limit: usize) -> Result<(), String> {
-        if let Self::Set(value) = self {
-            if value.trim().is_empty() || value.len() > limit {
-                return Err("Run metadata must be nonblank and within its size limit".into());
-            }
+        if let Self::Set(value) = self
+            && (value.trim().is_empty() || value.len() > limit)
+        {
+            return Err("Run metadata must be nonblank and within its size limit".into());
         }
         Ok(())
     }
@@ -551,10 +553,10 @@ impl UpdateRun {
         self.activity.validate(MAX_NOTE_BYTES)?;
         self.blocking_reason.validate(MAX_NOTE_BYTES)?;
         self.current_ticket.validate(MAX_PATH_BYTES)?;
-        if let FieldUpdate::Set(count) = self.rework {
-            if !(1..=MAX_REWORK).contains(&count) {
-                return Err("Rework must be a whole number from 1 to 99".into());
-            }
+        if let FieldUpdate::Set(count) = self.rework
+            && !(1..=MAX_REWORK).contains(&count)
+        {
+            return Err("Rework must be a whole number from 1 to 99".into());
         }
         if let FieldUpdate::Set(value) = &self.current_ticket {
             check_http_url("Current ticket", value)?;
@@ -565,8 +567,8 @@ impl UpdateRun {
                 return Err("Worktree must be an absolute path without control characters".into());
             }
         }
-        if let FieldUpdate::Set(value) = &self.branch {
-            if value.is_empty()
+        if let FieldUpdate::Set(value) = &self.branch
+            && (value.is_empty()
                 || value.len() > MAX_BRANCH_BYTES
                 || value.starts_with(['-', '/'])
                 || value.ends_with(['/', '.'])
@@ -576,21 +578,19 @@ impl UpdateRun {
                 || value.contains("//")
                 || value
                     .chars()
-                    .any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c))
-            {
-                return Err("Branch must be a valid git branch name: no spaces, control characters or any of ~ ^ : ? * [ \\ \"..\" \"@{\", and not starting with \"-\"".into());
-            }
+                    .any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c)))
+        {
+            return Err("Branch must be a valid git branch name: no spaces, control characters or any of ~ ^ : ? * [ \\ \"..\" \"@{\", and not starting with \"-\"".into());
         }
-        if let FieldUpdate::Set(value) = &self.base_commit {
-            if !BASE_COMMIT_LENGTH.contains(&value.len())
-                || !value.chars().all(|c| c.is_ascii_hexdigit())
-            {
-                return Err(format!(
-                    "Base commit must be {} to {} hexadecimal characters",
-                    BASE_COMMIT_LENGTH.start(),
-                    BASE_COMMIT_LENGTH.end()
-                ));
-            }
+        if let FieldUpdate::Set(value) = &self.base_commit
+            && (!BASE_COMMIT_LENGTH.contains(&value.len())
+                || !value.chars().all(|c| c.is_ascii_hexdigit()))
+        {
+            return Err(format!(
+                "Base commit must be {} to {} hexadecimal characters",
+                BASE_COMMIT_LENGTH.start(),
+                BASE_COMMIT_LENGTH.end()
+            ));
         }
         if let FieldUpdate::Set(value) = &self.spec {
             check_reference("Spec", value, MAX_PATH_BYTES)?;
@@ -1476,18 +1476,22 @@ mod tests {
         apply("build", "done", &[]);
         apply("finish", "done", &FINISH_SUMMARY);
         apply("finish", "done", &FINISH_SUMMARY);
-        assert!(store
-            .update("999999", UpdateRun::new(Stage::Build, RunStatus::Running))
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .update("999999", UpdateRun::new(Stage::Build, RunStatus::Running))
+                .unwrap()
+                .is_none()
+        );
         let before = std::fs::read(&path).unwrap();
         let mut invalid = UpdateRun::new(Stage::Check, RunStatus::Running);
         invalid.branch = FieldUpdate::Set("invalid branch".into());
         assert!(store.update(&run.id, invalid).is_err());
         std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
-        assert!(store
-            .update(&run.id, UpdateRun::new(Stage::Check, RunStatus::Running))
-            .is_err());
+        assert!(
+            store
+                .update(&run.id, UpdateRun::new(Stage::Check, RunStatus::Running))
+                .is_err()
+        );
         assert_eq!(std::fs::read(&path).unwrap(), before);
         assert_eq!(serde_json::to_vec(&store.list().unwrap()).unwrap(), before);
     }
@@ -1593,9 +1597,11 @@ mod tests {
         }
         let persisted = load_runs(&dir.0.path().join("runs.json")).unwrap();
         assert_eq!(persisted.len(), 2);
-        assert!(persisted
-            .iter()
-            .all(|run| matches!(run.status, RunStatus::Done)));
+        assert!(
+            persisted
+                .iter()
+                .all(|run| matches!(run.status, RunStatus::Done))
+        );
         assert!(matches!(
             persisted
                 .iter()
@@ -1881,14 +1887,16 @@ mod tests {
         for stage in ["define", "build", "check", "finish"] {
             assert!(error.contains(stage), "{error}");
         }
-        assert!(store
-            .get(&run.id)
-            .unwrap()
-            .unwrap()
-            .model_routing
-            .unwrap()
-            .overrides
-            .is_empty());
+        assert!(
+            store
+                .get(&run.id)
+                .unwrap()
+                .unwrap()
+                .model_routing
+                .unwrap()
+                .overrides
+                .is_empty()
+        );
         // A run that has no selection has nothing to override.
         let plain = new_run(&store, "plain");
         let error = store
@@ -2349,10 +2357,12 @@ mod tests {
             .iter()
             .flat_map(|t| ["--ticket", t.as_str()])
             .collect();
-        assert!(parse_update("build", "running", &options)
-            .unwrap_err()
-            .to_string()
-            .contains("At most 100"));
+        assert!(
+            parse_update("build", "running", &options)
+                .unwrap_err()
+                .to_string()
+                .contains("At most 100")
+        );
     }
 
     #[test]
@@ -2659,10 +2669,12 @@ mod tests {
         assert_eq!(checking.timeline[4].ticket, None, "only Build has a ticket");
         let rework = after(&["--rework", "1"], "build");
         assert_eq!(rework.timeline.last().unwrap().rework, Some(1));
-        assert!(rework
-            .timeline
-            .windows(2)
-            .all(|pair| pair[0].at <= pair[1].at));
+        assert!(
+            rework
+                .timeline
+                .windows(2)
+                .all(|pair| pair[0].at <= pair[1].at)
+        );
     }
 
     #[test]
@@ -2818,30 +2830,36 @@ mod tests {
         )
         .unwrap();
         assert!(store.update(&created.id, update).is_err());
-        assert!(store
-            .get(&created.id)
-            .unwrap()
-            .unwrap()
-            .ticket_reports
-            .is_empty());
+        assert!(
+            store
+                .get(&created.id)
+                .unwrap()
+                .unwrap()
+                .ticket_reports
+                .is_empty()
+        );
     }
 
     #[test]
     fn ticket_report_size_limits_are_enforced() {
         let valid = "x".repeat(500);
         let too_long = "x".repeat(501);
-        assert!(parse_update(
-            "build",
-            "running",
-            &["--ticket-report", "t1", "activity", &valid]
-        )
-        .is_ok());
-        assert!(parse_update(
-            "build",
-            "running",
-            &["--ticket-report", "t1", "activity", &too_long]
-        )
-        .is_err());
+        assert!(
+            parse_update(
+                "build",
+                "running",
+                &["--ticket-report", "t1", "activity", &valid]
+            )
+            .is_ok()
+        );
+        assert!(
+            parse_update(
+                "build",
+                "running",
+                &["--ticket-report", "t1", "activity", &too_long]
+            )
+            .is_err()
+        );
         let mut args = Vec::new();
         for _ in 0..100 {
             args.extend(["--ticket-report", "t1", "skill", "factory-tdd"]);
@@ -3023,9 +3041,11 @@ mod tests {
             .set_usage(&run.id, Usage::not_tracked("first", 1))
             .unwrap();
         fs::create_dir(path.with_extension("json.tmp")).unwrap();
-        assert!(store
-            .set_usage(&run.id, Usage::not_tracked("second", 2))
-            .is_err());
+        assert!(
+            store
+                .set_usage(&run.id, Usage::not_tracked("second", 2))
+                .is_err()
+        );
         assert_eq!(
             store
                 .get(&run.id)
