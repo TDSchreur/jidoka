@@ -413,8 +413,10 @@ pub(crate) fn truncate(command: &str) -> &str {
 /// The shell variables an agent has set to a literal so far, by name.
 pub(crate) type Variables = HashMap<String, String>;
 
-/// The most distinct variable names kept; an assignment to a new name beyond it is ignored.
-const MAX_VARIABLES: usize = 256;
+/// The most distinct variable names kept; an assignment to a new name beyond it is ignored. 256 is far
+/// above the handful of variables a real agent command sets, and small enough to bound the memory a
+/// session holds against a crafted log that assigns endless names.
+pub(crate) const MAX_VARIABLES: usize = 256;
 
 /// The run ids in `ids` that a run command in `command` names; see `run_claims`.
 pub(crate) fn updated_runs(command: &str, ids: &HashSet<&str>) -> HashSet<String> {

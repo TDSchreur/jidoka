@@ -12,12 +12,12 @@ use crate::{
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Rates for requests whose input is above `LONG_CONTEXT_INPUT_TOKENS`, USD per million tokens.
+/// The input, cache-read and output rates of a model, USD per million tokens.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct LongRates {
+pub(crate) struct Rates {
     pub(crate) input: f64,
-    pub(crate) output: f64,
     pub(crate) cache_read: f64,
+    pub(crate) output: f64,
 }
 
 /// US dollars per million tokens.
@@ -29,7 +29,7 @@ pub(crate) struct Price {
     /// `None` when the price of a cache write is not known: tokens written to the cache make the cost unknown.
     pub(crate) cache_write: Option<f64>,
     /// Rates for a request above the long-context threshold, when the model has them.
-    pub(crate) long: Option<LongRates>,
+    pub(crate) long: Option<Rates>,
 }
 
 const fn price(input: f64, output: f64, cache_read: f64, cache_write: f64) -> Price {
@@ -42,14 +42,6 @@ const fn price(input: f64, output: f64, cache_read: f64, cache_write: f64) -> Pr
     }
 }
 
-/// The three rates the OpenAI pricing page lists per model, USD per million tokens.
-#[derive(Clone, Copy)]
-struct Rates {
-    input: f64,
-    cache_read: f64,
-    output: f64,
-}
-
 /// An OpenAI price: the short-context rates, and the long-context column when the page has one.
 const fn openai(short: Rates, long: Option<Rates>) -> Price {
     Price {
@@ -57,14 +49,7 @@ const fn openai(short: Rates, long: Option<Rates>) -> Price {
         output: short.output,
         cache_read: short.cache_read,
         cache_write: None,
-        long: match long {
-            Some(l) => Some(LongRates {
-                input: l.input,
-                output: l.output,
-                cache_read: l.cache_read,
-            }),
-            None => None,
-        },
+        long,
     }
 }
 
@@ -311,12 +296,13 @@ fn minus(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     a.map(|a| a.saturating_sub(b.unwrap_or(0)))
 }
 
-/// Million-token-units cost of `tokens` at the given rates (uncounted fields add nothing).
-fn priced(tokens: &Tokens, input: f64, output: f64, cache_read: f64, cache_write: f64) -> f64 {
+/// Cost of `tokens` in dollars times a million: each count times its per-million price, `rates` for input,
+/// cache reads and output and `cache_write` for cache writes (uncounted fields add nothing).
+fn cost_at(tokens: &Tokens, rates: &Rates, cache_write: f64) -> f64 {
     let part = |count: Option<u64>, per_million: f64| count.unwrap_or(0) as f64 * per_million;
-    part(tokens.input, input)
-        + part(tokens.output, output)
-        + part(tokens.cache_read, cache_read)
+    part(tokens.input, rates.input)
+        + part(tokens.output, rates.output)
+        + part(tokens.cache_read, rates.cache_read)
         + part(tokens.cache_write, cache_write)
 }
 
@@ -347,21 +333,14 @@ pub(crate) fn tokens_cost(tokens: &Tokens, long_context: &Tokens, price: &Price)
         ),
         None => (*tokens, Tokens::default()),
     };
-    let mut total = priced(
-        &short,
-        price.input,
-        price.output,
-        price.cache_read,
-        write_price,
-    );
+    let short_rates = Rates {
+        input: price.input,
+        cache_read: price.cache_read,
+        output: price.output,
+    };
+    let mut total = cost_at(&short, &short_rates, write_price);
     if let Some(rates) = &price.long {
-        total += priced(
-            &long,
-            rates.input,
-            rates.output,
-            rates.cache_read,
-            write_price,
-        );
+        total += cost_at(&long, rates, write_price);
     }
     Some(total / 1e6)
 }

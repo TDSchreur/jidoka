@@ -1956,10 +1956,10 @@ fn the_usage_and_requests_readers_agree_on_a_codex_session_and_its_subagent() {
 
 #[test]
 fn only_a_bounded_number_of_variable_names_are_kept() {
-    use crate::request_logs::{Variables, run_claims};
+    use crate::request_logs::{MAX_VARIABLES, Variables, run_claims};
     let ids: std::collections::HashSet<&str> = [RUN_A].into_iter().collect();
     let mut variables = Variables::new();
-    let fill: String = (0..256).map(|n| format!("V{n}=x; ")).collect();
+    let fill: String = (0..MAX_VARIABLES).map(|n| format!("V{n}=x; ")).collect();
     run_claims(&fill, &ids, &mut variables);
     // A new name beyond the cap is ignored ...
     let late = format!("LATE={RUN_A}; jidoka run update $LATE build running");
