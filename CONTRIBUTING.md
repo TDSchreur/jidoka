@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve Jidoka. Bugs and ideas go to [GitHub Issues](https://github.com/TDSchreur/jidoka/issues); pull requests are welcome.
+Thanks for helping improve Jidoka. Bugs and ideas go to [GitHub Issues](https://github.com/TDSchreur/jidoka/issues); pull requests are welcome. Questions are covered in [SUPPORT.md](SUPPORT.md), and everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Branches and releases
 
