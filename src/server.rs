@@ -97,8 +97,8 @@ fn is_local_authority(authority: &str, port: u16) -> bool {
 struct SessionToken(String);
 
 impl SessionToken {
-    fn new() -> Self {
-        Self(crate::token::random())
+    fn new() -> Result<Self, String> {
+        crate::token::random().map(Self)
     }
 }
 
@@ -745,11 +745,13 @@ pub(crate) fn build_rocket_with(
     if let Some(warning) = secure_data_dir(path)? {
         eprintln!("{warning}");
     }
+    let session_token = SessionToken::new().map_err(io::Error::other)?;
+    let cli_token = crate::token::random().map_err(io::Error::other)?;
     Ok(rocket::custom(config)
         .manage(RunStore::open(path)?)
         .manage(collector)
-        .manage(SessionToken::new())
-        .manage(CliToken(crate::token::random()))
+        .manage(session_token)
+        .manage(CliToken(cli_token))
         .manage(TokenFile(path.to_path_buf()))
         .manage(TokenWriteFailure(std::sync::Mutex::new(None)))
         .attach(rocket::fairing::AdHoc::on_liftoff(

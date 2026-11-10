@@ -586,6 +586,11 @@ fn open_azure(
         );
     }
     let org = repo.org_url();
+    let Some(description) = description else {
+        return Err(ToolProblem(
+            "The new Azure pull request has no description.".into(),
+        ));
+    };
     let result = az_json(
         gh,
         dir,
@@ -604,9 +609,7 @@ fn open_azure(
             "--target-branch",
             &base,
             &format!("--title={}", options.title),
-            description
-                .as_deref()
-                .expect("new Azure PR has a description"),
+            &description,
             "--output",
             "json",
             "--detect",

@@ -427,10 +427,10 @@ fn checks_for(
         {
             "pending"
         } else {
-            match state {
-                "approved" => "pass",
-                "rejected" if build_id.is_some() => {
-                    let id = build_id.expect("build ID was checked").to_string();
+            match (state, build_id) {
+                ("approved", _) => "pass",
+                ("rejected", Some(id)) => {
+                    let id = id.to_string();
                     // The lookup only tells a cancelled build from a failed one; it never undoes the rejection.
                     let build = az_json(
                         gh,
@@ -463,7 +463,7 @@ fn checks_for(
                         _ => "fail",
                     }
                 }
-                "rejected" | "broken" => "fail",
+                ("rejected" | "broken", _) => "fail",
                 _ => "pending",
             }
         };
