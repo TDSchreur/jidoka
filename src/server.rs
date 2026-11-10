@@ -22,8 +22,27 @@ use std::{
     sync::Mutex,
 };
 
-pub(crate) const DEFAULT_PORT: u16 = 4311;
-pub(crate) const ADDRESS: &str = "127.0.0.1:4311";
+/// The one place the loopback host is spelled, as a macro so `concat!` can build `ADDRESS` from it.
+macro_rules! loopback_host {
+    () => {
+        "127.0.0.1"
+    };
+}
+/// The one place the default port is spelled, as a macro so `concat!` can build `ADDRESS` from it.
+macro_rules! default_port {
+    () => {
+        4311
+    };
+}
+
+/// The host the dashboard server binds to and the CLI talks to: loopback only, so nothing outside this machine
+/// can reach it.
+const LOOPBACK_HOST: &str = loopback_host!();
+/// The port the dashboard server listens on unless told otherwise; a fixed, uncommon port so the CLI and the
+/// dashboard find each other without configuration.
+pub(crate) const DEFAULT_PORT: u16 = default_port!();
+/// The dashboard server's default address, `LOOPBACK_HOST:DEFAULT_PORT`.
+pub(crate) const ADDRESS: &str = concat!(loopback_host!(), ":", default_port!());
 const DASHBOARD: &str = include_str!("../dashboard/index.html");
 /// The files the dashboard page may load from `/assets/`; any other path is a 404.
 const ASSETS: &[(&str, ContentType, &[u8])] = &[
@@ -88,7 +107,7 @@ const BODY_LIMIT: u64 = 64 * 1024;
 
 fn is_local_authority(authority: &str, port: u16) -> bool {
     authority.rsplit_once(':').is_some_and(|(host, given)| {
-        matches!(host, "localhost" | "127.0.0.1") && given == port.to_string()
+        matches!(host, "localhost" | LOOPBACK_HOST) && given == port.to_string()
     })
 }
 
@@ -740,7 +759,7 @@ pub(crate) fn build_rocket_with(
     collector: Collector,
 ) -> io::Result<Rocket<Build>> {
     let config = Figment::from(rocket::Config::default())
-        .merge(("address", "127.0.0.1"))
+        .merge(("address", LOOPBACK_HOST))
         .merge(("port", port))
         .merge(("limits", Limits::new().limit("json", BODY_LIMIT.bytes())));
     #[cfg(unix)]
@@ -814,7 +833,8 @@ pub(crate) fn build_rocket_with(
         )))
 }
 
-/// How often the dashboard server looks for pull requests whose state is due to be read again.
+/// How often the dashboard server looks for pull requests whose state is due to be read again. Every 20 seconds
+/// keeps the dashboard fresh while each pass only reads the pull requests that are due, so hosts are not hammered.
 const PR_STATE_PASS: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Reads the state of the Runs' pull requests from their hosts, one pass every `pass`, on a blocking thread so
@@ -842,7 +862,8 @@ fn watch_pr_states(
     })
 }
 
-/// How often the dashboard server looks in the logs of working runs for a usage limit or compaction.
+/// How often the dashboard server looks in the logs of working runs for a usage limit or compaction. A minute is
+/// frequent enough to notice a pause promptly and rare enough that reading the logs stays cheap.
 const PAUSE_PASS: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Collects the runs that are working or paused on their own every `pass`, on a blocking thread, so a

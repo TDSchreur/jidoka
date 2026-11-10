@@ -13,13 +13,33 @@ use std::{
 pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory-full|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `finish done` needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
+/// Tickets one update may list; a spec split into more pieces than this is too big to track on one board.
 const MAX_TICKETS: usize = 100;
+/// Sessions one update may attribute to a run; a run rarely spans more than a handful of agent sessions.
 const MAX_SESSIONS: usize = 20;
-/// Sessions kept per run, and marks kept on its timeline.
+/// Sessions kept per run; the oldest are dropped first.
 const KEEP_SESSIONS: usize = 100;
+/// Marks kept on a run's timeline, so a long run cannot grow its record without bound.
 pub(crate) const MAX_MARKS: usize = 1000;
-/// Blocked and resumed events kept per run.
+/// Blocked and resumed events kept per run, so a run that blocks over and over cannot grow its record without bound.
 pub(crate) const MAX_EVENTS: usize = 1000;
+/// Longest title, ticket title, ticket report or run report, in bytes: enough for a sentence or two that still fits
+/// a dashboard card.
+const MAX_TEXT_BYTES: usize = 500;
+/// Longest path, URL or reference, in bytes; the common 4096-byte `PATH_MAX`, which no real path exceeds.
+const MAX_PATH_BYTES: usize = 4096;
+/// Longest activity, blocking reason or stage summary, in bytes: a short paragraph.
+const MAX_NOTE_BYTES: usize = 2000;
+/// Longest git branch name, in bytes; git itself limits a ref name component to 255 bytes on common file systems.
+const MAX_BRANCH_BYTES: usize = 255;
+/// Shortest and longest agent session id, in characters: a UUID is 36, and 8 rules out accidental short values.
+const SESSION_ID_LENGTH: std::ops::RangeInclusive<usize> = 8..=100;
+/// Shortest and longest commit id, in hex digits: 7 is git's default abbreviation, 64 a full SHA-256 id.
+const COMMIT_ID_LENGTH: std::ops::RangeInclusive<usize> = 7..=64;
+/// Ticket reports or run reports one update may submit; matches `MAX_TICKETS`, one report per ticket.
+const MAX_REPORTS_PER_UPDATE: usize = 100;
+/// Ticket reports or run reports a run may hold in total, so a long run cannot grow its record without bound.
+const MAX_REPORTS_PER_RUN: usize = 1000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Run {
@@ -254,20 +274,20 @@ pub(crate) struct NewRun {
 impl NewRun {
     fn validate(&self) -> io::Result<()> {
         if self.title.trim().is_empty()
-            || self.title.len() > 500
+            || self.title.len() > MAX_TEXT_BYTES
             || self.title.chars().any(char::is_control)
         {
-            return Err(io_invalid(
-                "Title must be nonempty, at most 500 bytes, and contain no control characters",
-            ));
+            return Err(io_invalid(format!(
+                "Title must be nonempty, at most {MAX_TEXT_BYTES} bytes, and contain no control characters"
+            )));
         }
         if self.project.trim().is_empty()
-            || self.project.len() > 4096
+            || self.project.len() > MAX_PATH_BYTES
             || self.project.chars().any(char::is_control)
         {
-            return Err(io_invalid(
-                "Project must be nonempty, at most 4096 bytes, and contain no control characters",
-            ));
+            return Err(io_invalid(format!(
+                "Project must be nonempty, at most {MAX_PATH_BYTES} bytes, and contain no control characters"
+            )));
         }
         if let Some(session) = &self.session {
             check_session_id(session).map_err(io_invalid)?;
@@ -276,11 +296,11 @@ impl NewRun {
             routing.validate().map_err(io_invalid)?;
         }
         if self.repository.as_deref().is_some_and(|repository| {
-            repository.len() > 4096
+            repository.len() > MAX_PATH_BYTES
                 || repository.chars().any(char::is_control)
                 || !is_absolute_path(repository)
         }) {
-            return Err(io_invalid("Repository must be an absolute path of at most 4096 bytes without control characters"));
+            return Err(io_invalid(format!("Repository must be an absolute path of at most {MAX_PATH_BYTES} bytes without control characters")));
         }
         Ok(())
     }
@@ -481,14 +501,18 @@ pub(crate) fn is_absolute_path(value: &str) -> bool {
 
 /// An agent session id such as a UUID: letters, digits, `-`, `_` and `.`, so it is safe to store.
 pub(crate) fn check_session_id(id: &str) -> Result<(), String> {
-    let valid = (8..=100).contains(&id.len())
+    let valid = SESSION_ID_LENGTH.contains(&id.len())
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
     if valid {
         Ok(())
     } else {
-        Err("A session id must be 8 to 100 letters, digits, \"-\", \"_\" or \".\"".into())
+        Err(format!(
+            "A session id must be {} to {} letters, digits, \"-\", \"_\" or \".\"",
+            SESSION_ID_LENGTH.start(),
+            SESSION_ID_LENGTH.end()
+        ))
     }
 }
 
@@ -522,9 +546,9 @@ impl UpdateRun {
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
-        self.activity.validate(2000)?;
-        self.blocking_reason.validate(2000)?;
-        self.current_ticket.validate(4096)?;
+        self.activity.validate(MAX_NOTE_BYTES)?;
+        self.blocking_reason.validate(MAX_NOTE_BYTES)?;
+        self.current_ticket.validate(MAX_PATH_BYTES)?;
         if let FieldUpdate::Set(count) = self.rework {
             if !(1..=MAX_REWORK).contains(&count) {
                 return Err("Rework must be a whole number from 1 to 99".into());
@@ -534,14 +558,14 @@ impl UpdateRun {
             check_http_url("Current ticket", value)?;
         }
         if let FieldUpdate::Set(value) = &self.worktree {
-            check_text("Worktree", value, 4096)?;
+            check_text("Worktree", value, MAX_PATH_BYTES)?;
             if has_control(value) || !is_absolute_path(value) {
                 return Err("Worktree must be an absolute path without control characters".into());
             }
         }
         if let FieldUpdate::Set(value) = &self.branch {
             if value.is_empty()
-                || value.len() > 255
+                || value.len() > MAX_BRANCH_BYTES
                 || value.starts_with(['-', '/'])
                 || value.ends_with(['/', '.'])
                 || value.ends_with(".lock")
@@ -556,12 +580,18 @@ impl UpdateRun {
             }
         }
         if let FieldUpdate::Set(value) = &self.base_commit {
-            if !(7..=64).contains(&value.len()) || !value.chars().all(|c| c.is_ascii_hexdigit()) {
-                return Err("Base commit must be 7 to 64 hexadecimal characters".into());
+            if !COMMIT_ID_LENGTH.contains(&value.len())
+                || !value.chars().all(|c| c.is_ascii_hexdigit())
+            {
+                return Err(format!(
+                    "Base commit must be {} to {} hexadecimal characters",
+                    COMMIT_ID_LENGTH.start(),
+                    COMMIT_ID_LENGTH.end()
+                ));
             }
         }
         if let FieldUpdate::Set(value) = &self.spec {
-            check_reference("Spec", value, 4096)?;
+            check_reference("Spec", value, MAX_PATH_BYTES)?;
         }
         if let FieldUpdate::Set(value) = &self.pr {
             check_plain_url("Pull request", value)?;
@@ -571,14 +601,14 @@ impl UpdateRun {
                 return Err(format!("At most {MAX_TICKETS} tickets can be listed"));
             }
             for (index, ticket) in list.iter().enumerate() {
-                check_reference("Ticket reference", &ticket.reference, 4096)?;
+                check_reference("Ticket reference", &ticket.reference, MAX_PATH_BYTES)?;
                 if ticket.reference.chars().any(char::is_whitespace) {
                     return Err(format!(
                         "Ticket reference {:?} must not contain spaces",
                         ticket.reference
                     ));
                 }
-                check_text("Ticket title", &ticket.title, 500)?;
+                check_text("Ticket title", &ticket.title, MAX_TEXT_BYTES)?;
                 if list[..index]
                     .iter()
                     .any(|other| other.reference == ticket.reference)
@@ -587,30 +617,34 @@ impl UpdateRun {
                 }
             }
         }
-        if self.ticket_reports.len() > 100 {
-            return Err("At most 100 ticket reports can be submitted at once".into());
+        if self.ticket_reports.len() > MAX_REPORTS_PER_UPDATE {
+            return Err(format!(
+                "At most {MAX_REPORTS_PER_UPDATE} ticket reports can be submitted at once"
+            ));
         }
         for report in &self.ticket_reports {
-            check_reference("Ticket reference", &report.ticket, 4096)?;
+            check_reference("Ticket reference", &report.ticket, MAX_PATH_BYTES)?;
             if report.ticket.chars().any(char::is_whitespace) {
                 return Err("Ticket reference must not contain spaces".into());
             }
-            check_text("Ticket report", &report.text, 500)?;
+            check_text("Ticket report", &report.text, MAX_TEXT_BYTES)?;
             if has_control(&report.text) {
                 return Err("Ticket report must not contain control characters".into());
             }
         }
-        if self.run_reports.len() > 100 {
-            return Err("At most 100 run reports can be submitted at once".into());
+        if self.run_reports.len() > MAX_REPORTS_PER_UPDATE {
+            return Err(format!(
+                "At most {MAX_REPORTS_PER_UPDATE} run reports can be submitted at once"
+            ));
         }
         for report in &self.run_reports {
-            check_text("Run report", &report.text, 500)?;
+            check_text("Run report", &report.text, MAX_TEXT_BYTES)?;
             if has_control(&report.text) {
                 return Err("Run report must not contain control characters".into());
             }
         }
         for summary in self.summaries.values().flatten() {
-            check_text("Stage summary", summary, 2000)?;
+            check_text("Stage summary", summary, MAX_NOTE_BYTES)?;
         }
         for session in &self.sessions {
             check_session_id(session)?;
@@ -1023,8 +1057,10 @@ impl RunStore {
         {
             return Err(io_invalid("Only one ticket can be in progress at a time"));
         }
-        if next.ticket_reports.len() + update.ticket_reports.len() > 1000 {
-            return Err(io_invalid("A run can hold at most 1000 ticket reports"));
+        if next.ticket_reports.len() + update.ticket_reports.len() > MAX_REPORTS_PER_RUN {
+            return Err(io_invalid(format!(
+                "A run can hold at most {MAX_REPORTS_PER_RUN} ticket reports"
+            )));
         }
         for report in update.ticket_reports {
             if !next
@@ -1045,8 +1081,10 @@ impl RunStore {
                 at: updated_at,
             });
         }
-        if next.run_reports.len() + update.run_reports.len() > 1000 {
-            return Err(io_invalid("A run can hold at most 1000 run reports"));
+        if next.run_reports.len() + update.run_reports.len() > MAX_REPORTS_PER_RUN {
+            return Err(io_invalid(format!(
+                "A run can hold at most {MAX_REPORTS_PER_RUN} run reports"
+            )));
         }
         for report in update.run_reports {
             next.run_reports.push(RunReport {
