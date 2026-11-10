@@ -49,9 +49,14 @@ function Assert-FactoryExitCode([int]$ExitCode, [string]$Action) {
     throw "Factory $Action failed with exit code $ExitCode (0x$hex).$detail"
 }
 
-# True when Windows Defender or another antivirus blocked a file (0x800700E1, ERROR_VIRUS_INFECTED).
-function Test-FactoryAntivirusBlock([string]$Message) {
-    return $Message -match '(?i)contains a virus|potentially unwanted|800700E1'
+# True when Windows Defender or another antivirus blocked a file (ERROR_VIRUS_INFECTED, 225 or
+# 0x800700E1). Checks the codes as well as the English text, because Windows messages are localized.
+function Test-FactoryAntivirusBlock([Exception]$Exception) {
+    for ($e = $Exception; $e; $e = $e.InnerException) {
+        if ($e.HResult -eq -2147024671 -or ($e -is [ComponentModel.Win32Exception] -and $e.NativeErrorCode -eq 225)) { return $true }
+        if ($e.Message -match '(?i)contains a virus|800700E1') { return $true }
+    }
+    return $false
 }
 
 function Get-FactoryAntivirusAdvice([string]$Detail) {
@@ -77,10 +82,12 @@ function Install-Factory {
     $temp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
     New-Item -ItemType Directory -Path $temp | Out-Null
     try {
+        $downloaded = $false
         try {
             $download = Join-Path $temp 'factory.exe'
             $checksum = Join-Path $temp 'checksum'
             Invoke-WebRequest "$base/factory-windows-x86_64.exe" -OutFile $download
+            $downloaded = $true
             Invoke-WebRequest "$base/factory-windows-x86_64.exe.sha256" -OutFile $checksum
             $expected = ((Get-Content -Raw $checksum).Trim() -split '\s+')[0]
             $actual = (Get-FileHash -Algorithm SHA256 $download).Hash
@@ -89,7 +96,9 @@ function Install-Factory {
             Assert-FactoryExitCode $LASTEXITCODE 'startup'
         }
         catch {
-            if (Test-FactoryAntivirusBlock $_.Exception.Message) { throw (Get-FactoryAntivirusAdvice $_.Exception.Message) }
+            # Defender may also delete the file, so the next step fails with a different error.
+            $removed = $downloaded -and -not (Test-Path -LiteralPath $download)
+            if ($removed -or (Test-FactoryAntivirusBlock $_.Exception)) { throw (Get-FactoryAntivirusAdvice $_.Exception.Message) }
             throw
         }
         $bin = Join-Path $env:LOCALAPPDATA 'Programs\factory'

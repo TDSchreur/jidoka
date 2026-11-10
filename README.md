@@ -70,10 +70,10 @@ The dashboard footer and `factory --version` show which build is running: the ve
 
 ### Windows Defender blocks the download
 
-The Windows release is not code-signed yet. Windows Defender can therefore flag `factory.exe` as a false positive (for example `Trojan:Win32/Bearfoos.A!ml`; the `!ml` suffix marks a machine-learning heuristic, not a known malware signature) and remove it. The installer then stops with a message that names the antivirus block, and nothing is installed. `factory update` can be blocked the same way.
+The Windows release is not code-signed yet. Windows Defender can therefore flag `factory.exe` as a false positive (for example `Trojan:Win32/Bearfoos.A!ml`; the `!ml` suffix marks a machine-learning heuristic, not a known malware signature) and remove it. The installer then stops with a message that names the antivirus block, and nothing is installed.
 
 1. Check the file. Download `factory-windows-x86_64.exe` and `factory-windows-x86_64.exe.sha256` from the [latest release](https://github.com/TDSchreur/tds-factory2/releases/latest), and compare the hash: `(Get-FileHash -Algorithm SHA256 .\factory-windows-x86_64.exe).Hash` must equal the value in the `.sha256` file. Do not continue when it differs.
-2. Report the false positive to Microsoft at <https://www.microsoft.com/wdsi/filesubmission> as a software developer, with the detection name from Windows Security > Protection history. Microsoft usually clears a file within a few days.
+2. Report the false positive to Microsoft at <https://www.microsoft.com/wdsi/filesubmission> as a software developer, with the detection name from Windows Security > Protection history.
 3. Once the hash matches, restore the file from Windows Security > Protection history (Allow on device), or ask your administrator to allow it, and run the installer again. Prefer allowing this one file over excluding a whole folder such as `%TEMP%`.
 
 Each new release has a new hash, so it can be flagged again until the executable is signed.

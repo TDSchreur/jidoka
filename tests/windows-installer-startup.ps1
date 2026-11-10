@@ -35,6 +35,17 @@ try {
             if ($_.Exception.Message -notmatch '(?s)Defender.*blocked.*Nothing was installed.*filesubmission') { throw "Antivirus advice absent: $_" }
         }
     }
+    # Defender deletes the file after the download: the checksum step then fails with another error.
+    function Invoke-WebRequest {
+        param($Uri, $OutFile)
+        if ($Uri -like '*.sha256') { 'abc' | Set-Content $OutFile }
+    }
+    try { . (Join-Path $root 'scripts/install.ps1'); throw 'Expected failure' }
+    catch {
+        if ($_.Exception.Message -notmatch '(?s)Defender.*blocked') { throw "Removed file not reported as blocked: $_" }
+    }
+    if (-not (Test-FactoryAntivirusBlock ([ComponentModel.Win32Exception]::new(225)))) { throw 'Win32 error 225 not recognized' }
+    if (Test-FactoryAntivirusBlock ([InvalidOperationException]::new('Download checksum mismatch.'))) { throw 'Other errors must not match' }
     try { Assert-FactoryExitCode -1073741515 'startup'; throw 'Expected failure' }
     catch {
         if ($_.Exception.Message -notmatch '0xC0000135.*DLL') { throw "Missing DLL diagnostic absent: $_" }
