@@ -58,7 +58,7 @@ The dashboard and `jidoka run requests` read the same variable, with your system
 
 ## Automatic skills setup and refresh
 
-Ordinary commands can write outside the repository. When no install record exists, a command that finds the bundled skills already in an agent's default skills folder adopts them: it writes the install record and refreshes the skills. After an upgrade, the first command reinstalls the skills for the recorded agents and writes the new version to the record. Both write to the agents' skills folders and the Jidoka configuration directory, print one line on stderr, and never prompt. `jidoka install`, `jidoka uninstall`, `jidoka doctor`, `--help` and `--version` do not do this.
+Ordinary commands can write outside the repository. When no install record exists, a command that finds the bundled skills already in an agent's default skills folder adopts them: it writes the install record and refreshes the skills. After an upgrade, the first command reinstalls the skills for the recorded agents and writes the new version to the record. Both write to the agents' skills folders and the Jidoka configuration directory, print one line on stderr, and never prompt. When no record exists and no bundled skills are found, the command prints a hint to run `jidoka install`. If a refresh fails, it prints a warning and the next command retries it. If `install.json` cannot be read, the command prints a warning naming the file; fix it by running `jidoka install`. `jidoka install`, `jidoka uninstall`, `jidoka doctor`, `--help` and `--version` do not do this.
 
 ## Uninstall
 

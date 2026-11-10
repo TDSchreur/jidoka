@@ -82,6 +82,12 @@ struct Lock(PathBuf);
 impl Lock {
     /// `None` when another process holds a fresh lock or the lock cannot be created.
     fn take(path: PathBuf) -> Option<Self> {
+        Self::take_with(path, file_age)
+    }
+
+    /// `take` with the age of a file injected.
+    fn take_with(path: PathBuf, age: impl Fn(&Path) -> Option<Duration>) -> Option<Self> {
+        let is_stale = |file: &Path| age(file).is_some_and(|age| age > STALE_LOCK);
         for _ in 0..2 {
             match fs::OpenOptions::new()
                 .write(true)
@@ -90,19 +96,22 @@ impl Lock {
             {
                 Ok(_) => return Some(Self(path)),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    let stale = fs::metadata(&path)
-                        .and_then(|meta| meta.modified())
-                        .is_ok_and(|time| time.elapsed().is_ok_and(|age| age > STALE_LOCK));
-                    if !stale {
+                    if !is_stale(&path) {
                         return None;
                     }
-                    // Rename first: only one process can move the stale file away, and a lock
-                    // another process created in the meantime is never deleted by mistake.
+                    // Rename first: only one process can move the stale file away. If the moved
+                    // file turns out fresh, another process replaced the stale lock between our
+                    // check and the rename, so put it back. A tiny window remains in which that
+                    // process's lock is briefly missing; that is acceptable for a refresh lock.
                     let nanos = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .map_or(0, |age| age.as_nanos());
                     let aside = path.with_extension(format!("lock.{}.{nanos}", std::process::id()));
                     if fs::rename(&path, &aside).is_err() {
+                        return None;
+                    }
+                    if !is_stale(&aside) {
+                        let _ = fs::rename(&aside, &path);
                         return None;
                     }
                     let _ = fs::remove_file(&aside);
@@ -112,6 +121,14 @@ impl Lock {
         }
         None
     }
+}
+
+fn file_age(path: &Path) -> Option<Duration> {
+    fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()?
+        .elapsed()
+        .ok()
 }
 
 impl Drop for Lock {
@@ -420,5 +437,25 @@ mod tests {
             .unwrap();
         assert!(env.run(&["check"]).contains("updated skills"));
         assert!(!lock_path(&env).exists());
+    }
+
+    #[test]
+    fn a_fresh_lock_renamed_aside_is_put_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("install.lock");
+        fs::write(&path, "other").unwrap();
+        let calls = std::cell::Cell::new(0);
+        // Stale on the first check, fresh once moved aside: another process replaced it.
+        let age = |_: &Path| {
+            calls.set(calls.get() + 1);
+            Some(if calls.get() == 1 {
+                STALE_LOCK * 2
+            } else {
+                Duration::ZERO
+            })
+        };
+        assert!(Lock::take_with(path.clone(), age).is_none());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "other");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }

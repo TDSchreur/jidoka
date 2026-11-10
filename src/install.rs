@@ -99,10 +99,16 @@ pub(crate) fn validate_agent(name: &str) -> io::Result<()> {
     Err(unknown_agent(name))
 }
 
+/// `codex, claude, or copilot`.
+fn agent_list() -> String {
+    let (last, rest) = AGENTS.split_last().expect("AGENTS is not empty");
+    format!("{}, or {last}", rest.join(", "))
+}
+
 fn unknown_agent(name: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        format!("unknown agent {name:?}; use codex, claude, or copilot"),
+        format!("unknown agent {name:?}; use {}", agent_list()),
     )
 }
 
@@ -116,11 +122,11 @@ pub(crate) fn parse_agent_choice(answer: &str) -> Option<Vec<String>> {
     {
         let chosen: Vec<&str> = match entry {
             "all" => AGENTS.to_vec(),
-            "1" => vec!["codex"],
-            "2" => vec!["claude"],
-            "3" => vec!["copilot"],
             name if AGENTS.contains(&name) => vec![name],
-            _ => return None,
+            number => match number.parse::<usize>() {
+                Ok(n) if (1..=AGENTS.len()).contains(&n) => vec![AGENTS[n - 1]],
+                _ => return None,
+            },
         };
         for name in chosen {
             if !agents.iter().any(|known| known == name) {
@@ -186,9 +192,13 @@ fn ask_agents(
     output: &mut impl io::Write,
 ) -> io::Result<Vec<String>> {
     loop {
+        writeln!(output, "Install the Jidoka skills for which agents?")?;
+        for (index, name) in AGENTS.iter().enumerate() {
+            writeln!(output, "  {}) {name}", index + 1)?;
+        }
         write!(
             output,
-            "Install the Jidoka skills for which agents?\n  1) codex\n  2) claude\n  3) copilot\nEnter one or more numbers or names separated by commas, or \"all\": "
+            "Enter one or more numbers or names separated by commas, or \"all\": "
         )?;
         output.flush()?;
         let mut answer = String::new();
@@ -227,7 +237,7 @@ pub(crate) fn run(options: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
 /// The config dirs need `claude` among the agents.
 pub(crate) fn install(selection: &Selection) -> io::Result<()> {
     let var = |name: &str| env::var_os(name);
-    install_skills(selection, &home_dir()?, var, &mut io::stdout())?;
+    install_skills(selection, &home_dir()?, &var, &mut io::stdout())?;
     let path = crate::install_record::path_in(var).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -247,10 +257,10 @@ pub(crate) fn install(selection: &Selection) -> io::Result<()> {
 pub(crate) fn install_skills(
     selection: &Selection,
     home: &Path,
-    var: impl Fn(&str) -> Option<OsString>,
+    var: &impl Fn(&str) -> Option<OsString>,
     out: &mut impl io::Write,
 ) -> io::Result<()> {
-    install_skill_files(selection, home, &var, out)?;
+    install_skill_files(selection, home, var, out)?;
     ensure_default_policy(var, out)
 }
 
