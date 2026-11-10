@@ -108,6 +108,12 @@ fn remove_executable(home: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
+const FILTER_PATH: &str = r"$all = @($p -split ';'); $parts = @($all | Where-Object { $_.TrimEnd('\') -ine $env:JIDOKA_UNINSTALL_BIN.TrimEnd('\') })";
+
+#[cfg(windows)]
+const REMOVE_AFTER_EXIT: &str = r"$ErrorActionPreference = 'Stop'; Wait-Process -Id $env:JIDOKA_UNINSTALL_PID -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $env:JIDOKA_UNINSTALL_EXE -Force";
+
+#[cfg(windows)]
 fn remove_executable(_home: &Path) -> Result<(), String> {
     use std::process::{Command, Stdio};
     let base = env::var_os("LOCALAPPDATA").ok_or("cannot find LOCALAPPDATA")?;
@@ -128,8 +134,14 @@ fn remove_executable(_home: &Path) -> Result<(), String> {
             .join("WindowsPowerShell")
             .join("v1.0")
             .join("powershell.exe");
-    let status = Command::new(&powershell).args(["-NoProfile", "-NonInteractive", "-Command", r#"$ErrorActionPreference = 'Stop'; $p = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($null -ne $p) { $all = @($p -split ';'); $parts = @($all | Where-Object { $_.TrimEnd('\') -ine $env:JIDOKA_UNINSTALL_BIN.TrimEnd('\') }); if ($parts.Count -ne $all.Count) { [Environment]::SetEnvironmentVariable('Path', ($parts -join ';'), 'User') } }"#])
-        .env("JIDOKA_UNINSTALL_BIN", &bin).status().map_err(|error| format!("cannot start PowerShell to update user PATH: {error}"))?;
+    let path_script = format!(
+        "$ErrorActionPreference = 'Stop'; $p = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($null -ne $p) {{ {FILTER_PATH}; if ($parts.Count -ne $all.Count) {{ [Environment]::SetEnvironmentVariable('Path', ($parts -join ';'), 'User') }} }}"
+    );
+    let status = Command::new(&powershell)
+        .args(["-NoProfile", "-NonInteractive", "-Command", &path_script])
+        .env("JIDOKA_UNINSTALL_BIN", &bin)
+        .status()
+        .map_err(|error| format!("cannot start PowerShell to update user PATH: {error}"))?;
     if !status.success() {
         return Err(format!("cannot remove {} from user PATH", bin.display()));
     }
@@ -139,10 +151,134 @@ fn remove_executable(_home: &Path) -> Result<(), String> {
         }
         return Ok(());
     }
-    Command::new(powershell).args(["-NoProfile", "-NonInteractive", "-Command", r#"$ErrorActionPreference = 'Stop'; Wait-Process -Id $env:JIDOKA_UNINSTALL_PID -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $env:JIDOKA_UNINSTALL_EXE -Force"#])
-        .env("JIDOKA_UNINSTALL_PID", std::process::id().to_string()).env("JIDOKA_UNINSTALL_EXE", &target)
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+    Command::new(powershell)
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            REMOVE_AFTER_EXIT,
+        ])
+        .env("JIDOKA_UNINSTALL_PID", std::process::id().to_string())
+        .env("JIDOKA_UNINSTALL_EXE", &target)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
         .map_err(|error| format!("cannot schedule removal of {}: {error}", target.display()))?;
     println!("Scheduled removal: {}", target.display());
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::{FILTER_PATH, REMOVE_AFTER_EXIT};
+    use std::{
+        fs,
+        process::{Child, Command, Stdio},
+        thread,
+        time::{Duration, Instant},
+    };
+
+    fn powershell() -> Command {
+        let root = std::env::var_os("SystemRoot").expect("SystemRoot");
+        Command::new(
+            std::path::PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+        )
+    }
+
+    #[test]
+    fn filters_only_matching_path_entries() {
+        let script = format!(
+            "$p = $env:JIDOKA_TEST_PATH; {FILTER_PATH}; [Console]::Out.Write(($parts -join ';'))"
+        );
+        let output = powershell()
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .env("JIDOKA_UNINSTALL_BIN", r"C:\Apps\Jidoka")
+            .env(
+                "JIDOKA_TEST_PATH",
+                r"C:\Other;C:\APPS\JIDOKA\;C:\Apps\JidokaMore;C:\Apps\Jidoka;C:\Last",
+            )
+            .output()
+            .expect("run PATH filter");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            r"C:\Other;C:\Apps\JidokaMore;C:\Last"
+        );
+    }
+
+    struct Process(Child);
+    impl Drop for Process {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn deletes_executable_only_after_process_exits() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("jidoka [test].exe");
+        fs::write(&target, "fixture").unwrap();
+        let mut process = Process(
+            powershell()
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "$null = [Console]::ReadLine()",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let ready = dir.path().join("ready");
+        let script = format!(
+            "[IO.File]::WriteAllText($env:JIDOKA_TEST_READY, 'ready'); {REMOVE_AFTER_EXIT}"
+        );
+        let mut cleanup = Process(
+            powershell()
+                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                .env("JIDOKA_TEST_READY", &ready)
+                .env("JIDOKA_UNINSTALL_PID", process.0.id().to_string())
+                .env("JIDOKA_UNINSTALL_EXE", &target)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !ready.exists() {
+            assert!(
+                cleanup.0.try_wait().unwrap().is_none(),
+                "cleanup exited before becoming ready"
+            );
+            assert!(Instant::now() < deadline, "cleanup did not become ready");
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(target.exists());
+        assert!(
+            cleanup.0.try_wait().unwrap().is_none(),
+            "cleanup exited before the process"
+        );
+        drop(process.0.stdin.take());
+        assert!(process.0.wait().unwrap().success());
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Some(status) = cleanup.0.try_wait().unwrap() {
+                assert!(status.success(), "cleanup process failed: {status}");
+                break;
+            }
+            assert!(Instant::now() < deadline, "cleanup process did not finish");
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!target.exists());
+    }
 }
