@@ -725,6 +725,15 @@ mod test_support {
             Self(tempfile::tempdir().unwrap())
         }
     }
+
+    /// Makes `path` unreadable. Returns false when it can still be read anyway (running as root), so the
+    /// caller skips its check instead of failing.
+    #[cfg(unix)]
+    pub(crate) fn make_unreadable(path: &std::path::Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::read(path).is_err()
+    }
 }
 
 #[cfg(test)]

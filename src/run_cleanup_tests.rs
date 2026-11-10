@@ -295,6 +295,29 @@ fn a_pull_request_from_another_branch_refuses() {
 }
 
 #[test]
+fn a_failing_branch_lookup_refuses_and_says_what_git_said() {
+    struct BrokenGit;
+    impl Git for BrokenGit {
+        fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
+            if args.contains(&"symbolic-ref") {
+                Err("fatal: unable to read HEAD\nsecond line".into())
+            } else {
+                TestGit.git(dir, args)
+            }
+        }
+        fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
+            TestGit.status(dir, args)
+        }
+    }
+    let fx = Fixture::new();
+    let message = refusal(cleanup(&fx.recorded(), &fx.gh(), &BrokenGit, &fx.root));
+    assert!(message.contains("not on the recorded branch"), "{message}");
+    assert!(message.contains("unable to read HEAD"), "{message}");
+    assert!(!message.contains("second line"), "{message}");
+    fx.assert_untouched();
+}
+
+#[test]
 fn a_worktree_on_another_branch_or_detached_refuses() {
     let fx = Fixture::new();
     run_git(&fx.wt, &["checkout", "-q", "-b", "elsewhere"]);

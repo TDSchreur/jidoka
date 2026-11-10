@@ -168,9 +168,15 @@ pub(crate) fn cleanup(
         }
         if let Some(branch) = run.branch.as_deref() {
             let on = git.git(Path::new(path), &["symbolic-ref", "-q", "HEAD"]);
-            if on.ok().as_deref() != Some(format!("refs/heads/{branch}").as_str()) {
+            if on.as_deref().ok() != Some(format!("refs/heads/{branch}").as_str()) {
+                let reason = match &on {
+                    Err(error) if !error.trim().is_empty() => {
+                        format!(" Git said: {}", shown(first_line(error)))
+                    }
+                    _ => String::new(),
+                };
                 return refuse(format!(
-                    "The worktree {} is not on the recorded branch {} (it is detached or on another branch). Nothing was removed.",
+                    "The worktree {} is not on the recorded branch {} (it is detached or on another branch). Nothing was removed.{reason}",
                     shown(path),
                     shown(branch)
                 ));

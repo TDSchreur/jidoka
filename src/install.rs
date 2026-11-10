@@ -388,8 +388,16 @@ fn replace_dir(staging: &Path, dir: &Path) -> io::Result<()> {
     remove_if_exists(&previous)?;
     fs::rename(dir, &previous)?;
     if let Err(error) = fs::rename(staging, dir) {
-        // Best-effort rollback; the rename error is the one returned.
-        let _ = fs::rename(&previous, dir);
+        // The rename error is the one returned; a failed rollback is added to it.
+        if let Err(rollback) = fs::rename(&previous, dir) {
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "{error}; the previous copy at {} could not be restored: {rollback}",
+                    previous.display()
+                ),
+            ));
+        }
         return Err(error);
     }
     fs::remove_dir_all(previous)

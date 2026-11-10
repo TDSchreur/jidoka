@@ -815,8 +815,8 @@ impl ReadPass<'_> {
                 note("a session log larger than 64 MiB was not read");
                 None
             }
-            Err(_) => {
-                note("a session log could not be read");
+            Err(error) => {
+                note(&format!("a session log could not be read: {error}"));
                 None
             }
         }

@@ -709,12 +709,20 @@ impl Collector {
                 let (store, id, settings) = (store.clone(), id.clone(), settings.clone());
                 #[cfg(test)]
                 passes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let _ = rocket::tokio::task::spawn_blocking(move || {
-                    if let Err(error) = collect_and_store(&store, &id, &settings) {
-                        eprintln!("Usage was not collected for run {id}: {error}");
+                let joined = rocket::tokio::task::spawn_blocking({
+                    let id = id.clone();
+                    move || {
+                        if let Err(error) = collect_and_store(&store, &id, &settings) {
+                            eprintln!("Usage was not collected for run {id}: {error}");
+                        }
                     }
                 })
                 .await;
+                if let Err(error) = joined {
+                    eprintln!(
+                        "Usage was not collected for run {id}: the collection stopped: {error}"
+                    );
+                }
             }
             if let Ok(mut chains) = chains.lock()
                 && chains.get(&id) == Some(&generation)
@@ -862,7 +870,7 @@ fn watch_pr_states(
     rocket::tokio::spawn(async move {
         loop {
             let (store, tool) = (store.clone(), tool.clone());
-            let _ = rocket::tokio::task::spawn_blocking(move || {
+            let joined = rocket::tokio::task::spawn_blocking(move || {
                 let now = match crate::run::updated_now() {
                     Ok(now) => now,
                     Err(error) => return eprintln!("Pull request states were not read: {error}"),
@@ -872,6 +880,9 @@ fn watch_pr_states(
                 }
             })
             .await;
+            if let Err(error) = joined {
+                eprintln!("Pull request states were not read: the read stopped: {error}");
+            }
             rocket::tokio::time::sleep(pass).await;
         }
     })
