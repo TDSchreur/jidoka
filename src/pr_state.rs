@@ -243,6 +243,21 @@ pub(crate) fn follow_up(run: &Run, state: PrState) -> Option<UpdateRun> {
     Some(update)
 }
 
+/// Says what a read state is and, when `changed`, what became of the run.
+pub(crate) fn describe(state: PrState, changed: bool) -> String {
+    let mut text = format!("Pull request is {}.\n", state.label());
+    if changed {
+        text.push_str(match state {
+            PrState::Merged => {
+                "The run is finished. Run `factory run cleanup <id>` to remove its worktree.\n"
+            }
+            PrState::Closed => "The run is blocked: the pull request was closed without merging.\n",
+            PrState::Open | PrState::Draft | PrState::Unknown => "",
+        });
+    }
+    text
+}
+
 /// Reads the pull request of `run` from its host, stores the state and applies what it means for the run.
 fn sync(store: &RunStore, tool: &dyn Gh, run: &Run, url: &str, now: u64) -> io::Result<PrStatus> {
     let (state, reason) = match read(tool, url) {
@@ -256,7 +271,12 @@ fn sync(store: &RunStore, tool: &dyn Gh, run: &Run, url: &str, now: u64) -> io::
         checked_at: now,
     };
     store.set_pr_status(&run.id, status.clone())?;
-    if let Some(update) = follow_up(run, state) {
+    // The host answer may take seconds; decide from the run as it is now, not as it was when asked.
+    let current = store
+        .list()?
+        .into_iter()
+        .find(|current| current.id == run.id);
+    if let Some(update) = current.as_ref().and_then(|run| follow_up(run, state)) {
         store.update(&run.id, update)?;
     }
     Ok(status)
