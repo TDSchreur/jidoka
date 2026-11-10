@@ -97,7 +97,7 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch
 
 ## Acknowledgements
 
-Many of the bundled skills started in [mattpocock/skills](https://github.com/mattpocock/skills) and [github/awesome-copilot](https://github.com/github/awesome-copilot); [skills/README.md](skills/README.md) lists their origins. The dashboard uses [Preact](https://preactjs.com) and [htm](https://github.com/developit/htm). Third-party licenses are in [`third-party/`](third-party/). Jidoka grew out of the earlier [TDS Factory](https://github.com/TDSchreur/tds-factory).
+Many of the bundled skills started in [mattpocock/skills](https://github.com/mattpocock/skills) and [github/awesome-copilot](https://github.com/github/awesome-copilot); [skills/README.md](skills/README.md) lists their origins. The dashboard uses [Preact](https://preactjs.com) and [htm](https://github.com/developit/htm). Third-party licenses are in [`third-party/`](third-party/). Jidoka grew out of the earlier [tds-factory project](https://github.com/TDSchreur/tds-factory).
 
 ## License
 

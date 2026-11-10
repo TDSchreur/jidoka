@@ -3531,13 +3531,15 @@ mod tests {
         assert!(
             heading.contains("aria-hidden=\"true\"") && heading.contains("focusable=\"false\"")
         );
-        assert!(heading.contains("<span class=\"visually-hidden\">Jidoka</span>"));
-        // Its gradient has an id of its own, and only the dark parts follow the theme.
+        // The wordmark next to the logo is visible text in the theme's ink colour.
+        assert!(heading.contains("<span class=\"wordmark\">Jidoka</span>"));
+        // Its gradient has an id of its own.
         assert!(
-            heading.contains("id=\"tds-logo-blue\"") && heading.contains("url(#tds-logo-blue)")
+            heading.contains("id=\"jidoka-logo-blue\"")
+                && heading.contains("url(#jidoka-logo-blue)")
         );
         let css = stylesheet().await;
-        assert!(css.contains(".logo .ink { fill: var(--color-slate); }"));
+        assert!(css.contains("color: var(--color-slate)") && css.contains(".wordmark {"));
     }
 
     #[rocket::async_test]
