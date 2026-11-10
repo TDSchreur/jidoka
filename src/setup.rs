@@ -87,6 +87,15 @@ impl Lock {
 
     /// `take` with the age of a file injected.
     fn take_with(path: PathBuf, age: impl Fn(&Path) -> Option<Duration>) -> Option<Self> {
+        Self::take_hooked(path, age, || {})
+    }
+
+    /// `take_with` that runs `after_rename` once a stale lock has been moved aside.
+    fn take_hooked(
+        path: PathBuf,
+        age: impl Fn(&Path) -> Option<Duration>,
+        after_rename: impl Fn(),
+    ) -> Option<Self> {
         let is_stale = |file: &Path| age(file).is_some_and(|age| age > STALE_LOCK);
         for _ in 0..2 {
             match fs::OpenOptions::new()
@@ -101,8 +110,10 @@ impl Lock {
                     }
                     // Rename first: only one process can move the stale file away. If the moved
                     // file turns out fresh, another process replaced the stale lock between our
-                    // check and the rename, so put it back. A tiny window remains in which that
-                    // process's lock is briefly missing; that is acceptable for a refresh lock.
+                    // check and the rename, so try to put it back with a hard link, which never
+                    // replaces a lock created since. A tiny window remains in which that
+                    // process's lock is briefly missing, and if someone else took the lock in
+                    // it, the moved-aside lock is dropped; that is acceptable for a refresh lock.
                     let nanos = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .map_or(0, |age| age.as_nanos());
@@ -110,8 +121,10 @@ impl Lock {
                     if fs::rename(&path, &aside).is_err() {
                         return None;
                     }
+                    after_rename();
                     if !is_stale(&aside) {
-                        let _ = fs::rename(&aside, &path);
+                        let _ = fs::hard_link(&aside, &path);
+                        let _ = fs::remove_file(&aside);
                         return None;
                     }
                     let _ = fs::remove_file(&aside);
@@ -455,6 +468,26 @@ mod tests {
             })
         };
         assert!(Lock::take_with(path.clone(), age).is_none());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "other");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_fresh_lock_is_never_replaced_when_putting_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("install.lock");
+        fs::write(&path, "moved").unwrap();
+        let calls = std::cell::Cell::new(0);
+        let age = |_: &Path| {
+            calls.set(calls.get() + 1);
+            Some(if calls.get() == 1 {
+                STALE_LOCK * 2
+            } else {
+                Duration::ZERO
+            })
+        };
+        let place_other = || fs::write(&path, "other").unwrap();
+        assert!(Lock::take_hooked(path.clone(), age, place_other).is_none());
         assert_eq!(fs::read_to_string(&path).unwrap(), "other");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }

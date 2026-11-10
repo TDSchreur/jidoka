@@ -63,3 +63,94 @@ fn a_corrupt_record_does_not_block_uninstall_with_an_agent() {
     assert!(output.status.success(), "{output:?}");
     assert!(!record.exists());
 }
+
+fn install(home: &Path, agents: &str, dir: &Path) {
+    let output = jidoka(
+        home,
+        &[
+            "install",
+            "--agent",
+            agents,
+            "--config-dir",
+            dir.to_str().unwrap(),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
+fn a_partial_uninstall_keeps_the_record_minus_the_agent_and_keeps_the_binary() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join("cc");
+    install(home.path(), "claude,codex", &dir);
+    let record = home.path().join("config/jidoka/install.json");
+    let binary = home.path().join(".local/bin/jidoka");
+    std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+    std::fs::write(&binary, "binary").unwrap();
+    let output = jidoka(home.path(), &["uninstall", "--agent", "codex"]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("claude") && stdout.contains("remain"),
+        "{stdout}"
+    );
+    let text = std::fs::read_to_string(&record).unwrap();
+    assert!(text.contains("claude") && !text.contains("codex"), "{text}");
+    assert!(dir.join("skills/jidoka").exists());
+    assert!(binary.exists());
+}
+
+#[test]
+fn a_partial_uninstall_of_one_config_dir_keeps_the_other() {
+    let home = tempfile::tempdir().unwrap();
+    let (one, two) = (home.path().join("one"), home.path().join("two"));
+    let output = jidoka(
+        home.path(),
+        &[
+            "install",
+            "--agent",
+            "claude",
+            "--config-dir",
+            one.to_str().unwrap(),
+            "--config-dir",
+            two.to_str().unwrap(),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let record = home.path().join("config/jidoka/install.json");
+    let output = jidoka(
+        home.path(),
+        &[
+            "uninstall",
+            "--agent",
+            "claude",
+            "--config-dir",
+            one.to_str().unwrap(),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let text = std::fs::read_to_string(&record).unwrap();
+    assert!(text.contains("two") && !text.contains("one"), "{text}");
+    assert!(two.join("skills/jidoka").exists());
+}
+
+#[test]
+fn removing_the_last_agent_removes_the_record() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join("cc");
+    install(home.path(), "claude,codex", &dir);
+    let record = home.path().join("config/jidoka/install.json");
+    let first = jidoka(
+        home.path(),
+        &["uninstall", "--agent", "codex", "--keep-data"],
+    );
+    assert!(first.status.success(), "{first:?}");
+    assert!(record.exists());
+    let last = jidoka(
+        home.path(),
+        &["uninstall", "--agent", "claude", "--keep-data"],
+    );
+    assert!(last.status.success(), "{last:?}");
+    assert!(!record.exists());
+    assert!(String::from_utf8_lossy(&last.stdout).contains("package manager"));
+}

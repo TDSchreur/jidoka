@@ -1,3 +1,3 @@
 ## Changed
 
-- `jidoka uninstall` uses the agents and Claude configuration directories recorded by `jidoka install` when `--agent` is omitted, removes the install record, and removes the model routing policy together with the run data. It deletes the binary (and the Windows PATH entry) only when the install script put it in place.
+- `jidoka uninstall` uses the agents and Claude configuration directories recorded by `jidoka install` when `--agent` is omitted, removes the install record, and removes the model routing policy together with the run data. It deletes the binary (and the Windows PATH entry) only when the install script put it in place. When only some recorded agents or Claude configuration directories are removed, it keeps the install record without them, keeps the binary and the run data, and prints which agents remain.
