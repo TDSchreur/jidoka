@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "factory"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "getrandom",
  "percent-encoding",
