@@ -942,44 +942,87 @@ fn nothing_in_the_command_deletes_resets_checks_out_or_cleans() {
     );
     fs::write(project.repo.join("a.txt"), "edited\n").unwrap();
     fs::write(project.repo.join("untracked.txt"), "mine\n").unwrap();
-    let snapshot = |project: &Project| {
-        [
-            git(&project.repo, &["symbolic-ref", "HEAD"]),
-            git(&project.repo, &["rev-parse", "HEAD", "keep"]),
-            git(&project.repo, &["status", "--porcelain"]),
-            git(&project.repo, &["stash", "list"]),
-            git(&project.repo, &["branch", "--list"]),
-            git(&project.repo, &["worktree", "list", "--porcelain"]),
-            fs::read_to_string(project.repo.join("a.txt")).unwrap(),
-            fs::read_to_string(project.repo.join("untracked.txt")).unwrap(),
-            project.origin_commit("develop"),
-            project.origin_commit("release"),
-        ]
-    };
-    let before = snapshot(&project);
+    // A branch that exists without a worktree: a resume gives it one.
+    git(&project.repo, &["branch", "bx", "origin/develop"]);
 
-    begin(
-        &project.repo,
-        &options("Add login"),
-        &FakeApi::default(),
-        None,
-        None,
-    )
-    .unwrap();
-
-    let after = snapshot(&project);
-    // The only difference is the new branch and its worktree.
-    for (index, (was, is)) in before.iter().zip(&after).enumerate() {
-        if index == 4 {
-            assert!(is.contains("add-login"), "{is}");
-            for line in was.lines() {
-                assert!(is.contains(line.trim()), "{line}");
-            }
-        } else if index == 5 {
-            assert!(is.starts_with(was.as_str()), "{was}\n---\n{is}");
+    // A fresh run, a second run whose name collides with the first, and a resume of a run without a worktree.
+    let mut previous = Snapshot::of(&project);
+    for (step, run_options) in [
+        ("a fresh run", options("Add login")),
+        ("a name collision", options("Add login")),
+        ("a resume", resuming("Add login", "bx")),
+    ] {
+        let step_api = if step == "a resume" {
+            api_with_run("Add login")
         } else {
-            assert_eq!(was, is, "snapshot item {index}");
+            FakeApi::default()
+        };
+        begin(&project.repo, &run_options, &step_api, None, None)
+            .unwrap_or_else(|error| panic!("{step}: {error:?}"));
+        let now = Snapshot::of(&project);
+        previous.assert_only_added_branches_and_worktrees(&now, step);
+        previous = now;
+    }
+}
+
+/// What a run start must leave as it was, plus the branches and worktrees it may add.
+struct Snapshot {
+    head: String,
+    tips: String,
+    status: String,
+    stashes: String,
+    branches: String,
+    worktrees: String,
+    tracked_file: String,
+    untracked_file: String,
+    origin_develop: String,
+    origin_release: String,
+}
+
+impl Snapshot {
+    fn of(project: &Project) -> Self {
+        Self {
+            head: git(&project.repo, &["symbolic-ref", "HEAD"]),
+            tips: git(&project.repo, &["rev-parse", "HEAD", "keep"]),
+            status: git(&project.repo, &["status", "--porcelain"]),
+            stashes: git(&project.repo, &["stash", "list"]),
+            branches: git(&project.repo, &["branch", "--list"]),
+            worktrees: git(&project.repo, &["worktree", "list", "--porcelain"]),
+            tracked_file: fs::read_to_string(project.repo.join("a.txt")).unwrap(),
+            untracked_file: fs::read_to_string(project.repo.join("untracked.txt")).unwrap(),
+            origin_develop: project.origin_commit("develop"),
+            origin_release: project.origin_commit("release"),
         }
+    }
+
+    /// Everything is the same in `after`, except that branches and worktrees may have been added.
+    fn assert_only_added_branches_and_worktrees(&self, after: &Self, step: &str) {
+        assert_eq!(self.head, after.head, "{step}: HEAD");
+        assert_eq!(self.tips, after.tips, "{step}: branch tips");
+        assert_eq!(self.status, after.status, "{step}: status");
+        assert_eq!(self.stashes, after.stashes, "{step}: stashes");
+        assert_eq!(
+            self.tracked_file, after.tracked_file,
+            "{step}: tracked file"
+        );
+        assert_eq!(
+            self.untracked_file, after.untracked_file,
+            "{step}: untracked file"
+        );
+        assert_eq!(self.origin_develop, after.origin_develop, "{step}: develop");
+        assert_eq!(self.origin_release, after.origin_release, "{step}: release");
+        for line in self.branches.lines() {
+            assert!(
+                after.branches.contains(line.trim()),
+                "{step}: branch {line} is gone"
+            );
+        }
+        assert!(
+            after.worktrees.starts_with(self.worktrees.as_str()),
+            "{step}: worktrees\n{}\n---\n{}",
+            self.worktrees,
+            after.worktrees
+        );
     }
 }
 

@@ -13,9 +13,10 @@ const MAX_FILE_BYTES: u64 = LENGTH as u64 + 2;
 /// system gives no random bytes.
 pub(crate) fn random() -> Result<String, String> {
     let mut bytes = [0u8; BYTES];
-    getrandom::fill(&mut bytes).map_err(|_| {
-        "cannot start the dashboard: the operating system gave no random bytes for its tokens"
-            .to_string()
+    getrandom::fill(&mut bytes).map_err(|error| {
+        format!(
+            "cannot start the dashboard: the operating system gave no random bytes for its tokens: {error}"
+        )
     })?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }

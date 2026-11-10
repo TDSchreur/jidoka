@@ -146,7 +146,6 @@ impl Default for Options {
     }
 }
 
-/// `90s`, `30m`, `2h` or a plain number of seconds, from one second to 24 hours.
 /// Seconds in a minute, the `m` unit of `--timeout`.
 const SECONDS_PER_MINUTE: u64 = 60;
 /// Seconds in an hour, the `h` unit of `--timeout`.
@@ -155,6 +154,7 @@ const SECONDS_PER_HOUR: u64 = 3600;
 /// A failing check's name is cut to this many characters so one long matrix name cannot flood the dashboard.
 const MAX_CHECK_NAME_CHARS: usize = 50;
 
+/// `90s`, `30m`, `2h` or a plain number of seconds, from one second to 24 hours.
 fn parse_duration(text: &str) -> Result<Duration, String> {
     let invalid =
         || format!("Invalid --timeout {text:?}: use a number with s, m or h, such as 90s or 30m");

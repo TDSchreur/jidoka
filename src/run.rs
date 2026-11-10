@@ -34,8 +34,9 @@ const MAX_NOTE_BYTES: usize = 2000;
 const MAX_BRANCH_BYTES: usize = 255;
 /// Shortest and longest agent session id, in characters: a UUID is 36, and 8 rules out accidental short values.
 const SESSION_ID_LENGTH: std::ops::RangeInclusive<usize> = 8..=100;
-/// Shortest and longest commit id, in hex digits: 7 is git's default abbreviation, 64 a full SHA-256 id.
-const COMMIT_ID_LENGTH: std::ops::RangeInclusive<usize> = 7..=64;
+/// Shortest and longest base commit a run update accepts, in hex digits: 7 is git's default abbreviation and 64 a
+/// full SHA-256 id. Stricter than `run_check`'s `ACCEPTED_COMMIT_ID_LENGTH`, which must also read older records.
+const BASE_COMMIT_LENGTH: std::ops::RangeInclusive<usize> = 7..=64;
 /// Ticket reports or run reports one update may submit; matches `MAX_TICKETS`, one report per ticket.
 const MAX_REPORTS_PER_UPDATE: usize = 100;
 /// Ticket reports or run reports a run may hold in total, so a long run cannot grow its record without bound.
@@ -580,13 +581,13 @@ impl UpdateRun {
             }
         }
         if let FieldUpdate::Set(value) = &self.base_commit {
-            if !COMMIT_ID_LENGTH.contains(&value.len())
+            if !BASE_COMMIT_LENGTH.contains(&value.len())
                 || !value.chars().all(|c| c.is_ascii_hexdigit())
             {
                 return Err(format!(
                     "Base commit must be {} to {} hexadecimal characters",
-                    COMMIT_ID_LENGTH.start(),
-                    COMMIT_ID_LENGTH.end()
+                    BASE_COMMIT_LENGTH.start(),
+                    BASE_COMMIT_LENGTH.end()
                 ));
             }
         }

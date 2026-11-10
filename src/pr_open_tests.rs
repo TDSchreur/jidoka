@@ -644,17 +644,9 @@ fn the_text_and_the_json_say_the_same_and_are_printable() {
     assert!(render(&again, &run_of(&Project::new())).starts_with("Pull request already open: "));
 }
 
-#[test]
-fn nothing_in_the_command_forces_a_push_or_changes_the_work() {
-    let project = Project::new();
-    let gh = FakeGh::new_pr(URL);
-    open(
-        &run_of(&project),
-        &options(&project),
-        &gh,
-        &FakeApi::default(),
-    )
-    .unwrap();
+/// Asserts that the git commands and the `gh`/`az` calls of one `open` push the branch and never force, reset,
+/// switch, clean, commit, add, fetch or merge.
+fn assert_pushes_without_forcing_or_changing_the_work(gh: &FakeGh) {
     let forbidden = [
         "--force",
         "-f",
@@ -681,6 +673,65 @@ fn nothing_in_the_command_forces_a_push_or_changes_the_work() {
         for word in command.split_whitespace() {
             assert!(!forbidden.contains(&word), "{command}");
         }
+    }
+}
+
+/// Builds the fake `gh`/`az` of one scenario.
+type GhScript = Box<dyn Fn() -> FakeGh>;
+
+#[test]
+fn nothing_in_the_command_forces_a_push_or_changes_the_work() {
+    let azure_url = "https://dev.azure.com/dutchworkz/Projects/_git/Kahoot";
+    let scenarios: [(&str, GhScript); 4] = [
+        (
+            "a new GitHub pull request",
+            Box::new(|| FakeGh::new_pr(URL)),
+        ),
+        (
+            "an open GitHub pull request",
+            Box::new(|| {
+                let gh = FakeGh::default();
+                gh.list.borrow_mut().push_back(ok(&format!(
+                    r#"[{{"url":"{URL}","baseRefName":"develop"}}]"#
+                )));
+                gh
+            }),
+        ),
+        (
+            "a new Azure pull request",
+            Box::new(move || {
+                let gh = FakeGh::default();
+                *gh.remote_url.borrow_mut() = Some(azure_url.into());
+                gh.list.borrow_mut().push_back(ok("[]"));
+                gh.create.borrow_mut().push_back(ok(
+                    r#"{"pullRequestId":17,"repository":{"id":"96a543bd-0277-4ba4-acc6-2e45294010fe"}}"#,
+                ));
+                gh
+            }),
+        ),
+        (
+            "an open Azure pull request",
+            Box::new(move || {
+                let gh = FakeGh::default();
+                *gh.remote_url.borrow_mut() = Some(azure_url.into());
+                gh.list.borrow_mut().push_back(ok(
+                    r#"[{"pullRequestId":3,"repository":{"id":"target"},"targetRefName":"refs/heads/develop"}]"#,
+                ));
+                gh
+            }),
+        ),
+    ];
+    for (name, make) in scenarios {
+        let project = Project::new();
+        let gh = make();
+        open(
+            &run_of(&project),
+            &options(&project),
+            &gh,
+            &FakeApi::default(),
+        )
+        .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+        assert_pushes_without_forcing_or_changing_the_work(&gh);
     }
 }
 

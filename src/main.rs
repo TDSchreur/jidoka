@@ -36,7 +36,6 @@ use std::{env, io, path::PathBuf, process::ExitCode};
 
 const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...] [--config-dir <path>]...\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr sync <run-id> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run check <run-id> [--json]\n  factory run cleanup <run-id> [--reinstall] [--config-dir <path>]...\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
-/// Names a build: the version for official releases, the commit for any other build.
 /// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
 const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -46,6 +45,7 @@ const RUN_REQUESTS_DEADLINE: std::time::Duration = std::time::Duration::from_sec
 /// How long one dashboard usage collection may read logs, so the dashboard stays responsive.
 const DASHBOARD_USAGE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
     if release {
         version.to_string()
@@ -117,7 +117,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
         ["run", "start", title, options @ ..] => {
             let host = routing::parse_start_options(options)
                 .map_err(|error| format!("{error}\n{HELP}"))?;
-            let dir = env::current_dir().map_err(|e| e.to_string())?;
+            let dir = env::current_dir()?;
             let repository = repository::canonical_repository(&dir);
             let resolution = resolve_routing(host)?;
             println!(
@@ -328,7 +328,7 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
         branch: run.branch.clone(),
         pr: run.pr.clone(),
     };
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let cwd = std::env::current_dir()?;
     let cleaned = run_cleanup::cleanup(&recorded, &pr_wait::RealGh, &pr_sync::RealGit, &cwd)
         .map_err(|problem| inspect::shown(&problem.0))?;
     print!("{}", run_cleanup::render(&recorded, cleaned));
@@ -353,7 +353,7 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
         )?;
     }
     if let (Some(repository), Some(pr)) = (recorded.repository.as_deref(), recorded.pr.as_deref()) {
-        let home = install::home_dir().map_err(|e| e.to_string())?;
+        let home = install::home_dir()?;
         let var = |name: &str| env::var_os(name);
         let agents = update::installed_agents(&home, &config_dirs, var);
         let claude_dirs = install::claude_config_dirs(&config_dirs, &home, var)?;
@@ -516,7 +516,7 @@ impl run_begin::RunApi for ServerApi {
 /// `factory run begin <title>`, or `--run <id>` to resume: creates a run and its workspace.
 fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::error::Error>> {
     let host = parsed.agent.as_deref().and_then(routing::Host::parse);
-    let dir = env::current_dir().map_err(|e| e.to_string())?;
+    let dir = env::current_dir()?;
     // A resumed run already has its model routing; the policy is read only when a run is created.
     let resolution = if parsed.run.is_some() {
         routing::Resolution::default()
@@ -625,13 +625,13 @@ fn dashboard_url(port: u16, project: &str) -> String {
 }
 
 /// Serves the dashboard, or, when a Factory dashboard already answers on the port, prints its URL.
-fn dashboard(port: u16, usage: bool) -> Result<(), String> {
+fn dashboard(port: u16, usage: bool) -> Result<(), Box<dyn std::error::Error>> {
     // A Project is identified by its repository, so a linked worktree opens its main checkout's row.
-    let dir = env::current_dir().map_err(|e| e.to_string())?;
+    let dir = env::current_dir()?;
     let project =
         repository::canonical_repository(&dir).unwrap_or_else(|| dir.display().to_string());
     let url = dashboard_url(port, &project);
-    match probe_dashboard(&format!("127.0.0.1:{port}")).map_err(|e| e.to_string())? {
+    match probe_dashboard(&format!("127.0.0.1:{port}"))? {
         Probe::Running(info) => {
             println!("Dashboard already running (pid {}): {url}", info.pid);
             if !usage {
@@ -648,18 +648,18 @@ fn dashboard(port: u16, usage: bool) -> Result<(), String> {
         Probe::Foreign => {
             return Err(format!(
                 "Port {port} is in use by something that is not a Factory dashboard (it may be a dashboard from an older Factory; stop it and run 'factory dashboard' again). Or use 'factory dashboard --port <port>'."
-            ))
+            )
+            .into())
         }
         Probe::Absent => {
-            let home = install::home_dir().map_err(|e| e.to_string())?;
+            let home = install::home_dir()?;
             let settings = usage::UsageSettings {
                 enabled: usage,
-                roots: usage_logs::Roots::from_home(&home, &|name| env::var_os(name)).map_err(|e| e.to_string())?,
+                roots: usage_logs::Roots::from_home(&home, &|name| env::var_os(name))?,
                 budget: DASHBOARD_USAGE_BUDGET,
                 settle: usage::UsageSettings::default_settle(),
             };
-            serve(&data_path(port).map_err(|e| e.to_string())?, port, &url, settings)
-                .map_err(|e| e.to_string())?
+            serve(&data_path(port)?, port, &url, settings)?
         }
     }
     Ok(())

@@ -501,7 +501,10 @@ fn a_starter_for_both_agents_routes_every_stage() {
                 .choice_for(stage)
                 .unwrap_or_else(|| panic!("{agent:?} {stage:?} is routed"));
             assert!(!choice.model.is_empty(), "{agent:?} {stage:?}");
-            let effort = choice.effort.as_deref().expect("an effort");
+            let effort = choice
+                .effort
+                .as_deref()
+                .unwrap_or_else(|| panic!("{agent:?} {stage:?} has an effort: {choice:?}"));
             assert!(
                 ["low", "medium", "high", "xhigh", "max"].contains(&effort),
                 "{agent:?} {stage:?}: {effort}"

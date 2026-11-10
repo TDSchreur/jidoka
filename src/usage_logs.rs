@@ -399,7 +399,7 @@ fn claude_pauses(text: &str, parsed: &mut LogUsage) {
     }
 }
 
-fn read_claude(root: &Path, ctx: &mut ReadState, out: &mut ReadResult) {
+fn read_claude(root: &Path, ctx: &mut ReadScope, out: &mut ReadResult) {
     for slug in sub_dirs(root) {
         for file in files_in(&slug.path()) {
             let path = file.path();
@@ -578,7 +578,7 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> LogUsage {
     parsed
 }
 
-fn read_codex(root: &Path, ctx: &mut ReadState, out: &mut ReadResult) {
+fn read_codex(root: &Path, ctx: &mut ReadScope, out: &mut ReadResult) {
     let earliest_day = civil_day(ctx.from.saturating_sub(DAY_MS));
     let mut rollouts: Vec<Rollout> = Vec::new();
     for year in sub_dirs(root) {
@@ -727,7 +727,7 @@ fn parse_copilot(text: &str, session: &str) -> LogUsage {
     parsed
 }
 
-fn read_copilot(root: &Path, ctx: &mut ReadState, out: &mut ReadResult) {
+fn read_copilot(root: &Path, ctx: &mut ReadScope, out: &mut ReadResult) {
     for dir in sub_dirs(root) {
         let session = dir.file_name().to_string_lossy().into_owned();
         let path = dir.path().join("events.jsonl");
@@ -758,7 +758,7 @@ fn read_copilot(root: &Path, ctx: &mut ReadState, out: &mut ReadResult) {
 type Markers = (Vec<(PauseKind, u64)>, Vec<u64>);
 
 /// What the readers share: which runs and sessions are of interest, and the limits.
-struct ReadState<'a> {
+struct ReadScope<'a> {
     ids: &'a HashSet<&'a str>,
     recorded: &'a HashSet<&'a str>,
     from: u64,
@@ -774,7 +774,7 @@ struct ReadState<'a> {
     pauses: BTreeMap<String, Markers>,
 }
 
-impl ReadState<'_> {
+impl ReadScope<'_> {
     /// Whether a log was last written well before the earliest run of interest, so it cannot hold its
     /// work. File times are coarse and clocks differ, so there is plenty of slack.
     fn stale(&self, path: &Path) -> bool {
@@ -895,7 +895,7 @@ pub(crate) fn read_sessions(
     limits: ReadLimits,
 ) -> ReadResult {
     let mut out = ReadResult::default();
-    let mut ctx = ReadState {
+    let mut ctx = ReadScope {
         ids,
         recorded,
         from,
@@ -913,13 +913,13 @@ pub(crate) fn read_sessions(
         .map(|root| {
             (
                 root,
-                read_claude as fn(&Path, &mut ReadState, &mut ReadResult),
+                read_claude as fn(&Path, &mut ReadScope, &mut ReadResult),
             )
         })
         .chain([
             (
                 &roots.codex,
-                read_codex as fn(&Path, &mut ReadState, &mut ReadResult),
+                read_codex as fn(&Path, &mut ReadScope, &mut ReadResult),
             ),
             (&roots.copilot, read_copilot),
         ]);

@@ -115,6 +115,23 @@ fn is_local_authority(authority: &str, port: u16) -> bool {
 /// serves to a local host carries it, so a request that has it came from that page.
 struct SessionToken(String);
 
+/// A failure to create a token. `serve` shows it as it is, without the run-storage prefix it puts on other start-up
+/// errors.
+#[derive(Debug)]
+struct TokenError(String);
+
+impl std::fmt::Display for TokenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for TokenError {}
+
+fn token_error(message: String) -> io::Error {
+    io::Error::other(TokenError(message))
+}
+
 impl SessionToken {
     fn new() -> Result<Self, String> {
         crate::token::random().map(Self)
@@ -766,8 +783,8 @@ pub(crate) fn build_rocket_with(
     if let Some(warning) = secure_data_dir(path)? {
         eprintln!("{warning}");
     }
-    let session_token = SessionToken::new().map_err(io::Error::other)?;
-    let cli_token = crate::token::random().map_err(io::Error::other)?;
+    let session_token = SessionToken::new().map_err(token_error)?;
+    let cli_token = crate::token::random().map_err(token_error)?;
     Ok(rocket::custom(config)
         .manage(RunStore::open(path)?)
         .manage(collector)
@@ -902,7 +919,14 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
         let pause_settings = usage.clone();
         build_rocket_with(path, port, Collector::new(Some(usage)))
             .map_err(|error| {
-                io::Error::new(error.kind(), format!("could not open run storage: {error}"))
+                let is_token_error = error
+                    .get_ref()
+                    .is_some_and(|inner| inner.is::<TokenError>());
+                if is_token_error {
+                    error
+                } else {
+                    io::Error::new(error.kind(), format!("could not open run storage: {error}"))
+                }
             })?
             .attach(rocket::fairing::AdHoc::on_liftoff(
                 "Pull request state",
