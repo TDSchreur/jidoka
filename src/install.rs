@@ -1,3 +1,4 @@
+use crate::routing::Starter;
 use std::{
     env,
     ffi::OsString,
@@ -80,21 +81,227 @@ pub(crate) fn parse_options<'a>(
     Ok((agent, dirs))
 }
 
-/// Installs the bundled skills for each agent in a comma-separated list such as `codex,claude`.
-/// `config_dirs` are the `--config-dir` values: they replace the Claude config directory, so the
-/// skills go into each of them, and they need `claude` in the list.
-pub fn install(agents: &str, config_dirs: &[String]) -> io::Result<()> {
-    let roots = skills_roots(agents, config_dirs, &home_dir()?, |name| env::var_os(name))?;
-    for root in roots {
-        install_to(&root)?;
+/// The agents and Claude config directories a `jidoka install` should use.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Selection {
+    pub agents: Vec<String>,
+    pub config_dirs: Vec<String>,
+}
+
+/// The agents Jidoka installs skills for, in the order the install menu lists them.
+pub(crate) const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
+
+/// Fails with the list of valid agents when `name` is not one of them.
+pub(crate) fn validate_agent(name: &str) -> io::Result<()> {
+    if AGENTS.contains(&name) {
+        return Ok(());
     }
-    ensure_default_policy(|name| env::var_os(name))?;
+    Err(unknown_agent(name))
+}
+
+/// `codex, claude, or copilot`.
+fn agent_list() -> String {
+    let (last, rest) = AGENTS.split_last().expect("AGENTS is not empty");
+    format!("{}, or {last}", rest.join(", "))
+}
+
+fn unknown_agent(name: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("unknown agent {name:?}; use {}", agent_list()),
+    )
+}
+
+/// Turns an answer such as `1,claude`, `2 3` or `all` into agent names, in the order given, without
+/// duplicates. `None` when any entry is not a number, name or `all`.
+pub(crate) fn parse_agent_choice(answer: &str) -> Option<Vec<String>> {
+    let mut agents: Vec<String> = Vec::new();
+    for entry in answer
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|entry| !entry.is_empty())
+    {
+        let chosen: Vec<&str> = match entry {
+            "all" => AGENTS.to_vec(),
+            name if AGENTS.contains(&name) => vec![name],
+            number => match number.parse::<usize>() {
+                Ok(n) if (1..=AGENTS.len()).contains(&n) => vec![AGENTS[n - 1]],
+                _ => return None,
+            },
+        };
+        for name in chosen {
+            if !agents.iter().any(|known| known == name) {
+                agents.push(name.to_string());
+            }
+        }
+    }
+    (!agents.is_empty()).then_some(agents)
+}
+
+/// Decides the agents and Claude config directories. `--agent` and `--config-dir` win over
+/// `JIDOKA_AGENT` and `JIDOKA_CLAUDE_CONFIG_DIRS` (the platform path-list separator). With neither
+/// agents source, asks on `output`/`input` when `terminal` is true and otherwise fails.
+pub(crate) fn select(
+    agent_flag: Option<&str>,
+    dir_flags: &[String],
+    var: impl Fn(&str) -> Option<OsString>,
+    terminal: bool,
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+) -> io::Result<Selection> {
+    let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let env_agent = var("JIDOKA_AGENT")
+        .map(|value| value.to_string_lossy().into_owned())
+        .filter(|value| !value.trim().is_empty());
+    let agents = match agent_flag.map(str::to_string).or(env_agent) {
+        Some(list) => {
+            let mut agents = Vec::new();
+            for name in list.split(',').map(str::trim) {
+                validate_agent(name)?;
+                if !agents.iter().any(|known| known == name) {
+                    agents.push(name.to_string());
+                }
+            }
+            agents
+        }
+        None if terminal => ask_agents(input, output)?,
+        None => {
+            return Err(invalid(
+                "No terminal to ask which agents to install for. Use --agent or set JIDOKA_AGENT, for example --agent codex,claude."
+                    .to_string(),
+            ));
+        }
+    };
+    let mut config_dirs = dir_flags.to_vec();
+    if config_dirs.is_empty()
+        && agents.iter().any(|agent| agent == "claude")
+        && let Some(list) = var("JIDOKA_CLAUDE_CONFIG_DIRS")
+    {
+        config_dirs = env::split_paths(&list)
+            .map(|path| path.to_string_lossy().into_owned())
+            .filter(|path| !path.is_empty())
+            .collect();
+    }
+    Ok(Selection {
+        agents,
+        config_dirs,
+    })
+}
+
+fn ask_agents(
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+) -> io::Result<Vec<String>> {
+    loop {
+        writeln!(output, "Install the Jidoka skills for which agents?")?;
+        for (index, name) in AGENTS.iter().enumerate() {
+            writeln!(output, "  {}) {name}", index + 1)?;
+        }
+        write!(
+            output,
+            "Enter one or more numbers or names separated by commas, or \"all\": "
+        )?;
+        output.flush()?;
+        let mut answer = String::new();
+        if input.read_line(&mut answer)? == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "No answer given. Use --agent or set JIDOKA_AGENT.",
+            ));
+        }
+        if let Some(agents) = parse_agent_choice(&answer) {
+            return Ok(agents);
+        }
+        writeln!(output, "Invalid choice. Try again.")?;
+    }
+}
+
+/// `jidoka install [--agent <list>] [--config-dir <path>]...`: installs the skills and the default
+/// routing policy, then writes the install record.
+pub(crate) fn run(options: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+    use io::IsTerminal;
+    let (agent, dirs) = parse_options(options)?;
+    let stdin = io::stdin();
+    let selection = select(
+        agent,
+        &dirs,
+        |name| env::var_os(name),
+        stdin.is_terminal(),
+        &mut stdin.lock(),
+        &mut io::stdout(),
+    )?;
+    install(&selection)?;
     Ok(())
+}
+
+/// Installs the bundled skills for the selected agents, the default policy and the install record.
+/// The config dirs need `claude` among the agents.
+pub(crate) fn install(selection: &Selection) -> io::Result<()> {
+    let var = |name: &str| env::var_os(name);
+    install_skills(selection, &home_dir()?, &var, &mut io::stdout())?;
+    let path = crate::install_record::path_in(var).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "cannot find Jidoka config directory for the install record",
+        )
+    })?;
+    crate::install_record::write(
+        &path,
+        &crate::install_record::InstallRecord::current(
+            selection.agents.clone(),
+            selection.config_dirs.clone(),
+        ),
+    )
+}
+
+/// The skills and the default policy of an install, without the install record; policy messages go to `out`.
+pub(crate) fn install_skills(
+    selection: &Selection,
+    home: &Path,
+    var: &impl Fn(&str) -> Option<OsString>,
+    out: &mut impl io::Write,
+) -> io::Result<()> {
+    install_skill_files(selection, home, var, out)?;
+    ensure_default_policy(var, out)
+}
+
+/// Only the skills of an install: no policy, no record.
+pub(crate) fn install_skill_files(
+    selection: &Selection,
+    home: &Path,
+    var: &impl Fn(&str) -> Option<OsString>,
+    out: &mut impl io::Write,
+) -> io::Result<()> {
+    let roots = skills_roots(
+        &selection.agents.join(","),
+        &selection.config_dirs,
+        home,
+        var,
+    )?;
+    for root in roots {
+        install_to_reporting(&root, out)?;
+    }
+    Ok(())
+}
+
+/// Create the initial routing policy and report what happened on `out`.
+fn ensure_default_policy(
+    var: impl Fn(&str) -> Option<OsString>,
+    out: &mut impl io::Write,
+) -> io::Result<()> {
+    let (path, done) = create_default_policy(var)?;
+    let shown = path.display().to_string();
+    match done {
+        Starter::Created => writeln!(out, "{}", Starter::created_message(&shown, None)),
+        Starter::Replaced(off) => writeln!(out, "{}", Starter::replaced_message(&shown, off, None)),
+        Starter::Left => Ok(()),
+    }
 }
 
 /// Create the initial routing policy. Only a file in the old format is replaced; any other existing
 /// configuration is kept.
-pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> io::Result<()> {
+pub(crate) fn create_default_policy(
+    var: impl Fn(&str) -> Option<OsString>,
+) -> io::Result<(PathBuf, Starter)> {
     let path = crate::routing::policy_path_in(var).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -106,8 +313,7 @@ pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> i
         crate::routing::RoutingAgent::Codex,
         crate::routing::RoutingAgent::Copilot,
     ];
-    use crate::routing::Starter;
-    let created = crate::routing::install_starter(&path, &agents).map_err(|error| {
+    let done = crate::routing::install_starter(&path, &agents).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!(
@@ -116,13 +322,18 @@ pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> i
             ),
         )
     })?;
-    let shown = path.display().to_string();
-    match created {
-        Starter::Created => println!("{}", Starter::created_message(&shown, None)),
-        Starter::Replaced(off) => println!("{}", Starter::replaced_message(&shown, off, None)),
-        Starter::Left => {}
+    Ok((path, done))
+}
+
+/// Splits a comma-separated `--agent` value into trimmed names without duplicates.
+pub(crate) fn agent_names(agents: &str) -> Vec<&str> {
+    let mut names: Vec<&str> = Vec::new();
+    for name in agents.split(',').map(str::trim) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
     }
-    Ok(())
+    names
 }
 
 /// Resolves the skills folder of every listed agent before anything is installed.
@@ -132,12 +343,7 @@ pub(crate) fn skills_roots(
     home: &Path,
     var: impl Fn(&str) -> Option<OsString>,
 ) -> io::Result<Vec<PathBuf>> {
-    let mut names: Vec<&str> = Vec::new();
-    for name in agents.split(',').map(str::trim) {
-        if !names.contains(&name) {
-            names.push(name);
-        }
-    }
+    let names = agent_names(agents);
     if !config_dirs.is_empty() && !names.contains(&"claude") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -239,10 +445,7 @@ pub(crate) fn agent_home(
         "codex" => Ok(config_dir("CODEX_HOME", ".codex")),
         "claude" => Ok(config_dir("CLAUDE_CONFIG_DIR", ".claude")),
         "copilot" => Ok(config_dir("COPILOT_HOME", ".copilot")),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("unknown agent {agent:?}; use codex, claude, or copilot"),
-        )),
+        _ => Err(unknown_agent(agent)),
     }
 }
 
@@ -276,7 +479,13 @@ pub(crate) fn bundled_skill_names() -> Vec<&'static str> {
     names
 }
 
+#[cfg(test)]
 fn install_to(root: &Path) -> io::Result<()> {
+    install_to_reporting(root, &mut io::stdout())
+}
+
+/// Installs the bundled skills into `root`, reporting each change on `out`.
+fn install_to_reporting(root: &Path, out: &mut impl io::Write) -> io::Result<()> {
     fs::create_dir_all(root)?;
     for name in bundled_skill_names() {
         let dir = root.join(name);
@@ -291,7 +500,7 @@ fn install_to(root: &Path) -> io::Result<()> {
                 format!("cannot install skill {}: {error}", dir.display()),
             ));
         }
-        println!("Installed: {}", dir.display());
+        writeln!(out, "Installed: {}", dir.display())?;
     }
     for name in LEGACY_SKILLS {
         let dir = root.join(name);
@@ -302,10 +511,10 @@ fn install_to(root: &Path) -> io::Result<()> {
                     format!("cannot remove legacy skill {}: {error}", dir.display()),
                 )
             })?;
-            println!("Removed: {}", dir.display());
+            writeln!(out, "Removed: {}", dir.display())?;
         }
     }
-    remove_retired_humanizer(root);
+    remove_retired_humanizer(root, out);
     Ok(())
 }
 
@@ -323,13 +532,15 @@ const RETIRED_HUMANIZER_FILES: [(&str, &[u8]); 3] = [
 /// Removes a `humanizer` skill folder Jidoka installed earlier. Only an exact, unmodified
 /// copy goes: the same files and nothing else, none of them a symlink. Anything else is the
 /// user's own and stays. A failure to remove it is a warning, not an install failure.
-fn remove_retired_humanizer(root: &Path) {
+fn remove_retired_humanizer(root: &Path, out: &mut impl io::Write) {
     let dir = root.join("humanizer");
     if !is_retired_humanizer(&dir) {
         return;
     }
     match fs::remove_dir_all(&dir) {
-        Ok(()) => println!("Removed: {}", dir.display()),
+        Ok(()) => {
+            let _ = writeln!(out, "Removed: {}", dir.display());
+        }
         Err(error) => eprintln!(
             "warning: cannot remove retired skill {}: {error}. It may be partly deleted and will not be retried, so remove the folder by hand.",
             dir.display()
@@ -460,6 +671,95 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn selected(
+        agent: Option<&str>,
+        dirs: &[String],
+        env: &[(&str, &str)],
+        terminal: bool,
+        answers: &str,
+    ) -> (io::Result<Selection>, String) {
+        let var = |name: &str| {
+            env.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(value))
+        };
+        let mut out = Vec::new();
+        let result = select(
+            agent,
+            dirs,
+            var,
+            terminal,
+            &mut answers.as_bytes(),
+            &mut out,
+        );
+        (result, String::from_utf8(out).unwrap())
+    }
+
+    fn names(selection: io::Result<Selection>) -> Vec<String> {
+        selection.unwrap().agents
+    }
+
+    #[test]
+    fn the_prompt_accepts_numbers_names_lists_and_all() {
+        for (answer, expected) in [
+            ("2\n", vec!["claude"]),
+            ("copilot\n", vec!["copilot"]),
+            ("1,claude\n", vec!["codex", "claude"]),
+            ("3 1\n", vec!["copilot", "codex"]),
+            ("all\n", vec!["codex", "claude", "copilot"]),
+            ("2,claude\n", vec!["claude"]),
+        ] {
+            let (selection, _) = selected(None, &[], &[], true, answer);
+            assert_eq!(names(selection), expected, "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn the_prompt_asks_again_after_an_invalid_answer_and_fails_at_the_end_of_input() {
+        let (selection, shown) = selected(None, &[], &[], true, "9\nfoo,1\n\nall\n");
+        assert_eq!(names(selection), ["codex", "claude", "copilot"]);
+        assert_eq!(shown.matches("Invalid choice").count(), 3);
+        let (selection, _) = selected(None, &[], &[], true, "");
+        assert!(selection.is_err());
+    }
+
+    #[test]
+    fn without_a_terminal_and_agents_the_error_names_the_flag_and_the_variable() {
+        let (selection, shown) = selected(None, &[], &[], false, "all\n");
+        let message = selection.unwrap_err().to_string();
+        assert!(message.contains("--agent") && message.contains("JIDOKA_AGENT"));
+        assert!(shown.is_empty());
+    }
+
+    #[test]
+    fn the_flag_wins_over_the_variable_and_neither_prompts() {
+        let env = [("JIDOKA_AGENT", "codex")];
+        let (selection, shown) = selected(Some("claude"), &[], &env, true, "");
+        assert_eq!(names(selection), ["claude"]);
+        let (selection, shown_env) = selected(None, &[], &env, false, "");
+        assert_eq!(names(selection), ["codex"]);
+        assert!(shown.is_empty() && shown_env.is_empty());
+        let (selection, _) = selected(Some("nope"), &[], &[], true, "");
+        assert!(selection.is_err());
+    }
+
+    #[test]
+    fn config_dirs_come_from_flags_else_the_path_list_variable() {
+        let list = env::join_paths([test_abs("a"), test_abs("b c")]).unwrap();
+        let list = list.to_str().unwrap();
+        let env = [("JIDOKA_CLAUDE_CONFIG_DIRS", list)];
+        let (selection, _) = selected(Some("claude"), &[], &env, false, "");
+        assert_eq!(
+            selection.unwrap().config_dirs,
+            [test_abs("a"), test_abs("b c")].map(|p| p.to_string_lossy().into_owned())
+        );
+        let flag = vec![test_abs("flag").to_string_lossy().into_owned()];
+        let (selection, _) = selected(Some("claude"), &flag, &env, false, "");
+        assert_eq!(selection.unwrap().config_dirs, flag);
+        let (selection, _) = selected(Some("codex"), &[], &env, false, "");
+        assert!(selection.unwrap().config_dirs.is_empty());
+    }
 
     #[test]
     fn skills_root_honors_agent_config_directories() {

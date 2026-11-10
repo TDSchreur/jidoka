@@ -1,9 +1,10 @@
 //! `jidoka run update` prints the server's warnings on stderr and still succeeds.
 
+mod common;
+
 use std::{
     io::{Read, Write},
     net::TcpListener,
-    process::Command,
     thread,
 };
 
@@ -49,7 +50,7 @@ fn update_prints_each_warning_on_stderr_and_exits_zero() {
         )
         .unwrap();
     });
-    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
+    let output = common::jidoka_in(data.path())
         .args(["run", "update", "1", "finish", "done"])
         .env("JIDOKA_TEST_ADDRESS", &address)
         .env("XDG_DATA_HOME", data.path())

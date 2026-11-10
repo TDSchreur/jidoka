@@ -22,6 +22,8 @@
 
 **Model routing policy**: The user-owned file that describes model routing: for each agent (Claude Code, Codex, Copilot CLI), a model and optional effort per Stage. A Stage left out keeps the session's model. A run starts in one agent and records only that agent's part. Jidoka reads the file once, when a run starts.
 
+**Setup**: Putting Jidoka's skills and default model routing policy in place for the chosen agents. `jidoka install` does it, and Jidoka keeps it current automatically after the binary changes version.
+
 **Run context**: What a new agent session needs to continue a run: the repository, worktree, branch and base commit it started from, the workflow mode, a reference to the spec, the ordered tickets with their progress, the pull request, a short summary per Stage and the status reason. It holds references and summaries only, never transcripts or secrets, and is changed only through `jidoka run update`. Anything a run never recorded is shown as unknown, not guessed.
 
 **Repository**: The canonical main checkout of the project a run belongs to. Every linked worktree of a checkout has the same repository, so the dashboard groups their runs in one row.

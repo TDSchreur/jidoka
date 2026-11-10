@@ -4,10 +4,12 @@
     reason = "integration test helpers fail the test by panicking"
 )]
 
+mod common;
+
 use std::process::{Command, Output};
 
 fn jidoka(args: &[&str], dir: &std::path::Path, home: &std::path::Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_jidoka"))
+    common::jidoka_in(home)
         .args(args)
         .current_dir(dir)
         .env("HOME", home)
@@ -101,7 +103,7 @@ fn doctor_reads_the_repository_it_runs_in() {
                 .success()
         );
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
+    let output = common::jidoka_in(home.path())
         .args(["doctor", "--json"])
         .current_dir(repo.path())
         .env("HOME", home.path())

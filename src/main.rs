@@ -7,6 +7,7 @@ mod document;
 mod gitignore;
 mod inspect;
 mod install;
+mod install_record;
 mod plans;
 mod pr_open;
 mod pr_state;
@@ -23,6 +24,7 @@ mod run_begin;
 mod run_check;
 mod run_cleanup;
 mod server;
+mod setup;
 mod stats;
 mod token;
 mod uninstall;
@@ -34,7 +36,7 @@ use run::UPDATE_HELP;
 use server::{ADDRESS, DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install --agent <codex|claude|copilot>[,...] [--config-dir <path>]...\n  jidoka uninstall --agent <codex|claude|copilot>[,...] [--config-dir <path>]... [--keep-data]\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka check\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  jidoka --help | --version";
+const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...   (asks which agents when none are given on a terminal; else JIDOKA_AGENT, JIDOKA_CLAUDE_CONFIG_DIRS)\n  jidoka uninstall [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]... [--keep-data]   (uses the install record when no agent is given; removing only some recorded agents keeps the record and the binary)\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka check\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  jidoka --help | --version\n\nSetup:\n  `jidoka install` writes an install record (agents and Claude config dirs) next to the model routing policy. A command run before Setup prints a hint to run `jidoka install`; after an upgrade, the first command refreshes the installed skills automatically.";
 
 /// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
 const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
@@ -78,6 +80,10 @@ fn main() -> ExitCode {
 /// Runs the command and returns its exit status; a non-zero one means it already reported why.
 fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args().skip(1).collect();
+    if let Ok(home) = install::home_dir() {
+        let words: Vec<&str> = args.iter().map(String::as_str).collect();
+        setup::check(&words, |name| env::var_os(name), &home, &mut io::stderr());
+    }
     match args
         .iter()
         .map(String::as_str)
@@ -86,11 +92,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
     {
         [] | ["--help" | "-h"] => println!("{HELP}\n\n{UPDATE_HELP}"),
         ["--version" | "-V"] => println!("jidoka {}", current_build()),
-        ["install", options @ ..] => match install::parse_options(options) {
-            Ok((Some(agent), dirs)) => install::install(agent, &dirs)?,
-            Ok((None, _)) => return Err(format!("install needs --agent.\n{HELP}").into()),
-            Err(error) => return Err(format!("{error}\n{HELP}").into()),
-        },
+        ["install", options @ ..] => install::run(options)?,
         ["uninstall", options @ ..] => {
             uninstall::run(options)?;
         }
@@ -734,12 +736,19 @@ fn plan_path(id: &str) -> io::Result<PathBuf> {
 
 /// The default dashboard keeps `runs.json`; one on another port keeps its own file and shares nothing.
 fn data_path(port: u16) -> io::Result<PathBuf> {
+    data_path_in(port, &|name| env::var_os(name))
+}
+
+fn data_path_in(
+    port: u16,
+    var: &impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> io::Result<PathBuf> {
     #[cfg(windows)]
-    let base = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let base = var("LOCALAPPDATA").map(PathBuf::from);
     #[cfg(not(windows))]
-    let base = env::var_os("XDG_DATA_HOME")
+    let base = var("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
+        .or_else(|| var("HOME").map(|home| PathBuf::from(home).join(".local/share")));
     let base = base.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,

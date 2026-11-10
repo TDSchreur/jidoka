@@ -6,16 +6,25 @@ $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName()
 New-Item -ItemType Directory -Path $tempRoot | Out-Null
 $oldUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $oldPath = $env:Path
+$savedEnv = @{}
+foreach ($name in 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'COPILOT_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'JIDOKA_AGENT', 'JIDOKA_CLAUDE_CONFIG_DIRS') {
+    $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+}
 try {
+    # Everything the installer and `jidoka install` write (skills, install record, policy) stays in $tempRoot.
+    $env:USERPROFILE = Join-Path $tempRoot 'home'
+    $env:APPDATA = Join-Path $tempRoot 'roaming'
     $env:LOCALAPPDATA = Join-Path $tempRoot 'local'
+    $env:COPILOT_HOME = Join-Path $tempRoot 'copilot'
     $env:CODEX_HOME = Join-Path $tempRoot 'codex'
     $env:CLAUDE_CONFIG_DIR = Join-Path $tempRoot 'claude'
+    Remove-Item Env:XDG_CONFIG_HOME, Env:XDG_DATA_HOME, Env:JIDOKA_CLAUDE_CONFIG_DIRS -ErrorAction SilentlyContinue
     function Invoke-WebRequest {
         param($Uri, $OutFile)
         if ($Uri -like '*.sha256') { (Get-FileHash -Algorithm SHA256 $fixture).Hash | Set-Content -LiteralPath $OutFile }
         else { Copy-Item -LiteralPath $fixture -Destination $OutFile }
     }
-    function Read-Host { param($Prompt) return '2' }
+    function Read-Host { throw 'The installer must not prompt itself' }
 
     $env:JIDOKA_AGENT = 'codex'
     $output = . (Join-Path $root 'scripts/install.ps1') 6>&1
@@ -25,10 +34,10 @@ try {
     if (($env:Path -split ';') -notcontains $bin) { throw 'Current shell PATH was not updated' }
     if (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -notcontains $bin) { throw 'User PATH was not updated' }
 
-    Remove-Item Env:JIDOKA_AGENT
+    $env:JIDOKA_AGENT = 'claude'
     $output = . (Join-Path $root 'scripts/install.ps1') 6>&1
     if ($output | Where-Object { $_.ToString() -like '*Added * to your user PATH*' }) { throw 'Installer reported an unchanged user PATH as added' }
-    if (-not (Get-ChildItem -LiteralPath (Join-Path $env:CLAUDE_CONFIG_DIR 'skills'))) { throw 'Interactive selection did not install Claude skills' }
+    if (-not (Get-ChildItem -LiteralPath (Join-Path $env:CLAUDE_CONFIG_DIR 'skills'))) { throw 'JIDOKA_AGENT=claude did not install Claude skills' }
 
     $first = Join-Path $tempRoot 'claude work'
     $second = Join-Path $tempRoot 'claude-other'
@@ -45,5 +54,6 @@ try {
 finally {
     [Environment]::SetEnvironmentVariable('Path', $oldUserPath, 'User')
     $env:Path = $oldPath
+    foreach ($name in $savedEnv.Keys) { [Environment]::SetEnvironmentVariable($name, $savedEnv[$name], 'Process') }
     Remove-Item -Recurse -Force -LiteralPath $tempRoot -ErrorAction SilentlyContinue
 }

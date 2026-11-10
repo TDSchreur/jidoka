@@ -34,7 +34,7 @@ curl -fsSL https://github.com/TDSchreur/jidoka/releases/latest/download/install.
 irm https://github.com/TDSchreur/jidoka/releases/latest/download/install.ps1 | iex
 ```
 
-The installer downloads the `jidoka` command, checks it against the release checksum, asks which agents to install the skills for, and installs them. Re-run the same one-liner later to update both.
+The installer downloads the `jidoka` command, checks it against the release checksum, and runs `jidoka install`, which asks which agents to install the skills for. Re-run the same one-liner later to update; the skills refresh automatically after an upgrade.
 
 Windows Defender sometimes flags the unsigned Windows build; see [what to do](docs/installation.md#windows-defender-blocks-the-download). For unattended installs, several Claude Code configs and building from source, see the [installation guide](docs/installation.md).
 

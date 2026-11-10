@@ -4,11 +4,10 @@
     reason = "integration test helpers fail the test by panicking"
 )]
 
-use std::process::Command;
+mod common;
 
 fn jidoka(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_jidoka"))
-        .current_dir(dir)
+    common::jidoka_in(dir)
         // No `gh` can be found.
         .env("PATH", "")
         .args(args)
