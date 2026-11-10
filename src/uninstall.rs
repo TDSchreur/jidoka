@@ -122,10 +122,19 @@ fn filter_path_entries(value: &str, bin: &str) -> Option<String> {
     (kept.len() != entries.len()).then(|| kept.join(";"))
 }
 
-/// A paste-ready shell command that deletes `path`, with single quotes doubled so it can be pasted as is.
+/// Builds a paste-ready PowerShell command that deletes `path`.
+///
+/// Every single quote PowerShell accepts as a delimiter (ASCII and typographic) is doubled.
 #[cfg(any(windows, test))]
 fn delete_command(path: &str) -> String {
-    format!("Remove-Item -LiteralPath '{}'", path.replace('\'', "''"))
+    let mut quoted = String::with_capacity(path.len());
+    for c in path.chars() {
+        quoted.push(c);
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            quoted.push(c);
+        }
+    }
+    format!("Remove-Item -LiteralPath '{quoted}'")
 }
 
 #[cfg(windows)]
@@ -142,12 +151,12 @@ fn remove_executable(_home: &Path) -> Result<(), String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => false,
         Err(error) => return Err(format!("cannot inspect {}: {error}", target.display())),
     };
-    if registry::remove_from_user_path("Environment", &bin.to_string_lossy())? {
+    if registry::remove_from_user_path(registry::ENVIRONMENT_SUBKEY, &bin.to_string_lossy())? {
         registry::broadcast_environment_change();
     }
     if running_installed {
         println!(
-            "jidoka.exe is still running and was left in place: {}\nDelete it after this command exits with:\n  {}",
+            "jidoka.exe is still running and was left in place: {}\nDelete it after this command exits by running this in PowerShell:\n  {}",
             target.display(),
             delete_command(&target.to_string_lossy())
         );
@@ -172,8 +181,20 @@ mod registry {
         },
     };
 
-    pub(super) fn wide(text: &str) -> Vec<u16> {
+    fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// Subkey of `HKEY_CURRENT_USER` that holds the user environment.
+    pub(super) const ENVIRONMENT_SUBKEY: &str = "Environment";
+    /// Name of the user PATH value inside the environment subkey.
+    const PATH_VALUE: &str = "Path";
+    /// Longest time, in milliseconds, one hung window may delay the environment broadcast.
+    const BROADCAST_TIMEOUT_MS: u32 = 5000;
+
+    /// Turns a Win32 status code into a readable error.
+    fn os_error(status: u32) -> std::io::Error {
+        std::io::Error::from_raw_os_error(i32::try_from(status).unwrap_or(i32::MAX))
     }
 
     struct Key(HKEY);
@@ -187,7 +208,7 @@ mod registry {
 
     /// Reads the raw `Path` value (never expanded) and its registry type.
     fn read_path(key: &Key) -> Result<Option<(u32, String)>, String> {
-        let name = wide("Path");
+        let name = wide(PATH_VALUE);
         let mut kind = 0u32;
         let mut size = 0u32;
         // SAFETY: `name` is NUL-terminated and outlives the call; a null data pointer only queries the size.
@@ -205,7 +226,7 @@ mod registry {
             return Ok(None);
         }
         if status != 0 {
-            return Err(format!("cannot read user PATH (error {status})"));
+            return Err(format!("cannot read user PATH: {}", os_error(status)));
         }
         if kind != REG_SZ && kind != REG_EXPAND_SZ {
             return Ok(None);
@@ -224,7 +245,7 @@ mod registry {
             )
         };
         if status != 0 {
-            return Err(format!("cannot read user PATH (error {status})"));
+            return Err(format!("cannot read user PATH: {}", os_error(status)));
         }
         data.truncate(byte_len as usize / 2);
         while data.last() == Some(&0) {
@@ -235,7 +256,7 @@ mod registry {
     }
 
     fn write_path(key: &Key, kind: u32, value: &str) -> Result<(), String> {
-        let name = wide("Path");
+        let name = wide(PATH_VALUE);
         let data = wide(value);
         let byte_len = u32::try_from(data.len() * 2).map_err(|e| e.to_string())?;
         // SAFETY: `data` is a NUL-terminated buffer of `byte_len` bytes and `name` is NUL-terminated.
@@ -250,13 +271,17 @@ mod registry {
             )
         };
         if status != 0 {
-            return Err(format!("cannot write user PATH (error {status})"));
+            return Err(format!("cannot write user PATH: {}", os_error(status)));
         }
         Ok(())
     }
 
     /// Removes `bin` from the `Path` value under `HKCU\<subkey>`, keeping its type and
     /// leaving `%VARS%` unexpanded. Returns whether the value changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the key cannot be opened, or the value cannot be read or written.
     pub(super) fn remove_from_user_path(subkey: &str, bin: &str) -> Result<bool, String> {
         let subkey = wide(subkey);
         let mut handle: HKEY = null_mut();
@@ -274,7 +299,10 @@ mod registry {
             return Ok(false);
         }
         if status != 0 {
-            return Err(format!("cannot open user environment (error {status})"));
+            return Err(format!(
+                "cannot open user environment: {}",
+                os_error(status)
+            ));
         }
         let key = Key(handle);
         let Some((kind, value)) = read_path(&key)? else {
@@ -288,16 +316,17 @@ mod registry {
     }
 
     pub(super) fn broadcast_environment_change() {
-        let environment = wide("Environment");
+        let environment = wide(ENVIRONMENT_SUBKEY);
         // SAFETY: `environment` is a NUL-terminated wide string that outlives the call.
         unsafe {
+            // Best effort: a failed or timed-out broadcast only delays new shells seeing the change.
             SendMessageTimeoutW(
                 HWND_BROADCAST,
                 WM_SETTINGCHANGE,
                 0,
                 environment.as_ptr() as isize,
                 SMTO_ABORTIFHUNG,
-                5000,
+                BROADCAST_TIMEOUT_MS,
                 null_mut(),
             );
         }
@@ -346,7 +375,7 @@ mod registry {
                     null_mut(),
                 )
             };
-            assert_eq!(status, 0);
+            assert_eq!(status, 0, "creating the scratch registry key failed");
             let key = Key(handle);
             write_path(
                 &key,
@@ -402,6 +431,14 @@ mod tests {
         assert_eq!(
             delete_command(r"C:\Users\O'Neil\jidoka.exe"),
             r"Remove-Item -LiteralPath 'C:\Users\O''Neil\jidoka.exe'"
+        );
+    }
+
+    #[test]
+    fn delete_command_doubles_typographic_single_quotes() {
+        assert_eq!(
+            delete_command("C:\\Users\\O\u{2019}Neil\\jidoka.exe"),
+            "Remove-Item -LiteralPath 'C:\\Users\\O\u{2019}\u{2019}Neil\\jidoka.exe'"
         );
     }
 }
