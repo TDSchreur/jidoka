@@ -58,13 +58,11 @@ The dashboard and `jidoka run requests` read the same variable, with your system
 
 ## Uninstall
 
-Stop the dashboard first. Remove only the Jidoka skill directories (the `jidoka-*` directories and `jidoka`), leaving other skills in place. They are under `~/.codex/skills`, `~/.claude/skills`, and `~/.copilot/skills` by default. If set, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or `COPILOT_HOME` replaces the corresponding default folder; also check every Claude folder supplied with `--config-dir` or `JIDOKA_CLAUDE_CONFIG_DIRS`.
+Stop the dashboard, then run `jidoka uninstall --agent codex,claude,copilot` with the agents whose bundled skills you installed. Use the same `--config-dir <path>` options as installation to select custom Claude configuration directories. Other skills and configuration are preserved.
 
-On Linux, remove `~/.local/bin/jidoka`. Remove `~/.local/share/jidoka/` (or `$XDG_DATA_HOME/jidoka/` when set), `~/.local/state/jidoka/` (or `$XDG_STATE_HOME/jidoka/` when set), and `~/.config/jidoka/` (or `$XDG_CONFIG_HOME/jidoka/` when set) to delete run data and configuration.
+The command removes the executable at the installer-managed location. On Windows it also removes the install directory from the user PATH and schedules the executable for removal after exit. Run data is retained unless you confirm its removal interactively; pass `--keep-data` to skip the prompt. Unattended invocations retain run data. Run workspaces and repositories are preserved.
 
-On Windows, remove `%LOCALAPPDATA%\Programs\jidoka\jidoka.exe`, `%LOCALAPPDATA%\jidoka\`, and `%APPDATA%\jidoka\` to delete the binary, run data, and configuration. In Windows Settings, search for **Edit environment variables for your account**, edit the user `Path`, and remove the `%LOCALAPPDATA%\Programs\jidoka` entry. Restart terminals to pick up the change.
-
-Deleting data and configuration removes saved runs and settings. If you installed with Cargo, also run `cargo uninstall jidoka` and remove any separate release binary as above.
+If you installed with Cargo, also run `cargo uninstall jidoka`. To remove your configuration separately, delete the Jidoka configuration directory under `~/.config` (or `$XDG_CONFIG_HOME`) on Linux, or `%APPDATA%` on Windows.
 
 ## Build from source
 
@@ -91,3 +89,4 @@ The Windows release is not code-signed yet. Windows Defender can therefore flag 
 3. Once the hash matches, restore the file from Windows Security > Protection history (Allow on device), or ask your administrator to allow it, and run the installer again. Prefer allowing this one file over excluding a whole folder such as `%TEMP%`.
 
 Each new release has a new hash, so it can be flagged again until the executable is signed.
+
