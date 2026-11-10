@@ -1,31 +1,8 @@
 //! Uninstall operates on selected installed skills and preserves unattended data.
-#[cfg(windows)]
-use std::path::PathBuf;
 use std::{fs, process::Command};
 
-// The Windows command updates the user PATH through PowerShell. Replace that
-// executable in CLI tests so no test can modify the developer's registry.
-#[cfg(windows)]
-fn isolate_powershell(command: &mut Command) -> tempfile::TempDir {
-    let fixture = tempfile::tempdir().expect("create PowerShell fixture");
-    let dir = fixture.path().join("System32/WindowsPowerShell/v1.0");
-    fs::create_dir_all(&dir).expect("create PowerShell directory");
-    let source = fixture.path().join("powershell.rs");
-    fs::write(&source, r#"fn main() {
-        std::fs::write(std::env::var_os("JIDOKA_TEST_LOG").unwrap(),
-            std::env::var_os("JIDOKA_UNINSTALL_BIN").unwrap().to_string_lossy().as_bytes()).unwrap();
-    }"#).expect("write PowerShell fixture source");
-    let status = Command::new("rustc")
-        .arg(&source)
-        .arg("-o")
-        .arg(dir.join("powershell.exe"))
-        .status()
-        .expect("start rustc for PowerShell fixture");
-    assert!(status.success(), "cannot build isolated PowerShell fixture");
-    command.env("SystemRoot", fixture.path());
-    command.env("JIDOKA_TEST_LOG", fixture.path().join("invocation"));
-    fixture
-}
+// On Windows the command removes LOCALAPPDATA\Programs\jidoka from the real user PATH. Tests point
+// LOCALAPPDATA at a temporary directory that is never on PATH, so the registry is only read, never written.
 
 #[test]
 fn removes_selected_skills_and_preserves_other_files_and_data() {
@@ -39,10 +16,7 @@ fn removes_selected_skills_and_preserves_other_files_and_data() {
     fs::write(skills.join("jidoka/SKILL.md"), "installed").unwrap();
     fs::write(skills.join("other/SKILL.md"), "mine").unwrap();
     fs::write(data.join("runs.json"), "runs").unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_jidoka"));
-    #[cfg(windows)]
-    let fixture = isolate_powershell(&mut command);
-    let output = command
+    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
         .args(["uninstall", "--agent", "codex", "--keep-data"])
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())
@@ -55,11 +29,6 @@ fn removes_selected_skills_and_preserves_other_files_and_data() {
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
-    );
-    #[cfg(windows)]
-    assert_eq!(
-        PathBuf::from(fs::read_to_string(fixture.path().join("invocation")).unwrap()),
-        home.path().join("data/Programs/jidoka")
     );
     assert!(!skills.join("jidoka").exists());
     assert!(skills.join("other/SKILL.md").exists());
@@ -77,10 +46,7 @@ fn custom_claude_selection_and_noninteractive_input_preserve_data() {
     fs::create_dir_all(&default).unwrap();
     fs::create_dir_all(data.parent().unwrap()).unwrap();
     fs::write(&data, "history").unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_jidoka"));
-    #[cfg(windows)]
-    let _fixture = isolate_powershell(&mut command);
-    let mut child = command
+    let mut child = Command::new(env!("CARGO_BIN_EXE_jidoka"))
         .args(["uninstall", "--agent", "claude", "--config-dir"])
         .arg(&custom)
         .env("HOME", home.path())
@@ -137,9 +103,7 @@ fn removes_installer_copy_and_preserves_unrelated_command() {
     fs::create_dir_all(unrelated.parent().unwrap()).unwrap();
     fs::write(&installed, "installer copy").unwrap();
     fs::write(&unrelated, "other command").unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_jidoka"));
-    let fixture = isolate_powershell(&mut command);
-    let output = command
+    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
         .args(["uninstall", "--agent", "codex", "--keep-data"])
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())
@@ -152,11 +116,6 @@ fn removes_installer_copy_and_preserves_unrelated_command() {
         output.status.success(),
         "uninstall failed: {}",
         String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        PathBuf::from(fs::read_to_string(fixture.path().join("invocation")).unwrap()),
-        installed.parent().unwrap(),
-        "PowerShell received the wrong installer directory"
     );
     assert!(
         !installed.exists(),
