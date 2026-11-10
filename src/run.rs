@@ -635,10 +635,10 @@ pub(crate) fn parse_update(
     stage: &str,
     status: &str,
     options: &[&str],
-) -> Result<UpdateRun, Box<dyn std::error::Error>> {
+) -> Result<UpdateRun, String> {
     let mut update = UpdateRun::new(
-        serde_json::from_value(stage.into())?,
-        serde_json::from_value(status.into())?,
+        serde_json::from_value(stage.into()).map_err(|e| e.to_string())?,
+        serde_json::from_value(status.into()).map_err(|e| e.to_string())?,
     );
     let mut tickets: Vec<NewTicket> = Vec::new();
     let mut overrides: BTreeMap<Stage, ModelChoice> = BTreeMap::new();
@@ -653,7 +653,7 @@ pub(crate) fn parse_update(
         match *flag {
             "--rework" | "--clear-rework" => {
                 if !update.rework.is_keep() {
-                    return Err(repeated().into());
+                    return Err(repeated());
                 }
                 update.rework = if *flag == "--clear-rework" {
                     FieldUpdate::Clear
@@ -667,7 +667,7 @@ pub(crate) fn parse_update(
             }
             "--mode" | "--clear-mode" => {
                 if !update.mode.is_keep() {
-                    return Err(repeated().into());
+                    return Err(repeated());
                 }
                 update.mode = if *flag == "--clear-mode" {
                     FieldUpdate::Clear
@@ -681,7 +681,7 @@ pub(crate) fn parse_update(
             }
             "--ticket" => {
                 if !update.tickets.is_keep() && tickets.is_empty() {
-                    return Err(repeated().into());
+                    return Err(repeated());
                 }
                 let value = next_value()?;
                 let (reference, title) = value
@@ -699,14 +699,14 @@ pub(crate) fn parse_update(
             }
             "--clear-tickets" => {
                 if !update.tickets.is_keep() || !tickets.is_empty() {
-                    return Err(repeated().into());
+                    return Err(repeated());
                 }
                 update.tickets = FieldUpdate::Clear;
                 continue;
             }
             "--model-routing" => {
                 if !update.model_routing.is_keep() {
-                    return Err(repeated().into());
+                    return Err(repeated());
                 }
                 let value = next_value()?;
                 let (name, choice) = split_pair(flag, value)?;
@@ -716,13 +716,13 @@ pub(crate) fn parse_update(
                 let choice = ModelChoice::parse(choice)
                     .map_err(|problem| format!("Invalid --model-routing for {name}: {problem}"))?;
                 if overrides.insert(stage, choice).is_some() {
-                    return Err(format!("Model for {name} given twice").into());
+                    return Err(format!("Model for {name} given twice"));
                 }
                 continue;
             }
             "--clear-model-routing" => {
                 if !update.model_routing.is_keep() || !overrides.is_empty() {
-                    return Err(repeated().into());
+                    return Err(repeated());
                 }
                 update.model_routing = FieldUpdate::Clear;
                 continue;
@@ -772,7 +772,7 @@ pub(crate) fn parse_update(
                     .insert(reference.to_string(), status)
                     .is_some()
                 {
-                    return Err(format!("Ticket status for {reference} given twice").into());
+                    return Err(format!("Ticket status for {reference} given twice"));
                 }
                 continue;
             }
@@ -788,7 +788,7 @@ pub(crate) fn parse_update(
                     format!("Unknown stage {name:?} for {flag}; use define, build, check or finish")
                 })?;
                 if update.summaries.insert(stage, text).is_some() {
-                    return Err(format!("Summary for {name} given twice").into());
+                    return Err(format!("Summary for {name} given twice"));
                 }
                 continue;
             }
@@ -803,10 +803,10 @@ pub(crate) fn parse_update(
             "--base-commit" | "--clear-base-commit" => &mut update.base_commit,
             "--spec" | "--clear-spec" => &mut update.spec,
             "--pr" | "--clear-pr" => &mut update.pr,
-            _ => return Err(format!("Unknown run update option: {flag}\n{UPDATE_HELP}").into()),
+            _ => return Err(format!("Unknown run update option: {flag}\n{UPDATE_HELP}")),
         };
         if !field.is_keep() {
-            return Err(repeated().into());
+            return Err(repeated());
         }
         *field = if flag.starts_with("--clear-") {
             FieldUpdate::Clear

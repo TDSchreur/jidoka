@@ -176,6 +176,7 @@ fn write_token_file_from(path: &Path, token: &str, first_counter: u32) -> io::Re
             Ok(()) => {
                 let renamed = std::fs::rename(&temp, path);
                 if renamed.is_err() {
+                    // Best-effort cleanup; the rename error is the one returned.
                     let _ = std::fs::remove_file(&temp);
                 }
                 return renamed;
@@ -252,6 +253,7 @@ fn write_new_file_with(
     let written = write(&mut file, content.as_bytes());
     if written.is_err() {
         drop(file);
+        // Best-effort cleanup; the write error is the one returned.
         let _ = std::fs::remove_file(path);
     }
     written

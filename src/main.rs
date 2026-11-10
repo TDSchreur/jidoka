@@ -108,7 +108,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
         ["run", "start", title, options @ ..] => {
             let host = routing::parse_start_options(options)
                 .map_err(|error| format!("{error}\n{HELP}"))?;
-            let dir = env::current_dir()?;
+            let dir = env::current_dir().map_err(|e| e.to_string())?;
             let repository = repository::canonical_repository(&dir);
             let resolution = resolve_routing(host)?;
             println!(
@@ -319,7 +319,7 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
         branch: run.branch.clone(),
         pr: run.pr.clone(),
     };
-    let cwd = std::env::current_dir()?;
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let cleaned = run_cleanup::cleanup(&recorded, &pr_wait::RealGh, &pr_sync::RealGit, &cwd)
         .map_err(|problem| inspect::shown(&problem.0))?;
     print!("{}", run_cleanup::render(&recorded, cleaned));
@@ -344,7 +344,7 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
         )?;
     }
     if let (Some(repository), Some(pr)) = (recorded.repository.as_deref(), recorded.pr.as_deref()) {
-        let home = install::home_dir()?;
+        let home = install::home_dir().map_err(|e| e.to_string())?;
         let var = |name: &str| env::var_os(name);
         let agents = update::installed_agents(&home, &config_dirs, var);
         let claude_dirs = install::claude_config_dirs(&config_dirs, &home, var)?;
@@ -451,9 +451,7 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
 
 /// Reads the model-routing policy once, before a run exists: a mistake in it, or a policy for several
 /// agents without `--agent`, stops the start. Prints the notice, if any.
-fn resolve_routing(
-    host: Option<routing::Host>,
-) -> Result<routing::Resolution, Box<dyn std::error::Error>> {
+fn resolve_routing(host: Option<routing::Host>) -> Result<routing::Resolution, String> {
     let resolution = routing::policy_path_in(|name| env::var_os(name)).map_or_else(
         || Ok(routing::Resolution::default()),
         |path| routing::load(&path, host).map_err(|error| inspect::shown(&error)),
@@ -509,7 +507,7 @@ impl run_begin::RunApi for ServerApi {
 /// `factory run begin <title>`, or `--run <id>` to resume: creates a run and its workspace.
 fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::error::Error>> {
     let host = parsed.agent.as_deref().and_then(routing::Host::parse);
-    let dir = env::current_dir()?;
+    let dir = env::current_dir().map_err(|e| e.to_string())?;
     // A resumed run already has its model routing; the policy is read only when a run is created.
     let resolution = if parsed.run.is_some() {
         routing::Resolution::default()
@@ -618,13 +616,13 @@ fn dashboard_url(port: u16, project: &str) -> String {
 }
 
 /// Serves the dashboard, or, when a Factory dashboard already answers on the port, prints its URL.
-fn dashboard(port: u16, usage: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn dashboard(port: u16, usage: bool) -> Result<(), String> {
     // A Project is identified by its repository, so a linked worktree opens its main checkout's row.
-    let dir = env::current_dir()?;
+    let dir = env::current_dir().map_err(|e| e.to_string())?;
     let project =
         repository::canonical_repository(&dir).unwrap_or_else(|| dir.display().to_string());
     let url = dashboard_url(port, &project);
-    match probe_dashboard(&format!("127.0.0.1:{port}"))? {
+    match probe_dashboard(&format!("127.0.0.1:{port}")).map_err(|e| e.to_string())? {
         Probe::Running(info) => {
             println!("Dashboard already running (pid {}): {url}", info.pid);
             if !usage {
@@ -641,18 +639,18 @@ fn dashboard(port: u16, usage: bool) -> Result<(), Box<dyn std::error::Error>> {
         Probe::Foreign => {
             return Err(format!(
                 "Port {port} is in use by something that is not a Factory dashboard (it may be a dashboard from an older Factory; stop it and run 'factory dashboard' again). Or use 'factory dashboard --port <port>'."
-            )
-            .into())
+            ))
         }
         Probe::Absent => {
-            let home = install::home_dir()?;
+            let home = install::home_dir().map_err(|e| e.to_string())?;
             let settings = usage::UsageSettings {
                 enabled: usage,
-                roots: usage_logs::Roots::from_home(&home, &|name| env::var_os(name))?,
+                roots: usage_logs::Roots::from_home(&home, &|name| env::var_os(name)).map_err(|e| e.to_string())?,
                 budget: std::time::Duration::from_secs(5),
                 settle: usage::UsageSettings::default_settle(),
             };
-            serve(&data_path(port)?, port, &url, settings)?
+            serve(&data_path(port).map_err(|e| e.to_string())?, port, &url, settings)
+                .map_err(|e| e.to_string())?
         }
     }
     Ok(())
