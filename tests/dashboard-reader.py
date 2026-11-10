@@ -12,8 +12,11 @@ LOCAL = {
     "id": "local", "title": "Local run", "project": "/work/shop", "stage": "build", "status": "running", "updated_at": AT,
     "spec": "docs/spec.md",
     "tickets": [{"reference": "docs/ticket-1.md", "title": "Local ticket", "status": "open"},
-                {"reference": "https://github.com/acme/shop/issues/231", "title": "Web ticket", "status": "open"}],
+                {"reference": "https://github.com/acme/shop/issues/231", "title": "Web ticket", "status": "open"},
+                {"reference": "05", "title": "Bare id ticket", "status": "open"}],
 }
+BARE = {"id": "bare", "title": "Bare run", "project": "/work/shop", "stage": "build", "status": "running", "updated_at": AT - 3,
+        "spec": "plan-7", "tickets": []}
 GONE = {"id": "gone", "title": "Gone run", "project": "/work/shop", "stage": "build", "status": "running", "updated_at": AT - 2,
         "spec": "docs/old.md", "tickets": []}
 WEB = {"id": "web", "title": "Web run", "project": "/work/shop", "stage": "build", "status": "running", "updated_at": AT - 1,
@@ -55,6 +58,8 @@ const views = (root) => [...root.querySelectorAll('button')].filter((b) => /^Vie
   const web = await rowOf('web');
   out.webRowLink = web.querySelector('.links a[href]')?.getAttribute('href');
   out.webRowViews = views(web).length;
+  const bare = await rowOf('bare');
+  out.bareRowViews = views(bare).length;
   const row = await rowOf('local');
   out.rowViews = views(row).length;
   out.rowSpecLinks = [...row.querySelectorAll('.links a')].length;
@@ -64,6 +69,7 @@ const views = (root) => [...root.querySelectorAll('button')].filter((b) => /^Vie
   const titleLinks = [...sheet.querySelectorAll('.ticket-name button')].map(text);
   out.titleLinks = titleLinks;
   out.webTicketLinks = [...sheet.querySelectorAll('.ticket-name a')].map(text);
+  out.ticketNames = [...sheet.querySelectorAll('.ticket-name')].map(text);
   // Open the spec from the sheet.
   views(sheet.querySelector('.status-row'))[0].click();
   const reader = await wait(() => document.querySelector('dialog.reader[open]'), 'reader');
@@ -99,13 +105,15 @@ const views = (root) => [...root.querySelectorAll('button')].filter((b) => /^Vie
 
 class ReaderTest(unittest.TestCase):
     def test_reader(self):
-        result = run_dashboard([dict(LOCAL), dict(WEB), dict(GONE)], CHECK, handler=DocumentHandler)
+        result = run_dashboard([dict(LOCAL), dict(WEB), dict(GONE), dict(BARE)], CHECK, handler=DocumentHandler)
         self.assertNotIn("error", result)
         self.assertEqual(result["webRowLink"], HTTP_SPEC)
         self.assertEqual(result["webRowViews"], 0)
         self.assertEqual((result["rowViews"], result["rowSpecLinks"]), (1, 0))
         self.assertEqual(result["sheetViews"], 1)
         self.assertEqual(result["titleLinks"], ["Local ticket"])
+        self.assertEqual(result["bareRowViews"], 0)
+        self.assertEqual(result["ticketNames"][2], "05 Bare id ticket")
         self.assertEqual(result["webTicketLinks"], ["Ticket #231"])
         self.assertEqual(result["specName"], "spec.md")
         self.assertEqual(result["specBody"], "The specSome text.")
