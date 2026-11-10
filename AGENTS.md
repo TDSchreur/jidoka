@@ -9,6 +9,7 @@ Day-to-day pull requests target `develop`. Release pull requests merge `develop`
 ## Rust
 
 - Write idiomatic, safe Rust; avoid `unsafe` unless there is a clear need.
+- Follow the binding [CODING_STANDARDS.md](CODING_STANDARDS.md) when writing or reviewing Rust.
 - Handle errors with useful context, especially at user-facing and I/O boundaries.
 - Use the [Rust skill](skills/rust/SKILL.md) for guidance when writing or reviewing Rust. Apply its recommendations with judgment: avoid abstractions that add complexity without a concrete benefit.
 - Use [rust-best-practices](.agents/skills/rust-best-practices/SKILL.md) for Rust work, applying its guidance with the same judgment.
