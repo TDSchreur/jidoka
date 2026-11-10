@@ -52,10 +52,21 @@ struct TestGit {
     fail_merge_base: bool,
     /// Plays a git older than 2.38, which has no `merge-tree --write-tree`.
     old_git: bool,
+    /// Every git command the code ran, so a test can see what it never does.
+    commands: RefCell<Vec<Vec<String>>>,
+}
+
+impl TestGit {
+    fn record(&self, args: &[&str]) {
+        self.commands
+            .borrow_mut()
+            .push(args.iter().map(|a| a.to_string()).collect());
+    }
 }
 
 impl Git for TestGit {
     fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
+        self.record(args);
         let mut command = Command::new("git");
         command
             .arg("-C")
@@ -74,6 +85,7 @@ impl Git for TestGit {
     }
 
     fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
+        self.record(args);
         if self.old_git && args.first() == Some(&"merge-tree") {
             return Ok(129);
         }
@@ -464,23 +476,41 @@ fn the_options_and_the_outputs() {
 
 #[test]
 fn nothing_in_the_command_rewrites_history_or_throws_work_away() {
-    let source = include_str!("pr_sync.rs");
-    for forbidden in [
-        "\"rebase\"",
-        "\"--amend\"",
-        "\"--force\"",
-        "\"-f\"",
-        "\"reset\"",
-        "\"--abort\"",
-        "\"checkout\"",
-        "\"restore\"",
-        "\"clean\"",
-        "\"--ff-only\"",
-        "\"stash\"",
-    ] {
-        assert!(!source.contains(forbidden), "{forbidden}");
+    let forbidden = [
+        "rebase",
+        "--amend",
+        "--force",
+        "-f",
+        "reset",
+        "--abort",
+        "checkout",
+        "restore",
+        "clean",
+        "--ff-only",
+        "stash",
+    ];
+    let mut merged_without_fast_forward = false;
+    // A current branch, a clean merge that is pushed and a conflict: every path the command takes.
+    for scenario in 0..3 {
+        let project = Project::new();
+        match scenario {
+            1 => project.base_moves("b.txt", "b changed\n"),
+            2 => project.base_moves("a.txt", &TEN_LINES.replacen("1\n", "uno\n", 1)),
+            _ => {}
+        }
+        let git = TestGit::default();
+        sync(&run_of(&project), &options(), &git, &FakeApi::default()).unwrap();
+        let commands = git.commands.borrow();
+        assert!(!commands.is_empty());
+        for command in commands.iter() {
+            for argument in command {
+                assert!(!forbidden.contains(&argument.as_str()), "{command:?}");
+            }
+            merged_without_fast_forward |= command.first().map(String::as_str) == Some("merge")
+                && command.iter().any(|a| a == "--no-ff");
+        }
     }
-    assert!(source.contains("\"--no-ff\""));
+    assert!(merged_without_fast_forward);
 }
 
 // --- rework 1 ---------------------------------------------------------------------------------------

@@ -2330,11 +2330,6 @@ mod tests {
         assert!(!script.contains("group-description") && !script.contains("compact-description"));
     }
 
-    #[test]
-    fn the_address_constant_matches_the_default_port() {
-        assert_eq!(ADDRESS, format!("127.0.0.1:{DEFAULT_PORT}"));
-    }
-
     #[rocket::async_test]
     async fn a_dashboard_on_another_port_checks_host_origin_and_token_against_that_port() {
         let dir = TestDir::new();

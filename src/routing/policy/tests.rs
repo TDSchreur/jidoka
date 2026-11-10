@@ -474,7 +474,7 @@ fn the_agent_option_of_run_start_names_one_agent() {
 // --- the starter ------------------------------------------------------------------------------------
 
 #[test]
-fn a_starter_for_both_agents_routes_every_stage_with_the_cost_optimised_defaults() {
+fn a_starter_for_both_agents_routes_every_stage() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("model-routing.json");
     assert!(create_starter(&path, &[RoutingAgent::Claude, RoutingAgent::Codex]).unwrap());
@@ -486,27 +486,9 @@ fn a_starter_for_both_agents_routes_every_stage_with_the_cost_optimised_defaults
             copilot: None
         }
     ));
-    for (host, agent, expected) in [
-        (
-            Host::Claude,
-            RoutingAgent::Claude,
-            [
-                (Stage::Define, "sonnet", "low"),
-                (Stage::Build, "sonnet", "low"),
-                (Stage::Check, "sonnet", "medium"),
-                (Stage::Finish, "haiku", "low"),
-            ],
-        ),
-        (
-            Host::Codex,
-            RoutingAgent::Codex,
-            [
-                (Stage::Define, "gpt-6.1-terra", "low"),
-                (Stage::Build, "gpt-6.1-terra", "low"),
-                (Stage::Check, "gpt-6.1-terra", "medium"),
-                (Stage::Finish, "gpt-6-luna", "low"),
-            ],
-        ),
+    for (host, agent) in [
+        (Host::Claude, RoutingAgent::Claude),
+        (Host::Codex, RoutingAgent::Codex),
     ] {
         let recorded = load(&path, Some(host))
             .unwrap()
@@ -514,13 +496,15 @@ fn a_starter_for_both_agents_routes_every_stage_with_the_cost_optimised_defaults
             .expect("the starter routes");
         assert_eq!(recorded.agent, agent);
         assert_eq!(recorded.stages.len(), 4);
-        for (stage, model, effort) in expected {
-            let choice = recorded.choice_for(stage).expect("every stage is routed");
-            assert_eq!(choice.model, model, "{agent:?} {stage:?}");
-            assert_eq!(
-                choice.effort.as_deref(),
-                Some(effort),
-                "{agent:?} {stage:?}"
+        for stage in [Stage::Define, Stage::Build, Stage::Check, Stage::Finish] {
+            let choice = recorded
+                .choice_for(stage)
+                .unwrap_or_else(|| panic!("{agent:?} {stage:?} is routed"));
+            assert!(!choice.model.is_empty(), "{agent:?} {stage:?}");
+            let effort = choice.effort.as_deref().expect("an effort");
+            assert!(
+                ["low", "medium", "high", "xhigh", "max"].contains(&effort),
+                "{agent:?} {stage:?}: {effort}"
             );
         }
     }

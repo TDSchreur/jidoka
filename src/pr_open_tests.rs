@@ -119,6 +119,8 @@ struct FakeGh {
     list: RefCell<VecDeque<Result<GhOutput, GhError>>>,
     create: RefCell<VecDeque<Result<GhOutput, GhError>>>,
     calls: RefCell<Vec<(PathBuf, String)>>,
+    /// The arguments of every git command the code ran.
+    git_calls: RefCell<Vec<Vec<String>>>,
     remote_url: RefCell<Option<String>>,
     push_url: RefCell<Option<String>>,
     az_missing: std::cell::Cell<bool>,
@@ -163,6 +165,9 @@ impl Gh for FakeGh {
     }
     /// The code under test runs git; the user's own git settings must not reach it.
     fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
+        self.git_calls
+            .borrow_mut()
+            .push(args.iter().map(|a| a.to_string()).collect());
         if args == ["remote", "get-url", "--push", "--all", "origin"] {
             return Ok(self
                 .push_url
@@ -641,21 +646,41 @@ fn the_text_and_the_json_say_the_same_and_are_printable() {
 
 #[test]
 fn nothing_in_the_command_forces_a_push_or_changes_the_work() {
-    let source = include_str!("pr_open.rs");
-    for forbidden in [
-        "\"--force\"",
-        "\"-f\"",
-        "\"--force-with-lease\"",
-        "\"+",
-        "\"reset\"",
-        "\"checkout\"",
-        "\"clean\"",
-        "\"commit\"",
-        "\"add\"",
-        "\"fetch\"",
-        "\"merge\"",
-    ] {
-        assert!(!source.contains(forbidden), "{forbidden}");
+    let project = Project::new();
+    let gh = FakeGh::new_pr(URL);
+    open(
+        &run_of(&project),
+        &options(&project),
+        &gh,
+        &FakeApi::default(),
+    )
+    .unwrap();
+    let forbidden = [
+        "--force",
+        "-f",
+        "--force-with-lease",
+        "reset",
+        "checkout",
+        "clean",
+        "commit",
+        "add",
+        "fetch",
+        "merge",
+    ];
+    let git_calls = gh.git_calls.borrow();
+    assert!(git_calls
+        .iter()
+        .any(|c| c.first().map(String::as_str) == Some("push")));
+    for command in git_calls.iter() {
+        for argument in command {
+            assert!(!forbidden.contains(&argument.as_str()), "{command:?}");
+            assert!(!argument.starts_with('+'), "{command:?}");
+        }
+    }
+    for (_, command) in gh.calls.borrow().iter() {
+        for word in command.split_whitespace() {
+            assert!(!forbidden.contains(&word), "{command}");
+        }
     }
 }
 

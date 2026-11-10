@@ -930,32 +930,56 @@ fn resuming_an_unknown_or_finished_run_or_one_with_a_workspace_is_refused() {
 
 #[test]
 fn nothing_in_the_command_deletes_resets_checks_out_or_cleans() {
-    let source = include_str!("run_begin.rs");
-    for forbidden in [
-        "\"reset\"",
-        "\"clean\"",
-        "\"checkout\"",
-        "\"restore\"",
-        "\"rm\"",
-        "\"prune\"",
-        "\"stash\"",
-        "\"--force\"",
-        "\"-D\"",
-        "\"-d\"",
-        "\"-B\"",
-        "\"-f\"",
-        "\"-ff\"",
-        "\"--hard\"",
-        "\"--detach\"",
-        "\"remove\"",
-        "\"switch\"",
-        "\"gc\"",
-        "\"update-ref\"",
-        "remove_dir",
-        "remove_file",
-        "fs::write",
-    ] {
-        assert!(!source.contains(forbidden), "{forbidden}");
+    let project = Project::new();
+    // The checkout holds work that a reset, clean, checkout or stash would destroy or move away.
+    fs::write(project.repo.join("a.txt"), "committed\n").unwrap();
+    git(&project.repo, &["add", "a.txt"]);
+    git(&project.repo, &["commit", "-q", "-m", "local work"]);
+    git(&project.repo, &["branch", "keep"]);
+    git(
+        &project.repo,
+        &["worktree", "add", "-q", "../other", "keep"],
+    );
+    fs::write(project.repo.join("a.txt"), "edited\n").unwrap();
+    fs::write(project.repo.join("untracked.txt"), "mine\n").unwrap();
+    let snapshot = |project: &Project| {
+        [
+            git(&project.repo, &["symbolic-ref", "HEAD"]),
+            git(&project.repo, &["rev-parse", "HEAD", "keep"]),
+            git(&project.repo, &["status", "--porcelain"]),
+            git(&project.repo, &["stash", "list"]),
+            git(&project.repo, &["branch", "--list"]),
+            git(&project.repo, &["worktree", "list", "--porcelain"]),
+            fs::read_to_string(project.repo.join("a.txt")).unwrap(),
+            fs::read_to_string(project.repo.join("untracked.txt")).unwrap(),
+            project.origin_commit("develop"),
+            project.origin_commit("release"),
+        ]
+    };
+    let before = snapshot(&project);
+
+    begin(
+        &project.repo,
+        &options("Add login"),
+        &FakeApi::default(),
+        None,
+        None,
+    )
+    .unwrap();
+
+    let after = snapshot(&project);
+    // The only difference is the new branch and its worktree.
+    for (index, (was, is)) in before.iter().zip(&after).enumerate() {
+        if index == 4 {
+            assert!(is.contains("add-login"), "{is}");
+            for line in was.lines() {
+                assert!(is.contains(line.trim()), "{line}");
+            }
+        } else if index == 5 {
+            assert!(is.starts_with(was.as_str()), "{was}\n---\n{is}");
+        } else {
+            assert_eq!(was, is, "snapshot item {index}");
+        }
     }
 }
 
@@ -1104,7 +1128,17 @@ fn a_block_that_could_not_be_recorded_says_so() {
 
 #[test]
 fn git_is_asked_in_english_so_that_its_messages_can_be_told_apart() {
-    assert!(include_str!("run_begin.rs").contains(r#".env("LC_ALL", "C")"#));
+    // A git alias that runs a shell command shows the environment the command started git with.
+    let seen = super::git(
+        Path::new("."),
+        &[
+            "-c",
+            "alias.show-locale=!printf %s \"$LC_ALL\"",
+            "show-locale",
+        ],
+    )
+    .unwrap();
+    assert_eq!(seen, "C");
 }
 
 // --- rework 2 ---------------------------------------------------------------------------------------

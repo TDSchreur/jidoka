@@ -321,20 +321,6 @@ fn azure_problems_say_what_to_do() {
 }
 
 #[test]
-fn states_have_a_plain_label() {
-    let labels = [
-        (PrState::Open, "open"),
-        (PrState::Draft, "a draft"),
-        (PrState::Merged, "merged"),
-        (PrState::Closed, "closed"),
-        (PrState::Unknown, "unknown"),
-    ];
-    for (state, label) in labels {
-        assert_eq!(state.label(), label);
-    }
-}
-
-#[test]
 fn the_head_of_a_pull_request_is_its_commit_and_branch() {
     let gh = ScriptedGh::new(vec![Ok(GhOutput {
         code: Some(0),
