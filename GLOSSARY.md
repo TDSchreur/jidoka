@@ -38,7 +38,7 @@
 
 **Token usage**: The tokens a run used, read from the agents' session logs and kept as counts per stage, model and ticket (plus the reasoning efforts the logs recorded), with the rework and work with no ticket in their own buckets. It is `tracked`, `partial` or `not tracked`, with the reason; unknown usage is never shown as zero.
 
-**Estimated cost**: The cost of a run's token usage in USD, computed when it is shown from Jidoka's built-in price table (per million tokens) for each row, model, stage and run. A model without a price is `unknown`, never zero; a total that includes one is partial (`>= $X`). It is not stored.
+**Estimated cost**: The cost of a run's token usage in USD, computed when it is shown as a token-based estimate at API list prices, not subscription charges, from Jidoka's built-in price table (per million tokens, Claude and OpenAI models) for each row, model, stage and run. A model without a price is `unknown`, never zero; a total that includes one is partial (`>= $X`). It is not stored.
 
 **Pause**: A moment the agent's Claude Code log shows work stopped: a usage limit or a context compaction. The dashboard keeps its kind and time, blocks a running run with the matching reason until later activity appears, and shows it on the run's timeline. A stretch of over 10 minutes with no activity that no pause explains is an idle gap. Codex and Copilot logs are not checked: Copilot's `events.jsonl` writes no usage-limit or compaction events.
 

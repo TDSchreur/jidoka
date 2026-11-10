@@ -375,8 +375,9 @@ function UsageDetail({ usage }) {
             : null}
           <p class="usage-note">
             Fresh tokens are input excluding cache reads, plus cache writes and output. Cache reads are shown beside
-            them, not inside. Reasoning is part of output. n/a means the log did not report it; it is not zero. Est. cost is an estimate
-            from Jidoka's price table; a model without a price is unknown, never zero, and a total that includes
+            them, not inside. Reasoning is part of output. n/a means the log did not report it; it is not zero. Est. cost is a token-based
+            estimate at API list prices (Claude and, where OpenAI publishes a price, Codex models), not what a
+            subscription is charged; a model without a price is unknown, never zero, and a total that includes
             one is marked partial.
           </p>`
       : null}
