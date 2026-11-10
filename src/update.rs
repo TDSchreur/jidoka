@@ -157,28 +157,59 @@ fn asset_name() -> Result<&'static str, String> {
     }
 }
 
-/// Creates `target` for writing, failing when it already exists so no file is overwritten.
-fn create_new_file(target: &Path) -> Result<fs::File, String> {
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(target)
-        .map_err(|error| format!("Cannot write {}: {error}", target.display()))
+/// A newly created file that is removed on drop unless it was moved into place.
+struct StagedFile {
+    path: PathBuf,
+    file: fs::File,
+    armed: bool,
+}
+
+impl StagedFile {
+    /// Creates `path` for writing, failing when it already exists so no existing file is touched.
+    fn create(path: &Path) -> Result<Self, String> {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|error| format!("Cannot write {}: {error}", path.display()))?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+            armed: true,
+        })
+    }
+
+    /// Leaves the file on disk, for when it has been renamed or is otherwise no longer ours to remove.
+    fn keep(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        if self.armed {
+            // Best-effort cleanup; the update result is reported by the caller.
+            let _ = fs::remove_file(&self.path);
+        }
+    }
 }
 
 /// Downloads `url` to the new file `target`, following redirects and accepting at most `limit` bytes.
 ///
-/// Fails when `target` already exists, leaving it untouched. `created` is set once this call has
-/// created `target`, so the caller removes only files it made itself.
-fn download(url: &str, target: &Path, limit: u64, created: &mut bool) -> Result<(), String> {
+/// Fails when `target` already exists, leaving it untouched. The returned file is removed on drop.
+fn download(url: &str, target: &Path, limit: u64) -> Result<StagedFile, String> {
     let mut response = http_agent(ureq::Agent::config_builder())
         .get(url)
         .call()
         .map_err(|error| request_error(&format!("download {url}"), &error))?;
-    let mut file = create_new_file(target)?;
-    *created = true;
-    copy_limited(&mut response.body_mut().as_reader(), &mut file, limit)
-        .map_err(|error| format!("Could not download {url}: {error}"))
+    let mut staged = StagedFile::create(target)?;
+    copy_limited(
+        &mut response.body_mut().as_reader(),
+        &mut staged.file,
+        limit,
+    )
+    .map_err(|error| format!("Could not download {url}: {error}"))?;
+    Ok(staged)
 }
 
 /// Copies `source` to `sink`, failing when it holds more than `limit` bytes.
@@ -300,34 +331,26 @@ pub(crate) fn update(
     // Stage next to the executable so the final rename stays on one filesystem.
     let staged: PathBuf = dir.join(format!(".jidoka-update-{}", std::process::id()));
     let checksum = staged.with_extension("sha256");
-    let (mut staged_created, mut checksum_created) = (false, false);
     let result = (|| {
         println!("Downloading jidoka {latest}...");
-        download(
+        let staged_file = download(
             &format!("{DOWNLOAD_URL}/{asset}"),
             &staged,
             MAX_DOWNLOAD_BYTES,
-            &mut staged_created,
         )?;
-        download(
+        let _checksum_file = download(
             &format!("{DOWNLOAD_URL}/{asset}.sha256"),
             &checksum,
             MAX_CHECKSUM_BYTES,
-            &mut checksum_created,
         )?;
         let data = fs::read(&staged).map_err(|error| error.to_string())?;
         let checksum = fs::read_to_string(&checksum).map_err(|error| error.to_string())?;
         verify_checksum(&data, &checksum)?;
         replace_executable(&exe, &staged)
-            .map_err(|error| format!("Cannot replace {}: {error}", exe.display()))
+            .map_err(|error| format!("Cannot replace {}: {error}", exe.display()))?;
+        staged_file.keep();
+        Ok::<(), String>(())
     })();
-    // Best-effort cleanup of the temporary files this run created; the update result is reported below.
-    if staged_created {
-        let _ = fs::remove_file(&staged);
-    }
-    if checksum_created {
-        let _ = fs::remove_file(&checksum);
-    }
     result?;
     println!("Updated {} to Jidoka {latest}.", exe.display());
     if agents.is_empty() {
@@ -370,15 +393,31 @@ mod tests {
     }
 
     #[test]
+    fn a_staged_file_is_removed_when_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("staged");
+        let staged = StagedFile::create(&path).unwrap();
+        assert!(path.exists());
+        drop(staged);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_kept_staged_file_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("staged");
+        StagedFile::create(&path).unwrap().keep();
+        assert!(path.exists());
+    }
+
+    #[test]
     fn creating_over_an_existing_file_fails_and_keeps_it() {
-        let dir = std::env::temp_dir().join(format!("jidoka-create-new-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let target = dir.join("staged");
-        fs::write(&target, "existing").unwrap();
-        let error = create_new_file(&target).unwrap_err();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("staged");
+        fs::write(&path, "existing").unwrap();
+        let error = StagedFile::create(&path).err().unwrap();
         assert!(error.contains("Cannot write"), "{error}");
-        assert_eq!(fs::read_to_string(&target).unwrap(), "existing");
-        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "existing");
     }
 
     #[test]
