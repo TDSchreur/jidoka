@@ -1,7 +1,7 @@
 use crate::{
     routing::ModelRouting,
     run::{parse_update, NewRun, Run},
-    server::{Info, CLI_TOKEN_HEADER},
+    server::{DashboardIdentity, CLI_TOKEN_HEADER},
 };
 use std::{
     io::{self, Read, Write},
@@ -70,7 +70,7 @@ pub(crate) enum Probe {
     /// Nothing is listening.
     Absent,
     /// A Factory dashboard.
-    Running(Info),
+    Running(DashboardIdentity),
     /// Something else is using the port.
     Foreign,
 }
@@ -120,7 +120,7 @@ pub(crate) fn probe_dashboard(server: &str) -> io::Result<Probe> {
     Ok(parse_info(&response).map_or(Probe::Foreign, Probe::Running))
 }
 
-fn parse_info(response: &[u8]) -> Option<Info> {
+fn parse_info(response: &[u8]) -> Option<DashboardIdentity> {
     let end = response.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
     if !response.starts_with(b"HTTP/1.1 200 ") {
         return None;

@@ -399,17 +399,17 @@ fn asset(request: Security, path: PathBuf) -> Result<(ContentType, &'static [u8]
 
 /// What a client needs to recognise a running Factory dashboard and compare its build with its own.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub(crate) struct Info {
+pub(crate) struct DashboardIdentity {
     pub(crate) pid: u32,
     pub(crate) version: String,
 }
 
 #[rocket::get("/api/info")]
-fn info(request: Security) -> Result<Json<Info>, HttpStatus> {
+fn info(request: Security) -> Result<Json<DashboardIdentity>, HttpStatus> {
     if !request.local {
         return Err(HttpStatus::BadRequest);
     }
-    Ok(Json(Info {
+    Ok(Json(DashboardIdentity {
         pid: std::process::id(),
         version: current_build(),
     }))
@@ -1588,7 +1588,7 @@ mod tests {
             .dispatch()
             .await;
         assert_eq!(response.status(), HttpStatus::Ok);
-        let info: Info = response.into_json().await.unwrap();
+        let info: DashboardIdentity = response.into_json().await.unwrap();
         assert_eq!(info.pid, std::process::id());
         assert_eq!(info.version, current_build());
         let foreign = api

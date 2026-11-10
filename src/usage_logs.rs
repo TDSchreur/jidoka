@@ -81,7 +81,7 @@ impl Roots {
 
 /// A session that names a run or was recorded for one, with its de-duplicated entries.
 #[derive(Debug)]
-pub(crate) struct SessionData {
+pub(crate) struct RunSession {
     pub(crate) id: String,
     /// The run ids the log names.
     pub(crate) mentions: HashSet<String>,
@@ -102,7 +102,7 @@ pub(crate) struct Note {
 
 #[derive(Debug, Default)]
 pub(crate) struct ReadResult {
-    pub(crate) sessions: Vec<SessionData>,
+    pub(crate) sessions: Vec<RunSession>,
     pub(crate) notes: Vec<Note>,
     /// How many of the three log folders exist.
     pub(crate) roots_found: usize,
@@ -266,7 +266,7 @@ pub(crate) fn merge_largest(into: &mut Tokens, other: &Tokens) {
 /// What one log file gave. Lines that looked like usage but could not be used are counted, so the
 /// coverage can say so instead of silently looking complete.
 #[derive(Default)]
-struct Parsed {
+struct LogUsage {
     entries: Vec<(String, Entry)>,
     /// Lines that were not valid JSON.
     malformed: usize,
@@ -278,7 +278,7 @@ struct Parsed {
     activity: Vec<u64>,
 }
 
-impl Parsed {
+impl LogUsage {
     /// Adds an entry under its response id, or, with none, under its line so it counts once as written.
     fn push(&mut self, id: Option<String>, line: usize, prefix: &str, entry: Entry) {
         let key = match id {
@@ -291,7 +291,7 @@ impl Parsed {
         self.entries.push((key, entry));
     }
 
-    fn absorb(&mut self, other: Parsed) {
+    fn absorb(&mut self, other: LogUsage) {
         self.malformed += other.malformed;
         self.unusable += other.unusable;
         self.unidentified += other.unidentified;
@@ -305,8 +305,8 @@ impl Parsed {
 
 /// Claude Code writes a response once per content block with the same usage, so a response counts once.
 /// `input_tokens` excludes the cache; thinking tokens are inside `output_tokens`.
-fn parse_claude(text: &str, session: &str, subagent_file: bool) -> Parsed {
-    let mut parsed = Parsed::default();
+fn parse_claude(text: &str, session: &str, subagent_file: bool) -> LogUsage {
+    let mut parsed = LogUsage::default();
     for (number, line) in text
         .lines()
         .enumerate()
@@ -370,7 +370,7 @@ fn parse_claude(text: &str, session: &str, subagent_file: bool) -> Parsed {
 /// A usage limit is an assistant line flagged `isApiErrorMessage` with error `rate_limit`; a compaction is
 /// a `compact_boundary` system line. Other lines of the user or the assistant are activity, except an
 /// error message and the summary a compaction writes.
-fn claude_pauses(text: &str, parsed: &mut Parsed) {
+fn claude_pauses(text: &str, parsed: &mut LogUsage) {
     for line in text.lines().filter(|line| {
         line.contains("\"type\":\"user\"")
             || line.contains("\"type\":\"assistant\"")
@@ -399,7 +399,7 @@ fn claude_pauses(text: &str, parsed: &mut Parsed) {
     }
 }
 
-fn read_claude(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
+fn read_claude(root: &Path, ctx: &mut ReadState, out: &mut ReadResult) {
     for slug in sub_dirs(root) {
         for file in files_in(&slug.path()) {
             let path = file.path();
@@ -515,8 +515,8 @@ pub(crate) fn codex_tokens(usage: &Value) -> Tokens {
 }
 
 /// Reasoning tokens are part of output; see `codex_tokens` for how the counts are split.
-fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
-    let mut parsed = Parsed::default();
+fn parse_codex(text: &str, session: &str, subagent: bool) -> LogUsage {
+    let mut parsed = LogUsage::default();
     let mut by_turn: BTreeMap<String, TurnSettings> = BTreeMap::new();
     let mut last: Option<TurnSettings> = None;
     for (number, line) in text.lines().enumerate() {
@@ -578,7 +578,7 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> Parsed {
     parsed
 }
 
-fn read_codex(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
+fn read_codex(root: &Path, ctx: &mut ReadState, out: &mut ReadResult) {
     let earliest_day = civil_day(ctx.from.saturating_sub(DAY_MS));
     let mut rollouts: Vec<Rollout> = Vec::new();
     for year in sub_dirs(root) {
@@ -633,7 +633,7 @@ fn read_codex(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
         })
         .map(|r| r.root.clone())
         .collect();
-    let mut by_root: BTreeMap<String, (HashSet<String>, Parsed)> = BTreeMap::new();
+    let mut by_root: BTreeMap<String, (HashSet<String>, LogUsage)> = BTreeMap::new();
     for rollout in rollouts.iter().filter(|r| claimed_roots.contains(&r.root)) {
         if ctx.over_limit(out) {
             return;
@@ -684,8 +684,8 @@ pub(crate) fn copilot_tokens(usage: &Value) -> Option<Tokens> {
 
 /// Copilot counts cache reads and writes inside `inputTokens`; both are taken out of input. Reasoning
 /// tokens are part of output. Each record also names the effort of its call as `reasoningEffort`.
-fn parse_copilot(text: &str, session: &str) -> Parsed {
-    let mut parsed = Parsed::default();
+fn parse_copilot(text: &str, session: &str) -> LogUsage {
+    let mut parsed = LogUsage::default();
     for (number, line) in text
         .lines()
         .enumerate()
@@ -727,7 +727,7 @@ fn parse_copilot(text: &str, session: &str) -> Parsed {
     parsed
 }
 
-fn read_copilot(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
+fn read_copilot(root: &Path, ctx: &mut ReadState, out: &mut ReadResult) {
     for dir in sub_dirs(root) {
         let session = dir.file_name().to_string_lossy().into_owned();
         let path = dir.path().join("events.jsonl");
@@ -758,7 +758,7 @@ fn read_copilot(root: &Path, ctx: &mut Ctx, out: &mut ReadResult) {
 type Markers = (Vec<(PauseKind, u64)>, Vec<u64>);
 
 /// What the readers share: which runs and sessions are of interest, and the limits.
-struct Ctx<'a> {
+struct ReadState<'a> {
     ids: &'a HashSet<&'a str>,
     recorded: &'a HashSet<&'a str>,
     from: u64,
@@ -774,7 +774,7 @@ struct Ctx<'a> {
     pauses: BTreeMap<String, Markers>,
 }
 
-impl Ctx<'_> {
+impl ReadState<'_> {
     /// Whether a log was last written well before the earliest run of interest, so it cannot hold its
     /// work. File times are coarse and clocks differ, so there is plenty of slack.
     fn stale(&self, path: &Path) -> bool {
@@ -826,7 +826,7 @@ impl Ctx<'_> {
         &mut self,
         id: &str,
         mentions: HashSet<String>,
-        parsed: Parsed,
+        parsed: LogUsage,
         agent: &str,
         out: &mut ReadResult,
     ) {
@@ -895,7 +895,7 @@ pub(crate) fn read_sessions(
     limits: ReadLimits,
 ) -> ReadResult {
     let mut out = ReadResult::default();
-    let mut ctx = Ctx {
+    let mut ctx = ReadState {
         ids,
         recorded,
         from,
@@ -910,11 +910,16 @@ pub(crate) fn read_sessions(
     let sources = roots
         .claude
         .iter()
-        .map(|root| (root, read_claude as fn(&Path, &mut Ctx, &mut ReadResult)))
+        .map(|root| {
+            (
+                root,
+                read_claude as fn(&Path, &mut ReadState, &mut ReadResult),
+            )
+        })
         .chain([
             (
                 &roots.codex,
-                read_codex as fn(&Path, &mut Ctx, &mut ReadResult),
+                read_codex as fn(&Path, &mut ReadState, &mut ReadResult),
             ),
             (&roots.copilot, read_copilot),
         ]);
@@ -943,7 +948,7 @@ pub(crate) fn read_sessions(
         pauses.sort_by_key(|(_, at)| *at);
         activity.sort_unstable();
         activity.dedup();
-        out.sessions.push(SessionData {
+        out.sessions.push(RunSession {
             id,
             mentions,
             entries,

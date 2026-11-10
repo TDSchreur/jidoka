@@ -7,7 +7,7 @@
 
 use crate::{
     run::{Run, Stage},
-    usage_logs::{read_sessions, ReadLimits, Roots, SessionData},
+    usage_logs::{read_sessions, ReadLimits, Roots, RunSession},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -383,7 +383,7 @@ pub(crate) fn overlaps(a: &Run, b: &Run) -> bool {
     a_start <= b_end && b_start <= a_end
 }
 
-fn claims(run: &Run, session: &SessionData) -> bool {
+fn claims(run: &Run, session: &RunSession) -> bool {
     session.mentions.contains(&run.id) || run.sessions.contains(&session.id)
 }
 
@@ -403,7 +403,7 @@ fn bucket(mark: &Mark) -> (Option<String>, bool) {
 pub(crate) fn attribute(
     target: &Run,
     runs: &[Run],
-    sessions: &[SessionData],
+    sessions: &[RunSession],
     now: u64,
 ) -> (Vec<UsageRow>, Tokens, Vec<String>) {
     type Key = (Stage, String, Option<String>, bool);
@@ -477,7 +477,7 @@ pub(crate) fn attribute(
 /// pause explains is not also an idle gap.
 pub(crate) fn derive_pauses(
     target: &Run,
-    sessions: &[SessionData],
+    sessions: &[RunSession],
     now: u64,
 ) -> (Vec<Pause>, Vec<IdleGap>) {
     let Some(first) = target.timeline.first() else {
@@ -579,7 +579,7 @@ fn collect_limited(
         .min()
         .unwrap_or(first.at);
     let read = read_sessions(roots, &ids, &recorded, from, deadline, limits);
-    let claimed: Vec<&SessionData> = read.sessions.iter().filter(|s| claims(target, s)).collect();
+    let claimed: Vec<&RunSession> = read.sessions.iter().filter(|s| claims(target, s)).collect();
     if claimed.is_empty() {
         let reason = if read.roots_found == 0 {
             "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()

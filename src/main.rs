@@ -257,7 +257,7 @@ fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
         return Err("Invalid run id".into());
     }
     let run = fetch_run(ADDRESS, id)?;
-    let info = pr_open::RunInfo {
+    let info = pr_open::PrRun {
         id: id.to_string(),
         worktree: run.worktree.clone(),
         branch: run.branch.clone(),
@@ -388,7 +388,7 @@ fn pr_sync_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     let run = fetch_run(ADDRESS, id)?;
     let text =
         |value: serde_json::Value, fallback: &str| value.as_str().unwrap_or(fallback).to_string();
-    let info = pr_open::RunInfo {
+    let info = pr_open::PrRun {
         id: id.to_string(),
         worktree: run.worktree.clone(),
         branch: run.branch.clone(),

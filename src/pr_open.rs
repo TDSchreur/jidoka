@@ -81,7 +81,7 @@ pub(crate) trait RunApi {
 
 /// What the command needs to know about the run.
 #[derive(Clone, Debug)]
-pub(crate) struct RunInfo {
+pub(crate) struct PrRun {
     pub(crate) id: String,
     pub(crate) worktree: Option<String>,
     pub(crate) branch: Option<String>,
@@ -90,7 +90,7 @@ pub(crate) struct RunInfo {
     pub(crate) status: String,
 }
 
-impl RunInfo {
+impl PrRun {
     pub(crate) fn running(&self) -> bool {
         self.status == "running"
     }
@@ -548,7 +548,7 @@ struct PreparedPr {
 }
 
 fn open_azure(
-    run: &RunInfo,
+    run: &PrRun,
     options: &Options,
     gh: &dyn Gh,
     api: &dyn RunApi,
@@ -642,7 +642,7 @@ fn open_azure(
 /// Pushes the run's branch and opens its pull request, or finds the open one, and records its URL on the run.
 /// Nothing is pushed unless the checks pass and `gh` can see the repository. It never forces a push.
 pub(crate) fn open(
-    run: &RunInfo,
+    run: &PrRun,
     options: &Options,
     gh: &dyn Gh,
     api: &dyn RunApi,
@@ -859,7 +859,7 @@ pub(crate) fn open(
 
 /// Records the pull request on a running run and returns the result.
 fn finish(
-    run: &RunInfo,
+    run: &PrRun,
     api: &dyn RunApi,
     branch: String,
     base: String,
@@ -892,7 +892,7 @@ fn finish(
 }
 
 /// The result as text.
-pub(crate) fn render(opened: &Opened, run: &RunInfo) -> String {
+pub(crate) fn render(opened: &Opened, run: &PrRun) -> String {
     let mut text = format!(
         "{}: {}\n  Branch: {}\n  Base: {}\n  Pushed commit: {}\n",
         if opened.created {

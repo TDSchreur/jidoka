@@ -2,7 +2,7 @@
 
 use crate::{
     inspect::shown,
-    pr_open::{RunApi, RunInfo},
+    pr_open::{PrRun, RunApi},
     pr_wait::ToolProblem,
     run_begin::{first_line, git, last_line, valid_branch_name},
 };
@@ -125,7 +125,7 @@ fn lines(text: &str) -> Vec<String> {
 /// the change overlaps. It never rebases, amends, fast-forwards, force-pushes, resets or aborts, and never
 /// merges the pull request.
 pub(crate) fn sync(
-    run: &RunInfo,
+    run: &PrRun,
     options: &Options,
     git: &dyn Git,
     api: &dyn RunApi,
@@ -416,7 +416,7 @@ pub(crate) fn sync(
 }
 
 /// Notes the base update on a running run, keeping its stage and status. It is not a Rework or a CI fix.
-fn record(run: &RunInfo, api: &dyn RunApi, activity: &str) {
+fn record(run: &PrRun, api: &dyn RunApi, activity: &str) {
     if run.running() {
         // The outcome stands even if the dashboard cannot be reached.
         let _ = api.update(&run.id, &run.stage, &run.status, &["--activity", activity]);

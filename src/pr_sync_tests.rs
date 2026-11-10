@@ -194,8 +194,8 @@ impl RunApi for FakeApi {
     }
 }
 
-fn run_of(project: &Project) -> RunInfo {
-    RunInfo {
+fn run_of(project: &Project) -> PrRun {
+    PrRun {
         id: "100".into(),
         worktree: Some(project.wt.display().to_string()),
         branch: Some("feature".into()),
