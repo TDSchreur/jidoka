@@ -344,7 +344,7 @@ function Workflows({ reworkCap }) {
       <p>
         With Codex, start a new chat in Worktree mode on the intended base branch and tell Jidoka to use that
         worktree. Some sandboxes need permission for Git operations that write shared repository data, for network
-        access, and for the dashboard. The README has the details.
+        access, and for the dashboard. The workflows guide, docs/workflows.md, has the details.
       </p>
     <//>
   `;

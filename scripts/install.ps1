@@ -67,7 +67,7 @@ The release is not code-signed yet, so antivirus heuristics sometimes flag it as
   1. Compare the SHA256 of the downloaded file with the .sha256 file on the release page.
   2. Report the file at https://www.microsoft.com/wdsi/filesubmission as a software developer.
   3. Only if the checksum matches, restore it from Windows Security > Protection history, or ask your administrator to allow it, and run this installer again.
-See https://github.com/TDSchreur/jidoka#windows-defender-blocks-the-download
+See https://github.com/TDSchreur/jidoka/blob/master/docs/installation.md#windows-defender-blocks-the-download
 "@
 }
 
