@@ -42,26 +42,29 @@ const fn price(input: f64, output: f64, cache_read: f64, cache_write: f64) -> Pr
     }
 }
 
-/// An OpenAI price as the pricing page lists it: input, cached input, output.
-const fn openai(input: f64, cached: f64, output: f64) -> Price {
-    Price {
-        input,
-        output,
-        cache_read: cached,
-        cache_write: None,
-        long: None,
-    }
+/// The three rates the OpenAI pricing page lists per model, USD per million tokens.
+#[derive(Clone, Copy)]
+struct Rates {
+    input: f64,
+    cache_read: f64,
+    output: f64,
 }
 
-/// An OpenAI price with a long-context column: short input, cached, output, then long input, cached, output.
-const fn openai_long(short: [f64; 3], long: [f64; 3]) -> Price {
+/// An OpenAI price: the short-context rates, and the long-context column when the page has one.
+const fn openai(short: Rates, long: Option<Rates>) -> Price {
     Price {
-        long: Some(LongRates {
-            input: long[0],
-            output: long[2],
-            cache_read: long[1],
-        }),
-        ..openai(short[0], short[1], short[2])
+        input: short.input,
+        output: short.output,
+        cache_read: short.cache_read,
+        cache_write: None,
+        long: match long {
+            Some(l) => Some(LongRates {
+                input: l.input,
+                output: l.output,
+                cache_read: l.cache_read,
+            }),
+            None => None,
+        },
     }
 }
 
@@ -90,43 +93,209 @@ pub(crate) const PRICES: &[(&str, Price)] = &[
     ("claude-opus-4-8", price(5.0, 25.0, 0.50, 6.25)),
     (
         "gpt-6-1-terra",
-        openai_long([1.0, 0.05, 5.0], [2.0, 0.10, 7.5]),
+        openai(
+            Rates {
+                input: 1.0,
+                cache_read: 0.05,
+                output: 5.0,
+            },
+            Some(Rates {
+                input: 2.0,
+                cache_read: 0.10,
+                output: 7.5,
+            }),
+        ),
     ),
     (
         "gpt-6-1-sol",
-        openai_long([2.0, 0.10, 10.0], [4.0, 0.20, 15.0]),
+        openai(
+            Rates {
+                input: 2.0,
+                cache_read: 0.10,
+                output: 10.0,
+            },
+            Some(Rates {
+                input: 4.0,
+                cache_read: 0.20,
+                output: 15.0,
+            }),
+        ),
     ),
     (
         "gpt-6-astra",
-        openai_long([10.0, 1.0, 50.0], [20.0, 2.0, 75.0]),
+        openai(
+            Rates {
+                input: 10.0,
+                cache_read: 1.0,
+                output: 50.0,
+            },
+            Some(Rates {
+                input: 20.0,
+                cache_read: 2.0,
+                output: 75.0,
+            }),
+        ),
     ),
     (
         "gpt-6-luna",
-        openai_long([0.10, 0.01, 0.50], [0.20, 0.02, 0.75]),
+        openai(
+            Rates {
+                input: 0.10,
+                cache_read: 0.01,
+                output: 0.50,
+            },
+            Some(Rates {
+                input: 0.20,
+                cache_read: 0.02,
+                output: 0.75,
+            }),
+        ),
     ),
     (
         "gpt-6-sol",
-        openai_long([2.0, 0.20, 10.0], [4.0, 0.40, 15.0]),
+        openai(
+            Rates {
+                input: 2.0,
+                cache_read: 0.20,
+                output: 10.0,
+            },
+            Some(Rates {
+                input: 4.0,
+                cache_read: 0.40,
+                output: 15.0,
+            }),
+        ),
     ),
     (
         "gpt-5-6-sol",
-        openai_long([4.0, 0.40, 20.0], [8.0, 0.80, 30.0]),
+        openai(
+            Rates {
+                input: 4.0,
+                cache_read: 0.40,
+                output: 20.0,
+            },
+            Some(Rates {
+                input: 8.0,
+                cache_read: 0.80,
+                output: 30.0,
+            }),
+        ),
     ),
     (
         "gpt-5-6-terra",
-        openai_long([2.0, 0.20, 12.0], [4.0, 0.40, 18.0]),
+        openai(
+            Rates {
+                input: 2.0,
+                cache_read: 0.20,
+                output: 12.0,
+            },
+            Some(Rates {
+                input: 4.0,
+                cache_read: 0.40,
+                output: 18.0,
+            }),
+        ),
     ),
     (
         "gpt-5-6-luna",
-        openai_long([0.20, 0.02, 1.20], [0.40, 0.04, 1.80]),
+        openai(
+            Rates {
+                input: 0.20,
+                cache_read: 0.02,
+                output: 1.20,
+            },
+            Some(Rates {
+                input: 0.40,
+                cache_read: 0.04,
+                output: 1.80,
+            }),
+        ),
     ),
-    ("gpt-5-5", openai_long([5.0, 0.50, 30.0], [10.0, 1.0, 45.0])),
-    ("gpt-5-4", openai_long([2.5, 0.25, 15.0], [5.0, 0.50, 22.5])),
-    ("gpt-5-4-mini", openai(0.75, 0.075, 4.5)),
-    ("gpt-5-3-codex", openai(1.75, 0.175, 14.0)),
-    ("gpt-5-2", openai(1.75, 0.175, 14.0)),
-    ("gpt-5-1", openai(1.25, 0.125, 10.0)),
-    ("gpt-5", openai(1.25, 0.125, 10.0)),
+    (
+        "gpt-5-5",
+        openai(
+            Rates {
+                input: 5.0,
+                cache_read: 0.50,
+                output: 30.0,
+            },
+            Some(Rates {
+                input: 10.0,
+                cache_read: 1.0,
+                output: 45.0,
+            }),
+        ),
+    ),
+    (
+        "gpt-5-4",
+        openai(
+            Rates {
+                input: 2.5,
+                cache_read: 0.25,
+                output: 15.0,
+            },
+            Some(Rates {
+                input: 5.0,
+                cache_read: 0.50,
+                output: 22.5,
+            }),
+        ),
+    ),
+    (
+        "gpt-5-4-mini",
+        openai(
+            Rates {
+                input: 0.75,
+                cache_read: 0.075,
+                output: 4.5,
+            },
+            None,
+        ),
+    ),
+    (
+        "gpt-5-3-codex",
+        openai(
+            Rates {
+                input: 1.75,
+                cache_read: 0.175,
+                output: 14.0,
+            },
+            None,
+        ),
+    ),
+    (
+        "gpt-5-2",
+        openai(
+            Rates {
+                input: 1.75,
+                cache_read: 0.175,
+                output: 14.0,
+            },
+            None,
+        ),
+    ),
+    (
+        "gpt-5-1",
+        openai(
+            Rates {
+                input: 1.25,
+                cache_read: 0.125,
+                output: 10.0,
+            },
+            None,
+        ),
+    ),
+    (
+        "gpt-5",
+        openai(
+            Rates {
+                input: 1.25,
+                cache_read: 0.125,
+                output: 10.0,
+            },
+            None,
+        ),
+    ),
 ];
 
 pub(crate) type Table<'a> = &'a [(&'a str, Price)];
@@ -140,6 +309,15 @@ fn lookup(table: Table, model: &str) -> Option<Price> {
 
 fn minus(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     a.map(|a| a.saturating_sub(b.unwrap_or(0)))
+}
+
+/// Million-token-units cost of `tokens` at the given rates (uncounted fields add nothing).
+fn priced(tokens: &Tokens, input: f64, output: f64, cache_read: f64, cache_write: f64) -> f64 {
+    let part = |count: Option<u64>, per_million: f64| count.unwrap_or(0) as f64 * per_million;
+    part(tokens.input, input)
+        + part(tokens.output, output)
+        + part(tokens.cache_read, cache_read)
+        + part(tokens.cache_write, cache_write)
 }
 
 /// The cost of one set of tokens in dollars; `long_context` is the part of them from requests above the
@@ -156,7 +334,6 @@ pub(crate) fn tokens_cost(tokens: &Tokens, long_context: &Tokens, price: &Price)
         None if written > 0 => return None,
         None => 0.0,
     };
-    let part = |count: Option<u64>, per_million: f64| count.unwrap_or(0) as f64 * per_million;
     let (short, long) = match &price.long {
         Some(_) => (
             Tokens {
@@ -170,15 +347,21 @@ pub(crate) fn tokens_cost(tokens: &Tokens, long_context: &Tokens, price: &Price)
         ),
         None => (*tokens, Tokens::default()),
     };
-    let mut total = part(short.input, price.input)
-        + part(short.output, price.output)
-        + part(short.cache_read, price.cache_read)
-        + part(short.cache_write, write_price);
+    let mut total = priced(
+        &short,
+        price.input,
+        price.output,
+        price.cache_read,
+        write_price,
+    );
     if let Some(rates) = &price.long {
-        total += part(long.input, rates.input)
-            + part(long.output, rates.output)
-            + part(long.cache_read, rates.cache_read)
-            + part(long.cache_write, write_price);
+        total += priced(
+            &long,
+            rates.input,
+            rates.output,
+            rates.cache_read,
+            write_price,
+        );
     }
     Some(total / 1e6)
 }

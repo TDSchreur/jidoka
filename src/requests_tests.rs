@@ -1890,3 +1890,81 @@ mod unreadable_logs {
         assert!(read_error_note(&analyze_recorded(&world)));
     }
 }
+
+// --- the usage and requests readers agree -----------------------------------------------------------
+
+fn codex_record(
+    at: u64,
+    response: &str,
+    input: u64,
+    cached: u64,
+    output: u64,
+    reasoning: u64,
+) -> String {
+    json!({"type": "token_usage_record", "timestamp": iso(at), "payload": {"response_id": response, "turn_id": "turn-1",
+        "usage": {"input_tokens": input, "cached_input_tokens": cached, "cache_write_input_tokens": 0,
+                  "output_tokens": output, "reasoning_output_tokens": reasoning, "total_tokens": input + output}}})
+    .to_string()
+}
+
+#[test]
+fn the_usage_and_requests_readers_agree_on_a_codex_session_and_its_subagent() {
+    let world = World::new();
+    let context = json!({"type": "turn_context", "timestamp": iso(0), "payload": {"model": "gpt-test", "turn_id": "turn-1"}}).to_string();
+    world.file(
+        "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-root-1.jsonl",
+        &[
+            codex_meta("root-1", None),
+            context.clone(),
+            codex_exec_commands("c1", &[&format!("jidoka run update {RUN_A} build running")]),
+            codex_record(10, "resp-1", 1000, 600, 50, 20),
+            codex_record(20, "resp-2", 200, 0, 10, 0),
+        ],
+    );
+    world.file(
+        "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-30-sub-1.jsonl",
+        &[
+            codex_meta("sub-1", Some("root-1")),
+            context,
+            codex_record(30, "resp-3", 90, 40, 9, 4),
+        ],
+    );
+    let target = run(RUN_A, 0, Some(100), &[]);
+    let runs = std::slice::from_ref(&target);
+    let requests = world.analyze(&target, runs);
+    let usage = crate::usage::collect(
+        &target,
+        runs,
+        &world.roots(),
+        T0 + 10_000_000,
+        Instant::now() + Duration::from_secs(30),
+    );
+    let sum = |tokens: Vec<&Tokens>| {
+        let add = |f: fn(&Tokens) -> Option<u64>| tokens.iter().filter_map(|t| f(t)).sum::<u64>();
+        (add(|t| t.input), add(|t| t.cache_read), add(|t| t.output))
+    };
+    // Worked by hand: uncached input (1000 - 600) + 200 + (90 - 40) = 650, cache read 600 + 40 = 640,
+    // output 50 + 10 + 9 = 69; the subagent part is 50, 40 and 9.
+    let rows: Vec<&Tokens> = usage.rows.iter().map(|r| &r.tokens).collect();
+    let sub_rows: Vec<&Tokens> = usage.rows.iter().map(|r| &r.subagents).collect();
+    assert_eq!(sum(rows), (650, 640, 69));
+    assert_eq!(sum(sub_rows), (50, 40, 9));
+    assert_eq!(sum(vec![&requests.total.tokens]), (650, 640, 69));
+    assert_eq!(sum(vec![&requests.subagents.tokens]), (50, 40, 9));
+    assert_eq!(usage.sessions, requests.sessions);
+}
+
+#[test]
+fn only_a_bounded_number_of_variable_names_are_kept() {
+    use crate::request_logs::{Variables, run_claims};
+    let ids: std::collections::HashSet<&str> = [RUN_A].into_iter().collect();
+    let mut variables = Variables::new();
+    let fill: String = (0..256).map(|n| format!("V{n}=x; ")).collect();
+    run_claims(&fill, &ids, &mut variables);
+    // A new name beyond the cap is ignored ...
+    let late = format!("LATE={RUN_A}; jidoka run update $LATE build running");
+    assert!(run_claims(&late, &ids, &mut variables).is_empty());
+    // ... while a name already kept can still be updated.
+    let known = format!("V0={RUN_A}; jidoka run update $V0 build running");
+    assert_eq!(run_claims(&known, &ids, &mut variables).len(), 1);
+}

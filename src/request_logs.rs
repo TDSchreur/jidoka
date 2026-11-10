@@ -413,6 +413,9 @@ pub(crate) fn truncate(command: &str) -> &str {
 /// The shell variables an agent has set to a literal so far, by name.
 pub(crate) type Variables = HashMap<String, String>;
 
+/// The most distinct variable names kept; an assignment to a new name beyond it is ignored.
+const MAX_VARIABLES: usize = 256;
+
 /// The run ids in `ids` that a run command in `command` names; see `run_claims`.
 pub(crate) fn updated_runs(command: &str, ids: &HashSet<&str>) -> HashSet<String> {
     run_claims(command, ids, &mut Variables::new())
@@ -444,7 +447,7 @@ pub(crate) fn run_claims(
                     let value = value.trim_matches(['"', '\'']);
                     if value.contains(SUBSTITUTION) {
                         variables.remove(name);
-                    } else {
+                    } else if variables.len() < MAX_VARIABLES || variables.contains_key(name) {
                         variables.insert(name.to_string(), value.to_string());
                     }
                 }
