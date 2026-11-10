@@ -12,8 +12,15 @@ use std::{
 
 const LATEST_URL: &str = "https://github.com/TDSchreur/jidoka/releases/latest";
 const DOWNLOAD_URL: &str = "https://github.com/TDSchreur/jidoka/releases/latest/download";
-/// The largest release download accepted, as a guard against an unbounded response body.
+/// The largest release binary accepted: 256 MiB.
+///
+/// The release binary is currently about 11 MiB, so this leaves ample room to grow while
+/// still bounding disk use against an unbounded response body.
 const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
+/// The largest `.sha256` file accepted: 4 KiB.
+///
+/// A checksum file is one line holding a 64-character hash and a file name.
+const MAX_CHECKSUM_BYTES: u64 = 4 * 1024;
 const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
 
 /// How the running build compares with the latest release.
@@ -30,8 +37,9 @@ pub(crate) enum Status {
     },
 }
 
-/// An https-only agent with the platform's TLS: Schannel and the Windows certificate store on Windows,
-/// rustls elsewhere.
+/// Builds an https-only HTTP agent using the platform's TLS stack.
+///
+/// That is Schannel and the Windows certificate store on Windows, and rustls elsewhere.
 fn http_agent(config: ureq::config::ConfigBuilder<ureq::typestate::AgentScope>) -> ureq::Agent {
     let config = config.https_only(true);
     #[cfg(windows)]
@@ -149,23 +157,28 @@ fn asset_name() -> Result<&'static str, String> {
     }
 }
 
-/// Downloads `url` to `target`, following redirects.
-fn download(url: &str, target: &Path) -> Result<(), String> {
+/// Creates `target` for writing, failing when it already exists so no file is overwritten.
+fn create_new_file(target: &Path) -> Result<fs::File, String> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .map_err(|error| format!("Cannot write {}: {error}", target.display()))
+}
+
+/// Downloads `url` to the new file `target`, following redirects and accepting at most `limit` bytes.
+///
+/// Fails when `target` already exists, leaving it untouched. `created` is set once this call has
+/// created `target`, so the caller removes only files it made itself.
+fn download(url: &str, target: &Path, limit: u64, created: &mut bool) -> Result<(), String> {
     let mut response = http_agent(ureq::Agent::config_builder())
         .get(url)
         .call()
         .map_err(|error| request_error(&format!("download {url}"), &error))?;
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(target)
-        .map_err(|error| format!("Cannot write {}: {error}", target.display()))?;
-    copy_limited(
-        &mut response.body_mut().as_reader(),
-        &mut file,
-        MAX_DOWNLOAD_BYTES,
-    )
-    .map_err(|error| format!("Could not download {url}: {error}"))
+    let mut file = create_new_file(target)?;
+    *created = true;
+    copy_limited(&mut response.body_mut().as_reader(), &mut file, limit)
+        .map_err(|error| format!("Could not download {url}: {error}"))
 }
 
 /// Copies `source` to `sink`, failing when it holds more than `limit` bytes.
@@ -287,19 +300,34 @@ pub(crate) fn update(
     // Stage next to the executable so the final rename stays on one filesystem.
     let staged: PathBuf = dir.join(format!(".jidoka-update-{}", std::process::id()));
     let checksum = staged.with_extension("sha256");
+    let (mut staged_created, mut checksum_created) = (false, false);
     let result = (|| {
         println!("Downloading jidoka {latest}...");
-        download(&format!("{DOWNLOAD_URL}/{asset}"), &staged)?;
-        download(&format!("{DOWNLOAD_URL}/{asset}.sha256"), &checksum)?;
+        download(
+            &format!("{DOWNLOAD_URL}/{asset}"),
+            &staged,
+            MAX_DOWNLOAD_BYTES,
+            &mut staged_created,
+        )?;
+        download(
+            &format!("{DOWNLOAD_URL}/{asset}.sha256"),
+            &checksum,
+            MAX_CHECKSUM_BYTES,
+            &mut checksum_created,
+        )?;
         let data = fs::read(&staged).map_err(|error| error.to_string())?;
         let checksum = fs::read_to_string(&checksum).map_err(|error| error.to_string())?;
         verify_checksum(&data, &checksum)?;
         replace_executable(&exe, &staged)
             .map_err(|error| format!("Cannot replace {}: {error}", exe.display()))
     })();
-    // Best-effort cleanup of temporary files; the update result is reported below.
-    let _ = fs::remove_file(&staged);
-    let _ = fs::remove_file(&checksum);
+    // Best-effort cleanup of the temporary files this run created; the update result is reported below.
+    if staged_created {
+        let _ = fs::remove_file(&staged);
+    }
+    if checksum_created {
+        let _ = fs::remove_file(&checksum);
+    }
     result?;
     println!("Updated {} to Jidoka {latest}.", exe.display());
     if agents.is_empty() {
@@ -331,15 +359,27 @@ pub(crate) fn update(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn a_body_over_the_limit_is_an_error_and_one_at_the_limit_is_copied() {
         let mut sink = Vec::new();
-        super::copy_limited(&mut &[7u8; 4][..], &mut sink, 4).unwrap();
+        copy_limited(&mut &[7u8; 4][..], &mut sink, 4).unwrap();
         assert_eq!(sink.len(), 4);
-        assert!(super::copy_limited(&mut &[7u8; 5][..], &mut Vec::new(), 4).is_err());
+        assert!(copy_limited(&mut &[7u8; 5][..], &mut Vec::new(), 4).is_err());
     }
 
-    use super::*;
+    #[test]
+    fn creating_over_an_existing_file_fails_and_keeps_it() {
+        let dir = std::env::temp_dir().join(format!("jidoka-create-new-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("staged");
+        fs::write(&target, "existing").unwrap();
+        let error = create_new_file(&target).unwrap_err();
+        assert!(error.contains("Cannot write"), "{error}");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "existing");
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn the_version_comes_from_the_release_url() {
