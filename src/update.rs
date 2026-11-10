@@ -12,6 +12,15 @@ use std::{
 
 const LATEST_URL: &str = "https://github.com/TDSchreur/jidoka/releases/latest";
 const DOWNLOAD_URL: &str = "https://github.com/TDSchreur/jidoka/releases/latest/download";
+/// The largest release binary accepted: 256 MiB.
+///
+/// The release binary is currently about 11 MiB, so this leaves ample room to grow while
+/// still bounding disk use against an unbounded response body.
+const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
+/// The largest `.sha256` file accepted: 4 KiB.
+///
+/// A checksum file is one line holding a 64-character hash and a file name.
+const MAX_CHECKSUM_BYTES: u64 = 4 * 1024;
 const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
 
 /// How the running build compares with the latest release.
@@ -26,6 +35,21 @@ pub(crate) enum Status {
     Unknown {
         latest: String,
     },
+}
+
+/// Builds an https-only HTTP agent using the platform's TLS stack.
+///
+/// That is Schannel and the Windows certificate store on Windows, and rustls elsewhere.
+fn http_agent(config: ureq::config::ConfigBuilder<ureq::typestate::AgentScope>) -> ureq::Agent {
+    let config = config.https_only(true);
+    #[cfg(windows)]
+    let config = config.tls_config(
+        ureq::tls::TlsConfig::builder()
+            .provider(ureq::tls::TlsProvider::NativeTls)
+            .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+            .build(),
+    );
+    config.build().into()
 }
 
 /// The version in a release URL such as `.../releases/tag/v0.5.1`.
@@ -74,24 +98,42 @@ pub(crate) fn render(status: &Status) -> String {
 
 /// The version of the latest release, read from where GitHub redirects `releases/latest`.
 pub(crate) fn latest_version() -> Result<String, String> {
-    let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
-    let output = Command::new("curl")
-        .args(["-fsSL", "-o", null, "-w", "%{url_effective}", LATEST_URL])
-        .output()
-        .map_err(|error| match error.kind() {
-            io::ErrorKind::NotFound => {
-                "curl is required to look up releases but was not found.".to_string()
-            }
-            _ => format!("Could not run curl: {error}"),
-        })?;
-    if !output.status.success() {
+    let agent = http_agent(
+        ureq::Agent::config_builder()
+            .max_redirects(0)
+            .http_status_as_error(false),
+    );
+    let response = agent
+        .get(LATEST_URL)
+        .call()
+        .map_err(|error| request_error("look up the latest release", &error))?;
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok());
+    version_from_redirect(response.status().as_u16(), location)
+}
+
+/// The release version in a `releases/latest` response, given its status and `Location` header.
+fn version_from_redirect(status: u16, location: Option<&str>) -> Result<String, String> {
+    if !(300..400).contains(&status) {
         return Err(format!(
-            "Could not look up the latest release: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            "Could not look up the latest release: GitHub answered with status {status}."
         ));
     }
-    let url = String::from_utf8_lossy(&output.stdout);
-    version_from_url(&url).ok_or_else(|| format!("Could not read a release version from {url}."))
+    let location = location.ok_or("Could not look up the latest release: no redirect location.")?;
+    version_from_url(location)
+        .ok_or_else(|| format!("Could not read a release version from {location}."))
+}
+
+/// A readable message for a failed request while trying to `action`.
+fn request_error(action: &str, error: &ureq::Error) -> String {
+    match error {
+        ureq::Error::StatusCode(status) => {
+            format!("Could not {action}: the server answered with status {status}.")
+        }
+        other => format!("Could not {action}: network error: {other}."),
+    }
 }
 
 /// Runs `jidoka check` for a build with this version.
@@ -115,27 +157,72 @@ fn asset_name() -> Result<&'static str, String> {
     }
 }
 
-/// Downloads `url` to `target` with curl.
-fn download(url: &str, target: &Path) -> Result<(), String> {
-    let output = Command::new("curl")
-        .args(["-fsSL", "-o"])
-        .arg(target)
-        .arg(url)
-        .output()
-        .map_err(|error| match error.kind() {
-            io::ErrorKind::NotFound => {
-                "curl is required to download releases but was not found.".to_string()
-            }
-            _ => format!("Could not run curl: {error}"),
-        })?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Could not download {url}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
+/// A newly created file that is removed on drop unless it was moved into place.
+struct StagedFile {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl StagedFile {
+    /// Creates `path` and opens it for writing; fails when it already exists, touching nothing.
+    ///
+    /// The caller closes the returned handle before the file is renamed or run.
+    fn create(path: &Path) -> Result<(Self, fs::File), String> {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|error| format!("Cannot write {}: {error}", path.display()))?;
+        let staged = Self {
+            path: path.to_path_buf(),
+            armed: true,
+        };
+        Ok((staged, file))
     }
+
+    /// Leaves the file on disk, for when it has been renamed or is otherwise no longer ours to remove.
+    fn keep(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        if self.armed {
+            // Best-effort cleanup; the update result is reported by the caller.
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Downloads `url` to the new file `target`, following redirects and accepting at most `limit` bytes.
+///
+/// Fails when `target` already exists, leaving it untouched. The returned guard removes the file on
+/// drop; the file itself is closed.
+fn download(url: &str, target: &Path, limit: u64) -> Result<StagedFile, String> {
+    let mut response = http_agent(ureq::Agent::config_builder())
+        .get(url)
+        .call()
+        .map_err(|error| request_error(&format!("download {url}"), &error))?;
+    let (staged, mut file) = StagedFile::create(target)?;
+    copy_limited(&mut response.body_mut().as_reader(), &mut file, limit)
+        .map_err(|error| format!("Could not download {url}: {error}"))?;
+    // The handle closes here, so the file can be renamed over the executable and run.
+    drop(file);
+    Ok(staged)
+}
+
+/// Copies `source` to `sink`, failing when it holds more than `limit` bytes.
+fn copy_limited(
+    source: &mut impl io::Read,
+    sink: &mut impl io::Write,
+    limit: u64,
+) -> io::Result<()> {
+    let copied = io::copy(&mut io::Read::take(source, limit + 1), sink)?;
+    if copied > limit {
+        return Err(io::Error::other(format!("larger than {limit} bytes")));
+    }
+    Ok(())
 }
 
 /// Checks `data` against the first word of a `.sha256` file.
@@ -246,17 +333,24 @@ pub(crate) fn update(
     let checksum = staged.with_extension("sha256");
     let result = (|| {
         println!("Downloading jidoka {latest}...");
-        download(&format!("{DOWNLOAD_URL}/{asset}"), &staged)?;
-        download(&format!("{DOWNLOAD_URL}/{asset}.sha256"), &checksum)?;
+        let staged_file = download(
+            &format!("{DOWNLOAD_URL}/{asset}"),
+            &staged,
+            MAX_DOWNLOAD_BYTES,
+        )?;
+        let _checksum_file = download(
+            &format!("{DOWNLOAD_URL}/{asset}.sha256"),
+            &checksum,
+            MAX_CHECKSUM_BYTES,
+        )?;
         let data = fs::read(&staged).map_err(|error| error.to_string())?;
         let checksum = fs::read_to_string(&checksum).map_err(|error| error.to_string())?;
         verify_checksum(&data, &checksum)?;
         replace_executable(&exe, &staged)
-            .map_err(|error| format!("Cannot replace {}: {error}", exe.display()))
+            .map_err(|error| format!("Cannot replace {}: {error}", exe.display()))?;
+        staged_file.keep();
+        Ok::<(), String>(())
     })();
-    // Best-effort cleanup of temporary files; the update result is reported below.
-    let _ = fs::remove_file(&staged);
-    let _ = fs::remove_file(&checksum);
     result?;
     println!("Updated {} to Jidoka {latest}.", exe.display());
     if agents.is_empty() {
@@ -291,6 +385,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_body_over_the_limit_is_an_error_and_one_at_the_limit_is_copied() {
+        let mut sink = Vec::new();
+        copy_limited(&mut &[7u8; 4][..], &mut sink, 4).unwrap();
+        assert_eq!(sink.len(), 4);
+        assert!(copy_limited(&mut &[7u8; 5][..], &mut Vec::new(), 4).is_err());
+    }
+
+    #[test]
+    fn a_staged_file_is_removed_when_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("staged");
+        let (staged, file) = StagedFile::create(&path).unwrap();
+        drop(file);
+        assert!(path.exists());
+        drop(staged);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_kept_staged_file_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("staged");
+        StagedFile::create(&path).unwrap().0.keep();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn creating_over_an_existing_file_fails_and_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("staged");
+        fs::write(&path, "existing").unwrap();
+        let error = StagedFile::create(&path).err().unwrap();
+        assert!(error.contains("Cannot write"), "{error}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "existing");
+    }
+
+    #[test]
     fn the_version_comes_from_the_release_url() {
         assert_eq!(
             version_from_url("https://github.com/TDSchreur/jidoka/releases/tag/v0.5.1\n"),
@@ -304,6 +435,42 @@ mod tests {
         ] {
             assert_eq!(version_from_url(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn a_redirect_to_a_release_gives_its_version() {
+        let location = "https://github.com/TDSchreur/jidoka/releases/tag/v0.15.2";
+        assert_eq!(
+            version_from_redirect(302, Some(location)),
+            Ok("0.15.2".to_string())
+        );
+    }
+
+    #[test]
+    fn a_missing_or_unrelated_redirect_is_an_error() {
+        assert!(version_from_redirect(302, None).is_err());
+        let error = version_from_redirect(302, Some("https://github.com/login")).unwrap_err();
+        assert!(error.contains("https://github.com/login"), "{error}");
+    }
+
+    #[test]
+    fn a_non_redirect_status_is_an_error_naming_the_status() {
+        let location = "https://github.com/TDSchreur/jidoka/releases/tag/v0.15.2";
+        for status in [200, 404, 503] {
+            let error = version_from_redirect(status, Some(location)).unwrap_err();
+            assert!(error.contains(&status.to_string()), "{error}");
+        }
+    }
+
+    #[test]
+    fn request_failures_say_what_went_wrong() {
+        let status = request_error("download x", &ureq::Error::StatusCode(404));
+        assert!(
+            status.contains("404") && status.contains("download x"),
+            "{status}"
+        );
+        let network = request_error("download x", &ureq::Error::HostNotFound);
+        assert!(network.contains("network error"), "{network}");
     }
 
     #[test]

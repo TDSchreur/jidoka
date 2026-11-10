@@ -28,9 +28,9 @@ Both installers download the prebuilt CLI, verify its release checksum, ask whic
 
 ## Check for updates and update
 
-To see whether a newer release exists, run `jidoka check`. It looks up the latest release with `curl`, says whether you are up to date, and exits 0 either way (1 on an error, such as no network). A development build cannot be compared, so it only names the latest release.
+To see whether a newer release exists, run `jidoka check`. It looks up the latest release, says whether you are up to date, and exits 0 either way (1 on an error, such as no network). A development build cannot be compared, so it only names the latest release.
 
-To update, run `jidoka update`. It downloads the latest release for your platform with `curl`, verifies its checksum, replaces the installed `jidoka`, and reinstalls the skills for the agents that already have them. Use `jidoka update --agent codex,claude` to choose the agents yourself. If you run a development build, it updates to the latest release. It supports Linux and Windows on x86-64 only. Restart a running dashboard afterwards. Re-running the one-line installer does the same.
+To update, run `jidoka update`. It downloads the latest release for your platform, verifies its checksum, replaces the installed `jidoka`, and reinstalls the skills for the agents that already have them. Use `jidoka update --agent codex,claude` to choose the agents yourself. If you run a development build, it updates to the latest release. It supports Linux and Windows on x86-64 only. Restart a running dashboard afterwards. Re-running the one-line installer does the same.
 
 Stop the dashboard before upgrading when you can; `jidoka update` renames a running Windows executable aside, but the dashboard keeps running the old version until you restart it. The release workflow checks Windows runtime imports and starts the Windows executable on a Windows runner.
 
