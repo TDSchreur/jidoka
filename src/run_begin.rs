@@ -180,7 +180,7 @@ pub(crate) enum BeginError {
 const MAX_REASON_CHARS: usize = 300;
 /// The highest numeric suffix tried when a derived run name is taken: a hundred clashes means something is wrong.
 const MAX_NAME_SUFFIX: u32 = 99;
-/// The longest branch name derived from a title.
+/// A derived branch name is cut to this length, so it stays short to type and read.
 const MAX_NAME_CHARS: usize = 40;
 /// What every run's worktree keeps out of git: the factory's own folder and the local tracker.
 const RUN_IGNORED: &[&str] = &[".factory/", ".scratch/"];

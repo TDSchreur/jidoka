@@ -98,9 +98,9 @@ impl PrRun {
 
 /// Azure DevOps rejects a pull request description longer than this many characters.
 const AZURE_DESCRIPTION_LIMIT: usize = 4000;
-/// The longest title that is accepted.
+/// A title longer than this is rejected, which keeps it a short one-line heading.
 const MAX_TITLE_CHARS: usize = 256;
-/// The longest body file that is accepted.
+/// A body file larger than this is rejected, so the whole file is never read into memory.
 const MAX_BODY_BYTES: u64 = 256 * 1024;
 
 #[derive(Clone, Debug)]

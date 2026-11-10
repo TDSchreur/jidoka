@@ -399,7 +399,7 @@ fn claude_pauses(text: &str, parsed: &mut LogUsage) {
     }
 }
 
-fn read_claude(root: &Path, ctx: &mut ReadScope, out: &mut ReadResult) {
+fn read_claude(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
     for slug in sub_dirs(root) {
         for file in files_in(&slug.path()) {
             let path = file.path();
@@ -410,18 +410,18 @@ fn read_claude(root: &Path, ctx: &mut ReadScope, out: &mut ReadResult) {
             else {
                 continue;
             };
-            if ctx.over_limit(out) {
+            if pass.over_limit(out) {
                 return;
             }
-            if ctx.stale(&path) {
+            if pass.stale(&path) {
                 continue;
             }
             let stem = stem.to_string();
-            let Some(text) = ctx.load(&path, &stem, out) else {
+            let Some(text) = pass.load(&path, &stem, out) else {
                 continue;
             };
-            let mentions = mentioned_runs(&text, ctx.ids);
-            if mentions.is_empty() && !ctx.recorded.contains(stem.as_str()) {
+            let mentions = mentioned_runs(&text, pass.ids);
+            if mentions.is_empty() && !pass.recorded.contains(stem.as_str()) {
                 continue;
             }
             let mut parsed = parse_claude(&text, &stem, false);
@@ -433,16 +433,16 @@ fn read_claude(root: &Path, ctx: &mut ReadScope, out: &mut ReadResult) {
                 if sub_path.extension().is_none_or(|e| e != "jsonl") {
                     continue;
                 }
-                if ctx.over_limit(out) {
+                if pass.over_limit(out) {
                     break;
                 }
-                if let Some(sub_text) = ctx.load(&sub_path, &stem, out) {
+                if let Some(sub_text) = pass.load(&sub_path, &stem, out) {
                     let mut sub = parse_claude(&sub_text, &stem, true);
                     claude_pauses(&sub_text, &mut sub);
                     parsed.absorb(sub);
                 }
             }
-            ctx.add(&stem, mentions, parsed, "Claude Code", out);
+            pass.add(&stem, mentions, parsed, "Claude Code", out);
         }
     }
 }
@@ -578,8 +578,8 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> LogUsage {
     parsed
 }
 
-fn read_codex(root: &Path, ctx: &mut ReadScope, out: &mut ReadResult) {
-    let earliest_day = civil_day(ctx.from.saturating_sub(DAY_MS));
+fn read_codex(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
+    let earliest_day = civil_day(pass.from.saturating_sub(DAY_MS));
     let mut rollouts: Vec<Rollout> = Vec::new();
     for year in sub_dirs(root) {
         for month in sub_dirs(&year.path()) {
@@ -599,19 +599,19 @@ fn read_codex(root: &Path, ctx: &mut ReadScope, out: &mut ReadResult) {
                     if !(fname.starts_with("rollout-") && fname.ends_with(".jsonl")) {
                         continue;
                     }
-                    if ctx.over_limit(out) {
+                    if pass.over_limit(out) {
                         return;
                     }
-                    if ctx.stale(&path) {
+                    if pass.stale(&path) {
                         continue;
                     }
-                    let Some(text) = ctx.load(&path, &fname, out) else {
+                    let Some(text) = pass.load(&path, &fname, out) else {
                         continue;
                     };
                     let Some((id, root, subagent)) = codex_meta(&text) else {
                         continue;
                     };
-                    let mentions = mentioned_runs(&text, ctx.ids);
+                    let mentions = mentioned_runs(&text, pass.ids);
                     rollouts.push(Rollout {
                         path,
                         id,
@@ -628,18 +628,18 @@ fn read_codex(root: &Path, ctx: &mut ReadScope, out: &mut ReadResult) {
         .iter()
         .filter(|r| {
             !r.mentions.is_empty()
-                || ctx.recorded.contains(r.id.as_str())
-                || ctx.recorded.contains(r.root.as_str())
+                || pass.recorded.contains(r.id.as_str())
+                || pass.recorded.contains(r.root.as_str())
         })
         .map(|r| r.root.clone())
         .collect();
     let mut by_root: BTreeMap<String, (HashSet<String>, LogUsage)> = BTreeMap::new();
     for rollout in rollouts.iter().filter(|r| claimed_roots.contains(&r.root)) {
-        if ctx.over_limit(out) {
+        if pass.over_limit(out) {
             return;
         }
         // Only a claimed rollout is read again, to parse it.
-        let Some(text) = ctx.load(&rollout.path, &rollout.root, out) else {
+        let Some(text) = pass.load(&rollout.path, &rollout.root, out) else {
             continue;
         };
         let parsed = parse_codex(&text, &rollout.root, rollout.subagent);
@@ -648,7 +648,7 @@ fn read_codex(root: &Path, ctx: &mut ReadScope, out: &mut ReadResult) {
         all.absorb(parsed);
     }
     for (root, (mentions, parsed)) in by_root {
-        ctx.add(&root, mentions, parsed, "Codex", out);
+        pass.add(&root, mentions, parsed, "Codex", out);
     }
 }
 
@@ -727,28 +727,28 @@ fn parse_copilot(text: &str, session: &str) -> LogUsage {
     parsed
 }
 
-fn read_copilot(root: &Path, ctx: &mut ReadScope, out: &mut ReadResult) {
+fn read_copilot(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
     for dir in sub_dirs(root) {
         let session = dir.file_name().to_string_lossy().into_owned();
         let path = dir.path().join("events.jsonl");
         if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
             continue;
         }
-        if ctx.over_limit(out) {
+        if pass.over_limit(out) {
             return;
         }
-        if ctx.stale(&path) {
+        if pass.stale(&path) {
             continue;
         }
-        let Some(text) = ctx.load(&path, &session, out) else {
+        let Some(text) = pass.load(&path, &session, out) else {
             continue;
         };
-        let mentions = mentioned_runs(&text, ctx.ids);
-        if mentions.is_empty() && !ctx.recorded.contains(session.as_str()) {
+        let mentions = mentioned_runs(&text, pass.ids);
+        if mentions.is_empty() && !pass.recorded.contains(session.as_str()) {
             continue;
         }
         let parsed = parse_copilot(&text, &session);
-        ctx.add(&session, mentions, parsed, "Copilot", out);
+        pass.add(&session, mentions, parsed, "Copilot", out);
     }
 }
 
@@ -757,8 +757,8 @@ fn read_copilot(root: &Path, ctx: &mut ReadScope, out: &mut ReadResult) {
 /// A session's pause markers and moments of activity.
 type Markers = (Vec<(PauseKind, u64)>, Vec<u64>);
 
-/// What the readers share: which runs and sessions are of interest, and the limits.
-struct ReadScope<'a> {
+/// One pass over the agent logs: what to look for and the limits, plus what the readers have gathered so far.
+struct ReadPass<'a> {
     ids: &'a HashSet<&'a str>,
     recorded: &'a HashSet<&'a str>,
     from: u64,
@@ -774,7 +774,7 @@ struct ReadScope<'a> {
     pauses: BTreeMap<String, Markers>,
 }
 
-impl ReadScope<'_> {
+impl ReadPass<'_> {
     /// Whether a log was last written well before the earliest run of interest, so it cannot hold its
     /// work. File times are coarse and clocks differ, so there is plenty of slack.
     fn stale(&self, path: &Path) -> bool {
@@ -895,7 +895,7 @@ pub(crate) fn read_sessions(
     limits: ReadLimits,
 ) -> ReadResult {
     let mut out = ReadResult::default();
-    let mut ctx = ReadScope {
+    let mut pass = ReadPass {
         ids,
         recorded,
         from,
@@ -913,13 +913,13 @@ pub(crate) fn read_sessions(
         .map(|root| {
             (
                 root,
-                read_claude as fn(&Path, &mut ReadScope, &mut ReadResult),
+                read_claude as fn(&Path, &mut ReadPass, &mut ReadResult),
             )
         })
         .chain([
             (
                 &roots.codex,
-                read_codex as fn(&Path, &mut ReadScope, &mut ReadResult),
+                read_codex as fn(&Path, &mut ReadPass, &mut ReadResult),
             ),
             (&roots.copilot, read_copilot),
         ]);
@@ -929,22 +929,22 @@ pub(crate) fn read_sessions(
             continue;
         }
         out.roots_found += 1;
-        read(root, &mut ctx, &mut out);
+        read(root, &mut pass, &mut out);
         if out.timed_out || out.truncated {
             break;
         }
     }
     let mut by_session: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
-    for entry in ctx.entries.into_values() {
+    for entry in pass.entries.into_values() {
         by_session
             .entry(entry.session.clone())
             .or_default()
             .push(entry);
     }
-    for (id, mentions) in ctx.sessions {
+    for (id, mentions) in pass.sessions {
         let mut entries = by_session.remove(&id).unwrap_or_default();
         entries.sort_by_key(|entry| entry.ts);
-        let (mut pauses, mut activity) = ctx.pauses.remove(&id).unwrap_or_default();
+        let (mut pauses, mut activity) = pass.pauses.remove(&id).unwrap_or_default();
         pauses.sort_by_key(|(_, at)| *at);
         activity.sort_unstable();
         activity.dedup();

@@ -115,23 +115,6 @@ fn is_local_authority(authority: &str, port: u16) -> bool {
 /// serves to a local host carries it, so a request that has it came from that page.
 struct SessionToken(String);
 
-/// A failure to create a token. `serve` shows it as it is, without the run-storage prefix it puts on other start-up
-/// errors.
-#[derive(Debug)]
-struct TokenError(String);
-
-impl std::fmt::Display for TokenError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for TokenError {}
-
-fn token_error(message: String) -> io::Error {
-    io::Error::other(TokenError(message))
-}
-
 impl SessionToken {
     fn new() -> Result<Self, String> {
         crate::token::random().map(Self)
@@ -761,7 +744,7 @@ impl Collector {
 
 #[cfg(test)]
 pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> {
-    build_rocket_with(path, port, Collector::new(None))
+    build_rocket_with_tokens(path, port, Collector::new(None), new_tokens()?)
 }
 
 /// The runs file the CLI token is kept next to.
@@ -770,10 +753,27 @@ struct TokenFile(PathBuf);
 /// Set at liftoff when the CLI token could not be written; the server shuts down and `serve` reports it.
 struct TokenWriteFailure(std::sync::Mutex<Option<String>>);
 
+#[cfg(test)]
 pub(crate) fn build_rocket_with(
     path: &Path,
     port: u16,
     collector: Collector,
+) -> io::Result<Rocket<Build>> {
+    build_rocket_with_tokens(path, port, collector, new_tokens()?)
+}
+
+/// The session token and the CLI token, or why the operating system could not provide them.
+fn new_tokens() -> io::Result<(SessionToken, String)> {
+    let session_token = SessionToken::new().map_err(io::Error::other)?;
+    let cli_token = crate::token::random().map_err(io::Error::other)?;
+    Ok((session_token, cli_token))
+}
+
+fn build_rocket_with_tokens(
+    path: &Path,
+    port: u16,
+    collector: Collector,
+    (session_token, cli_token): (SessionToken, String),
 ) -> io::Result<Rocket<Build>> {
     let config = Figment::from(rocket::Config::default())
         .merge(("address", LOOPBACK_HOST))
@@ -783,8 +783,6 @@ pub(crate) fn build_rocket_with(
     if let Some(warning) = secure_data_dir(path)? {
         eprintln!("{warning}");
     }
-    let session_token = SessionToken::new().map_err(token_error)?;
-    let cli_token = crate::token::random().map_err(token_error)?;
     Ok(rocket::custom(config)
         .manage(RunStore::open(path)?)
         .manage(collector)
@@ -917,16 +915,11 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
     println!("Dashboard: {url} (press Ctrl+C to stop)");
     runtime.block_on(async {
         let pause_settings = usage.clone();
-        build_rocket_with(path, port, Collector::new(Some(usage)))
+        // Made before the run-storage step so a token failure keeps its own message.
+        let tokens = new_tokens()?;
+        build_rocket_with_tokens(path, port, Collector::new(Some(usage)), tokens)
             .map_err(|error| {
-                let is_token_error = error
-                    .get_ref()
-                    .is_some_and(|inner| inner.is::<TokenError>());
-                if is_token_error {
-                    error
-                } else {
-                    io::Error::new(error.kind(), format!("could not open run storage: {error}"))
-                }
+                io::Error::new(error.kind(), format!("could not open run storage: {error}"))
             })?
             .attach(rocket::fairing::AdHoc::on_liftoff(
                 "Pull request state",
