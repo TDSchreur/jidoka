@@ -126,7 +126,7 @@ pub(crate) fn ensure_default_policy(var: impl Fn(&str) -> Option<OsString>) -> i
 }
 
 /// Resolves the skills folder of every listed agent before anything is installed.
-fn skills_roots(
+pub(crate) fn skills_roots(
     agents: &str,
     config_dirs: &[String],
     home: &Path,

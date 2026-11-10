@@ -25,6 +25,7 @@ mod run_reinstall;
 mod server;
 mod stats;
 mod token;
+mod uninstall;
 mod update;
 mod usage;
 mod usage_logs;
@@ -34,7 +35,7 @@ use run::UPDATE_HELP;
 use server::{ADDRESS, DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install --agent <codex|claude|copilot>[,...] [--config-dir <path>]...\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka check\n  jidoka update [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id> [--reinstall] [--config-dir <path>]...\n  jidoka run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  jidoka --help | --version";
+const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install --agent <codex|claude|copilot>[,...] [--config-dir <path>]...\n  jidoka uninstall --agent <codex|claude|copilot>[,...] [--config-dir <path>]... [--keep-data]\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka check\n  jidoka update [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id> [--reinstall] [--config-dir <path>]...\n  jidoka run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  jidoka --help | --version";
 
 /// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
 const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
@@ -91,6 +92,9 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             Ok((None, _)) => return Err(format!("install needs --agent.\n{HELP}").into()),
             Err(error) => return Err(format!("{error}\n{HELP}").into()),
         },
+        ["uninstall", options @ ..] => {
+            uninstall::run(options)?;
+        }
         ["update", options @ ..] => {
             let (agents, dirs) =
                 install::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
