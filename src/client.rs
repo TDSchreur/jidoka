@@ -1,6 +1,6 @@
 use crate::{
     routing::ModelRouting,
-    run::{NewRun, Run, parse_update},
+    run::{NewRun, Run, UpdateRun, parse_update},
     server::{CLI_TOKEN_HEADER, DashboardIdentity},
 };
 use std::{
@@ -43,12 +43,26 @@ pub(crate) fn report_run(
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
         return Err("Invalid run id".into());
     }
-    let update = parse_update(stage, status, options)?;
+    send_update(
+        server,
+        token_file,
+        id,
+        &parse_update(stage, status, options)?,
+    )
+}
+
+/// Sends an already built update for run `id` to the factory server at `server`.
+pub(crate) fn send_update(
+    server: &str,
+    token_file: &Path,
+    id: &str,
+    update: &UpdateRun,
+) -> Result<(), Box<dyn std::error::Error>> {
     let response = api_post(
         server,
         token_file,
         &format!("/api/runs/{id}"),
-        &serde_json::to_vec(&update)?,
+        &serde_json::to_vec(update)?,
     )?;
     for warning in update_warnings(&response) {
         eprintln!("Warning: {warning}");

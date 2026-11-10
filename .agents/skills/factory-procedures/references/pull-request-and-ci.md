@@ -18,7 +18,7 @@ Watch the pull request's CI with `factory pr wait <run-id>`. It follows the chec
 - `no-ci` (6): no check appeared within 90 seconds (or within `--timeout` when that is shorter), so the project has no CI.
 - `not-open` (7): the pull request was merged or closed.
 
-Exit status 1 is a problem with the tools or the run (no `gh` or `az`, not signed in, no network, no pull request recorded); its message says what to do. Next to the outcome the command says whether the branch is up to date, behind its base or in conflict with it. It only reads: it never merges, pushes or updates the branch, and a `passed` outcome does not mark Finish done. Add `--fail-fast` to get a `failed` outcome as soon as one check fails.
+Exit status 1 is a problem with the tools or the run (no `gh` or `az`, not signed in, no network, no pull request recorded); its message says what to do. Next to the outcome the command says whether the branch is up to date, behind its base or in conflict with it. It never merges, pushes or updates the branch, and a `passed` outcome does not mark Finish done. On `not-open` it also brings the run in line with the pull request, as `factory run sync <run-id>` does: a merged pull request clears the activity and marks Finish done, a closed one clears the activity and blocks the run with the reason "PR closed without merge". The dashboard does the same on its own within about a minute, and its "Check PR" button does it at once. Add `--fail-fast` to get a `failed` outcome as soon as one check fails.
 
 ## Keeping the branch current
 
@@ -43,7 +43,7 @@ When the outcome is `failed`, read the failure details it printed (fetch the ful
 - For `cancelled` or `timeout`, look at the checks it lists; if the cause is not something you can fix, treat it as a failure you cannot fix.
 - A failure you cannot fix, such as an infrastructure problem, a missing permission, or a flaky external dependency, blocks the run with that reason.
 - On `no-ci`, skip the watch and say so.
-- On `not-open`, report that the pull request was merged or closed and stop.
+- On `not-open`, report that the pull request was merged or closed and stop; the run has already followed it, so do not update it again.
 
 ## Reporting the result
 
