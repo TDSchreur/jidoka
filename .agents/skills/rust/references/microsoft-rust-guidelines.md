@@ -27,6 +27,8 @@ the spirit counts over the letter.
   implement `Display`. Same redaction rules as `Debug`.
 - **M-SMALLER-CRATES**: when in doubt, split into more crates (faster builds, no cycles).
   `web_server`, `web_client`, `web_protocols` rather than one `web` crate with modules.
+  Crates are for items usable alone; features unlock extras that can't live on their own.
+  Technical splits (a `foo_proc` crate) are re-exported.
 - **M-WEASEL-WORDS**: no `Service`, `Manager`, `Factory` suffixes. `Bookings` or
   `BookingDispatcher`; `Builder` instead of `Factory`; disposal is `Drop`, not a manager.
   Repeatable instantiation takes `impl Fn() -> Foo`.
@@ -38,8 +40,9 @@ the spirit counts over the letter.
   effects of changing it, and the external systems involved. Prefer a named `const` with
   a doc comment.
 - **M-LOG-STRUCTURED**: structured events with message templates, named
-  `<component>.<operation>.<state>`, OpenTelemetry attribute names, PII redacted. Don't
-  pre-format with `format!`.
+  `<component>.<operation>.<state>`, OpenTelemetry attribute names, sensitive data
+  (emails, identifying paths, secrets in filenames) redacted, for example with the
+  `data_privacy` crate. Don't pre-format with `format!`.
 
 ## Libraries: interoperability
 
@@ -86,7 +89,7 @@ the spirit counts over the letter.
 - **M-INIT-CASCADED**: constructors with four or more parameters group them into semantic
   types: `Deposit::new(account, amount)`.
 - **M-SERVICES-CLONE**: heavyweight services implement cheap `Clone` through
-  `Arc<Inner>`; clones share state.
+  `Arc<Inner>`; clones share state, no fat copy.
 - **M-ESSENTIAL-FN-INHERENT**: core functionality in inherent methods; trait impls
   forward to them, so callers need no import.
 - **M-BALANCED-MODULES**: essential items at the crate root; group the rest by use case
@@ -146,7 +149,7 @@ the spirit counts over the letter.
 - **M-MACRO-MAIN-CRATE**: structure as `foo` (re-exports), `foo_proc` (facade),
   `foo_proc_impl` (logic and tests). Don't support renamed imports.
 - **M-MACRO-VERSION-PIN**: companion macro crates pinned with `=x.y.z` and published
-  together.
+  together; not for independently consumed macro libraries.
 - **M-MACRO-HELPERS**: generated code reaches third-party items through a hidden
   `#[doc(hidden)] pub mod _private { pub use ::bar::Bar; }`.
 - **M-PROC-IMPL**: proc macro crate is a thin shim over a normal library crate holding
@@ -156,9 +159,9 @@ the spirit counts over the letter.
 
 ## Applications
 
-- **M-APP-ERROR**: applications and single-app crates may use `anyhow`, `eyre`, or
-  similar; libraries follow M-ERRORS-CANONICAL-STRUCTS. Don't mix several app-level
-  error types.
+- **M-APP-ERROR**: applications, and crates used only by your application, may use
+  `ohno::AppError`, `anyhow`, `eyre`, or similar; libraries follow
+  M-ERRORS-CANONICAL-STRUCTS. Pick one and don't mix several app-level error types.
 - **M-MIMALLOC-APPS**: applications set `#[global_allocator]` to `mimalloc` (up to 25%
   gains reported).
 - **M-TARGET-CPU**: server apps compile for the highest `target-cpu` the deployment
@@ -178,7 +181,9 @@ the spirit counts over the letter.
 - **M-UNSAFE**: `unsafe` only for a novel abstraction, a benchmarked performance need, or
   FFI/platform calls. Banned: enum casts via `transmute`, `unsafe impl Send` to bypass
   bounds, `transmute` to bypass lifetimes. Each use needs plain-text safety reasoning;
-  new abstractions are tested against adversarial code and pass Miri.
+  new abstractions are tested against adversarial code and pass Miri. Performance uses
+  are benchmarked first; FFI prefers an established interop library and documents which
+  call patterns the generated bindings permit.
 - **M-UNSAFE-IMPLIES-UB**: mark a function or trait `unsafe` only when misuse risks
   undefined behavior, not for merely dangerous operations (`delete_database()`).
 - **M-UNSOUND**: a safe function that can cause UB through any safe calls is unsound.
@@ -201,11 +206,14 @@ the spirit counts over the letter.
 ## Performance
 
 - **M-HOTPATH**: decide early whether the crate is performance-relevant; if so, find and
-  benchmark hot paths (criterion or divan), profile regularly, document hot spots.
+  benchmark hot paths (criterion or divan, ideally measuring CPU time over all threads
+  as well as wall time), profile CPU and allocations regularly with debug symbols
+  enabled for benchmarks, document hot spots.
 - **M-THROUGHPUT**: optimize for items per CPU cycle; batched APIs; no hot spinning or
   per-item work where batching is possible.
 - **M-YIELD-POINTS**: long CPU-bound async work yields (`yield_now().await`) roughly
-  every 10 to 100 microseconds.
+  every 10 to 100 microseconds; when operation count and duration are unpredictable,
+  ask the runtime (`has_budget_remaining()`).
 - **M-MEM-REUSE**: let callers own and reuse buffers: `get_in(id, &mut value)` alongside
   a convenience `get(id)`; provide `clear()`. Arenas for deep call stacks.
 - **M-LOG-OVERHEAD**: no telemetry in hot inner loops; no per-event `format!`.
@@ -228,12 +236,14 @@ the spirit counts over the letter.
   `[workspace.dependencies]` and `[workspace.lints]`, with `default-features = false`
   on workspace dependency definitions.
 - **M-CRATES-FLAT-FOLDER**: one workspace `Cargo.toml`, crates as siblings under
-  `crates/`, never nested inside another crate or its `src/`.
+  `crates/` (add a folder hierarchy beyond one to two dozen crates), never nested inside
+  another crate or its `src/`. Express relationships with prefixes (`foo`, `foo_util`).
 - **M-CRATES-IN-WORKSPACE**: every crate is a workspace member; siblings referenced as
   `sibling.workspace = true`.
-- **M-LATEST-EDITION**: new crates use the latest stable edition (2024 or later).
-- **M-MSRV**: set a minimum supported Rust version at creation; raise it conservatively
-  in minor releases.
+- **M-LATEST-EDITION**: new crates use the latest stable edition (2024 or later); the
+  `resolver` field is generally not needed.
+- **M-MSRV**: set a minimum supported Rust version at library creation and keep it a few
+  releases behind the newest compiler; raising it needs only a minor release.
 
 ## Documentation
 
@@ -265,5 +275,6 @@ the spirit counts over the letter.
   add re-exports during refactors instead of redesigning. A `pub(crate) mod` with a
   single `pub use` is fine.
 - **M-TAUTOLOGICAL-TESTS**: don't write tests that restate constants or mirror
-  implementation branches (`assert_eq!(CHECKPOINTS, [0, 90, 180, 270])`). Test
-  properties: even spacing, monotonicity, round-trips.
+  implementation branches (`assert_eq!(CHECKPOINTS, [0, 90, 180, 270])`), not even to
+  satisfy mutation testing (skip the mutant instead). Test properties: even spacing,
+  monotonicity, round-trips.

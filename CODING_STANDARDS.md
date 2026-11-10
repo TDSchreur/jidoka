@@ -1,6 +1,6 @@
 # Coding standards
 
-These Rust standards are binding for this application. The other entries in the [Microsoft Rust guidelines digest](.agents/skills/rust-best-practices/references/microsoft-rust-guidelines.md) apply with judgment.
+These Rust standards are binding for this application. The other entries in the [Microsoft Rust guidelines digest](.agents/skills/rust/references/microsoft-rust-guidelines.md) apply with judgment.
 
 ## Error handling (M-APP-ERROR)
 

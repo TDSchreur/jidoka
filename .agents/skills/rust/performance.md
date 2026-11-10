@@ -231,6 +231,14 @@ Inline hints can help or hurt depending on code size and call frequency. Apply o
 
 **Authority:** Rust Performance Book “Inlining”.
 
+## More Performance Rules
+
+- Design for usability first and optimize after measuring. When you do: `Vec::with_capacity` or `collect()` over push loops; reuse caller-owned buffers in hot APIs (`fn read_into(&mut self, buf: &mut Vec<u8>)`, plus `clear()`); `Box<[T]>`, `Box<str>`, `Arc<str>` for frequently created immutable sequences; `shrink_to_fit` on long-lived collections built without a reservation.
+- A faster hasher (`foldhash`, `FxHash`) only for trusted keys. Batch work instead of per-item locking or hot spinning. No telemetry or `format!` in hot inner loops.
+- Do not stack `Arc` layers on hot types; lift hot, cacheable fields into the owning struct.
+- Applications may set `#[global_allocator]` to `mimalloc` and compile server builds for the highest `target-cpu` the deployment guarantees. Libraries do neither.
+- Benchmark with `criterion` or `divan` and `std::hint::black_box`, with debug symbols enabled for profiling. Derive `Copy` for small plain types and never for large ones.
+
 ## Common Agent Failure Modes
 
 - “Optimized” code measured in dev builds → always re-measure in `--release`.

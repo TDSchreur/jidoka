@@ -453,6 +453,18 @@ impl ApiError {
 }
 ```
 
+## More Error and Panic Rules
+
+- A panic means "stop now". Never use one to report bad input, never rely on `catch_unwind` for control flow (it does nothing under `panic = "abort"` and can leave state inconsistent), and never catch a panic and continue inside a library. Servers may catch per request but should then restart the process.
+- Pair a panicking convenience with a fallible API (`v[i]` / `v.get(i)`, `new` / `try_new`) and document it under `# Panics`.
+- Every intentional panic carries a message with the relevant values: `assert!(buf.len() >= HEADER, "buffer too small: {} bytes", buf.len())`, `expect("config is loaded before workers start")`. Do not restate the condition as the message. Tests do not need messages.
+- Pattern-match instead of check-then-unwrap: `if let Some(v) = opt`, `let Some(v) = opt else { return .. }`, never `if opt.is_some() { opt.unwrap() }`.
+- Lock poisoning is fatal: `.lock().expect("lock poisoned")`; do not recover with `into_inner`.
+- A detected bug or contract violation panics instead of returning an `Error` the caller cannot act on; input that can legitimately be bad returns `Result`.
+- Library error types implement `std::error::Error`, are `Send + Sync + 'static`, implement `source()` for wrapped causes, and have lowercase `Display` messages without trailing punctuation. If a fallible function consumes an argument, return it inside the error so the caller can retry without cloning (`FromUtf8Error::into_bytes`).
+- Destructors never fail, panic, or block. Provide `close(self) -> Result<()>` for fallible teardown and let `Drop` do best-effort cleanup.
+- Document failure modes: `# Errors` for any `Result`, `# Panics` for any reachable panic, `# Safety` for every `unsafe fn`.
+
 ## Common Mistakes (Agent Failure Modes)
 
 - **`Error(String)` in a library** → Callers can't match. Define structured variants.
