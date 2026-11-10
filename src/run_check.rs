@@ -199,9 +199,12 @@ fn display(path: &Path) -> String {
     shown(&path.display().to_string())
 }
 
+/// The accepted lengths of a commit id: git abbreviates to 4 digits at least, and SHA-256 ids have 64.
+const COMMIT_ID_LENGTH: std::ops::RangeInclusive<usize> = 4..=64;
+
 /// A full or abbreviated commit id: 4 to 64 hexadecimal digits.
 fn is_commit_id(text: &str) -> bool {
-    (4..=64).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_hexdigit())
+    COMMIT_ID_LENGTH.contains(&text.len()) && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// The common git directory of the repository that `dir` belongs to.

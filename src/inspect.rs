@@ -311,13 +311,22 @@ pub(crate) fn render(run: &Run) -> String {
     out
 }
 
+/// Milliseconds in a minute.
+const MS_PER_MINUTE: u64 = 60_000;
+/// Minutes in an hour.
+const MINUTES_PER_HOUR: u64 = 60;
+
 /// A span of milliseconds as minutes, or hours and minutes.
 fn duration(ms: u64) -> String {
-    let minutes = ms / 60_000;
-    if minutes < 60 {
+    let minutes = ms / MS_PER_MINUTE;
+    if minutes < MINUTES_PER_HOUR {
         format!("{minutes} min")
     } else {
-        format!("{} h {} min", minutes / 60, minutes % 60)
+        format!(
+            "{} h {} min",
+            minutes / MINUTES_PER_HOUR,
+            minutes % MINUTES_PER_HOUR
+        )
     }
 }
 

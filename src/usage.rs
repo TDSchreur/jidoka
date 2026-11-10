@@ -628,8 +628,8 @@ fn collect_limited(
         .id
         .parse::<u128>()
         .ok()
-        .map(|nanos| (nanos / 1_000_000) as u64);
-    if created.is_some_and(|created| first.at > created + 5_000) {
+        .map(|nanos| (nanos / NANOS_PER_MS) as u64);
+    if created.is_some_and(|created| first.at > created + RUN_START_SLACK_MS) {
         notes.push(format!(
             "usage before {} was not tracked: the run's stage timeline starts then",
             format_timestamp(first.at)
@@ -666,7 +666,7 @@ fn collect_limited(
         notes,
         no_data,
         collected_at: now,
-        sessions: counted.into_iter().take(100).collect(),
+        sessions: counted.into_iter().take(MAX_SESSIONS_LISTED).collect(),
         rows,
         unattributed,
         pauses,
@@ -674,6 +674,21 @@ fn collect_limited(
         log_complete,
     }
 }
+
+/// Run ids are creation times in nanoseconds; usage timestamps are milliseconds.
+const NANOS_PER_MS: u128 = 1_000_000;
+
+/// Clock and write skew allowed between a run's creation and its first usage entry before a note is added.
+const RUN_START_SLACK_MS: u64 = 5_000;
+
+/// The most sessions a usage report lists: enough for any run, and a bound on the size of the dashboard payload.
+const MAX_SESSIONS_LISTED: usize = 100;
+
+/// The first settle pass: soon after the run, to show nearly complete numbers quickly.
+const FIRST_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The second settle pass: by now agents have surely flushed their logs.
+const SECOND_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_secs(45);
 
 // --- collecting -------------------------------------------------------------------------------------
 
@@ -692,10 +707,7 @@ pub(crate) struct UsageSettings {
 impl UsageSettings {
     /// The delays between passes in the dashboard: soon after, then once the logs have surely been written.
     pub(crate) fn default_settle() -> Vec<std::time::Duration> {
-        vec![
-            std::time::Duration::from_secs(15),
-            std::time::Duration::from_secs(45),
-        ]
+        vec![FIRST_SETTLE_DELAY, SECOND_SETTLE_DELAY]
     }
 }
 

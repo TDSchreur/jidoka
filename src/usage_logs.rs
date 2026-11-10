@@ -22,6 +22,8 @@ use std::{
 /// The largest log read: real session logs are a few megabytes, so a bigger one is skipped.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+/// The longest model name or session id kept from a log: real ones are far shorter, so a longer one is junk.
+const MAX_NAME_LEN: usize = 100;
 pub(crate) const MTIME_SLACK_MS: u64 = 5 * 60 * 1000;
 /// Limits on one pass over the logs, so a huge or hostile log folder cannot exhaust memory or time.
 #[derive(Clone, Copy, Debug)]
@@ -117,7 +119,7 @@ pub(crate) fn model_name(value: &Value) -> Option<String> {
     let mut chars = name.chars();
     let first = chars.next()?;
     (first.is_ascii_alphanumeric()
-        && name.len() <= 100
+        && name.len() <= MAX_NAME_LEN
         && chars.all(|c| c.is_ascii_alphanumeric() || "._:/@+-".contains(c)))
     .then(|| name.to_string())
 }
@@ -829,7 +831,7 @@ impl Ctx<'_> {
         out: &mut ReadResult,
     ) {
         // An id comes from the log's file or folder name or its own metadata: only a plain one is kept.
-        let plain = (1..=100).contains(&id.len())
+        let plain = (1..=MAX_NAME_LEN).contains(&id.len())
             && id
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));

@@ -37,6 +37,15 @@ use std::{env, io, path::PathBuf, process::ExitCode};
 const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...] [--config-dir <path>]...\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr sync <run-id> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run check <run-id> [--json]\n  factory run cleanup <run-id> [--reinstall] [--config-dir <path>]...\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// Names a build: the version for official releases, the commit for any other build.
+/// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
+const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long the request analysis of one run may read logs.
+const RUN_REQUESTS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long one dashboard usage collection may read logs, so the dashboard stays responsive.
+const DASHBOARD_USAGE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn build_label(version: &str, release: bool, commit: &str) -> String {
     if release {
         version.to_string()
@@ -171,7 +180,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 &runs,
                 &roots,
                 run::updated_now()?,
-                std::time::Instant::now() + std::time::Duration::from_secs(120),
+                std::time::Instant::now() + POOL_DEADLINE,
                 &pool,
             );
             if json {
@@ -195,7 +204,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 &runs,
                 &roots,
                 run::updated_now()?,
-                std::time::Instant::now() + std::time::Duration::from_secs(30),
+                std::time::Instant::now() + RUN_REQUESTS_DEADLINE,
             );
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
@@ -646,7 +655,7 @@ fn dashboard(port: u16, usage: bool) -> Result<(), String> {
             let settings = usage::UsageSettings {
                 enabled: usage,
                 roots: usage_logs::Roots::from_home(&home, &|name| env::var_os(name)).map_err(|e| e.to_string())?,
-                budget: std::time::Duration::from_secs(5),
+                budget: DASHBOARD_USAGE_BUDGET,
                 settle: usage::UsageSettings::default_settle(),
             };
             serve(&data_path(port).map_err(|e| e.to_string())?, port, &url, settings)

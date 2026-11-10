@@ -97,6 +97,8 @@ impl RunInfo {
 }
 
 /// The longest title and body file that are accepted.
+/// Azure DevOps rejects a pull request description longer than this many characters.
+const AZURE_DESCRIPTION_LIMIT: usize = 4000;
 const MAX_TITLE_CHARS: usize = 256;
 const MAX_BODY_BYTES: u64 = 256 * 1024;
 
@@ -563,8 +565,8 @@ fn open_azure(
     let description = if existing.is_none() {
         let text = std::fs::read_to_string(&options.body_file)
             .map_err(|_| ToolProblem("The pull request body could not be read as UTF-8.".into()))?;
-        if text.chars().count() > 4000 || text.contains('\0') {
-            return Err(ToolProblem("Azure pull request descriptions must be at most 4000 characters and contain no NUL bytes.".into()));
+        if text.chars().count() > AZURE_DESCRIPTION_LIMIT || text.contains('\0') {
+            return Err(ToolProblem(format!("Azure pull request descriptions must be at most {AZURE_DESCRIPTION_LIMIT} characters and contain no NUL bytes.")));
         }
         Some(format!("--description={text}"))
     } else {
