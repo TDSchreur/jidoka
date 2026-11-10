@@ -9,12 +9,12 @@
 
 use crate::{
     request_logs::{
-        classify, result_bytes, truncate, Category, Request, RequestRead, SessionRequests,
+        Category, Request, RequestRead, SessionRequests, classify, result_bytes, truncate,
     },
     usage::Tokens,
     usage_logs::{
-        copilot_tokens, mentioned_runs, merge_largest, model_name, modified_ms, read_text,
-        sub_dirs, timestamp, LogFile, ReadLimits, MTIME_SLACK_MS,
+        LogFile, MTIME_SLACK_MS, ReadLimits, copilot_tokens, mentioned_runs, merge_largest,
+        model_name, modified_ms, read_text, sub_dirs, timestamp,
     },
 };
 use serde_json::Value;
@@ -40,7 +40,7 @@ struct Usage {
 }
 
 /// A session's id, the runs it claims and its requests with their keys.
-type Parsed = (String, HashSet<String>, Vec<(String, Request)>);
+type ParsedSession = (String, HashSet<String>, Vec<(String, Request)>);
 
 /// The requests of one log, keyed by `apiCallId` (or by line when a record has none).
 fn parse_events(text: &str, session: &str) -> (BTreeMap<String, Request>, usize) {
@@ -80,10 +80,9 @@ fn parse_events(text: &str, session: &str) -> (BTreeMap<String, Request>, usize)
             Some("tool.execution_complete") => {
                 if let (Some(id), content) =
                     (body["toolCallId"].as_str(), &body["result"]["content"])
+                    && !content.is_null()
                 {
-                    if !content.is_null() {
-                        results.insert(id.to_string(), result_bytes(content));
-                    }
+                    results.insert(id.to_string(), result_bytes(content));
                 }
             }
             Some("session.usage_record") => {
@@ -176,7 +175,7 @@ pub(crate) fn read_copilot_requests(
     }
     let (mut files, mut bytes) = (0usize, 0u64);
     let mut malformed = 0;
-    let mut sessions: Vec<Parsed> = Vec::new();
+    let mut sessions: Vec<ParsedSession> = Vec::new();
     for dir in sub_dirs(root) {
         let session = dir.file_name().to_string_lossy().into_owned();
         let path = dir.path().join("events.jsonl");
@@ -207,9 +206,10 @@ pub(crate) fn read_copilot_requests(
                 }
                 continue;
             }
-            Err(_) => {
+            Err(error) => {
                 if is_recorded {
-                    out.notes.push("a session log could not be read".into());
+                    out.notes
+                        .push(format!("a session log could not be read: {error}"));
                 }
                 continue;
             }

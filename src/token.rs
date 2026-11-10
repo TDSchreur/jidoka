@@ -9,13 +9,16 @@ const LENGTH: usize = BYTES * 2;
 /// A token file may end in a line break (`\n` or `\r\n`); nothing more is read than that allows.
 const MAX_FILE_BYTES: u64 = LENGTH as u64 + 2;
 
-/// A new token: 32 bytes from the operating system's CSPRNG, as 64 lowercase hex characters.
-pub(crate) fn random() -> String {
+/// A new token: 32 bytes from the operating system's CSPRNG, as 64 lowercase hex characters. Fails when the operating
+/// system gives no random bytes.
+pub(crate) fn random() -> Result<String, String> {
     let mut bytes = [0u8; BYTES];
-    getrandom::fill(&mut bytes).expect(
-        "cannot start the dashboard: the operating system gave no random bytes for its tokens",
-    );
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    getrandom::fill(&mut bytes).map_err(|error| {
+        format!(
+            "cannot start the dashboard: the operating system gave no random bytes for its tokens: {error}"
+        )
+    })?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 /// Whether `token` is exactly what `random` produces: 64 lowercase hex characters.
@@ -58,7 +61,7 @@ mod tests {
 
     #[test]
     fn random_tokens_are_valid_and_differ() {
-        let (a, b) = (random(), random());
+        let (a, b) = (random().unwrap(), random().unwrap());
         assert!(is_valid(&a) && is_valid(&b));
         assert_eq!((a.len(), b.len()), (LENGTH, LENGTH));
         assert_ne!(a, b);
@@ -85,7 +88,7 @@ mod tests {
     #[test]
     fn a_token_file_is_read_with_or_without_a_line_break() {
         let dir = TestDir::new();
-        let token = random();
+        let token = random().unwrap();
         for (name, content) in [
             ("bare", token.clone()),
             ("lf", format!("{token}\n")),

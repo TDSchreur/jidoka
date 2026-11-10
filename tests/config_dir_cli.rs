@@ -1,4 +1,8 @@
 //! `--config-dir` installs the Claude skills into each named folder and leaves `~/.claude` alone.
+#![expect(
+    clippy::unwrap_used,
+    reason = "integration test helpers fail the test by panicking"
+)]
 use std::{
     path::Path,
     process::{Command, Output},
@@ -64,10 +68,11 @@ fn a_tilde_expands_to_the_home_folder() {
         ],
     );
     assert!(output.status.success(), "{}", stderr(&output));
-    assert!(home
-        .path()
-        .join("work-claude/skills/factory/SKILL.md")
-        .is_file());
+    assert!(
+        home.path()
+            .join("work-claude/skills/factory/SKILL.md")
+            .is_file()
+    );
     assert!(!home.path().join(".claude").exists());
 }
 
@@ -147,13 +152,17 @@ fn doctor_reports_each_config_dir_by_path() {
     let skills: Vec<_> = checks.iter().filter(|c| c["id"] == "skills").collect();
     assert_eq!(skills.len(), 2, "{report}");
     assert_eq!(skills[0]["status"], "pass");
-    assert!(skills[0]["message"]
-        .as_str()
-        .unwrap()
-        .contains(a.to_str().unwrap()));
+    assert!(
+        skills[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains(a.to_str().unwrap())
+    );
     assert_eq!(skills[1]["status"], "missing");
-    assert!(skills[1]["message"]
-        .as_str()
-        .unwrap()
-        .contains(b.to_str().unwrap()));
+    assert!(
+        skills[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains(b.to_str().unwrap())
+    );
 }

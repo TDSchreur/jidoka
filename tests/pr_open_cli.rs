@@ -1,4 +1,8 @@
 //! `factory pr open` validates arguments before contacting the server.
+#![expect(
+    clippy::unwrap_used,
+    reason = "integration test helpers fail the test by panicking"
+)]
 
 use std::process::Command;
 

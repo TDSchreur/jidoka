@@ -52,10 +52,21 @@ struct TestGit {
     fail_merge_base: bool,
     /// Plays a git older than 2.38, which has no `merge-tree --write-tree`.
     old_git: bool,
+    /// Every git command the code ran, so a test can see what it never does.
+    commands: RefCell<Vec<Vec<String>>>,
+}
+
+impl TestGit {
+    fn record(&self, args: &[&str]) {
+        self.commands
+            .borrow_mut()
+            .push(args.iter().map(|a| a.to_string()).collect());
+    }
 }
 
 impl Git for TestGit {
     fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
+        self.record(args);
         let mut command = Command::new("git");
         command
             .arg("-C")
@@ -74,6 +85,7 @@ impl Git for TestGit {
     }
 
     fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
+        self.record(args);
         if self.old_git && args.first() == Some(&"merge-tree") {
             return Ok(129);
         }
@@ -194,8 +206,8 @@ impl RunApi for FakeApi {
     }
 }
 
-fn run_of(project: &Project) -> RunInfo {
-    RunInfo {
+fn run_of(project: &Project) -> PrRun {
+    PrRun {
         id: "100".into(),
         worktree: Some(project.wt.display().to_string()),
         branch: Some("feature".into()),
@@ -362,10 +374,12 @@ fn the_checks_stop_the_command_before_anything_changes() {
     project.base_moves("b.txt", "b changed\n");
     fs::write(project.wt.join("b.txt"), "mine\n").unwrap();
     let head = project.head();
-    assert!(sync_now(&project, &FakeApi::default())
-        .unwrap_err()
-        .0
-        .contains("uncommitted"));
+    assert!(
+        sync_now(&project, &FakeApi::default())
+            .unwrap_err()
+            .0
+            .contains("uncommitted")
+    );
     assert_eq!(project.head(), head);
 
     // The base branch, a wrong branch, a name that is not safe, no worktree, a worktree that is gone.
@@ -380,15 +394,17 @@ fn the_checks_stop_the_command_before_anything_changes() {
     );
     let mut base = options();
     base.base = Some("feature".into());
-    assert!(sync(
-        &run_of(&project),
-        &base,
-        &TestGit::default(),
-        &FakeApi::default()
-    )
-    .unwrap_err()
-    .0
-    .contains("base branch"));
+    assert!(
+        sync(
+            &run_of(&project),
+            &base,
+            &TestGit::default(),
+            &FakeApi::default()
+        )
+        .unwrap_err()
+        .0
+        .contains("base branch")
+    );
     let mut run = run_of(&project);
     run.worktree = None;
     assert!(
@@ -462,25 +478,112 @@ fn the_options_and_the_outputs() {
     );
 }
 
+/// Makes the remote refuse every push; returns the hook, which is removed to allow pushes again.
+fn refuse_pushes(project: &Project) -> PathBuf {
+    let hook = project.remote.join("hooks/pre-receive");
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    hook
+}
+
+/// The situations `nothing_in_the_command_rewrites_history_or_throws_work_away` runs the command in.
+#[derive(Clone, Copy, Debug)]
+enum Scenario {
+    Current,
+    CleanMerge,
+    Conflict,
+    OldGit,
+    PushRefused,
+    FetchFails,
+}
+
+impl Scenario {
+    const ALL: [Self; 6] = [
+        Self::Current,
+        Self::CleanMerge,
+        Self::Conflict,
+        Self::OldGit,
+        Self::PushRefused,
+        Self::FetchFails,
+    ];
+
+    /// Whether the command ends in an error here.
+    fn fails(self) -> bool {
+        matches!(self, Self::OldGit | Self::PushRefused | Self::FetchFails)
+    }
+}
+
 #[test]
 fn nothing_in_the_command_rewrites_history_or_throws_work_away() {
-    let source = include_str!("pr_sync.rs");
-    for forbidden in [
-        "\"rebase\"",
-        "\"--amend\"",
-        "\"--force\"",
-        "\"-f\"",
-        "\"reset\"",
-        "\"--abort\"",
-        "\"checkout\"",
-        "\"restore\"",
-        "\"clean\"",
-        "\"--ff-only\"",
-        "\"stash\"",
-    ] {
-        assert!(!source.contains(forbidden), "{forbidden}");
+    let forbidden = [
+        "rebase",
+        "--amend",
+        "--force",
+        "-f",
+        "reset",
+        "--abort",
+        "checkout",
+        "restore",
+        "clean",
+        "--ff-only",
+        "stash",
+    ];
+    let mut merged_without_fast_forward = false;
+    // Every path the command takes: a current branch, a clean merge that is pushed, a conflict, and the failures
+    // (a git too old for merge-tree, a remote that refuses the push, a fetch that fails).
+    for scenario in Scenario::ALL {
+        let project = Project::new();
+        let mut git = TestGit::default();
+        match scenario {
+            Scenario::Current => {}
+            Scenario::CleanMerge => project.base_moves("b.txt", "b changed\n"),
+            Scenario::Conflict => {
+                project.base_moves("a.txt", &TEN_LINES.replacen("1\n", "uno\n", 1));
+            }
+            Scenario::OldGit => {
+                // A merge that was kept after a refused push, then retried with a git that cannot check it.
+                project.base_moves("b.txt", "b changed\n");
+                let hook = refuse_pushes(&project);
+                sync_now(&project, &FakeApi::default()).unwrap_err();
+                fs::remove_file(hook).unwrap();
+                git.old_git = true;
+            }
+            Scenario::PushRefused => {
+                project.base_moves("b.txt", "b changed\n");
+                refuse_pushes(&project);
+            }
+            Scenario::FetchFails => {
+                let missing = project.remote.join("missing");
+                run_git(
+                    &project.wt,
+                    &["remote", "set-url", "origin", missing.to_str().unwrap()],
+                );
+            }
+        }
+        let result = sync(&run_of(&project), &options(), &git, &FakeApi::default());
+        assert_eq!(
+            result.is_err(),
+            scenario.fails(),
+            "{scenario:?}: {result:?}"
+        );
+        let commands = git.commands.borrow();
+        assert!(!commands.is_empty());
+        for command in commands.iter() {
+            for argument in command {
+                assert!(
+                    !forbidden.contains(&argument.as_str()),
+                    "{scenario:?}: {command:?}"
+                );
+            }
+            merged_without_fast_forward |= command.first().map(String::as_str) == Some("merge")
+                && command.iter().any(|a| a == "--no-ff");
+        }
     }
-    assert!(source.contains("\"--no-ff\""));
+    assert!(merged_without_fast_forward);
 }
 
 // --- rework 1 ---------------------------------------------------------------------------------------

@@ -7,7 +7,7 @@
 
 use crate::{
     run::{Run, Stage},
-    usage_logs::{read_sessions, ReadLimits, Roots, SessionData},
+    usage_logs::{ReadLimits, Roots, RunSession, read_sessions},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -304,11 +304,7 @@ pub(crate) fn parse_timestamp(text: &str) -> Option<u64> {
         b'Z' | b'z' if at + 1 == bytes.len() => 0,
         sign @ (b'+' | b'-') if at + 6 == bytes.len() && bytes[at + 3] == b':' => {
             let minutes = digits(at + 1, 2)? * 60 + digits(at + 4, 2)?;
-            if *sign == b'+' {
-                minutes
-            } else {
-                -minutes
-            }
+            if *sign == b'+' { minutes } else { -minutes }
         }
         _ => return None,
     };
@@ -383,7 +379,7 @@ pub(crate) fn overlaps(a: &Run, b: &Run) -> bool {
     a_start <= b_end && b_start <= a_end
 }
 
-fn claims(run: &Run, session: &SessionData) -> bool {
+fn claims(run: &Run, session: &RunSession) -> bool {
     session.mentions.contains(&run.id) || run.sessions.contains(&session.id)
 }
 
@@ -403,7 +399,7 @@ fn bucket(mark: &Mark) -> (Option<String>, bool) {
 pub(crate) fn attribute(
     target: &Run,
     runs: &[Run],
-    sessions: &[SessionData],
+    sessions: &[RunSession],
     now: u64,
 ) -> (Vec<UsageRow>, Tokens, Vec<String>) {
     type Key = (Stage, String, Option<String>, bool);
@@ -441,10 +437,10 @@ pub(crate) fn attribute(
                     subagents: Tokens::default(),
                     efforts: BTreeSet::new(),
                 });
-            if let Some(effort) = &entry.effort {
-                if row.efforts.len() < MAX_EFFORTS_PER_ROW || row.efforts.contains(effort) {
-                    row.efforts.insert(effort.clone());
-                }
+            if let Some(effort) = &entry.effort
+                && (row.efforts.len() < MAX_EFFORTS_PER_ROW || row.efforts.contains(effort))
+            {
+                row.efforts.insert(effort.clone());
             }
             row.tokens.add(&entry.tokens);
             if entry.subagent {
@@ -477,7 +473,7 @@ pub(crate) fn attribute(
 /// pause explains is not also an idle gap.
 pub(crate) fn derive_pauses(
     target: &Run,
-    sessions: &[SessionData],
+    sessions: &[RunSession],
     now: u64,
 ) -> (Vec<Pause>, Vec<IdleGap>) {
     let Some(first) = target.timeline.first() else {
@@ -579,7 +575,7 @@ fn collect_limited(
         .min()
         .unwrap_or(first.at);
     let read = read_sessions(roots, &ids, &recorded, from, deadline, limits);
-    let claimed: Vec<&SessionData> = read.sessions.iter().filter(|s| claims(target, s)).collect();
+    let claimed: Vec<&RunSession> = read.sessions.iter().filter(|s| claims(target, s)).collect();
     if claimed.is_empty() {
         let reason = if read.roots_found == 0 {
             "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()
@@ -628,8 +624,8 @@ fn collect_limited(
         .id
         .parse::<u128>()
         .ok()
-        .map(|nanos| (nanos / 1_000_000) as u64);
-    if created.is_some_and(|created| first.at > created + 5_000) {
+        .map(|nanos| (nanos / NANOS_PER_MS) as u64);
+    if created.is_some_and(|created| first.at > created + RUN_START_SLACK_MS) {
         notes.push(format!(
             "usage before {} was not tracked: the run's stage timeline starts then",
             format_timestamp(first.at)
@@ -666,7 +662,7 @@ fn collect_limited(
         notes,
         no_data,
         collected_at: now,
-        sessions: counted.into_iter().take(100).collect(),
+        sessions: counted.into_iter().take(MAX_SESSIONS_LISTED).collect(),
         rows,
         unattributed,
         pauses,
@@ -674,6 +670,21 @@ fn collect_limited(
         log_complete,
     }
 }
+
+/// Run ids are creation times in nanoseconds; usage timestamps are milliseconds.
+const NANOS_PER_MS: u128 = 1_000_000;
+
+/// Clock and write skew allowed between a run's creation and its first usage entry before a note is added.
+const RUN_START_SLACK_MS: u64 = 5_000;
+
+/// The most sessions a usage report lists: enough for any run, and a bound on the size of the dashboard payload.
+const MAX_SESSIONS_LISTED: usize = 100;
+
+/// The first settle pass: soon after the run, to show nearly complete numbers quickly.
+const FIRST_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The second settle pass: by now agents have surely flushed their logs.
+const SECOND_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_secs(45);
 
 // --- collecting -------------------------------------------------------------------------------------
 
@@ -692,10 +703,7 @@ pub(crate) struct UsageSettings {
 impl UsageSettings {
     /// The delays between passes in the dashboard: soon after, then once the logs have surely been written.
     pub(crate) fn default_settle() -> Vec<std::time::Duration> {
-        vec![
-            std::time::Duration::from_secs(15),
-            std::time::Duration::from_secs(45),
-        ]
+        vec![FIRST_SETTLE_DELAY, SECOND_SETTLE_DELAY]
     }
 }
 
@@ -783,7 +791,7 @@ impl Collection {
         let _guard = match self.lock.try_lock() {
             Ok(guard) => guard,
             Err(std::sync::TryLockError::Poisoned(error)) => {
-                return Err(crate::run::lock_error(error))
+                return Err(crate::run::lock_error(error));
             }
             Err(std::sync::TryLockError::WouldBlock) => {
                 waiting();

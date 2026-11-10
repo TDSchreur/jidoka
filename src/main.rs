@@ -29,12 +29,21 @@ mod update;
 mod usage;
 mod usage_logs;
 
-use client::{fetch_run, fetch_runs, probe_dashboard, report_run, start_run, Probe};
+use client::{Probe, fetch_run, fetch_runs, probe_dashboard, report_run, start_run};
 use run::UPDATE_HELP;
-use server::{serve, ADDRESS, DEFAULT_PORT};
+use server::{ADDRESS, DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
 const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...] [--config-dir <path>]...\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr sync <run-id> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run check <run-id> [--json]\n  factory run cleanup <run-id> [--reinstall] [--config-dir <path>]...\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+
+/// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
+const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long the request analysis of one run may read logs.
+const RUN_REQUESTS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long one dashboard usage collection may read logs, so the dashboard stays responsive.
+const DASHBOARD_USAGE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Names a build: the version for official releases, the commit for any other build.
 fn build_label(version: &str, release: bool, commit: &str) -> String {
@@ -171,7 +180,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 &runs,
                 &roots,
                 run::updated_now()?,
-                std::time::Instant::now() + std::time::Duration::from_secs(120),
+                std::time::Instant::now() + POOL_DEADLINE,
                 &pool,
             );
             if json {
@@ -195,7 +204,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 &runs,
                 &roots,
                 run::updated_now()?,
-                std::time::Instant::now() + std::time::Duration::from_secs(30),
+                std::time::Instant::now() + RUN_REQUESTS_DEADLINE,
             );
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
@@ -248,7 +257,7 @@ fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
         return Err("Invalid run id".into());
     }
     let run = fetch_run(ADDRESS, id)?;
-    let info = pr_open::RunInfo {
+    let info = pr_open::PrRun {
         id: id.to_string(),
         worktree: run.worktree.clone(),
         branch: run.branch.clone(),
@@ -379,7 +388,7 @@ fn pr_sync_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     let run = fetch_run(ADDRESS, id)?;
     let text =
         |value: serde_json::Value, fallback: &str| value.as_str().unwrap_or(fallback).to_string();
-    let info = pr_open::RunInfo {
+    let info = pr_open::PrRun {
         id: id.to_string(),
         worktree: run.worktree.clone(),
         branch: run.branch.clone(),
@@ -417,13 +426,12 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     let running = matches!(run.status, run::RunStatus::Running);
     let mut reported_failure = false;
     let mut activity = |text: &str| {
-        if running {
-            if let Err(error) = report_to_dashboard(id, &stage, "running", &["--activity", text]) {
-                if !reported_failure {
-                    reported_failure = true;
-                    eprintln!("The run's activity could not be updated: {error}");
-                }
-            }
+        if running
+            && let Err(error) = report_to_dashboard(id, &stage, "running", &["--activity", text])
+            && !reported_failure
+        {
+            reported_failure = true;
+            eprintln!("The run's activity could not be updated: {error}");
         }
     };
     // Only GitHub can lag behind a push in what it reports; the Azure wait does not use the hint.
@@ -451,9 +459,7 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
 
 /// Reads the model-routing policy once, before a run exists: a mistake in it, or a policy for several
 /// agents without `--agent`, stops the start. Prints the notice, if any.
-fn resolve_routing(
-    host: Option<routing::Host>,
-) -> Result<routing::Resolution, Box<dyn std::error::Error>> {
+fn resolve_routing(host: Option<routing::Host>) -> Result<routing::Resolution, String> {
     let resolution = routing::policy_path_in(|name| env::var_os(name)).map_or_else(
         || Ok(routing::Resolution::default()),
         |path| routing::load(&path, host).map_err(|error| inspect::shown(&error)),
@@ -649,7 +655,7 @@ fn dashboard(port: u16, usage: bool) -> Result<(), Box<dyn std::error::Error>> {
             let settings = usage::UsageSettings {
                 enabled: usage,
                 roots: usage_logs::Roots::from_home(&home, &|name| env::var_os(name))?,
-                budget: std::time::Duration::from_secs(5),
+                budget: DASHBOARD_USAGE_BUDGET,
                 settle: usage::UsageSettings::default_settle(),
             };
             serve(&data_path(port)?, port, &url, settings)?
@@ -719,6 +725,15 @@ mod test_support {
             Self(tempfile::tempdir().unwrap())
         }
     }
+
+    /// Makes `path` unreadable. Returns false when it can still be read anyway (running as root), so the
+    /// caller skips its check instead of failing.
+    #[cfg(unix)]
+    pub(crate) fn make_unreadable(path: &std::path::Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::read(path).is_err()
+    }
 }
 
 #[cfg(test)]
@@ -755,12 +770,16 @@ mod tests {
 
     #[test]
     fn a_separate_port_keeps_its_own_data_file() {
-        assert!(data_path(DEFAULT_PORT)
-            .unwrap()
-            .ends_with("tds-factory/runs.json"));
-        assert!(data_path(4400)
-            .unwrap()
-            .ends_with("tds-factory/runs-4400.json"));
+        assert!(
+            data_path(DEFAULT_PORT)
+                .unwrap()
+                .ends_with("tds-factory/runs.json")
+        );
+        assert!(
+            data_path(4400)
+                .unwrap()
+                .ends_with("tds-factory/runs-4400.json")
+        );
     }
 
     #[test]

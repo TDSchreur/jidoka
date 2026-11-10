@@ -8,7 +8,7 @@ fn files(root: &Path, dir: &Path, output: &mut Vec<String>) {
         } else if path.is_file() {
             let relative = path
                 .strip_prefix(root)
-                .unwrap()
+                .expect("skill path inside its root")
                 .to_string_lossy()
                 .replace('\\', "/");
             let absolute = fs::canonicalize(&path).expect("skill path");
@@ -93,7 +93,8 @@ fn main() {
         );
     }
     for name in ["mattpocock-skills-LICENSE", "awesome-copilot-LICENSE"] {
-        let path = fs::canonicalize(Path::new("third-party").join(name)).unwrap();
+        let path =
+            fs::canonicalize(Path::new("third-party").join(name)).expect("third-party skill path");
         output.push(format!(
             "({:?}, include_bytes!({:?}).as_slice()),",
             format!("licenses/{name}"),
@@ -101,7 +102,8 @@ fn main() {
         ));
     }
     output.sort();
-    let dest = Path::new(&env::var_os("OUT_DIR").unwrap()).join("bundled_skills.rs");
+    let dest = Path::new(&env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"))
+        .join("bundled_skills.rs");
     fs::write(
         dest,
         format!(
@@ -109,5 +111,5 @@ fn main() {
             output.join("\n")
         ),
     )
-    .unwrap();
+    .expect("write bundled skills");
 }

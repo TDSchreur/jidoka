@@ -58,33 +58,69 @@ struct Project {
     worktrees: PathBuf,
 }
 
+/// Copies `from` to `to`, creating directories as needed.
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// Builds the remote and its clone once. Starting git is slow on Windows, so each test copies this instead.
+fn template() -> &'static Path {
+    static TEMPLATE: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+    TEMPLATE
+        .get_or_init(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let root = real_path(dir.path());
+            let remote = root.join("remote.git");
+            fs::create_dir(&remote).unwrap();
+            git(&remote, &["init", "-q", "--bare", "-b", "develop"]);
+            let seed = root.join("seed");
+            fs::create_dir(&seed).unwrap();
+            git(&seed, &["init", "-q", "-b", "develop"]);
+            git(&seed, &["commit", "-q", "--allow-empty", "-m", "first"]);
+            git(
+                &seed,
+                &["remote", "add", "origin", remote.to_str().unwrap()],
+            );
+            git(&seed, &["push", "-q", "origin", "develop"]);
+            git(&seed, &["branch", "release"]);
+            git(&seed, &["commit", "-q", "--allow-empty", "-m", "second"]);
+            git(&seed, &["push", "-q", "origin", "develop", "release"]);
+            fs::remove_dir_all(&seed).unwrap();
+            let mut clone_command = Command::new("git");
+            clone_command
+                .args(["clone", "-q"])
+                .arg(&remote)
+                .arg(root.join("repo"));
+            let clone = isolated(&mut clone_command).output().unwrap();
+            assert!(
+                clone.status.success(),
+                "{}",
+                String::from_utf8_lossy(&clone.stderr)
+            );
+            dir
+        })
+        .path()
+}
+
 impl Project {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = real_path(dir.path());
+        copy_tree(&real_path(template()), &root);
         let remote = root.join("remote.git");
-        fs::create_dir(&remote).unwrap();
-        git(&remote, &["init", "-q", "--bare", "-b", "develop"]);
-        let seed = root.join("seed");
-        fs::create_dir(&seed).unwrap();
-        git(&seed, &["init", "-q", "-b", "develop"]);
-        git(&seed, &["commit", "-q", "--allow-empty", "-m", "first"]);
-        git(
-            &seed,
-            &["remote", "add", "origin", remote.to_str().unwrap()],
-        );
-        git(&seed, &["push", "-q", "origin", "develop"]);
-        git(&seed, &["branch", "release"]);
-        git(&seed, &["commit", "-q", "--allow-empty", "-m", "second"]);
-        git(&seed, &["push", "-q", "origin", "develop", "release"]);
         let repo = root.join("repo");
-        let mut clone_command = Command::new("git");
-        clone_command.args(["clone", "-q"]).arg(&remote).arg(&repo);
-        let clone = isolated(&mut clone_command).output().unwrap();
-        assert!(
-            clone.status.success(),
-            "{}",
-            String::from_utf8_lossy(&clone.stderr)
+        git(
+            &repo,
+            &["remote", "set-url", "origin", remote.to_str().unwrap()],
         );
         let worktrees = root.join("repo.worktrees");
         Self {
@@ -894,32 +930,99 @@ fn resuming_an_unknown_or_finished_run_or_one_with_a_workspace_is_refused() {
 
 #[test]
 fn nothing_in_the_command_deletes_resets_checks_out_or_cleans() {
-    let source = include_str!("run_begin.rs");
-    for forbidden in [
-        "\"reset\"",
-        "\"clean\"",
-        "\"checkout\"",
-        "\"restore\"",
-        "\"rm\"",
-        "\"prune\"",
-        "\"stash\"",
-        "\"--force\"",
-        "\"-D\"",
-        "\"-d\"",
-        "\"-B\"",
-        "\"-f\"",
-        "\"-ff\"",
-        "\"--hard\"",
-        "\"--detach\"",
-        "\"remove\"",
-        "\"switch\"",
-        "\"gc\"",
-        "\"update-ref\"",
-        "remove_dir",
-        "remove_file",
-        "fs::write",
+    let project = Project::new();
+    // The checkout holds work that a reset, clean, checkout or stash would destroy or move away.
+    fs::write(project.repo.join("a.txt"), "committed\n").unwrap();
+    git(&project.repo, &["add", "a.txt"]);
+    git(&project.repo, &["commit", "-q", "-m", "local work"]);
+    git(&project.repo, &["branch", "keep"]);
+    git(
+        &project.repo,
+        &["worktree", "add", "-q", "../other", "keep"],
+    );
+    fs::write(project.repo.join("a.txt"), "edited\n").unwrap();
+    fs::write(project.repo.join("untracked.txt"), "mine\n").unwrap();
+    // A branch that exists without a worktree: a resume gives it one.
+    git(&project.repo, &["branch", "bx", "origin/develop"]);
+
+    // A fresh run, a second run whose name collides with the first, and a resume of a run without a worktree.
+    let mut previous = Snapshot::of(&project);
+    for (step, run_options) in [
+        ("a fresh run", options("Add login")),
+        ("a name collision", options("Add login")),
+        ("a resume", resuming("Add login", "bx")),
     ] {
-        assert!(!source.contains(forbidden), "{forbidden}");
+        let step_api = if step == "a resume" {
+            api_with_run("Add login")
+        } else {
+            FakeApi::default()
+        };
+        begin(&project.repo, &run_options, &step_api, None, None)
+            .unwrap_or_else(|error| panic!("{step}: {error:?}"));
+        let now = Snapshot::of(&project);
+        previous.assert_only_added_branches_and_worktrees(&now, step);
+        previous = now;
+    }
+}
+
+/// What a run start must leave as it was, plus the branches and worktrees it may add.
+struct Snapshot {
+    head: String,
+    tips: String,
+    status: String,
+    stashes: String,
+    branches: String,
+    worktrees: String,
+    tracked_file: String,
+    untracked_file: String,
+    origin_develop: String,
+    origin_release: String,
+}
+
+impl Snapshot {
+    fn of(project: &Project) -> Self {
+        Self {
+            head: git(&project.repo, &["symbolic-ref", "HEAD"]),
+            tips: git(&project.repo, &["rev-parse", "HEAD", "keep"]),
+            status: git(&project.repo, &["status", "--porcelain"]),
+            stashes: git(&project.repo, &["stash", "list"]),
+            branches: git(&project.repo, &["branch", "--list"]),
+            worktrees: git(&project.repo, &["worktree", "list", "--porcelain"]),
+            tracked_file: fs::read_to_string(project.repo.join("a.txt")).unwrap(),
+            untracked_file: fs::read_to_string(project.repo.join("untracked.txt")).unwrap(),
+            origin_develop: project.origin_commit("develop"),
+            origin_release: project.origin_commit("release"),
+        }
+    }
+
+    /// Everything is the same in `after`, except that branches and worktrees may have been added.
+    fn assert_only_added_branches_and_worktrees(&self, after: &Self, step: &str) {
+        assert_eq!(self.head, after.head, "{step}: HEAD");
+        assert_eq!(self.tips, after.tips, "{step}: branch tips");
+        assert_eq!(self.status, after.status, "{step}: status");
+        assert_eq!(self.stashes, after.stashes, "{step}: stashes");
+        assert_eq!(
+            self.tracked_file, after.tracked_file,
+            "{step}: tracked file"
+        );
+        assert_eq!(
+            self.untracked_file, after.untracked_file,
+            "{step}: untracked file"
+        );
+        assert_eq!(self.origin_develop, after.origin_develop, "{step}: develop");
+        assert_eq!(self.origin_release, after.origin_release, "{step}: release");
+        for line in self.branches.lines() {
+            assert!(
+                after.branches.contains(line.trim()),
+                "{step}: branch {line} is gone"
+            );
+        }
+        assert!(
+            after.worktrees.starts_with(self.worktrees.as_str()),
+            "{step}: worktrees\n{}\n---\n{}",
+            self.worktrees,
+            after.worktrees
+        );
     }
 }
 
@@ -1049,9 +1152,11 @@ fn the_text_output_is_printable_whatever_the_folder_is_called() {
         gitignore_warning: Some("bad \u{1b}[2J".into()),
         session_warning: None,
     };
-    assert!(!render(&begun, "/p/plans/100.md")
-        .chars()
-        .any(|c| c.is_control() && c != '\n'));
+    assert!(
+        !render(&begun, "/p/plans/100.md")
+            .chars()
+            .any(|c| c.is_control() && c != '\n')
+    );
 }
 
 #[test]
@@ -1068,7 +1173,17 @@ fn a_block_that_could_not_be_recorded_says_so() {
 
 #[test]
 fn git_is_asked_in_english_so_that_its_messages_can_be_told_apart() {
-    assert!(include_str!("run_begin.rs").contains(r#".env("LC_ALL", "C")"#));
+    // A git alias that runs a shell command shows the environment the command started git with.
+    let seen = super::git(
+        Path::new("."),
+        &[
+            "-c",
+            "alias.show-locale=!printf %s \"$LC_ALL\"",
+            "show-locale",
+        ],
+    )
+    .unwrap();
+    assert_eq!(seen, "C");
 }
 
 // --- rework 2 ---------------------------------------------------------------------------------------

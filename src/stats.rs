@@ -4,7 +4,7 @@ use crate::{
     cost::{self, PRICES},
     inspect::shown,
     run::{Run, Stage},
-    usage::{format_timestamp, Tokens, Usage, UsageRow, UsageStatus},
+    usage::{Tokens, Usage, UsageRow, UsageStatus, format_timestamp},
 };
 use std::collections::BTreeMap;
 

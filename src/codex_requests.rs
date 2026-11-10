@@ -8,12 +8,12 @@
 
 use crate::{
     request_logs::{
-        classify, result_bytes, updated_runs, Request, RequestRead, SessionRequests,
-        MAX_COMMAND_BYTES,
+        MAX_COMMAND_BYTES, Request, RequestRead, SessionRequests, classify, result_bytes,
+        updated_runs,
     },
     usage_logs::{
-        civil_day, codex_meta, codex_tokens, files_in, has_token_counts, merge_largest,
-        modified_ms, read_text, sub_dirs, timestamp, LogFile, ReadLimits, DAY_MS, MTIME_SLACK_MS,
+        DAY_MS, LogFile, MTIME_SLACK_MS, ReadLimits, civil_day, codex_meta, codex_tokens, files_in,
+        has_token_counts, merge_largest, modified_ms, read_text, sub_dirs, timestamp,
     },
 };
 use serde_json::Value;
@@ -407,11 +407,11 @@ fn parse_rollout(text: &str, session: &str, subagent: bool, ids: &HashSet<&str>)
                     let bytes = result_bytes(&payload["output"]);
                     if open_calls.remove(call) {
                         open.tool_output_bytes = open.tool_output_bytes.saturating_add(bytes);
-                    } else if let Some(index) = owners.remove(call) {
-                        if let Some((_, request)) = rollout.requests.get_mut(index) {
-                            request.tool_output_bytes =
-                                Some(request.tool_output_bytes.unwrap_or(0).saturating_add(bytes));
-                        }
+                    } else if let Some(index) = owners.remove(call)
+                        && let Some((_, request)) = rollout.requests.get_mut(index)
+                    {
+                        request.tool_output_bytes =
+                            Some(request.tool_output_bytes.unwrap_or(0).saturating_add(bytes));
                     }
                 }
                 _ => {}
@@ -515,7 +515,14 @@ pub(crate) fn read_codex_requests(
                     }
                     let text = match read_text(&path) {
                         Ok(LogFile::Content(text)) => text,
-                        Ok(LogFile::Skipped | LogFile::TooBig) | Err(_) => continue,
+                        Ok(LogFile::Skipped | LogFile::TooBig) => continue,
+                        Err(error) => {
+                            if recorded.iter().any(|id| file_name.contains(*id)) {
+                                out.notes
+                                    .push(format!("a session log could not be read: {error}"));
+                            }
+                            continue;
+                        }
                     };
                     bytes += text.len() as u64;
                     let Some((id, session_root, subagent)) = codex_meta(&text) else {

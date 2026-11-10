@@ -1,8 +1,8 @@
 //! The readable form of a run, for `factory run inspect`: everything a new session needs to continue it.
 
-use crate::routing::{model_matches, ModelChoice, ModelRouting};
+use crate::routing::{ModelChoice, ModelRouting, model_matches};
 use crate::run::{Mode, Run, RunEventKind, RunStatus, Stage, TicketStatus};
-use crate::usage::{format_timestamp, Usage, UsageStatus};
+use crate::usage::{Usage, UsageStatus, format_timestamp};
 use std::collections::BTreeSet;
 
 const UNKNOWN: &str = "unknown (not recorded)";
@@ -182,7 +182,9 @@ fn verdict(requested: &ModelChoice, seen: &[Seen], partial: bool) -> String {
         } else if !efforts.iter().any(|e| e.eq_ignore_ascii_case(want)) {
             let (want, got) = (shown(want), join_efforts(efforts.iter().copied()));
             return if partial {
-                format!("effort {want} not observed, only {got} (usage is partial, so it may be missing)")
+                format!(
+                    "effort {want} not observed, only {got} (usage is partial, so it may be missing)"
+                )
             } else {
                 format!("MISMATCH: effort {want} was requested, observed {got}")
             };
@@ -311,13 +313,22 @@ pub(crate) fn render(run: &Run) -> String {
     out
 }
 
+/// Milliseconds in a minute.
+const MS_PER_MINUTE: u64 = 60_000;
+/// Minutes in an hour.
+const MINUTES_PER_HOUR: u64 = 60;
+
 /// A span of milliseconds as minutes, or hours and minutes.
 fn duration(ms: u64) -> String {
-    let minutes = ms / 60_000;
-    if minutes < 60 {
+    let minutes = ms / MS_PER_MINUTE;
+    if minutes < MINUTES_PER_HOUR {
         format!("{minutes} min")
     } else {
-        format!("{} h {} min", minutes / 60, minutes % 60)
+        format!(
+            "{} h {} min",
+            minutes / MINUTES_PER_HOUR,
+            minutes % MINUTES_PER_HOUR
+        )
     }
 }
 

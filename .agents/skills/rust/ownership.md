@@ -260,6 +260,14 @@ fn process(data: &Data) {
 
 **Authority:** pretzelhammer ("Tour of Rust's Standard Library Traits" — Clone/Copy); Effective Rust (items on ownership ergonomics).
 
+## More Ownership Rules
+
+- Escape a borrow without cloning: extend a temporary with a named `let`, split a long expression into typed intermediates, move a field out of `&mut self` with `std::mem::take` (needs `Default`), `mem::replace`, or `Option::take`, or split a large struct so disjoint fields borrow separately (the compiler tracks disjoint fields within one function, not across method calls).
+- Structs own their data: a struct holding `&'a T` forces a lifetime onto every container. When a type does carry a lifetime, name it (`'src`, `'conn`).
+- Where a function only reads a path, string, or byte buffer, `impl AsRef<Path>` / `AsRef<str>` / `AsRef<[u8]>` is fine on parameters, never on struct fields (store `PathBuf` and `String`). Library code that only iterates takes `impl IntoIterator<Item = T>`; application code may simply take `&[T]`.
+- Return multiple values as a tuple or struct, not through `&mut` out-parameters (reusing a caller-owned buffer, as `Read::read` does, is the exception).
+- Freeze after setup: build with `let mut`, then rebind `let data = data;`.
+
 ## Common Mistakes (Agent Failure Modes)
 
 - **`clone()` as first response to E0382** → Ask who should own the data. Often the fix is to borrow, restructure, or use `Rc`/`Arc`.

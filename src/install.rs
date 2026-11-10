@@ -263,6 +263,7 @@ fn install_to(root: &Path) -> io::Result<()> {
         remove_if_exists(&staging)?;
         fs::create_dir(&staging)?;
         if let Err(error) = write_skill(name, &staging).and_then(|()| replace_dir(&staging, &dir)) {
+            // Best-effort cleanup; the install error is the one returned.
             let _ = fs::remove_dir_all(&staging);
             return Err(io::Error::new(
                 error.kind(),
@@ -387,7 +388,16 @@ fn replace_dir(staging: &Path, dir: &Path) -> io::Result<()> {
     remove_if_exists(&previous)?;
     fs::rename(dir, &previous)?;
     if let Err(error) = fs::rename(staging, dir) {
-        let _ = fs::rename(&previous, dir);
+        // The rename error is the one returned; a failed rollback is added to it.
+        if let Err(rollback) = fs::rename(&previous, dir) {
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "{error}; the previous copy at {} could not be restored: {rollback}",
+                    previous.display()
+                ),
+            ));
+        }
         return Err(error);
     }
     fs::remove_dir_all(previous)
@@ -405,7 +415,10 @@ fn write_skill(name: &str, dir: &Path) -> io::Result<()> {
         .iter()
         .filter(|(path, _)| path.split('/').next() == Some(name))
     {
-        let relative = path.split_once('/').unwrap().1;
+        let relative = path
+            .split_once('/')
+            .unwrap_or_else(|| panic!("bundled skill file `{path}` has no directory in its path"))
+            .1;
         let destination = dir.join(relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
@@ -702,8 +715,10 @@ mod tests {
                 "{skill} does not point to Using the bundled skills"
             );
         }
-        assert!(bundled_text("factory-full/SKILL.md")
-            .contains("`factory-implement` can also only be invoked by the user"));
+        assert!(
+            bundled_text("factory-full/SKILL.md")
+                .contains("`factory-implement` can also only be invoked by the user")
+        );
     }
 
     #[test]
@@ -1516,9 +1531,11 @@ mod tests {
         fs::create_dir_all(root.join("my-skill")).unwrap();
         fs::write(root.join("my-skill/SKILL.md"), "user skill").unwrap();
         install_to(root).unwrap();
-        assert!(fs::read_to_string(root.join("factory/SKILL.md"))
-            .unwrap()
-            .contains("name: factory"));
+        assert!(
+            fs::read_to_string(root.join("factory/SKILL.md"))
+                .unwrap()
+                .contains("name: factory")
+        );
         assert!(!root.join("factory/stale.md").exists());
         for old in LEGACY_SKILLS {
             assert!(!root.join(old).exists(), "{old}");
@@ -1538,15 +1555,17 @@ mod tests {
             fs::read_to_string(root.join("my-skill/SKILL.md")).unwrap(),
             "user skill"
         );
-        assert!(root
-            .join("factory-security-review/references/language-patterns.md")
-            .is_file());
+        assert!(
+            root.join("factory-security-review/references/language-patterns.md")
+                .is_file()
+        );
         assert!(root.join("factory-security-review/LICENSE").is_file());
         assert!(root.join("factory-setup/SKILL.md").is_file());
         assert!(root.join("factory-setup/issue-tracker-github.md").is_file());
-        assert!(root
-            .join("factory-setup/issue-tracker-azure-boards.md")
-            .is_file());
+        assert!(
+            root.join("factory-setup/issue-tracker-azure-boards.md")
+                .is_file()
+        );
         assert!(root.join("factory-setup/LICENSE").is_file());
         assert!(root.join("factory-to-spec/SKILL.md").is_file());
         assert!(root.join("factory-full/SKILL.md").is_file());
@@ -1559,12 +1578,14 @@ mod tests {
         assert!(root.join("factory-implement-balanced/SKILL.md").is_file());
         assert!(!root.join("factory-balanced/LICENSE").exists());
         assert!(root.join("factory-procedures/SKILL.md").is_file());
-        assert!(root
-            .join("factory-procedures/references/model-routing.md")
-            .is_file());
-        assert!(root
-            .join("factory-procedures/references/pull-request-and-ci.md")
-            .is_file());
+        assert!(
+            root.join("factory-procedures/references/model-routing.md")
+                .is_file()
+        );
+        assert!(
+            root.join("factory-procedures/references/pull-request-and-ci.md")
+                .is_file()
+        );
         assert!(!root.join("factory-procedures/LICENSE").exists());
         assert!(!root.join("factory-implement-balanced/LICENSE").exists());
         assert!(!root.join("factory-implement-fast/LICENSE").exists());

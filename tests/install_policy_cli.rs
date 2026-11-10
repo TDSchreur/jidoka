@@ -1,4 +1,8 @@
 //! Installation creates the default policy without replacing user settings.
+#![expect(
+    clippy::unwrap_used,
+    reason = "integration test helpers fail the test by panicking"
+)]
 use std::{fs, process::Command};
 
 #[test]

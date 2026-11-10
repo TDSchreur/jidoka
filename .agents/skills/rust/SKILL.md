@@ -1,17 +1,18 @@
 ---
 name: rust
 description: >
-  Mental-model reset for Rust. Use when writing or reviewing Rust code to shift
-  from "it compiles" to "thinks in Rust." Triggers on Rust code review,
-  "is this idiomatic", borrow-checker errors, API design, domain modeling,
-  ownership, lifetimes, errors, traits, async/Tokio, unsafe, serde, FFI, tests,
-  performance, Cargo structure, .rs files, Cargo.toml, rustc diagnostics, clippy
-  findings, Result/Option, thiserror vs anyhow, newtype, typestate, enum vs
-  trait, dyn Trait, Send/Sync, Pin, Miri, PyO3, napi-rs, cxx, UniFFI,
-  wasm-bindgen, serde attributes, or feature unification.
+  Write idiomatic, robust, maintainable Rust. Use whenever you write, review,
+  refactor, debug, or explain Rust code: new crates, modules, functions, structs,
+  traits, error types, async/Tokio, unsafe or FFI, serde, macros, Cargo.toml and
+  workspaces, tests, rustdoc, performance. Triggers on any mention of Rust, cargo,
+  crates, .rs files, the borrow checker, lifetimes, traits, clippy, rustfmt,
+  rustc diagnostics, "is this idiomatic", Result/Option, thiserror vs anyhow,
+  newtype, typestate, dyn Trait, Send/Sync, Pin, Miri, PyO3, napi-rs, cxx, UniFFI,
+  wasm-bindgen, feature unification, or Bevy, even when the user does not ask for
+  "best practices". Shifts defaults from "it compiles" to "thinks in Rust".
 ---
 
-# Thinking in Rust
+# Rust
 
 You already know Rust syntax. Change the **defaults** you reach for first when modeling a domain, handling ownership, designing APIs, or crossing boundaries.
 
@@ -22,6 +23,12 @@ Most of these habits come from languages without sum types, ownership, zero-cost
 When reviewing Rust, start with the shape of the program: what invariants are represented, who owns each value, which states are impossible, where errors cross boundaries, and whether any escape hatch is hiding a design problem.
 
 Treat these as strong defaults, not rigid laws: when unsure, choose the approach that moves invariants into types and lets the compiler enforce them.
+
+**Application code is not library code.** Library code (anything with external users) follows the API-design rules strictly. Application code favors simplicity and directness: concrete types, `String` or `&str` parameters, one app-level error type, `Vec` return values, no speculative generality. Follow a project's own written standards where they differ.
+
+## Before You Hand Back Code
+
+Run the project's format, lint, and test commands and fix everything they report; for a bare crate that is `cargo fmt`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, and `cargo doc --no-deps` for libraries. Fix a lint rather than silencing it; see [style-and-docs.md](style-and-docs.md) for lint configuration and the `#[expect]` rule.
 
 ## How Rust Thinks
 
@@ -56,7 +63,8 @@ Treat these as strong defaults, not rigid laws: when unsure, choose the approach
 21. **Right-size pattern matching.** `matches!()` for boolean checks. `if let` for one variant. `let ... else` for early return. `match` for real alternatives. Exhaustive `match` when adding a variant should break the build. See [references/pattern-matching-tools.md](references/pattern-matching-tools.md).
 22. **Public fields beat trivial getters.** If any value of a field's type is valid, make it `pub`. Do not write `get_x()`/`set_x()` that only forwards. When accessors protect invariants, use Rust naming: `name()`, not `get_name()`. See [references/getter-setter.md](references/getter-setter.md).
 23. **Visibility is a design tool, not cleanup.** `pub` is a semver promise. Default to private or `pub(crate)`, group modules by domain, and curate the public facade with `pub use`. See [references/visibility-and-modules.md](references/visibility-and-modules.md).
-24. **Crate boundaries must earn their names.** Stay single-crate until you can name the boundary. Cargo features are additive public capability, not an internal architecture switch. See [project-structure.md](project-structure.md).
+24. **Names and std traits follow convention.** No `get_` prefixes, `as_`/`to_`/`into_` signal cost, derive the common std traits, no `Manager`/`Factory`/`Service` suffixes, no `bool` parameters. See [api-design.md](api-design.md).
+25. **Crate boundaries must earn their names.** Stay single-crate until you can name the boundary. Cargo features are additive public capability, not an internal architecture switch. See [project-structure.md](project-structure.md).
 
 ## Common Mistakes (Agent Failure Modes)
 
@@ -130,9 +138,22 @@ Treat these as strong defaults, not rigid laws: when unsure, choose the approach
 
 ## Cross-References
 
+- **[api-design.md](api-design.md)** and **[style-and-docs.md](style-and-docs.md)**: Naming, std traits, constructors and builders, visibility and semver, refactoring someone else's code; lints, everyday idioms, rustdoc, comments.
+
 - **[ownership.md](ownership.md)** — Borrow checker errors, lifetimes, function signatures, smart pointers, `Cow`, clone discipline.
 - **[error-handling.md](error-handling.md)** — `thiserror` vs `anyhow`, structured errors, context, combinators, panic boundaries.
 - **[traits.md](traits.md)** and **[type-design.md](type-design.md)** — Dispatch choices, trait design, newtypes, typestate, builders, phantom types.
 - **[async.md](async.md)**, **[atomics.md](atomics.md)**, and **[unsafe.md](unsafe.md)** — Concurrency, memory ordering, soundness, Miri, `Send`/`Sync` invariants.
 - **[macros.md](macros.md)**, **[testing.md](testing.md)**, and **[performance.md](performance.md)** — Generated code, validation strategy, profiling-first optimization.
 - **[serde.md](serde.md)**, **[interop.md](interop.md)**, and **[project-structure.md](project-structure.md)** — Boundaries, DTOs, FFI, workspaces, features, public API surface.
+
+## Reference Digests
+
+`references/` also holds a condensed digest of each upstream guide. Read one for the reasoning behind a rule, or a complete checklist for a task. Where guides disagree, this skill's topic files say which to follow.
+
+- [references/rust-api-guidelines.md](references/rust-api-guidelines.md) ([source](https://rust-lang.github.io/api-guidelines/)): designing a public API or crate; all 54 checklist items.
+- [references/effective-rust.md](references/effective-rust.md) ([source](https://www.lurklurk.org/effective-rust/)): choosing between alternatives such as generics vs `dyn`, `Result` vs panic, iterators vs loops.
+- [references/rust-design-patterns.md](references/rust-design-patterns.md) ([source](https://rust-unofficial.github.io/patterns/)): idioms, patterns, and anti-patterns.
+- [references/microsoft-rust-guidelines.md](references/microsoft-rust-guidelines.md) ([source](https://microsoft.github.io/rust-guidelines/)): `M-` guidelines on error structs, panic and unsafe policy, async, workspace layout, performance.
+- [references/google-rust-style-guide.md](references/google-rust-style-guide.md) ([source](https://google.github.io/styleguide/rustguide.html)): formatting, imports, module layout, accessor naming.
+- [references/bevy.md](references/bevy.md) ([source](https://docs.rs/bevy/0.20.0)): read first if the crate uses Bevy.

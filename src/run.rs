@@ -13,13 +13,35 @@ use std::{
 pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <factory-full|factory-balanced|factory-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `finish done` needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
+/// Tickets one update may list; a spec split into more pieces than this is too big to track on one board.
 const MAX_TICKETS: usize = 100;
+/// Sessions one update may attribute to a run; a run rarely spans more than a handful of agent sessions.
 const MAX_SESSIONS: usize = 20;
-/// Sessions kept per run, and marks kept on its timeline.
+/// Sessions kept per run; the oldest are dropped first.
 const KEEP_SESSIONS: usize = 100;
+/// Marks kept on a run's timeline, so a long run cannot grow its record without bound.
 pub(crate) const MAX_MARKS: usize = 1000;
-/// Blocked and resumed events kept per run.
+/// Blocked and resumed events kept per run, so a run that blocks over and over cannot grow its record without bound.
 pub(crate) const MAX_EVENTS: usize = 1000;
+/// Longest title, ticket title, ticket report or run report, in bytes: enough for a sentence or two that still fits
+/// a dashboard card.
+const MAX_TEXT_BYTES: usize = 500;
+/// Longest path, URL or reference, in bytes; the common 4096-byte `PATH_MAX`, which no real path exceeds.
+const MAX_PATH_BYTES: usize = 4096;
+/// Longest activity, blocking reason or stage summary, in bytes: a short paragraph.
+const MAX_NOTE_BYTES: usize = 2000;
+/// Longest git branch name, in bytes; git itself limits a ref name component to 255 bytes on common file systems.
+const MAX_BRANCH_BYTES: usize = 255;
+/// Shortest and longest agent session id, in characters: a UUID is 36, and 8 rules out accidental short values.
+const SESSION_ID_LENGTH: std::ops::RangeInclusive<usize> = 8..=100;
+/// Shortest and longest base commit a run update accepts, in hex digits.
+/// 7 is git's default abbreviation and 64 a full SHA-256 id. Stricter than `run_check`'s `ACCEPTED_COMMIT_ID_LENGTH`,
+/// which must also read older records.
+const BASE_COMMIT_LENGTH: std::ops::RangeInclusive<usize> = 7..=64;
+/// Ticket reports or run reports one update may submit; matches `MAX_TICKETS`, one report per ticket.
+const MAX_REPORTS_PER_UPDATE: usize = 100;
+/// Ticket reports or run reports a run may hold in total, so a long run cannot grow its record without bound.
+const MAX_REPORTS_PER_RUN: usize = 1000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Run {
@@ -254,20 +276,20 @@ pub(crate) struct NewRun {
 impl NewRun {
     fn validate(&self) -> io::Result<()> {
         if self.title.trim().is_empty()
-            || self.title.len() > 500
+            || self.title.len() > MAX_TEXT_BYTES
             || self.title.chars().any(char::is_control)
         {
-            return Err(io_invalid(
-                "Title must be nonempty, at most 500 bytes, and contain no control characters",
-            ));
+            return Err(io_invalid(format!(
+                "Title must be nonempty, at most {MAX_TEXT_BYTES} bytes, and contain no control characters"
+            )));
         }
         if self.project.trim().is_empty()
-            || self.project.len() > 4096
+            || self.project.len() > MAX_PATH_BYTES
             || self.project.chars().any(char::is_control)
         {
-            return Err(io_invalid(
-                "Project must be nonempty, at most 4096 bytes, and contain no control characters",
-            ));
+            return Err(io_invalid(format!(
+                "Project must be nonempty, at most {MAX_PATH_BYTES} bytes, and contain no control characters"
+            )));
         }
         if let Some(session) = &self.session {
             check_session_id(session).map_err(io_invalid)?;
@@ -276,11 +298,13 @@ impl NewRun {
             routing.validate().map_err(io_invalid)?;
         }
         if self.repository.as_deref().is_some_and(|repository| {
-            repository.len() > 4096
+            repository.len() > MAX_PATH_BYTES
                 || repository.chars().any(char::is_control)
                 || !is_absolute_path(repository)
         }) {
-            return Err(io_invalid("Repository must be an absolute path of at most 4096 bytes without control characters"));
+            return Err(io_invalid(format!(
+                "Repository must be an absolute path of at most {MAX_PATH_BYTES} bytes without control characters"
+            )));
         }
         Ok(())
     }
@@ -367,10 +391,10 @@ impl<T> FieldUpdate<T> {
 
 impl FieldUpdate {
     pub(crate) fn validate(&self, limit: usize) -> Result<(), String> {
-        if let Self::Set(value) = self {
-            if value.trim().is_empty() || value.len() > limit {
-                return Err("Run metadata must be nonblank and within its size limit".into());
-            }
+        if let Self::Set(value) = self
+            && (value.trim().is_empty() || value.len() > limit)
+        {
+            return Err("Run metadata must be nonblank and within its size limit".into());
         }
         Ok(())
     }
@@ -481,14 +505,18 @@ pub(crate) fn is_absolute_path(value: &str) -> bool {
 
 /// An agent session id such as a UUID: letters, digits, `-`, `_` and `.`, so it is safe to store.
 pub(crate) fn check_session_id(id: &str) -> Result<(), String> {
-    let valid = (8..=100).contains(&id.len())
+    let valid = SESSION_ID_LENGTH.contains(&id.len())
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
     if valid {
         Ok(())
     } else {
-        Err("A session id must be 8 to 100 letters, digits, \"-\", \"_\" or \".\"".into())
+        Err(format!(
+            "A session id must be {} to {} letters, digits, \"-\", \"_\" or \".\"",
+            SESSION_ID_LENGTH.start(),
+            SESSION_ID_LENGTH.end()
+        ))
     }
 }
 
@@ -522,26 +550,26 @@ impl UpdateRun {
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
-        self.activity.validate(2000)?;
-        self.blocking_reason.validate(2000)?;
-        self.current_ticket.validate(4096)?;
-        if let FieldUpdate::Set(count) = self.rework {
-            if !(1..=MAX_REWORK).contains(&count) {
-                return Err("Rework must be a whole number from 1 to 99".into());
-            }
+        self.activity.validate(MAX_NOTE_BYTES)?;
+        self.blocking_reason.validate(MAX_NOTE_BYTES)?;
+        self.current_ticket.validate(MAX_PATH_BYTES)?;
+        if let FieldUpdate::Set(count) = self.rework
+            && !(1..=MAX_REWORK).contains(&count)
+        {
+            return Err("Rework must be a whole number from 1 to 99".into());
         }
         if let FieldUpdate::Set(value) = &self.current_ticket {
             check_http_url("Current ticket", value)?;
         }
         if let FieldUpdate::Set(value) = &self.worktree {
-            check_text("Worktree", value, 4096)?;
+            check_text("Worktree", value, MAX_PATH_BYTES)?;
             if has_control(value) || !is_absolute_path(value) {
                 return Err("Worktree must be an absolute path without control characters".into());
             }
         }
-        if let FieldUpdate::Set(value) = &self.branch {
-            if value.is_empty()
-                || value.len() > 255
+        if let FieldUpdate::Set(value) = &self.branch
+            && (value.is_empty()
+                || value.len() > MAX_BRANCH_BYTES
                 || value.starts_with(['-', '/'])
                 || value.ends_with(['/', '.'])
                 || value.ends_with(".lock")
@@ -550,18 +578,22 @@ impl UpdateRun {
                 || value.contains("//")
                 || value
                     .chars()
-                    .any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c))
-            {
-                return Err("Branch must be a valid git branch name: no spaces, control characters or any of ~ ^ : ? * [ \\ \"..\" \"@{\", and not starting with \"-\"".into());
-            }
+                    .any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c)))
+        {
+            return Err("Branch must be a valid git branch name: no spaces, control characters or any of ~ ^ : ? * [ \\ \"..\" \"@{\", and not starting with \"-\"".into());
         }
-        if let FieldUpdate::Set(value) = &self.base_commit {
-            if !(7..=64).contains(&value.len()) || !value.chars().all(|c| c.is_ascii_hexdigit()) {
-                return Err("Base commit must be 7 to 64 hexadecimal characters".into());
-            }
+        if let FieldUpdate::Set(value) = &self.base_commit
+            && (!BASE_COMMIT_LENGTH.contains(&value.len())
+                || !value.chars().all(|c| c.is_ascii_hexdigit()))
+        {
+            return Err(format!(
+                "Base commit must be {} to {} hexadecimal characters",
+                BASE_COMMIT_LENGTH.start(),
+                BASE_COMMIT_LENGTH.end()
+            ));
         }
         if let FieldUpdate::Set(value) = &self.spec {
-            check_reference("Spec", value, 4096)?;
+            check_reference("Spec", value, MAX_PATH_BYTES)?;
         }
         if let FieldUpdate::Set(value) = &self.pr {
             check_plain_url("Pull request", value)?;
@@ -571,14 +603,14 @@ impl UpdateRun {
                 return Err(format!("At most {MAX_TICKETS} tickets can be listed"));
             }
             for (index, ticket) in list.iter().enumerate() {
-                check_reference("Ticket reference", &ticket.reference, 4096)?;
+                check_reference("Ticket reference", &ticket.reference, MAX_PATH_BYTES)?;
                 if ticket.reference.chars().any(char::is_whitespace) {
                     return Err(format!(
                         "Ticket reference {:?} must not contain spaces",
                         ticket.reference
                     ));
                 }
-                check_text("Ticket title", &ticket.title, 500)?;
+                check_text("Ticket title", &ticket.title, MAX_TEXT_BYTES)?;
                 if list[..index]
                     .iter()
                     .any(|other| other.reference == ticket.reference)
@@ -587,30 +619,34 @@ impl UpdateRun {
                 }
             }
         }
-        if self.ticket_reports.len() > 100 {
-            return Err("At most 100 ticket reports can be submitted at once".into());
+        if self.ticket_reports.len() > MAX_REPORTS_PER_UPDATE {
+            return Err(format!(
+                "At most {MAX_REPORTS_PER_UPDATE} ticket reports can be submitted at once"
+            ));
         }
         for report in &self.ticket_reports {
-            check_reference("Ticket reference", &report.ticket, 4096)?;
+            check_reference("Ticket reference", &report.ticket, MAX_PATH_BYTES)?;
             if report.ticket.chars().any(char::is_whitespace) {
                 return Err("Ticket reference must not contain spaces".into());
             }
-            check_text("Ticket report", &report.text, 500)?;
+            check_text("Ticket report", &report.text, MAX_TEXT_BYTES)?;
             if has_control(&report.text) {
                 return Err("Ticket report must not contain control characters".into());
             }
         }
-        if self.run_reports.len() > 100 {
-            return Err("At most 100 run reports can be submitted at once".into());
+        if self.run_reports.len() > MAX_REPORTS_PER_UPDATE {
+            return Err(format!(
+                "At most {MAX_REPORTS_PER_UPDATE} run reports can be submitted at once"
+            ));
         }
         for report in &self.run_reports {
-            check_text("Run report", &report.text, 500)?;
+            check_text("Run report", &report.text, MAX_TEXT_BYTES)?;
             if has_control(&report.text) {
                 return Err("Run report must not contain control characters".into());
             }
         }
         for summary in self.summaries.values().flatten() {
-            check_text("Stage summary", summary, 2000)?;
+            check_text("Stage summary", summary, MAX_NOTE_BYTES)?;
         }
         for session in &self.sessions {
             check_session_id(session)?;
@@ -635,10 +671,10 @@ pub(crate) fn parse_update(
     stage: &str,
     status: &str,
     options: &[&str],
-) -> Result<UpdateRun, Box<dyn std::error::Error>> {
+) -> Result<UpdateRun, String> {
     let mut update = UpdateRun::new(
-        serde_json::from_value(stage.into())?,
-        serde_json::from_value(status.into())?,
+        serde_json::from_value(stage.into()).map_err(|e| e.to_string())?,
+        serde_json::from_value(status.into()).map_err(|e| e.to_string())?,
     );
     let mut tickets: Vec<NewTicket> = Vec::new();
     let mut overrides: BTreeMap<Stage, ModelChoice> = BTreeMap::new();
@@ -653,7 +689,7 @@ pub(crate) fn parse_update(
         match *flag {
             "--rework" | "--clear-rework" => {
                 if !update.rework.is_keep() {
-                    return Err(repeated().into());
+                    return Err(repeated());
                 }
                 update.rework = if *flag == "--clear-rework" {
                     FieldUpdate::Clear
@@ -667,7 +703,7 @@ pub(crate) fn parse_update(
             }
             "--mode" | "--clear-mode" => {
                 if !update.mode.is_keep() {
-                    return Err(repeated().into());
+                    return Err(repeated());
                 }
                 update.mode = if *flag == "--clear-mode" {
                     FieldUpdate::Clear
@@ -681,7 +717,7 @@ pub(crate) fn parse_update(
             }
             "--ticket" => {
                 if !update.tickets.is_keep() && tickets.is_empty() {
-                    return Err(repeated().into());
+                    return Err(repeated());
                 }
                 let value = next_value()?;
                 let (reference, title) = value
@@ -699,14 +735,14 @@ pub(crate) fn parse_update(
             }
             "--clear-tickets" => {
                 if !update.tickets.is_keep() || !tickets.is_empty() {
-                    return Err(repeated().into());
+                    return Err(repeated());
                 }
                 update.tickets = FieldUpdate::Clear;
                 continue;
             }
             "--model-routing" => {
                 if !update.model_routing.is_keep() {
-                    return Err(repeated().into());
+                    return Err(repeated());
                 }
                 let value = next_value()?;
                 let (name, choice) = split_pair(flag, value)?;
@@ -716,13 +752,13 @@ pub(crate) fn parse_update(
                 let choice = ModelChoice::parse(choice)
                     .map_err(|problem| format!("Invalid --model-routing for {name}: {problem}"))?;
                 if overrides.insert(stage, choice).is_some() {
-                    return Err(format!("Model for {name} given twice").into());
+                    return Err(format!("Model for {name} given twice"));
                 }
                 continue;
             }
             "--clear-model-routing" => {
                 if !update.model_routing.is_keep() || !overrides.is_empty() {
-                    return Err(repeated().into());
+                    return Err(repeated());
                 }
                 update.model_routing = FieldUpdate::Clear;
                 continue;
@@ -772,7 +808,7 @@ pub(crate) fn parse_update(
                     .insert(reference.to_string(), status)
                     .is_some()
                 {
-                    return Err(format!("Ticket status for {reference} given twice").into());
+                    return Err(format!("Ticket status for {reference} given twice"));
                 }
                 continue;
             }
@@ -788,7 +824,7 @@ pub(crate) fn parse_update(
                     format!("Unknown stage {name:?} for {flag}; use define, build, check or finish")
                 })?;
                 if update.summaries.insert(stage, text).is_some() {
-                    return Err(format!("Summary for {name} given twice").into());
+                    return Err(format!("Summary for {name} given twice"));
                 }
                 continue;
             }
@@ -803,10 +839,10 @@ pub(crate) fn parse_update(
             "--base-commit" | "--clear-base-commit" => &mut update.base_commit,
             "--spec" | "--clear-spec" => &mut update.spec,
             "--pr" | "--clear-pr" => &mut update.pr,
-            _ => return Err(format!("Unknown run update option: {flag}\n{UPDATE_HELP}").into()),
+            _ => return Err(format!("Unknown run update option: {flag}\n{UPDATE_HELP}")),
         };
         if !field.is_keep() {
-            return Err(repeated().into());
+            return Err(repeated());
         }
         *field = if flag.starts_with("--clear-") {
             FieldUpdate::Clear
@@ -1023,8 +1059,10 @@ impl RunStore {
         {
             return Err(io_invalid("Only one ticket can be in progress at a time"));
         }
-        if next.ticket_reports.len() + update.ticket_reports.len() > 1000 {
-            return Err(io_invalid("A run can hold at most 1000 ticket reports"));
+        if next.ticket_reports.len() + update.ticket_reports.len() > MAX_REPORTS_PER_RUN {
+            return Err(io_invalid(format!(
+                "A run can hold at most {MAX_REPORTS_PER_RUN} ticket reports"
+            )));
         }
         for report in update.ticket_reports {
             if !next
@@ -1045,8 +1083,10 @@ impl RunStore {
                 at: updated_at,
             });
         }
-        if next.run_reports.len() + update.run_reports.len() > 1000 {
-            return Err(io_invalid("A run can hold at most 1000 run reports"));
+        if next.run_reports.len() + update.run_reports.len() > MAX_REPORTS_PER_RUN {
+            return Err(io_invalid(format!(
+                "A run can hold at most {MAX_REPORTS_PER_RUN} run reports"
+            )));
         }
         for report in update.run_reports {
             next.run_reports.push(RunReport {
@@ -1436,18 +1476,22 @@ mod tests {
         apply("build", "done", &[]);
         apply("finish", "done", &FINISH_SUMMARY);
         apply("finish", "done", &FINISH_SUMMARY);
-        assert!(store
-            .update("999999", UpdateRun::new(Stage::Build, RunStatus::Running))
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .update("999999", UpdateRun::new(Stage::Build, RunStatus::Running))
+                .unwrap()
+                .is_none()
+        );
         let before = std::fs::read(&path).unwrap();
         let mut invalid = UpdateRun::new(Stage::Check, RunStatus::Running);
         invalid.branch = FieldUpdate::Set("invalid branch".into());
         assert!(store.update(&run.id, invalid).is_err());
         std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
-        assert!(store
-            .update(&run.id, UpdateRun::new(Stage::Check, RunStatus::Running))
-            .is_err());
+        assert!(
+            store
+                .update(&run.id, UpdateRun::new(Stage::Check, RunStatus::Running))
+                .is_err()
+        );
         assert_eq!(std::fs::read(&path).unwrap(), before);
         assert_eq!(serde_json::to_vec(&store.list().unwrap()).unwrap(), before);
     }
@@ -1553,9 +1597,11 @@ mod tests {
         }
         let persisted = load_runs(&dir.0.path().join("runs.json")).unwrap();
         assert_eq!(persisted.len(), 2);
-        assert!(persisted
-            .iter()
-            .all(|run| matches!(run.status, RunStatus::Done)));
+        assert!(
+            persisted
+                .iter()
+                .all(|run| matches!(run.status, RunStatus::Done))
+        );
         assert!(matches!(
             persisted
                 .iter()
@@ -1841,14 +1887,16 @@ mod tests {
         for stage in ["define", "build", "check", "finish"] {
             assert!(error.contains(stage), "{error}");
         }
-        assert!(store
-            .get(&run.id)
-            .unwrap()
-            .unwrap()
-            .model_routing
-            .unwrap()
-            .overrides
-            .is_empty());
+        assert!(
+            store
+                .get(&run.id)
+                .unwrap()
+                .unwrap()
+                .model_routing
+                .unwrap()
+                .overrides
+                .is_empty()
+        );
         // A run that has no selection has nothing to override.
         let plain = new_run(&store, "plain");
         let error = store
@@ -2309,10 +2357,12 @@ mod tests {
             .iter()
             .flat_map(|t| ["--ticket", t.as_str()])
             .collect();
-        assert!(parse_update("build", "running", &options)
-            .unwrap_err()
-            .to_string()
-            .contains("At most 100"));
+        assert!(
+            parse_update("build", "running", &options)
+                .unwrap_err()
+                .to_string()
+                .contains("At most 100")
+        );
     }
 
     #[test]
@@ -2619,10 +2669,12 @@ mod tests {
         assert_eq!(checking.timeline[4].ticket, None, "only Build has a ticket");
         let rework = after(&["--rework", "1"], "build");
         assert_eq!(rework.timeline.last().unwrap().rework, Some(1));
-        assert!(rework
-            .timeline
-            .windows(2)
-            .all(|pair| pair[0].at <= pair[1].at));
+        assert!(
+            rework
+                .timeline
+                .windows(2)
+                .all(|pair| pair[0].at <= pair[1].at)
+        );
     }
 
     #[test]
@@ -2778,30 +2830,36 @@ mod tests {
         )
         .unwrap();
         assert!(store.update(&created.id, update).is_err());
-        assert!(store
-            .get(&created.id)
-            .unwrap()
-            .unwrap()
-            .ticket_reports
-            .is_empty());
+        assert!(
+            store
+                .get(&created.id)
+                .unwrap()
+                .unwrap()
+                .ticket_reports
+                .is_empty()
+        );
     }
 
     #[test]
     fn ticket_report_size_limits_are_enforced() {
         let valid = "x".repeat(500);
         let too_long = "x".repeat(501);
-        assert!(parse_update(
-            "build",
-            "running",
-            &["--ticket-report", "t1", "activity", &valid]
-        )
-        .is_ok());
-        assert!(parse_update(
-            "build",
-            "running",
-            &["--ticket-report", "t1", "activity", &too_long]
-        )
-        .is_err());
+        assert!(
+            parse_update(
+                "build",
+                "running",
+                &["--ticket-report", "t1", "activity", &valid]
+            )
+            .is_ok()
+        );
+        assert!(
+            parse_update(
+                "build",
+                "running",
+                &["--ticket-report", "t1", "activity", &too_long]
+            )
+            .is_err()
+        );
         let mut args = Vec::new();
         for _ in 0..100 {
             args.extend(["--ticket-report", "t1", "skill", "factory-tdd"]);
@@ -2983,9 +3041,11 @@ mod tests {
             .set_usage(&run.id, Usage::not_tracked("first", 1))
             .unwrap();
         fs::create_dir(path.with_extension("json.tmp")).unwrap();
-        assert!(store
-            .set_usage(&run.id, Usage::not_tracked("second", 2))
-            .is_err());
+        assert!(
+            store
+                .set_usage(&run.id, Usage::not_tracked("second", 2))
+                .is_err()
+        );
         assert_eq!(
             store
                 .get(&run.id)

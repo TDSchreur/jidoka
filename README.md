@@ -487,7 +487,7 @@ Doctor writes a starter model-routing policy only when you ask. The installer an
 
 Run `/factory-setup` once in each repository before the first workflow run. It records the repository's issue tracker (GitHub, Azure Boards, or local Markdown files), triage labels and domain-doc layout in `docs/agents/` and adds an `## Agent skills` section to `AGENTS.md` or `CLAUDE.md`. Run it in your normal checkout; there is no need to commit it or push it to a protected branch first. Each workflow run starts in a fresh worktree and carries the uncommitted setup output over from the checkout it was started in, so the output lands in that run's pull request. `/factory-full` stops at the start of Define when `docs/agents/issue-tracker.md` exists neither in the worktree nor in the original checkout. `/factory-balanced` and `/factory-fast` need it only when a run reads or publishes a spec or tickets in the tracker; a clear, bounded request planned in the conversation runs without it. A run whose plan exists only in the conversation saves its plan and acceptance criteria in the file `factory run begin` and `factory run inspect` show as the plan path (in the factory data folder, so it outlives the worktree) and records it with `--spec`, so another session can continue from `factory run inspect` without the original chat.
 
-The [Rust skill](skills/rust/SKILL.md) and [project instructions](AGENTS.md) guide Rust development in this repository.
+The [Rust skill](.agents/skills/rust/SKILL.md) and [project instructions](AGENTS.md) guide Rust development in this repository.
 
 ## Development
 

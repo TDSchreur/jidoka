@@ -4,10 +4,10 @@ use crate::{
     codex_requests::read_codex_requests,
     copilot_requests::read_copilot_requests,
     inspect::shown,
-    request_logs::{read_requests, Category, Request, RequestRead, SessionRequests},
+    request_logs::{Category, Request, RequestRead, SessionRequests, read_requests},
     run::Run,
     stats::{number, table_with},
-    usage::{mark_at, overlaps, Tokens, FUTURE_SLACK_MS},
+    usage::{FUTURE_SLACK_MS, Tokens, mark_at, overlaps},
     usage_logs::{ReadLimits, Roots},
 };
 use serde::Serialize;
@@ -301,11 +301,7 @@ pub(crate) fn cells(label: &str, counts: &Counts, total: u64) -> Vec<String> {
 }
 
 fn plural(count: u64) -> &'static str {
-    if count == 1 {
-        "request"
-    } else {
-        "requests"
-    }
+    if count == 1 { "request" } else { "requests" }
 }
 
 const EXPLANATION: &str = "A model request is one response of the model, counted once. Each has one category from its Bash commands. Tokens are separate columns; n/a means the log did not report it, and it is never zero. Tool output is the bytes of text the tool calls returned.";

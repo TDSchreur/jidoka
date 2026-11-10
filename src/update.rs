@@ -63,9 +63,9 @@ pub(crate) fn status(current: &str, release: bool, latest: &str) -> Result<Statu
 pub(crate) fn render(status: &Status) -> String {
     match status {
         Status::UpToDate => "factory is up to date.".to_string(),
-        Status::Available { current, latest } => format!(
-            "Update available: {current} -> {latest}. Run 'factory update' to install it."
-        ),
+        Status::Available { current, latest } => {
+            format!("Update available: {current} -> {latest}. Run 'factory update' to install it.")
+        }
         Status::Unknown { latest } => format!(
             "This is a development build, so it cannot be compared. The latest release is {latest}; 'factory update' installs it."
         ),
@@ -162,9 +162,11 @@ fn replace_executable(current: &Path, new: &Path) -> io::Result<()> {
 #[cfg(windows)]
 fn replace_executable(current: &Path, new: &Path) -> io::Result<()> {
     let old = current.with_extension("old");
+    // A stale copy from an earlier update may not exist; the rename below reports real failures.
     let _ = fs::remove_file(&old);
     fs::rename(current, &old)?;
     fs::rename(new, current).inspect_err(|_| {
+        // Best-effort rollback; the rename error is the one returned.
         let _ = fs::rename(&old, current);
     })
 }
@@ -249,6 +251,7 @@ pub(crate) fn update(
         replace_executable(&exe, &staged)
             .map_err(|error| format!("Cannot replace {}: {error}", exe.display()))
     })();
+    // Best-effort cleanup of temporary files; the update result is reported below.
     let _ = fs::remove_file(&staged);
     let _ = fs::remove_file(&checksum);
     result?;
@@ -256,7 +259,9 @@ pub(crate) fn update(
     if agents.is_empty() {
         install::ensure_default_policy(|name| env::var_os(name))
             .map_err(|error| error.to_string())?;
-        println!("No installed skills found. Run 'factory install --agent <codex|claude|copilot>' to install them.");
+        println!(
+            "No installed skills found. Run 'factory install --agent <codex|claude|copilot>' to install them."
+        );
     } else {
         // The new binary carries the new skills, so it installs them.
         let forwarded = if config_dirs.is_empty() {
@@ -329,10 +334,12 @@ mod tests {
         };
         assert!(render(&available).contains("0.5.0 -> 0.6.0"));
         assert!(render(&Status::UpToDate).contains("up to date"));
-        assert!(render(&Status::Unknown {
-            latest: "0.6.0".into()
-        })
-        .contains("0.6.0"));
+        assert!(
+            render(&Status::Unknown {
+                latest: "0.6.0".into()
+            })
+            .contains("0.6.0")
+        );
     }
 
     #[test]

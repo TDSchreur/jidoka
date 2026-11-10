@@ -1,7 +1,7 @@
 use crate::{
     routing::ModelRouting,
-    run::{parse_update, NewRun, Run},
-    server::{Info, CLI_TOKEN_HEADER},
+    run::{NewRun, Run, parse_update},
+    server::{CLI_TOKEN_HEADER, DashboardIdentity},
 };
 use std::{
     io::{self, Read, Write},
@@ -70,7 +70,7 @@ pub(crate) enum Probe {
     /// Nothing is listening.
     Absent,
     /// A Factory dashboard.
-    Running(Info),
+    Running(DashboardIdentity),
     /// Something else is using the port.
     Foreign,
 }
@@ -78,15 +78,20 @@ pub(crate) enum Probe {
 /// The most a probe reads: far more than an info document, so a chatty listener cannot fill memory.
 const PROBE_LIMIT: u64 = 4096;
 
+/// How long a probe waits to connect: a local dashboard answers at once, so a slower listener is not ours.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long one API call waits on a read or write: the dashboard answers locally, so this only catches a hung server.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Asks the server at `server` (`host:port`) who it is, through `/api/info`, not the port alone.
 /// Anything that does not answer as a Factory dashboard, including a listener that is slow or odd, is `Foreign`.
 pub(crate) fn probe_dashboard(server: &str) -> io::Result<Probe> {
-    let timeout = Duration::from_secs(2);
     let address = server
         .to_socket_addrs()?
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid server address"))?;
-    let mut stream = match TcpStream::connect_timeout(&address, timeout) {
+    let mut stream = match TcpStream::connect_timeout(&address, PROBE_TIMEOUT) {
         Ok(stream) => stream,
         // Windows reports a closed port as a timeout, not a refusal. Nobody accepted, so nothing runs here;
         // binding the port later reports a real conflict.
@@ -96,12 +101,12 @@ pub(crate) fn probe_dashboard(server: &str) -> io::Result<Probe> {
                 io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut
             ) =>
         {
-            return Ok(Probe::Absent)
+            return Ok(Probe::Absent);
         }
         Err(error) => return Err(error),
     };
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
+    stream.set_read_timeout(Some(PROBE_TIMEOUT))?;
+    stream.set_write_timeout(Some(PROBE_TIMEOUT))?;
     let sent = write!(
         stream,
         "GET /api/info HTTP/1.1\r\nHost: {server}\r\nConnection: close\r\n\r\n"
@@ -115,7 +120,7 @@ pub(crate) fn probe_dashboard(server: &str) -> io::Result<Probe> {
     Ok(parse_info(&response).map_or(Probe::Foreign, Probe::Running))
 }
 
-fn parse_info(response: &[u8]) -> Option<Info> {
+fn parse_info(response: &[u8]) -> Option<DashboardIdentity> {
     let end = response.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
     if !response.starts_with(b"HTTP/1.1 200 ") {
         return None;
@@ -166,11 +171,15 @@ fn api_request(
     let mut stream = TcpStream::connect(server).map_err(|e| {
         io::Error::new(e.kind(), format!("cannot connect to factory server at {server}; start it with 'factory dashboard': {e}"))
     })?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+    stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
     match post {
         Some((cli_token, body)) => {
-            write!(stream, "POST {route} HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\n{CLI_TOKEN_HEADER}: {cli_token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
+            write!(
+                stream,
+                "POST {route} HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\n{CLI_TOKEN_HEADER}: {cli_token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )?;
             stream.write_all(body)?;
         }
         None => write!(
@@ -743,11 +752,12 @@ mod tests {
         )
         .unwrap();
         let run = fetch_run(&server.address, &id).unwrap();
-        assert!(run
-            .model_routing
-            .unwrap()
-            .overrides
-            .contains_key(&Stage::Check));
+        assert!(
+            run.model_routing
+                .unwrap()
+                .overrides
+                .contains_key(&Stage::Check)
+        );
         // A run started now reads the new file, and a Claude run gets the Claude entry, never Codex's.
         let codex = crate::routing::load(&policy, Some(Host::Codex))
             .unwrap()

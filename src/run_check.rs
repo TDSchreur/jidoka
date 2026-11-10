@@ -199,9 +199,14 @@ fn display(path: &Path) -> String {
     shown(&path.display().to_string())
 }
 
+/// The lengths of a commit id that `is_commit_id` accepts when checking a run.
+/// Git abbreviates to 4 digits at least, and SHA-256 ids have 64. Looser than `run`'s `BASE_COMMIT_LENGTH`, which
+/// bounds what an update may set.
+const ACCEPTED_COMMIT_ID_LENGTH: std::ops::RangeInclusive<usize> = 4..=64;
+
 /// A full or abbreviated commit id: 4 to 64 hexadecimal digits.
 fn is_commit_id(text: &str) -> bool {
-    (4..=64).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_hexdigit())
+    ACCEPTED_COMMIT_ID_LENGTH.contains(&text.len()) && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// The common git directory of the repository that `dir` belongs to.
@@ -256,10 +261,14 @@ enum Workdir<'a> {
 
 impl Workdir<'_> {
     /// The check for a recorded field that cannot be compared here, or `None` when it can.
-    fn skipped(&self, check: CheckName, recorded: Option<&String>) -> Option<Check> {
+    fn skipped<'a>(
+        &'a self,
+        check: CheckName,
+        recorded: Option<&'a String>,
+    ) -> Result<(&'a Path, &'a String), Check> {
         let (state, found) = match (recorded, self) {
             (None, _) => (State::Unknown, "never recorded"),
-            (Some(_), Workdir::Usable(_)) => return None,
+            (Some(value), Workdir::Usable(dir)) => return Ok((dir, value)),
             (Some(_), Workdir::NotRecorded) => {
                 (State::NotChecked, "the worktree was never recorded")
             }
@@ -267,7 +276,7 @@ impl Workdir<'_> {
                 (State::NotChecked, "the recorded worktree is not available")
             }
         };
-        Some(entry(check, state, recorded, found.into()))
+        Err(entry(check, state, recorded, found.into()))
     }
 }
 
@@ -356,7 +365,7 @@ fn check_worktree(
             return (
                 entry(name, State::Unknown, None, "never recorded".into()),
                 false,
-            )
+            );
         }
         Worktree::Missing => return differs("the directory does not exist".into()),
         Worktree::NotGit(error) => return differs(format!("not a git worktree: {error}")),
@@ -384,11 +393,9 @@ fn check_worktree(
 fn check_branch(git: &dyn Git, run: &Recorded, workdir: &Workdir) -> Check {
     let name = CheckName::Branch;
     let recorded = run.branch.as_ref();
-    if let Some(skipped) = workdir.skipped(name, recorded) {
-        return skipped;
-    }
-    let (Workdir::Usable(dir), Some(branch)) = (workdir, recorded) else {
-        unreachable!("skipped() covers every other case");
+    let (dir, branch) = match workdir.skipped(name, recorded) {
+        Ok(usable) => usable,
+        Err(skipped) => return skipped,
     };
     let (state, found) = match read(git, dir, &["branch", "--show-current"]) {
         Err(error) => (
@@ -409,11 +416,9 @@ fn check_branch(git: &dyn Git, run: &Recorded, workdir: &Workdir) -> Check {
 fn check_base_commit(git: &dyn Git, run: &Recorded, workdir: &Workdir) -> Check {
     let name = CheckName::BaseCommit;
     let recorded = run.base_commit.as_ref();
-    if let Some(skipped) = workdir.skipped(name, recorded) {
-        return skipped;
-    }
-    let (Workdir::Usable(dir), Some(base)) = (workdir, recorded) else {
-        unreachable!("skipped() covers every other case");
+    let (dir, base) = match workdir.skipped(name, recorded) {
+        Ok(usable) => usable,
+        Err(skipped) => return skipped,
     };
     if !is_commit_id(base) {
         let found = "not a commit id (4 to 64 hexadecimal digits)".into();

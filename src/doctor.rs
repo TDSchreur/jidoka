@@ -6,7 +6,7 @@
 //! only when `--create-model-routing` asks for it.
 
 use crate::install::{bundled_skill_files, claude_config_dirs, skills_root};
-use crate::routing::{install_starter, policy_path_in, RoutingAgent, Starter};
+use crate::routing::{RoutingAgent, Starter, install_starter, policy_path_in};
 use serde::Serialize;
 use std::{
     ffi::OsString,
@@ -21,6 +21,9 @@ mod routing;
 pub(crate) const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
 /// Project files are not trusted: anything larger is not read.
 const MAX_DOC_BYTES: u64 = 1 << 20;
+/// How much of an agent's `--version` output doctor shows: a version line is short, so this only guards against
+/// a program that prints something huge.
+const VERSION_OUTPUT_CHARS: usize = 200;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -250,7 +253,7 @@ fn git_checks(project: &Path) -> Vec<Check> {
                 "git",
                 "git is not available",
                 "Install Git and make sure `git` is on PATH.",
-            )]
+            )];
         }
     }
     if git_output(project, &["rev-parse", "--is-inside-work-tree"]).as_deref() != Some("true") {
@@ -346,7 +349,7 @@ fn setup_docs_check(root: &Path) -> Check {
                     "setup-docs",
                     format!("cannot read {}: {error}", file.display()),
                     FIX,
-                )
+                );
             }
         },
     }
@@ -428,7 +431,7 @@ fn verification_check(root: &Path, path: &OsString) -> Check {
                 "verification",
                 format!("cannot read {}: {error}", file.display()),
                 FIX,
-            )
+            );
         }
     };
     let commands = documented_commands(&text).unwrap_or_default();
@@ -677,7 +680,7 @@ fn agent_version(program: &Path) -> Option<String> {
     output.status.success().then(|| {
         String::from_utf8_lossy(&output.stdout)
             .chars()
-            .take(200)
+            .take(VERSION_OUTPUT_CHARS)
             .collect()
     })
 }
@@ -800,12 +803,12 @@ pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
             "--agent" => match args.next() {
                 Some(name) if AGENTS.contains(name) && agent.is_none() => agent = Some(*name),
                 Some(name) if AGENTS.contains(name) => {
-                    return Err("--agent can be given only once.".into())
+                    return Err("--agent can be given only once.".into());
                 }
                 Some(name) => {
                     return Err(format!(
                         "Unknown agent {name:?}; use codex, claude, or copilot."
-                    ))
+                    ));
                 }
                 None => return Err("--agent needs codex, claude, or copilot.".into()),
             },
@@ -970,11 +973,13 @@ mod tests {
         let report = world.report(None);
         let check = project_check(&report, "windows-lint");
         assert_eq!(check.status, Status::Warning);
-        assert!(check
-            .fix
-            .as_deref()
-            .unwrap()
-            .contains("rustup target add x86_64-pc-windows-gnu"));
+        assert!(
+            check
+                .fix
+                .as_deref()
+                .unwrap()
+                .contains("rustup target add x86_64-pc-windows-gnu")
+        );
         assert!(report.ok, "{}", render(&report));
     }
 
@@ -1001,10 +1006,12 @@ mod tests {
         let mut world = World::ready().with_agent("claude");
         world.rustup_targets = Some(String::new());
         let report = world.report(None);
-        assert!(report
-            .project
-            .iter()
-            .all(|check| check.id != "windows-lint"));
+        assert!(
+            report
+                .project
+                .iter()
+                .all(|check| check.id != "windows-lint")
+        );
     }
 
     #[test]
@@ -1014,9 +1021,11 @@ mod tests {
         assert!(report.project.iter().all(Check::passed));
         assert!(agent(&report, "claude").usable);
         assert!(!agent(&report, "codex").usable);
-        assert!(project_check(&report, "base-branch")
-            .message
-            .contains("develop"));
+        assert!(
+            project_check(&report, "base-branch")
+                .message
+                .contains("develop")
+        );
     }
 
     #[test]
@@ -1070,9 +1079,11 @@ mod tests {
         fs::remove_file(root.join(extra)).unwrap();
         let report = world.report(Some("claude"));
         assert_eq!(agent(&report, "claude").checks[1].status, Status::Missing);
-        assert!(agent(&report, "claude").checks[1]
-            .message
-            .contains(extra.split('/').next().unwrap()));
+        assert!(
+            agent(&report, "claude").checks[1]
+                .message
+                .contains(extra.split('/').next().unwrap())
+        );
 
         let world = World::ready();
         install_skills(&skills_root("codex", world.home.path(), |_| None).unwrap());
@@ -1102,11 +1113,13 @@ mod tests {
             .with_agent("claude")
             .with_agent("codex")
             .with_agent("copilot");
-        assert!(custom
-            .path()
-            .join("skills")
-            .join(bundled_skill_names()[0])
-            .is_dir());
+        assert!(
+            custom
+                .path()
+                .join("skills")
+                .join(bundled_skill_names()[0])
+                .is_dir()
+        );
         assert!(custom.path().join("codex/skills").is_dir());
         assert!(custom.path().join("copilot/skills").is_dir());
         assert!(!world.home.path().join(".claude").exists());
@@ -1139,11 +1152,13 @@ mod tests {
         let report = no_origin.report(None);
         assert!(!report.ok);
         assert_eq!(project_check(&report, "origin").status, Status::Fail);
-        assert!(project_check(&report, "origin")
-            .fix
-            .as_ref()
-            .unwrap()
-            .contains("git remote add origin"));
+        assert!(
+            project_check(&report, "origin")
+                .fix
+                .as_ref()
+                .unwrap()
+                .contains("git remote add origin")
+        );
 
         let no_base = World::ready().with_agent("claude");
         git(
@@ -1156,11 +1171,13 @@ mod tests {
             project_check(&report, "base-branch").status,
             Status::Missing
         );
-        assert!(project_check(&report, "base-branch")
-            .fix
-            .as_ref()
-            .unwrap()
-            .contains("set-head"));
+        assert!(
+            project_check(&report, "base-branch")
+                .fix
+                .as_ref()
+                .unwrap()
+                .contains("set-head")
+        );
     }
 
     #[test]
@@ -1230,9 +1247,11 @@ mod tests {
         let report = world.report(None);
         let origin = &project_check(&report, "origin").message;
         assert_eq!(origin, "origin is https://example.com/me/repo.git");
-        assert!(!serde_json::to_string(&report)
-            .unwrap()
-            .contains("secret-token"));
+        assert!(
+            !serde_json::to_string(&report)
+                .unwrap()
+                .contains("secret-token")
+        );
 
         assert_eq!(
             display_url("git@github.com:me/repo.git"),
@@ -1297,10 +1316,12 @@ mod tests {
             .unwrap();
         assert_eq!(codex["usable"], false);
         assert_eq!(codex["checks"][0]["status"], "missing");
-        assert!(codex["checks"][0]["fix"]
-            .as_str()
-            .unwrap()
-            .contains("codex"));
+        assert!(
+            codex["checks"][0]["fix"]
+                .as_str()
+                .unwrap()
+                .contains("codex")
+        );
     }
 
     #[test]
@@ -1320,11 +1341,13 @@ mod tests {
         assert!(skills[0].message.contains(&work.display().to_string()));
         assert_eq!(skills[1].status, Status::Missing);
         assert!(skills[1].message.contains(&bare.display().to_string()));
-        assert!(skills[1]
-            .fix
-            .as_deref()
-            .unwrap()
-            .contains(&format!("--config-dir {}", bare.display())));
+        assert!(
+            skills[1]
+                .fix
+                .as_deref()
+                .unwrap()
+                .contains(&format!("--config-dir {}", bare.display()))
+        );
         assert!(!claude.usable && !report.ok);
         // The default folder is not looked at once a directory is named.
         assert!(!home.join(".claude").exists());
@@ -1603,27 +1626,33 @@ mod tests {
         let report = world.report(None);
         assert!(report.ok, "{}", render(&report));
         assert_eq!(report.model_routing[0].id, "policy");
-        assert!(report.model_routing[0]
-            .message
-            .contains("configures claude, codex"));
+        assert!(
+            report.model_routing[0]
+                .message
+                .contains("configures claude, codex")
+        );
         assert_eq!(report.model_routing[0].agent, None);
         let claude: Vec<_> = tagged(&report, "claude").iter().map(|c| c.id).collect();
         assert_eq!(claude, ["host", "model", "effort", "overrides"]);
         // Codex has its own checks, which skip what the factory cannot judge.
         let codex = tagged(&report, "codex");
         assert_eq!(codex.len(), 3);
-        assert!(codex
-            .iter()
-            .any(|c| c.id == "model" && c.status == Status::Skipped));
+        assert!(
+            codex
+                .iter()
+                .any(|c| c.id == "model" && c.status == Status::Skipped)
+        );
         let text = render(&report);
         assert!(text.contains("pass     host [claude]:"), "{text}");
         assert!(text.contains("skipped  model [codex]:"), "{text}");
         let json = serde_json::to_value(&report).unwrap();
-        assert!(json["model_routing"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|c| c["agent"] == "codex"));
+        assert!(
+            json["model_routing"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["agent"] == "codex")
+        );
     }
 
     #[test]
@@ -1639,9 +1668,11 @@ mod tests {
         // BOTH_POLICY has no Copilot entry, so Copilot is skipped with the reason.
         let copilot = world.report(Some("copilot"));
         assert!(tagged(&copilot, "claude").is_empty() && tagged(&copilot, "codex").is_empty());
-        assert!(tagged(&copilot, "copilot")
-            .iter()
-            .any(|c| c.status == Status::Skipped && c.message.contains("no entry for copilot")));
+        assert!(
+            tagged(&copilot, "copilot")
+                .iter()
+                .any(|c| c.status == Status::Skipped && c.message.contains("no entry for copilot"))
+        );
     }
 
     #[test]
@@ -1712,9 +1743,11 @@ mod tests {
                 "{ask:?}"
             );
             // Every check but the summary of the file says which agent it is about.
-            assert!(report.model_routing[1..]
-                .iter()
-                .all(|c| c.agent == Some("claude")));
+            assert!(
+                report.model_routing[1..]
+                    .iter()
+                    .all(|c| c.agent == Some("claude"))
+            );
         }
         for other in ["codex", "copilot"] {
             let report = world.report(Some(other));
@@ -1841,9 +1874,11 @@ mod tests {
             .with_policy(CLAUDE_POLICY)
             .report(None);
         assert_eq!(routing_check(&missing, "host").status, Status::Warning);
-        assert!(routing_check(&missing, "host")
-            .message
-            .contains("not on PATH"));
+        assert!(
+            routing_check(&missing, "host")
+                .message
+                .contains("not on PATH")
+        );
 
         // A version that cannot be read is not guessed at.
         let unreadable = World::ready()
@@ -1917,9 +1952,11 @@ mod tests {
 
         let effort = ready().with_var("CLAUDE_CODE_EFFORT_LEVEL", "low");
         let report = effort.report(None);
-        assert!(routing_check(&report, "overrides")
-            .message
-            .contains("CLAUDE_CODE_EFFORT_LEVEL=low (the environment)"));
+        assert!(
+            routing_check(&report, "overrides")
+                .message
+                .contains("CLAUDE_CODE_EFFORT_LEVEL=low (the environment)")
+        );
 
         // Neither variable alone on the model side overrides the Agent tool's own choice.
         assert_eq!(
@@ -1949,9 +1986,11 @@ mod tests {
         )
         .unwrap();
         let report = world.report(None);
-        assert!(routing_check(&report, "overrides")
-            .message
-            .contains("(user settings)"));
+        assert!(
+            routing_check(&report, "overrides")
+                .message
+                .contains("(user settings)")
+        );
 
         let world = ready();
         let project_dir = world.project.path().join(".claude");
@@ -1962,9 +2001,11 @@ mod tests {
         )
         .unwrap();
         let report = world.report(None);
-        assert!(routing_check(&report, "overrides")
-            .message
-            .contains("(local project settings)"));
+        assert!(
+            routing_check(&report, "overrides")
+                .message
+                .contains("(local project settings)")
+        );
     }
 
     #[test]
@@ -1993,10 +2034,12 @@ mod tests {
         assert!(host.message.contains("0.99.1"), "{}", host.message);
         assert_eq!(routing_check(&report, "model").status, Status::Skipped);
         assert_eq!(routing_check(&report, "overrides").status, Status::Skipped);
-        assert!(report
-            .model_routing
-            .iter()
-            .all(|c| c.status != Status::Fail));
+        assert!(
+            report
+                .model_routing
+                .iter()
+                .all(|c| c.status != Status::Fail)
+        );
 
         let missing = World::ready().with_policy(policy).report(None);
         assert_eq!(routing_check(&missing, "host").status, Status::Warning);
@@ -2014,9 +2057,11 @@ mod tests {
         let copilot = tagged(&report, "copilot");
         let ids: Vec<_> = copilot.iter().map(|c| c.id).collect();
         assert_eq!(ids, ["host", "model", "effort", "overrides"]);
-        assert!(copilot
-            .iter()
-            .any(|c| c.id == "model" && c.status == Status::Pass));
+        assert!(
+            copilot
+                .iter()
+                .any(|c| c.id == "model" && c.status == Status::Pass)
+        );
         assert!(copilot.iter().all(|c| !c.blocks()));
         // A missing effort is a warning, never a failure.
         let weak = r#"{"agents":{"copilot":{"stages":{
@@ -2112,11 +2157,13 @@ mod tests {
     fn a_named_pipe_in_the_repository_is_refused_without_waiting() {
         let dir = tempfile::tempdir().unwrap();
         let pipe = dir.path().join("settings.local.json");
-        assert!(Command::new("mkfifo")
-            .arg(&pipe)
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            Command::new("mkfifo")
+                .arg(&pipe)
+                .status()
+                .unwrap()
+                .success()
+        );
         let link = dir.path().join("link.json");
         std::os::unix::fs::symlink(&pipe, &link).unwrap();
         for path in [pipe, link] {
@@ -2323,10 +2370,12 @@ mod tests {
             provider_check(&report, "host").unwrap().status,
             Status::Pass
         );
-        assert!(provider_check(&report, "host")
-            .unwrap()
-            .message
-            .contains("GitHub"));
+        assert!(
+            provider_check(&report, "host")
+                .unwrap()
+                .message
+                .contains("GitHub")
+        );
         assert_eq!(
             provider_check(&report, "gh").unwrap().status,
             Status::Warning
@@ -2384,11 +2433,13 @@ mod tests {
         assert_eq!(provider_check(&report, "az").unwrap().status, Status::Pass);
         let extension = provider_check(&report, "azure-devops-extension").unwrap();
         assert_eq!(extension.status, Status::Warning);
-        assert!(extension
-            .fix
-            .as_deref()
-            .unwrap()
-            .contains("az extension add --name azure-devops"));
+        assert!(
+            extension
+                .fix
+                .as_deref()
+                .unwrap()
+                .contains("az extension add --name azure-devops")
+        );
         // The sign-in needs no extension, so it is still reported.
         assert_eq!(
             provider_check(&report, "sign-in").unwrap().status,
@@ -2443,9 +2494,11 @@ mod tests {
         assert_eq!(sign_in.status, Status::Pass);
         assert_eq!(sign_in.message, "AZURE_DEVOPS_EXT_PAT is set");
         assert!(!render(&report).contains("tok3n-value"));
-        assert!(!serde_json::to_string(&report)
-            .unwrap()
-            .contains("tok3n-value"));
+        assert!(
+            !serde_json::to_string(&report)
+                .unwrap()
+                .contains("tok3n-value")
+        );
     }
 
     #[test]

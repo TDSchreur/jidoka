@@ -2,7 +2,7 @@
 
 use crate::{
     inspect::shown,
-    pr_open::{RunApi, RunInfo},
+    pr_open::{PrRun, RunApi},
     pr_wait::ToolProblem,
     run_begin::{first_line, git, last_line, valid_branch_name},
 };
@@ -125,7 +125,7 @@ fn lines(text: &str) -> Vec<String> {
 /// the change overlaps. It never rebases, amends, fast-forwards, force-pushes, resets or aborts, and never
 /// merges the pull request.
 pub(crate) fn sync(
-    run: &RunInfo,
+    run: &PrRun,
     options: &Options,
     git: &dyn Git,
     api: &dyn RunApi,
@@ -160,14 +160,14 @@ pub(crate) fn sync(
             shown(&branch)
         )));
     }
-    if let Some(recorded) = &run.branch {
-        if *recorded != branch {
-            return Err(problem(format!(
-                "The worktree is on {} but the run records {}. Switch it back, or record the right branch with `factory run update`.",
-                shown(&branch),
-                shown(recorded)
-            )));
-        }
+    if let Some(recorded) = &run.branch
+        && *recorded != branch
+    {
+        return Err(problem(format!(
+            "The worktree is on {} but the run records {}. Switch it back, or record the right branch with `factory run update`.",
+            shown(&branch),
+            shown(recorded)
+        )));
     }
     if git
         .status(dir, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])
@@ -240,18 +240,17 @@ pub(crate) fn sync(
                 ))
             })?;
     }
-    if let Some(sha) = &remote {
-        if git
+    if let Some(sha) = &remote
+        && git
             .status(dir, &["merge-base", "--is-ancestor", sha, "HEAD"])
             .map_err(problem)?
             != 0
-        {
-            return Err(problem(format!(
-                "origin's {} has commits you do not have (someone pushed to it). Merge origin/{} into the branch, rerun the verification, then try again.",
-                shown(&branch),
-                shown(&branch)
-            )));
-        }
+    {
+        return Err(problem(format!(
+            "origin's {} has commits you do not have (someone pushed to it). Merge origin/{} into the branch, rerun the verification, then try again.",
+            shown(&branch),
+            shown(&branch)
+        )));
     }
     // Commits of the branch that neither the remote branch nor the base has: work that is not pushed.
     let count_unpushed = || -> Result<u64, ToolProblem> {
@@ -324,7 +323,10 @@ pub(crate) fn sync(
             // what the remote has, and the base touched none of the change's files: the cases that never
             // needed verification.
             if let Some(sha) = &remote {
-                let parents = read(&["rev-list", "--parents", "-n", "1", "HEAD"], "Reading HEAD")?;
+                let parents = read(
+                    &["rev-list", "--parents", "-n", "1", "HEAD"],
+                    "Reading HEAD",
+                )?;
                 let parents: Vec<&str> = parents.split_whitespace().collect();
                 if parents.len() == 3
                     && parents[1] == sha
@@ -345,27 +347,44 @@ pub(crate) fn sync(
                         .map_err(problem)?
                     {
                         0 => {
-                            let tree = read(&["merge-tree", "--write-tree", ours, theirs], "Merging in memory")?;
-                            first_line(&tree) == read(&["rev-parse", "HEAD^{tree}"], "Reading HEAD")?
+                            let tree = read(
+                                &["merge-tree", "--write-tree", ours, theirs],
+                                "Merging in memory",
+                            )?;
+                            first_line(&tree)
+                                == read(&["rev-parse", "HEAD^{tree}"], "Reading HEAD")?
                         }
                         1 => false,
                         _ => {
                             return Err(problem(format!(
                                 "HEAD is a merge of {} that is not pushed, and this git cannot check whether it is the plain merge (`git merge-tree --write-tree` needs git 2.38 or later). Verify it and push it by hand, or update git.",
                                 shown(&base)
-                            )))
+                            )));
                         }
                     };
                     if untouched && automatic {
                         push().map_err(|detail| {
-                            problem(format!("Pushing the merge of {} failed: {detail}", shown(&base)))
+                            problem(format!(
+                                "Pushing the merge of {} failed: {detail}",
+                                shown(&base)
+                            ))
                         })?;
                         record(run, api, &format!("Merged {base} into the branch"));
-                        return Ok(synced(Outcome::Pushed, Vec::new(), Some(parents[0].to_string()), 0));
+                        return Ok(synced(
+                            Outcome::Pushed,
+                            Vec::new(),
+                            Some(parents[0].to_string()),
+                            0,
+                        ));
                     }
                 }
             }
-            Ok(synced(Outcome::Current, Vec::new(), None, count_unpushed()?))
+            Ok(synced(
+                Outcome::Current,
+                Vec::new(),
+                None,
+                count_unpushed()?,
+            ))
         }
         1 => {
             let unpushed = count_unpushed()?;
@@ -392,12 +411,20 @@ pub(crate) fn sync(
                 return Ok(synced(Outcome::Conflict, conflicts, None, unpushed));
             }
             let merge_commit = read(&["rev-parse", "HEAD"], "Reading the merge commit")?;
-            let overlap: Vec<String> = own.into_iter().filter(|file| theirs.contains(file)).collect();
+            let overlap: Vec<String> = own
+                .into_iter()
+                .filter(|file| theirs.contains(file))
+                .collect();
             // Only a merge on top of exactly what the remote has, touching nothing of the change, is pushed:
             // commits that are not pushed yet may not be verified.
             if !overlap.is_empty() || unpushed > 0 || remote.is_none() {
                 record(run, api, &format!("Merged {base}: verification needed"));
-                return Ok(synced(Outcome::NeedsVerification, overlap, Some(merge_commit), unpushed));
+                return Ok(synced(
+                    Outcome::NeedsVerification,
+                    overlap,
+                    Some(merge_commit),
+                    unpushed,
+                ));
             }
             push().map_err(|detail| {
                 problem(format!(
@@ -416,7 +443,7 @@ pub(crate) fn sync(
 }
 
 /// Notes the base update on a running run, keeping its stage and status. It is not a Rework or a CI fix.
-fn record(run: &RunInfo, api: &dyn RunApi, activity: &str) {
+fn record(run: &PrRun, api: &dyn RunApi, activity: &str) {
     if run.running() {
         // The outcome stands even if the dashboard cannot be reached.
         let _ = api.update(&run.id, &run.stage, &run.status, &["--activity", activity]);

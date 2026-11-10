@@ -146,14 +146,22 @@ impl Default for Options {
     }
 }
 
+/// Seconds in a minute, the `m` unit of `--timeout`.
+const SECONDS_PER_MINUTE: u64 = 60;
+/// Seconds in an hour, the `h` unit of `--timeout`.
+const SECONDS_PER_HOUR: u64 = 3600;
+
+/// A failing check's name is cut to this many characters so one long matrix name cannot flood the dashboard.
+const MAX_CHECK_NAME_CHARS: usize = 50;
+
 /// `90s`, `30m`, `2h` or a plain number of seconds, from one second to 24 hours.
 fn parse_duration(text: &str) -> Result<Duration, String> {
     let invalid =
         || format!("Invalid --timeout {text:?}: use a number with s, m or h, such as 90s or 30m");
     let (digits, unit) = match text.chars().last() {
         Some('s') => (&text[..text.len() - 1], 1),
-        Some('m') => (&text[..text.len() - 1], 60),
-        Some('h') => (&text[..text.len() - 1], 3600),
+        Some('m') => (&text[..text.len() - 1], SECONDS_PER_MINUTE),
+        Some('h') => (&text[..text.len() - 1], SECONDS_PER_HOUR),
         _ => (text, 1),
     };
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
@@ -400,7 +408,12 @@ fn activity_text(waited: &Waited) -> String {
                 .checks
                 .iter()
                 .filter(|check| check.bucket == "fail")
-                .map(|check| shown(&check.name).chars().take(50).collect())
+                .map(|check| {
+                    shown(&check.name)
+                        .chars()
+                        .take(MAX_CHECK_NAME_CHARS)
+                        .collect()
+                })
                 .collect();
             let more = names.len().saturating_sub(3);
             let listed = names[..names.len() - more].join(", ");
@@ -484,15 +497,16 @@ fn failures(gh: &dyn Gh, checks: &[CheckResult]) -> Vec<Failure> {
     let mut out = Vec::new();
     for check in checks.iter().filter(|check| check.bucket == "fail") {
         let mut text = None;
-        if let Some((id, repository)) = run_of_link(&check.link) {
-            if !fetched.contains(&id) && fetched.len() < MAX_LOGS {
-                fetched.push(id);
-                text = gh
-                    .run(&["run", "view", id, "--repo", &repository, "--log-failed"])
-                    .ok()
-                    .filter(|output| output.code == Some(0))
-                    .and_then(|output| excerpt(&output.stdout));
-            }
+        if let Some((id, repository)) = run_of_link(&check.link)
+            && !fetched.contains(&id)
+            && fetched.len() < MAX_LOGS
+        {
+            fetched.push(id);
+            text = gh
+                .run(&["run", "view", id, "--repo", &repository, "--log-failed"])
+                .ok()
+                .filter(|output| output.code == Some(0))
+                .and_then(|output| excerpt(&output.stdout));
         }
         out.push(Failure {
             name: check.name.clone(),

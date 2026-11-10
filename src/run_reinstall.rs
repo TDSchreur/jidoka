@@ -6,6 +6,7 @@ use crate::{
     pr_state,
     pr_sync::Git,
     pr_wait::{Gh, ToolProblem},
+    run_begin::first_line,
     update,
 };
 use std::{
@@ -146,10 +147,8 @@ pub(crate) fn is_factory(repository: &Path) -> bool {
     for line in manifest.lines().map(str::trim) {
         if line.starts_with('[') {
             in_package = line == "[package]";
-        } else if in_package {
-            if let Some((key, value)) = line.split_once('=') {
-                named |= key.trim() == "name" && value.trim().trim_matches('"') == "factory";
-            }
+        } else if in_package && let Some((key, value)) = line.split_once('=') {
+            named |= key.trim() == "name" && value.trim().trim_matches('"') == "factory";
         }
     }
     named
@@ -218,25 +217,42 @@ pub(crate) fn offer(
         return Ok(());
     }
     // Also after a cleanup that found nothing left to remove, as long as the pull request is merged.
-    if pr_state::read(gh, input.pr).ok() != Some(pr_state::PrState::Merged) {
-        return Ok(());
+    match pr_state::read(gh, input.pr) {
+        Ok(pr_state::PrState::Merged) => {}
+        Ok(_) => return Ok(()),
+        Err(problem) => {
+            io.say(&format!(
+                "The state of the pull request could not be read, so the factory was not reinstalled: {}\n",
+                shown(first_line(&problem.0))
+            ));
+            return Ok(());
+        }
     }
     if input.agents.is_empty() {
         io.say("The factory is not installed for any agent, so there is nothing to reinstall.\n");
         return Ok(());
     }
     let commands = commands(input);
-    let contained = pr_state::merge_commit(gh, input.pr)
-        .ok()
-        .is_some_and(|merge| {
-            git.status(
-                input.repository,
-                &["merge-base", "--is-ancestor", &merge, "HEAD"],
-            ) == Ok(0)
-        });
+    let mut reason = String::new();
+    let contained = match pr_state::merge_commit(gh, input.pr) {
+        Ok(merge) => match git.status(
+            input.repository,
+            &["merge-base", "--is-ancestor", &merge, "HEAD"],
+        ) {
+            Ok(code) => code == 0,
+            Err(error) => {
+                reason = format!(" ({})", shown(first_line(&error)));
+                false
+            }
+        },
+        Err(problem) => {
+            reason = format!(" ({})", shown(first_line(&problem.0)));
+            false
+        }
+    };
     if !contained {
         io.say(&format!(
-            "The merged change is not in the checkout of {} yet, or its merge commit could not be read. Pull the base branch there first, then reinstall the factory:\n  {}\n{}",
+            "The merged change is not in the checkout of {} yet, or its merge commit could not be read{reason}. Pull the base branch there first, then reinstall the factory:\n  {}\n{}",
             shown(&input.repository.display().to_string()),
             if input.windows && windows_unsafe(&input.repository.to_string_lossy()) {
                 "Pull the base branch there by hand (see the path above).".to_string()

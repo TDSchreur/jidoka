@@ -4,16 +4,16 @@ use crate::{
     pr_state,
     pr_wait::{self, RealGh},
     run::{NewRun, Run, RunStore, UpdateRun},
-    usage::{collect_and_store, UsageSettings},
+    usage::{UsageSettings, collect_and_store},
 };
 use rocket::{
+    Build, Rocket, State,
     data::{Limits, ToByteUnit},
     figment::Figment,
     http::{ContentType, Status as HttpStatus},
     request::{FromRequest, Outcome, Request},
     response::content::RawHtml,
     serde::json::Json,
-    Build, Rocket, State,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -22,8 +22,27 @@ use std::{
     sync::Mutex,
 };
 
-pub(crate) const DEFAULT_PORT: u16 = 4311;
-pub(crate) const ADDRESS: &str = "127.0.0.1:4311";
+/// The one place the loopback host is spelled, as a macro so `concat!` can build `ADDRESS` from it.
+macro_rules! loopback_host {
+    () => {
+        "127.0.0.1"
+    };
+}
+/// The one place the default port is spelled, as a macro so `concat!` can build `ADDRESS` from it.
+macro_rules! default_port {
+    () => {
+        4311
+    };
+}
+
+/// The host the dashboard server binds to and the CLI talks to: loopback only, so nothing outside this machine
+/// can reach it.
+const LOOPBACK_HOST: &str = loopback_host!();
+/// The port the dashboard server listens on unless told otherwise; a fixed, uncommon port so the CLI and the
+/// dashboard find each other without configuration.
+pub(crate) const DEFAULT_PORT: u16 = default_port!();
+/// The dashboard server's default address, `LOOPBACK_HOST:DEFAULT_PORT`.
+pub(crate) const ADDRESS: &str = concat!(loopback_host!(), ":", default_port!());
 const DASHBOARD: &str = include_str!("../dashboard/index.html");
 /// The files the dashboard page may load from `/assets/`; any other path is a 404.
 const ASSETS: &[(&str, ContentType, &[u8])] = &[
@@ -88,7 +107,7 @@ const BODY_LIMIT: u64 = 64 * 1024;
 
 fn is_local_authority(authority: &str, port: u16) -> bool {
     authority.rsplit_once(':').is_some_and(|(host, given)| {
-        matches!(host, "localhost" | "127.0.0.1") && given == port.to_string()
+        matches!(host, "localhost" | LOOPBACK_HOST) && given == port.to_string()
     })
 }
 
@@ -97,8 +116,8 @@ fn is_local_authority(authority: &str, port: u16) -> bool {
 struct SessionToken(String);
 
 impl SessionToken {
-    fn new() -> Self {
-        Self(crate::token::random())
+    fn new() -> Result<Self, String> {
+        crate::token::random().map(Self)
     }
 }
 
@@ -176,6 +195,7 @@ fn write_token_file_from(path: &Path, token: &str, first_counter: u32) -> io::Re
             Ok(()) => {
                 let renamed = std::fs::rename(&temp, path);
                 if renamed.is_err() {
+                    // Best-effort cleanup; the rename error is the one returned.
                     let _ = std::fs::remove_file(&temp);
                 }
                 return renamed;
@@ -252,6 +272,7 @@ fn write_new_file_with(
     let written = write(&mut file, content.as_bytes());
     if written.is_err() {
         drop(file);
+        // Best-effort cleanup; the write error is the one returned.
         let _ = std::fs::remove_file(path);
     }
     written
@@ -378,17 +399,17 @@ fn asset(request: Security, path: PathBuf) -> Result<(ContentType, &'static [u8]
 
 /// What a client needs to recognise a running Factory dashboard and compare its build with its own.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub(crate) struct Info {
+pub(crate) struct DashboardIdentity {
     pub(crate) pid: u32,
     pub(crate) version: String,
 }
 
 #[rocket::get("/api/info")]
-fn info(request: Security) -> Result<Json<Info>, HttpStatus> {
+fn info(request: Security) -> Result<Json<DashboardIdentity>, HttpStatus> {
     if !request.local {
         return Err(HttpStatus::BadRequest);
     }
-    Ok(Json(Info {
+    Ok(Json(DashboardIdentity {
         pid: std::process::id(),
         version: current_build(),
     }))
@@ -688,17 +709,25 @@ impl Collector {
                 let (store, id, settings) = (store.clone(), id.clone(), settings.clone());
                 #[cfg(test)]
                 passes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let _ = rocket::tokio::task::spawn_blocking(move || {
-                    if let Err(error) = collect_and_store(&store, &id, &settings) {
-                        eprintln!("Usage was not collected for run {id}: {error}");
+                let joined = rocket::tokio::task::spawn_blocking({
+                    let id = id.clone();
+                    move || {
+                        if let Err(error) = collect_and_store(&store, &id, &settings) {
+                            eprintln!("Usage was not collected for run {id}: {error}");
+                        }
                     }
                 })
                 .await;
-            }
-            if let Ok(mut chains) = chains.lock() {
-                if chains.get(&id) == Some(&generation) {
-                    chains.remove(&id);
+                if let Err(error) = joined {
+                    eprintln!(
+                        "Usage was not collected for run {id}: the collection stopped: {error}"
+                    );
                 }
+            }
+            if let Ok(mut chains) = chains.lock()
+                && chains.get(&id) == Some(&generation)
+            {
+                chains.remove(&id);
             }
         });
         if let Ok(mut pending) = self.pending.lock() {
@@ -723,7 +752,7 @@ impl Collector {
 
 #[cfg(test)]
 pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> {
-    build_rocket_with(path, port, Collector::new(None))
+    build_rocket_with_tokens(path, port, Collector::new(None), new_tokens()?)
 }
 
 /// The runs file the CLI token is kept next to.
@@ -732,13 +761,30 @@ struct TokenFile(PathBuf);
 /// Set at liftoff when the CLI token could not be written; the server shuts down and `serve` reports it.
 struct TokenWriteFailure(std::sync::Mutex<Option<String>>);
 
+#[cfg(test)]
 pub(crate) fn build_rocket_with(
     path: &Path,
     port: u16,
     collector: Collector,
 ) -> io::Result<Rocket<Build>> {
+    build_rocket_with_tokens(path, port, collector, new_tokens()?)
+}
+
+/// The session token and the CLI token, or why the operating system could not provide them.
+fn new_tokens() -> io::Result<(SessionToken, String)> {
+    let session_token = SessionToken::new().map_err(io::Error::other)?;
+    let cli_token = crate::token::random().map_err(io::Error::other)?;
+    Ok((session_token, cli_token))
+}
+
+fn build_rocket_with_tokens(
+    path: &Path,
+    port: u16,
+    collector: Collector,
+    (session_token, cli_token): (SessionToken, String),
+) -> io::Result<Rocket<Build>> {
     let config = Figment::from(rocket::Config::default())
-        .merge(("address", "127.0.0.1"))
+        .merge(("address", LOOPBACK_HOST))
         .merge(("port", port))
         .merge(("limits", Limits::new().limit("json", BODY_LIMIT.bytes())));
     #[cfg(unix)]
@@ -748,8 +794,8 @@ pub(crate) fn build_rocket_with(
     Ok(rocket::custom(config)
         .manage(RunStore::open(path)?)
         .manage(collector)
-        .manage(SessionToken::new())
-        .manage(CliToken(crate::token::random()))
+        .manage(session_token)
+        .manage(CliToken(cli_token))
         .manage(TokenFile(path.to_path_buf()))
         .manage(TokenWriteFailure(std::sync::Mutex::new(None)))
         .attach(rocket::fairing::AdHoc::on_liftoff(
@@ -810,7 +856,8 @@ pub(crate) fn build_rocket_with(
         )))
 }
 
-/// How often the dashboard server looks for pull requests whose state is due to be read again.
+/// How often the dashboard server looks for pull requests whose state is due to be read again. Every 20 seconds
+/// keeps the dashboard fresh while each pass only reads the pull requests that are due, so hosts are not hammered.
 const PR_STATE_PASS: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Reads the state of the Runs' pull requests from their hosts, one pass every `pass`, on a blocking thread so
@@ -823,7 +870,7 @@ fn watch_pr_states(
     rocket::tokio::spawn(async move {
         loop {
             let (store, tool) = (store.clone(), tool.clone());
-            let _ = rocket::tokio::task::spawn_blocking(move || {
+            let joined = rocket::tokio::task::spawn_blocking(move || {
                 let now = match crate::run::updated_now() {
                     Ok(now) => now,
                     Err(error) => return eprintln!("Pull request states were not read: {error}"),
@@ -833,12 +880,16 @@ fn watch_pr_states(
                 }
             })
             .await;
+            if let Err(error) = joined {
+                eprintln!("Pull request states were not read: the read stopped: {error}");
+            }
             rocket::tokio::time::sleep(pass).await;
         }
     })
 }
 
-/// How often the dashboard server looks in the logs of working runs for a usage limit or compaction.
+/// How often the dashboard server looks in the logs of working runs for a usage limit or compaction. A minute is
+/// frequent enough to notice a pause promptly and rare enough that reading the logs stays cheap.
 const PAUSE_PASS: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Collects the runs that are working or paused on their own every `pass`, on a blocking thread, so a
@@ -875,7 +926,9 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
     println!("Dashboard: {url} (press Ctrl+C to stop)");
     runtime.block_on(async {
         let pause_settings = usage.clone();
-        build_rocket_with(path, port, Collector::new(Some(usage)))
+        // Made before the run-storage step so a token failure keeps its own message.
+        let tokens = new_tokens()?;
+        build_rocket_with_tokens(path, port, Collector::new(Some(usage)), tokens)
             .map_err(|error| {
                 io::Error::new(error.kind(), format!("could not open run storage: {error}"))
             })?
@@ -913,7 +966,7 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
 mod tests {
     use super::*;
     use crate::{
-        run::{load_runs, updated_now, RunStatus, Stage},
+        run::{RunStatus, Stage, load_runs, updated_now},
         test_support::TestDir,
     };
     use rocket::{http::Header, local::asynchronous::Client};
@@ -1496,8 +1549,11 @@ mod tests {
             2,
             "one definition, one use"
         );
-        assert!(script
-            .contains("The repository, worktrees, branches and pull requests stay as they are."));
+        assert!(
+            script.contains(
+                "The repository, worktrees, branches and pull requests stay as they are."
+            )
+        );
         // No row on the board has a Delete of its own.
         assert!(!script.contains("now=${now} onOpen=${onOpen} onDelete=${onDelete} />"));
     }
@@ -1563,7 +1619,7 @@ mod tests {
             .dispatch()
             .await;
         assert_eq!(response.status(), HttpStatus::Ok);
-        let info: Info = response.into_json().await.unwrap();
+        let info: DashboardIdentity = response.into_json().await.unwrap();
         assert_eq!(info.pid, std::process::id());
         assert_eq!(info.version, current_build());
         let foreign = api
@@ -1758,11 +1814,13 @@ mod tests {
         let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
         let response = report(&api, &run.id, r#"{"stage":"finish","status":"done"}"#).await;
         assert_eq!(response.status(), HttpStatus::BadRequest);
-        assert!(response
-            .into_string()
-            .await
-            .unwrap()
-            .contains("--summary finish="));
+        assert!(
+            response
+                .into_string()
+                .await
+                .unwrap()
+                .contains("--summary finish=")
+        );
         let stored = fetch(&api, &run.id).await.1.unwrap();
         assert!(stored.finished_at.is_none());
     }
@@ -2061,13 +2119,14 @@ mod tests {
                 .await;
             assert_eq!(response.status(), HttpStatus::BadRequest, "{routing}");
         }
-        assert!(api
-            .rocket()
-            .state::<RunStore>()
-            .unwrap()
-            .list()
-            .unwrap()
-            .is_empty());
+        assert!(
+            api.rocket()
+                .state::<RunStore>()
+                .unwrap()
+                .list()
+                .unwrap()
+                .is_empty()
+        );
         let run = start(
             &api,
             &with(
@@ -2098,13 +2157,14 @@ mod tests {
                 .await;
             assert_eq!(response.status(), HttpStatus::BadRequest, "{body}");
         }
-        assert!(api
-            .rocket()
-            .state::<RunStore>()
-            .unwrap()
-            .list()
-            .unwrap()
-            .is_empty());
+        assert!(
+            api.rocket()
+                .state::<RunStore>()
+                .unwrap()
+                .list()
+                .unwrap()
+                .is_empty()
+        );
         let run = start(
             &api,
             r#"{"title":"t","project":"C:\\work\\repo","repository":"C:\\work\\repo"}"#,
@@ -2118,8 +2178,11 @@ mod tests {
         let script = asset("/assets/app.js").await;
         let css = asset("/assets/style.css").await;
         // The card chip: fresh tokens, marked partial, and none at all when nothing is tracked.
-        assert!(script
-            .contains("const freshTokens = (t) => (t.input == null && t.output == null ? null :"));
+        assert!(
+            script.contains(
+                "const freshTokens = (t) => (t.input == null && t.output == null ? null :"
+            )
+        );
         assert!(script.contains("if (!usage || usage.status === 'not-tracked'"));
         assert!(script.contains("run.usage.status === 'partial' ? ' (partial)' : ''"));
         assert!(script.contains("tokens !== null"));
@@ -2303,11 +2366,6 @@ mod tests {
         assert!(!script.contains("Activity: ${run.activity}"));
         // Stage descriptions live in Help, not on the board.
         assert!(!script.contains("group-description") && !script.contains("compact-description"));
-    }
-
-    #[test]
-    fn the_address_constant_matches_the_default_port() {
-        assert_eq!(ADDRESS, format!("127.0.0.1:{DEFAULT_PORT}"));
     }
 
     #[rocket::async_test]
@@ -3073,8 +3131,8 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn the_detail_shows_the_status_reason_only_while_blocked_and_the_activity_only_while_active(
-    ) {
+    async fn the_detail_shows_the_status_reason_only_while_blocked_and_the_activity_only_while_active()
+     {
         // The workflows clear the reason when work resumes; a Run that is not blocked shows none, and a shipped Run no activity.
         let script = asset("/assets/app.js").await;
         assert!(script.contains(
@@ -3149,10 +3207,14 @@ mod tests {
         // Above the footer, so the Projects menu panel is never covered.
         assert!(sticky.contains("z-index: 3"));
         // Focus rings inside the scrolling lists sit inside their control, where the list cannot clip them.
-        assert!(rule(".andon-run:focus-visible")
-            .contains("outline-offset: calc(-2 * var(--stroke-thick))"));
-        assert!(rule(".line-open:focus-visible::after")
-            .contains("outline-offset: calc(-1 * var(--stroke-thick))"));
+        assert!(
+            rule(".andon-run:focus-visible")
+                .contains("outline-offset: calc(-2 * var(--stroke-thick))")
+        );
+        assert!(
+            rule(".line-open:focus-visible::after")
+                .contains("outline-offset: calc(-1 * var(--stroke-thick))")
+        );
         assert!(rule(".line-row .meta a:focus-visible").contains("outline-offset: 0"));
         // Narrow screens: the toolbar scrolls away, the andon strip and the line stay.
         let narrow = rules
@@ -3239,8 +3301,11 @@ mod tests {
     #[rocket::async_test]
     async fn the_page_has_a_favicon_and_a_decorative_logo_with_a_readable_heading() {
         let page = dashboard_page().await;
-        assert!(page
-            .contains("<link rel=\"icon\" href=\"/assets/favicon.svg\" type=\"image/svg+xml\">"));
+        assert!(
+            page.contains(
+                "<link rel=\"icon\" href=\"/assets/favicon.svg\" type=\"image/svg+xml\">"
+            )
+        );
         // The logo is drawn inline, hidden from assistive technology, and the heading keeps its text.
         let heading = page
             .split("<h1>")
@@ -3923,10 +3988,12 @@ mod tests {
             post_status(&api, "/api/runs", Some(&cli)).await,
             HttpStatus::Created
         );
-        assert!(load_runs(&dir.0.path().join("runs.json"))
-            .unwrap()
-            .iter()
-            .all(|run| run.title == "x"));
+        assert!(
+            load_runs(&dir.0.path().join("runs.json"))
+                .unwrap()
+                .iter()
+                .all(|run| run.title == "x")
+        );
     }
 
     #[rocket::async_test]

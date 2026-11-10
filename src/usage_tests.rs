@@ -88,10 +88,12 @@ fn cloned_store_collections_serialize_while_updates_remain_responsive() {
     second_release_tx.send(()).unwrap();
     second.join().unwrap().unwrap();
     update.join().unwrap();
-    assert!(updated
-        .expect("update should complete while collection is held")
-        .unwrap()
-        .is_some());
+    assert!(
+        updated
+            .expect("update should complete while collection is held")
+            .unwrap()
+            .is_some()
+    );
     assert!(store.delete(&run.id).unwrap());
     collect_and_store(&store, &run.id, &settings).unwrap();
     assert!(store.get(&run.id).unwrap().is_none());
@@ -171,7 +173,10 @@ impl World {
 
 // --- fixture lines ----------------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)] // a fixture line: every field is its own argument
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a fixture line: every field is its own argument"
+)]
 fn claude_line(
     session: &str,
     at: u64,
@@ -234,7 +239,10 @@ fn codex_usage(
     .to_string()
 }
 
-#[allow(clippy::too_many_arguments)] // a fixture line: every field is its own argument
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a fixture line: every field is its own argument"
+)]
 fn copilot_usage(
     at: u64,
     call: &str,
@@ -1016,11 +1024,13 @@ fn missing_unreadable_or_unrecognised_logs_are_not_tracked_with_a_reason_never_z
     let target = full_run(RUN_A);
     let usage = world.collect(&target, std::slice::from_ref(&target));
     assert_eq!(usage.status, UsageStatus::NotTracked);
-    assert!(usage
-        .reason
-        .as_deref()
-        .unwrap()
-        .contains("no Claude Code, Codex or Copilot session logs"));
+    assert!(
+        usage
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("no Claude Code, Codex or Copilot session logs")
+    );
     assert!(usage.rows.is_empty());
 
     // Logs exist but none names the run.
@@ -1039,11 +1049,13 @@ fn missing_unreadable_or_unrecognised_logs_are_not_tracked_with_a_reason_never_z
     );
     let usage = world.collect(&target, std::slice::from_ref(&target));
     assert_eq!(usage.status, UsageStatus::NotTracked);
-    assert!(usage
-        .reason
-        .as_deref()
-        .unwrap()
-        .contains("no session log names this run"));
+    assert!(
+        usage
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("no session log names this run")
+    );
 
     // A session that names the run but is in a format nobody reads.
     world.write(
@@ -1123,11 +1135,13 @@ fn a_run_from_before_usage_tracking_is_not_tracked_and_a_late_timeline_is_partia
     let legacy: Run = serde_json::from_value(json!({"id": RUN_A, "title": "old", "project": "/p", "stage": "build", "status": "running"})).unwrap();
     let usage = world.collect(&legacy, std::slice::from_ref(&legacy));
     assert_eq!(usage.status, UsageStatus::NotTracked);
-    assert!(usage
-        .reason
-        .as_deref()
-        .unwrap()
-        .contains("started before usage tracking"));
+    assert!(
+        usage
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("started before usage tracking")
+    );
 
     // The timeline starts an hour after the run was created (its id is its creation time).
     let late = run(RUN_A, &[(3600, "define", None, None)], None, &[]);
@@ -1355,10 +1369,12 @@ fn a_usage_limit_with_no_later_activity_is_an_unresumed_pause_and_is_not_a_model
     assert!(usage.idle.is_empty());
     // The synthetic limit message is neither a row nor a note about a skipped line.
     assert!(usage.rows.is_empty());
-    assert!(!usage
-        .notes
-        .iter()
-        .any(|note| note.contains("no usable model")));
+    assert!(
+        !usage
+            .notes
+            .iter()
+            .any(|note| note.contains("no usable model"))
+    );
 }
 
 #[test]
@@ -1807,4 +1823,33 @@ mod auto_block {
         collect_active(&done.store, &done.settings, now).unwrap();
         assert!(done.run().usage.is_none());
     }
+}
+
+// Making a file unreadable is a Unix permission trick; it is skipped when the tests run as root.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_recorded_log_says_why() {
+    let world = World::new();
+    world.write("claude/projects/slug/sess.jsonl", &[mention(RUN_A)]);
+    let log = world.dir.path().join("claude/projects/slug/sess.jsonl");
+    if !crate::test_support::make_unreadable(&log) {
+        return;
+    }
+    let ids = HashSet::from([RUN_A]);
+    let recorded = HashSet::from(["sess"]);
+    let read = read_sessions(
+        &world.roots(),
+        &ids,
+        &recorded,
+        T0,
+        Instant::now() + Duration::from_secs(30),
+        ReadLimits::default(),
+    );
+    assert!(
+        read.notes
+            .iter()
+            .any(|n| n.text.starts_with("a session log could not be read: ")),
+        "{:?}",
+        read.notes
+    );
 }

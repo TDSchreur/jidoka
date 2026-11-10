@@ -3,9 +3,9 @@
 //! Everything else is a warning or skipped: model routing is optional, and without it a stage uses the
 //! session's model. Nothing here changes a file or calls a model; at most it asks an agent for its `--version`.
 
-use super::{find_program, read_doc, Check, Machine};
+use super::{Check, Machine, find_program, read_doc};
 use crate::routing::{
-    policy_path_in, read, Coverage, Host, ModelRouting, Policy, RoutingAgent, COPILOT_EFFORTS,
+    COPILOT_EFFORTS, Coverage, Host, ModelRouting, Policy, RoutingAgent, policy_path_in, read,
 };
 use std::path::Path;
 
@@ -29,7 +29,7 @@ pub(super) fn checks(root: &Path, machine: &Machine, agent: Option<&str>) -> Vec
                 "policy",
                 problem,
                 "Correct the file, or set \"enabled\": false to switch model routing off.",
-            )]
+            )];
         }
     };
     let shown = path.display();
@@ -89,7 +89,9 @@ fn host_check(agent: &'static str, machine: &Machine, minimum: Option<(u32, u32,
     let Some(program) = find_program(agent, &machine.path) else {
         return Check::warning(
             "host",
-            format!("`{agent}` is not on PATH, so model routing cannot be applied and every stage uses the session's model"),
+            format!(
+                "`{agent}` is not on PATH, so model routing cannot be applied and every stage uses the session's model"
+            ),
             format!("Install the {agent} command line tool and make sure `{agent}` is on PATH."),
         );
     };
@@ -97,7 +99,9 @@ fn host_check(agent: &'static str, machine: &Machine, minimum: Option<(u32, u32,
     match (version, minimum) {
         (None, _) => Check::skipped(
             "host",
-            format!("could not read the version of `{agent}`, so support for model routing was not checked"),
+            format!(
+                "could not read the version of `{agent}`, so support for model routing was not checked"
+            ),
         ),
         (Some(found), Some(minimum)) if found < minimum => Check::warning(
             "host",
@@ -217,7 +221,9 @@ fn effort_check(selection: &ModelRouting, host: &str, accepted: &[&str]) -> Chec
     if problems.is_empty() {
         return Check::pass(
             "effort",
-            format!("every routed stage has an effort {host} accepts; which levels a model offers is not checked"),
+            format!(
+                "every routed stage has an effort {host} accepts; which levels a model offers is not checked"
+            ),
         );
     }
     Check::warning(
@@ -289,12 +295,11 @@ fn claude_overrides_check(root: &Path, machine: &Machine) -> Check {
     if let (Some((_, _, force)), Some((source, _, model))) = (
         value_of("CLAUDE_CODE_SUBAGENT_MODEL_FORCE"),
         value_of("CLAUDE_CODE_SUBAGENT_MODEL"),
-    ) {
-        if force == "1" {
-            overrides.push(format!(
+    ) && force == "1"
+    {
+        overrides.push(format!(
                 "CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1 with CLAUDE_CODE_SUBAGENT_MODEL={model} ({source}) puts every subagent on {model}, replacing the policy's models"
             ));
-        }
     }
     if let Some((source, _, level)) = value_of("CLAUDE_CODE_EFFORT_LEVEL") {
         overrides.push(format!(

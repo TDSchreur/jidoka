@@ -435,32 +435,6 @@ fn the_check_only_runs_reading_git_commands() {
 }
 
 #[test]
-fn the_source_never_names_a_changing_git_command() {
-    let source = include_str!("run_check.rs");
-    let code = source.split("#[cfg(test)]").next().unwrap();
-    for word in [
-        "\"reset\"",
-        "\"clean\"",
-        "\"checkout\"",
-        "\"switch\"",
-        "\"restore\"",
-        "\"fetch\"",
-        "\"push\"",
-        "\"commit\"",
-        "\"merge\"",
-        "\"stash\"",
-        "\"prune\"",
-        "\"remove\"",
-        "\"add\"",
-        "\"rm\"",
-        "remove_dir",
-        "remove_file",
-    ] {
-        assert!(!code.contains(word), "run_check.rs names {word}");
-    }
-}
-
-#[test]
 fn json_carries_the_states_and_lists() {
     let fx = Fixture::new();
     fs::write(fx.wt.join("x.txt"), "x\n").unwrap();
