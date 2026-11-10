@@ -5,7 +5,7 @@ use crate::pr_wait::{
     Gh, ToolProblem, azure_pr_head, azure_pr_merge_commit, azure_pr_status, is_azure_pr_url,
     problem, run_gh,
 };
-use crate::run::RunStore;
+use crate::run::{FieldUpdate, Run, RunStatus, RunStore, Stage, UpdateRun};
 use serde::{Deserialize, Serialize};
 use std::io;
 
@@ -213,8 +213,93 @@ fn due(status: Option<&PrStatus>, url: &str, now: u64) -> bool {
     }
 }
 
-/// One pass: reads the state of every Run's pull request that is due and stores it. A problem is stored as
-/// unknown with its reason and tried again on a later pass. Returns how many pull requests were read.
+/// The reason a run is blocked when its pull request was closed without merging.
+pub(crate) const CLOSED_REASON: &str = "PR closed without merge";
+
+/// What a read state means for a run: a merged pull request finishes a run that is not done, and a closed one
+/// blocks a running run. Both clear the activity, which was about waiting for a pull request that is gone.
+/// Anything else, including an unreachable host, leaves the run as it is.
+pub(crate) fn follow_up(run: &Run, state: PrState) -> Option<UpdateRun> {
+    let mut update = match (state, run.status) {
+        (PrState::Merged, RunStatus::Running | RunStatus::Blocked) => {
+            let mut update = UpdateRun::new(Stage::Finish, RunStatus::Done);
+            update.blocking_reason = FieldUpdate::Clear;
+            // Finish cannot be done without a summary; keep the agent's when it wrote one.
+            if !run.summaries.contains_key(&Stage::Finish) {
+                update
+                    .summaries
+                    .insert(Stage::Finish, Some("Pull request merged".into()));
+            }
+            update
+        }
+        (PrState::Closed, RunStatus::Running) => {
+            let mut update = UpdateRun::new(Stage::Finish, RunStatus::Blocked);
+            update.blocking_reason = FieldUpdate::Set(CLOSED_REASON.into());
+            update
+        }
+        _ => return None,
+    };
+    update.activity = FieldUpdate::Clear;
+    Some(update)
+}
+
+/// Says what a read state is and, when `changed`, what became of the run.
+pub(crate) fn describe(state: PrState, changed: bool) -> String {
+    let mut text = format!("Pull request is {}.\n", state.label());
+    if changed {
+        text.push_str(match state {
+            PrState::Merged => {
+                "The run is finished. Run `factory run cleanup <id>` to remove its worktree.\n"
+            }
+            PrState::Closed => "The run is blocked: the pull request was closed without merging.\n",
+            PrState::Open | PrState::Draft | PrState::Unknown => "",
+        });
+    }
+    text
+}
+
+/// Reads the pull request of `run` from its host, stores the state and applies what it means for the run.
+fn sync(store: &RunStore, tool: &dyn Gh, run: &Run, url: &str, now: u64) -> io::Result<PrStatus> {
+    let (state, reason) = match read(tool, url) {
+        Ok(state) => (state, None),
+        Err(ToolProblem(reason)) => (PrState::Unknown, Some(reason)),
+    };
+    let status = PrStatus {
+        url: url.into(),
+        state,
+        reason,
+        checked_at: now,
+    };
+    store.set_pr_status(&run.id, status.clone())?;
+    // The host answer may take seconds; decide from the run as it is now, not as it was when asked.
+    let current = store
+        .list()?
+        .into_iter()
+        .find(|current| current.id == run.id);
+    if let Some(update) = current.as_ref().and_then(|run| follow_up(run, state)) {
+        store.update(&run.id, update)?;
+    }
+    Ok(status)
+}
+
+/// Syncs one run now, whatever its stored state says. `None` when the run does not exist or records no pull request.
+pub(crate) fn sync_run(
+    store: &RunStore,
+    tool: &dyn Gh,
+    id: &str,
+    now: u64,
+) -> io::Result<Option<PrStatus>> {
+    let Some(run) = store.list()?.into_iter().find(|run| run.id == id) else {
+        return Ok(None);
+    };
+    let Some(url) = run.pr.clone() else {
+        return Ok(None);
+    };
+    sync(store, tool, &run, &url, now).map(Some)
+}
+
+/// One pass: syncs every Run whose pull request state is due. A problem is stored as unknown with its reason
+/// and tried again on a later pass. Returns how many pull requests were read.
 pub(crate) fn refresh(store: &RunStore, tool: &dyn Gh, now: u64) -> io::Result<usize> {
     let mut checked = 0;
     for run in store.list()? {
@@ -224,17 +309,7 @@ pub(crate) fn refresh(store: &RunStore, tool: &dyn Gh, now: u64) -> io::Result<u
         if !due(run.pr_status.as_ref(), url, now) {
             continue;
         }
-        let (state, reason) = match read(tool, url) {
-            Ok(state) => (state, None),
-            Err(ToolProblem(reason)) => (PrState::Unknown, Some(reason)),
-        };
-        let status = PrStatus {
-            url: url.into(),
-            state,
-            reason,
-            checked_at: now,
-        };
-        store.set_pr_status(&run.id, status)?;
+        sync(store, tool, &run, url, now)?;
         checked += 1;
     }
     Ok(checked)

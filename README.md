@@ -118,6 +118,14 @@ It runs five checks and reports each as `matches`, `differs` with what it found,
 
 Commits of `HEAD` that no remote-tracking branch has (as of the last fetch) are listed as not pushed, which does not count as a difference. A repository without remote-tracking branches says the list is not known. The exit status is 0 when nothing differs, also when some fields are unknown, 2 when a check differs, and 1 for a problem such as bad arguments or an unreachable dashboard. `--json` prints the same data (`run`, `consistent`, `exit_code`, `checks` with `check`, `state`, `recorded` and `found`, `changes`, `unpushed` and, when the list is not known, `unpushed_unknown`).
 
+`factory run sync <run-id>` reads the state of the run's pull request from its host (`gh` for GitHub, `az` for Azure Repos) and brings the run in line with it: a merged pull request clears the activity (such as "Waiting for CI") and marks Finish done, a closed one clears the activity and blocks the run with "PR closed without merge", and an open one changes nothing. A host that cannot be reached is reported and leaves the run as it is. The dashboard does the same on its own for every run with a pull request, and the run sheet has a "Check PR" button to do it at once. `factory pr wait` does it when it reports that the pull request is no longer open.
+
+```text
+factory run sync <run-id> [--json]
+```
+
+`--json` prints `run`, `pull_request`, `state` and `run_updated`.
+
 `factory run cleanup <run-id>` removes the worktree and local branch of a run after its pull request merged, so you do not clean up by hand. Run it from the main checkout, not from inside the worktree. A directory at the recorded worktree path that git does not list as a worktree is left alone: the command says nothing was removed and names it, and the run's record is still cleared.
 
 ```text

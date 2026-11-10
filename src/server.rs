@@ -634,6 +634,52 @@ fn delete_run(
     }
 }
 
+/// How long a sync may wait for the host before the dashboard gives up on it.
+const SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Reads the state of the Run's pull request from its host now, and brings the Run in line with it: a merged
+/// pull request finishes the Run, a closed one blocks it. Needs the session token, like delete.
+#[rocket::post("/api/runs/<id>/sync")]
+async fn sync_run(
+    request: Security,
+    id: &str,
+    store: &State<RunStore>,
+    tool: &State<PrTool>,
+    collector: &State<Collector>,
+) -> Result<Json<pr_state::PrStatus>, HttpStatus> {
+    if !request.delete_allowed {
+        return Err(HttpStatus::Forbidden);
+    }
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(HttpStatus::BadRequest);
+    }
+    let (read_store, read_tool, read_id) = (store.inner().clone(), tool.0.clone(), id.to_owned());
+    let read = rocket::tokio::task::spawn_blocking(move || {
+        let now = crate::run::updated_now()?;
+        pr_state::sync_run(&read_store, read_tool.as_ref(), &read_id, now)
+    });
+    let status = match rocket::tokio::time::timeout(SYNC_TIMEOUT, read).await {
+        Ok(Ok(Ok(Some(status)))) => status,
+        Ok(Ok(Ok(None))) => return Err(HttpStatus::NotFound),
+        Ok(Ok(Err(error))) => {
+            eprintln!("Run storage error: {error}");
+            return Err(HttpStatus::InternalServerError);
+        }
+        Ok(Err(error)) => {
+            eprintln!("Pull request sync stopped: {error}");
+            return Err(HttpStatus::InternalServerError);
+        }
+        Err(_) => return Err(HttpStatus::GatewayTimeout),
+    };
+    if matches!(
+        status.state,
+        pr_state::PrState::Merged | pr_state::PrState::Closed
+    ) {
+        collector.after_update(store, id);
+    }
+    Ok(Json(status))
+}
+
 #[rocket::catch(413)]
 fn too_large() -> (HttpStatus, &'static str) {
     (HttpStatus::PayloadTooLarge, "Request too large")
@@ -750,9 +796,27 @@ impl Collector {
     }
 }
 
+/// The tool that reads pull requests from their hosts, shared by the background pass and the sync endpoint.
+struct PrTool(std::sync::Arc<dyn pr_wait::Gh + Send + Sync>);
+
 #[cfg(test)]
 pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> {
-    build_rocket_with_tokens(path, port, Collector::new(None), new_tokens()?)
+    build_rocket_with_tokens(
+        path,
+        port,
+        Collector::new(None),
+        new_tokens()?,
+        std::sync::Arc::new(RealGh),
+    )
+}
+
+#[cfg(test)]
+fn build_rocket_with_tool(
+    path: &Path,
+    port: u16,
+    tool: std::sync::Arc<dyn pr_wait::Gh + Send + Sync>,
+) -> io::Result<Rocket<Build>> {
+    build_rocket_with_tokens(path, port, Collector::new(None), new_tokens()?, tool)
 }
 
 /// The runs file the CLI token is kept next to.
@@ -767,7 +831,13 @@ pub(crate) fn build_rocket_with(
     port: u16,
     collector: Collector,
 ) -> io::Result<Rocket<Build>> {
-    build_rocket_with_tokens(path, port, collector, new_tokens()?)
+    build_rocket_with_tokens(
+        path,
+        port,
+        collector,
+        new_tokens()?,
+        std::sync::Arc::new(RealGh),
+    )
 }
 
 /// The session token and the CLI token, or why the operating system could not provide them.
@@ -782,6 +852,7 @@ fn build_rocket_with_tokens(
     port: u16,
     collector: Collector,
     (session_token, cli_token): (SessionToken, String),
+    tool: std::sync::Arc<dyn pr_wait::Gh + Send + Sync>,
 ) -> io::Result<Rocket<Build>> {
     let config = Figment::from(rocket::Config::default())
         .merge(("address", LOOPBACK_HOST))
@@ -794,6 +865,7 @@ fn build_rocket_with_tokens(
     Ok(rocket::custom(config)
         .manage(RunStore::open(path)?)
         .manage(collector)
+        .manage(PrTool(tool))
         .manage(session_token)
         .manage(CliToken(cli_token))
         .manage(TokenFile(path.to_path_buf()))
@@ -835,6 +907,7 @@ fn build_rocket_with_tokens(
                 get_document,
                 create_run,
                 update_run,
+                sync_run,
                 delete_run
             ],
         )
@@ -928,37 +1001,41 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
         let pause_settings = usage.clone();
         // Made before the run-storage step so a token failure keeps its own message.
         let tokens = new_tokens()?;
-        build_rocket_with_tokens(path, port, Collector::new(Some(usage)), tokens)
-            .map_err(|error| {
-                io::Error::new(error.kind(), format!("could not open run storage: {error}"))
-            })?
-            .attach(rocket::fairing::AdHoc::on_liftoff(
-                "Pull request state",
-                |rocket| {
-                    Box::pin(async move {
-                        if let Some(store) = rocket.state::<RunStore>() {
-                            watch_pauses(store.clone(), pause_settings, PAUSE_PASS);
-                            watch_pr_states(
-                                store.clone(),
-                                std::sync::Arc::new(RealGh),
-                                PR_STATE_PASS,
-                            );
-                        }
-                    })
-                },
-            ))
-            .launch()
-            .await
-            .map_err(io::Error::other)
-            .and_then(|rocket| {
-                match rocket
-                    .state::<TokenWriteFailure>()
-                    .and_then(|failure| failure.0.lock().ok()?.take())
-                {
-                    Some(message) => Err(io::Error::other(message)),
-                    None => Ok(()),
-                }
-            })
+        build_rocket_with_tokens(
+            path,
+            port,
+            Collector::new(Some(usage)),
+            tokens,
+            std::sync::Arc::new(RealGh),
+        )
+        .map_err(|error| {
+            io::Error::new(error.kind(), format!("could not open run storage: {error}"))
+        })?
+        .attach(rocket::fairing::AdHoc::on_liftoff(
+            "Pull request state",
+            |rocket| {
+                Box::pin(async move {
+                    if let (Some(store), Some(tool)) =
+                        (rocket.state::<RunStore>(), rocket.state::<PrTool>())
+                    {
+                        watch_pauses(store.clone(), pause_settings, PAUSE_PASS);
+                        watch_pr_states(store.clone(), tool.0.clone(), PR_STATE_PASS);
+                    }
+                })
+            },
+        ))
+        .launch()
+        .await
+        .map_err(io::Error::other)
+        .and_then(|rocket| {
+            match rocket
+                .state::<TokenWriteFailure>()
+                .and_then(|failure| failure.0.lock().ok()?.take())
+            {
+                Some(message) => Err(io::Error::other(message)),
+                None => Ok(()),
+            }
+        })
     })
 }
 
@@ -3057,6 +3134,124 @@ mod tests {
         }
     }
 
+    async fn client_with_pr_tool(
+        dir: &TestDir,
+        tool: std::sync::Arc<dyn crate::pr_wait::Gh + Send + Sync>,
+    ) -> Client {
+        Client::tracked(
+            build_rocket_with_tool(&dir.0.path().join("runs.json"), DEFAULT_PORT, tool).unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn waiting_run(api: &Client, pr: Option<&str>) -> String {
+        let store = api.rocket().state::<RunStore>().unwrap();
+        let run = store
+            .create(NewRun {
+                title: "t".into(),
+                project: "/work".into(),
+                repository: None,
+                session: None,
+                model_routing: None,
+            })
+            .unwrap();
+        let pr = pr.map_or(String::new(), |pr| format!(r#","pr":"{pr}""#));
+        let update =
+            format!(r#"{{"stage":"finish","status":"running","activity":"Waiting for CI"{pr}}}"#);
+        store
+            .update(&run.id, serde_json::from_str(&update).unwrap())
+            .unwrap();
+        run.id
+    }
+
+    async fn sync<'a>(
+        api: &'a Client,
+        id: &str,
+        token: Option<&str>,
+    ) -> rocket::local::asynchronous::LocalResponse<'a> {
+        let mut request = api
+            .post(format!("/api/runs/{id}/sync"))
+            .header(Header::new("Host", "127.0.0.1:4311"));
+        if let Some(token) = token {
+            request = request.header(Header::new(TOKEN_HEADER, token.to_string()));
+        }
+        request.dispatch().await
+    }
+
+    #[rocket::async_test]
+    async fn syncing_a_run_reads_its_pull_request_and_follows_what_happened_to_it() {
+        let dir = TestDir::new();
+        let api = client_with_pr_tool(&dir, std::sync::Arc::new(MergedGh)).await;
+        let id = waiting_run(&api, Some("https://github.com/o/r/pull/7"));
+        let token = session_token(&api).await;
+        let response = sync(&api, &id, Some(&token)).await;
+        assert_eq!(response.status(), HttpStatus::Ok);
+        let body: serde_json::Value = response.into_json().await.unwrap();
+        assert_eq!(body["state"], "merged");
+        let run = &api.rocket().state::<RunStore>().unwrap().list().unwrap()[0];
+        assert_eq!(run.status, crate::run::RunStatus::Done);
+        assert_eq!(run.activity, None);
+    }
+
+    #[rocket::async_test]
+    async fn syncing_needs_the_session_token_and_a_run_with_a_pull_request() {
+        let dir = TestDir::new();
+        let api = client_with_pr_tool(&dir, std::sync::Arc::new(MergedGh)).await;
+        let with_pr = waiting_run(&api, Some("https://github.com/o/r/pull/7"));
+        let without_pr = waiting_run(&api, None);
+        let token = session_token(&api).await;
+        assert_eq!(
+            sync(&api, &with_pr, None).await.status(),
+            HttpStatus::Forbidden
+        );
+        assert_eq!(
+            sync(&api, &with_pr, Some("wrong")).await.status(),
+            HttpStatus::Forbidden
+        );
+        assert_eq!(
+            sync(&api, &without_pr, Some(&token)).await.status(),
+            HttpStatus::NotFound
+        );
+        assert_eq!(
+            sync(&api, "999", Some(&token)).await.status(),
+            HttpStatus::NotFound
+        );
+        assert_eq!(
+            sync(&api, "abc", Some(&token)).await.status(),
+            HttpStatus::BadRequest
+        );
+        let runs = api.rocket().state::<RunStore>().unwrap().list().unwrap();
+        assert!(
+            runs.iter()
+                .all(|run| run.activity.as_deref() == Some("Waiting for CI"))
+        );
+    }
+
+    #[rocket::async_test]
+    async fn an_unreachable_host_is_reported_and_leaves_the_run_alone() {
+        struct NoGh;
+        impl crate::pr_wait::Gh for NoGh {
+            fn run(
+                &self,
+                _args: &[&str],
+            ) -> Result<crate::pr_wait::GhOutput, crate::pr_wait::GhError> {
+                Err(crate::pr_wait::GhError::NotInstalled)
+            }
+        }
+        let dir = TestDir::new();
+        let api = client_with_pr_tool(&dir, std::sync::Arc::new(NoGh)).await;
+        let id = waiting_run(&api, Some("https://github.com/o/r/pull/7"));
+        let token = session_token(&api).await;
+        let response = sync(&api, &id, Some(&token)).await;
+        assert_eq!(response.status(), HttpStatus::Ok);
+        let body: serde_json::Value = response.into_json().await.unwrap();
+        assert_eq!(body["state"], "unknown");
+        assert!(body["reason"].as_str().unwrap().contains("not installed"));
+        let run = &api.rocket().state::<RunStore>().unwrap().list().unwrap()[0];
+        assert_eq!(run.activity.as_deref(), Some("Waiting for CI"));
+    }
+
     #[rocket::async_test]
     async fn the_dashboard_server_reads_pull_request_states_in_the_background() {
         use crate::pr_state::PrState;
@@ -3097,6 +3292,26 @@ mod tests {
         };
         watcher.abort();
         assert_eq!(state, PrState::Merged);
+    }
+
+    #[rocket::async_test]
+    async fn the_run_sheet_can_check_the_pull_request_now() {
+        let script = asset("/assets/app.js").await;
+        let button = script
+            .split("function CheckPrButton(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("a CheckPrButton component");
+        // It needs a pull request, and a finished run only shows it while it reports the check it just made.
+        assert!(button.contains("!run.pr || (run.status === 'done' && !check.text)"));
+        assert!(button.contains("disabled=${check.busy}"));
+        // The result is announced, and the list is read again so the run shows what the check changed.
+        assert!(button.contains(r#"role="status""#));
+        assert!(button.contains("await onSynced()"));
+        assert!(script.contains("`/api/runs/${encodeURIComponent(id)}/sync`"));
+        assert!(script.contains("'X-Session-Token': sessionToken()"));
+        assert!(script.contains("<${CheckPrButton} run=${run} onSynced=${onSynced} />"));
+        assert!(script.contains("onSynced=${reload}"));
     }
 
     #[rocket::async_test]

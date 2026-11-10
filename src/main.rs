@@ -34,7 +34,7 @@ use run::UPDATE_HELP;
 use server::{ADDRESS, DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...] [--config-dir <path>]...\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr sync <run-id> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run check <run-id> [--json]\n  factory run cleanup <run-id> [--reinstall] [--config-dir <path>]...\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
+const HELP: &str = "TDS Factory\n\nUsage:\n  factory install --agent <codex|claude|copilot>[,...] [--config-dir <path>]...\n  factory dashboard [--port <port>] [--no-usage]\n  factory run stats <id> | --all\n  factory pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  factory pr sync <run-id> [--base <branch>] [--json]\n  factory pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  factory run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  factory check\n  factory update [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...\n  factory doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  factory run start <title> [--agent <codex|claude|copilot>]\n  factory run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <factory-full|factory-balanced|factory-fast>] [--base <branch>] [--branch <name>] [--json]\n  factory run inspect <id> [--json]\n  factory run check <run-id> [--json]\n  factory run sync <run-id> [--json]\n  factory run cleanup <run-id> [--reinstall] [--config-dir <path>]...\n  factory run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  factory --help | --version";
 
 /// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
 const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
@@ -148,6 +148,14 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
         }
         ["run", "check", id, options @ ..] if !id.starts_with('-') => {
             return run_check_command(id, options);
+        }
+        ["run", "sync", id, options @ ..] if !id.starts_with('-') => {
+            let json = match options {
+                [] => false,
+                ["--json"] => true,
+                _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
+            };
+            return run_sync_command(id, json);
         }
         ["run", "inspect", id, options @ ..] => {
             let json = match options {
@@ -301,6 +309,46 @@ fn run_check_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::erro
     Ok(report.exit_code)
 }
 
+/// `factory run sync <run-id>`: reads the state of the run's pull request from its host and brings the run in
+/// line with it: a merged pull request finishes the run, a closed one blocks it, and an open one changes nothing.
+fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Error>> {
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Invalid run id".into());
+    }
+    let run = fetch_run(ADDRESS, id)?;
+    let Some(url) = run.pr.as_deref() else {
+        return Err("The run has no pull request recorded. Record it with `factory run update <id> finish running --pr <url>`.".into());
+    };
+    let state =
+        pr_state::read(&pr_wait::RealGh, url).map_err(|problem| inspect::shown(&problem.0))?;
+    let changed = apply_pr_state(id, state)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "run": id,
+                "pull_request": url,
+                "state": state,
+                "run_updated": changed,
+            }))?
+        );
+    } else {
+        print!("{}", pr_state::describe(state, changed));
+    }
+    Ok(0)
+}
+
+/// Applies what the state of the run's pull request means for the run (see `pr_state::follow_up`), deciding
+/// from the run as it is now: the host may have taken seconds to answer. Returns whether the run was changed.
+fn apply_pr_state(id: &str, state: pr_state::PrState) -> Result<bool, Box<dyn std::error::Error>> {
+    let run = fetch_run(ADDRESS, id)?;
+    let Some(update) = pr_state::follow_up(&run, state) else {
+        return Ok(false);
+    };
+    client::send_update(ADDRESS, &cli_token_file()?, id, &update)?;
+    Ok(true)
+}
+
 /// `factory run cleanup <run-id>`: removes the worktree and local branch of a run whose pull request merged,
 /// then clears them from the run. It refuses, removing nothing, when work could be lost.
 fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
@@ -449,6 +497,18 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
         &mut |text| eprintln!("{text}"),
     )
     .map_err(|problem| problem.0)?;
+    if waited.outcome == pr_wait::Outcome::NotOpen
+        && let Some(url) = run.pr.as_deref()
+    {
+        // The wait only reports that the pull request is gone; the run follows what happened to it.
+        match pr_state::read(&gh, url) {
+            Ok(state) => match apply_pr_state(id, state) {
+                Ok(changed) => eprint!("{}", pr_state::describe(state, changed)),
+                Err(error) => eprintln!("The run could not be updated: {error}"),
+            },
+            Err(problem) => eprintln!("The run was not updated: {}", inspect::shown(&problem.0)),
+        }
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&waited)?);
     } else {

@@ -826,8 +826,50 @@ function PrLink({ run }) {
   </span>`;
 }
 
+/** Asks the server to read the Run's pull request from its host now; the Run follows a merge or a close. */
+async function syncRun(id) {
+  const response = await fetch(`/api/runs/${encodeURIComponent(id)}/sync`, {
+    method: 'POST',
+    headers: { 'X-Session-Token': sessionToken() },
+  });
+  if (!response.ok) throw new Error('Sync failed');
+  return response.json();
+}
+
+const SYNC_RESULT = {
+  open: 'Pull request is still open.',
+  draft: 'Pull request is still a draft.',
+  merged: 'Pull request is merged; the run is finished.',
+  closed: 'Pull request was closed without merging; the run is blocked.',
+};
+
+/** Reads the pull request now instead of waiting for the next automatic check, and says what it found. */
+function CheckPrButton({ run, onSynced }) {
+  const [check, setCheck] = useState({ busy: false, text: '' });
+  // A finished run has nothing to follow, unless this check just finished it and the result is still shown.
+  if (!run.pr || (run.status === 'done' && !check.text)) return null;
+  const start = async () => {
+    setCheck({ busy: true, text: 'Checking the pull request…' });
+    try {
+      const status = await syncRun(run.id);
+      const text =
+        SYNC_RESULT[status.state] ?? `The pull request could not be read${status.reason ? `: ${status.reason}` : '.'}`;
+      setCheck({ busy: false, text });
+      await onSynced();
+    } catch {
+      setCheck({ busy: false, text: 'The dashboard could not check the pull request.' });
+    }
+  };
+  return html`<span class="status-item">
+    <button type="button" class="text-button" disabled=${check.busy} onClick=${start}>
+      Check PR<span class="visually-hidden">${` of ${run.title}`}</span>
+    </button>
+    <span class="pr-reason" role="status">${check.text}</span>
+  </span>`;
+}
+
 /** The Run's route card in a native modal dialog on the right. The browser handles focus containment and Escape. */
-function Detail({ run, now, onClose, onDelete }) {
+function Detail({ run, now, onClose, onDelete, onSynced }) {
   const dialog = useRef(null);
   // The listener below is added once; it calls whatever `onClose` is current.
   const closing = useRef(onClose);
@@ -893,6 +935,7 @@ function Detail({ run, now, onClose, onDelete }) {
       <div class=${blocked ? 'status-row blocked' : 'status-row'}>
         <span class=${STATUSES.includes(run.status) ? `badge ${run.status}` : 'badge'}>${statusLabel(run.status)}</span>
         <${PrLink} run=${run} />
+        <${CheckPrButton} run=${run} onSynced=${onSynced} />
         ${spec ? html`<span class="status-item"><a href=${spec.href} target="_blank" rel="noopener noreferrer">Spec ${shortRef(spec)}</a></span>` : null}
         ${localSpec ? html`<span class="status-item">Spec <${ReaderLink} run=${run} reference=${localSpec}>View</${ReaderLink}></span>` : null}
         ${rework !== null ? html`<span class="status-item">Rework${' '}${reworkLabel(rework)}</span>` : null}
@@ -1545,6 +1588,7 @@ function App() {
             now=${now}
             onClose=${close}
             onDelete=${(run) => setPending({ runs: [run] })}
+            onSynced=${reload}
           />`
         : null}
     </main>

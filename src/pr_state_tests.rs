@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::pr_wait::{GhError, GhOutput};
-use crate::run::{NewRun, RunStore, UpdateRun};
+use crate::run::{NewRun, RunStatus, RunStore, Stage, UpdateRun};
 use crate::test_support::TestDir;
 use std::sync::Mutex;
 
@@ -364,4 +364,117 @@ fn a_head_without_a_branch_is_an_error() {
         stderr: String::new(),
     })]);
     assert!(super::head(&gh, "https://github.com/o/r/pull/7").is_err());
+}
+
+fn run_waiting_for_ci(store: &RunStore) -> String {
+    let id = run_with_pr(store, PR);
+    let update: UpdateRun = serde_json::from_str(
+        r#"{"stage":"finish","status":"running","activity":"Waiting for CI"}"#,
+    )
+    .unwrap();
+    store.update(&id, update).unwrap();
+    id
+}
+
+fn the_run(store: &RunStore, id: &str) -> crate::run::Run {
+    store
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|run| run.id == id)
+        .unwrap()
+}
+
+#[test]
+fn a_merged_pull_request_finishes_the_run_and_clears_its_activity() {
+    let (_dir, store) = store();
+    let id = run_waiting_for_ci(&store);
+    let gh = ScriptedGh::new(vec![view("MERGED", false)]);
+    refresh(&store, &gh, 0).unwrap();
+    let run = the_run(&store, &id);
+    assert_eq!((run.stage, run.status), (Stage::Finish, RunStatus::Done));
+    assert_eq!(run.activity, None);
+}
+
+#[test]
+fn a_closed_pull_request_blocks_the_run_with_a_reason_and_clears_its_activity() {
+    let (_dir, store) = store();
+    let id = run_waiting_for_ci(&store);
+    let gh = ScriptedGh::new(vec![view("CLOSED", false)]);
+    refresh(&store, &gh, 0).unwrap();
+    let run = the_run(&store, &id);
+    assert_eq!((run.stage, run.status), (Stage::Finish, RunStatus::Blocked));
+    assert_eq!(run.activity, None);
+    assert_eq!(
+        run.blocking_reason.as_deref(),
+        Some("PR closed without merge")
+    );
+    // The block is not applied again, so a later pass leaves a run the agent resumed alone.
+    let resumed: UpdateRun =
+        serde_json::from_str(r#"{"stage":"build","status":"running","activity":"Reworking"}"#)
+            .unwrap();
+    store.update(&id, resumed).unwrap();
+    refresh(&store, &gh, 60_000).unwrap();
+    assert_eq!(the_run(&store, &id).status, RunStatus::Blocked);
+}
+
+#[test]
+fn an_open_or_unreachable_pull_request_leaves_the_run_as_it_is() {
+    for answer in [
+        view("OPEN", false),
+        view("OPEN", true),
+        Err(GhError::NotInstalled),
+    ] {
+        let (_dir, store) = store();
+        let id = run_waiting_for_ci(&store);
+        refresh(&store, &ScriptedGh::new(vec![answer]), 0).unwrap();
+        let run = the_run(&store, &id);
+        assert_eq!(run.status, RunStatus::Running);
+        assert_eq!(run.activity.as_deref(), Some("Waiting for CI"));
+    }
+}
+
+#[test]
+fn a_finished_run_is_not_changed_by_its_pull_request() {
+    let (_dir, store) = store();
+    let id = run_waiting_for_ci(&store);
+    let done: UpdateRun = serde_json::from_str(
+        r#"{"stage":"finish","status":"done","summaries":{"finish":"Shipped"},"activity":"Opened it"}"#,
+    )
+    .unwrap();
+    store.update(&id, done).unwrap();
+    refresh(&store, &ScriptedGh::new(vec![view("CLOSED", false)]), 0).unwrap();
+    let run = the_run(&store, &id);
+    assert_eq!(run.status, RunStatus::Done);
+    assert_eq!(run.activity.as_deref(), Some("Opened it"));
+}
+
+#[test]
+fn syncing_one_run_reads_the_host_now_even_when_the_state_is_recent() {
+    let (_dir, store) = store();
+    let id = run_waiting_for_ci(&store);
+    let gh = ScriptedGh::new(vec![view("OPEN", false), view("MERGED", false)]);
+    refresh(&store, &gh, 0).unwrap();
+    let status = sync_run(&store, &gh, &id, 1).unwrap().unwrap();
+    assert_eq!(status.state, PrState::Merged);
+    assert_eq!(the_run(&store, &id).status, RunStatus::Done);
+    assert_eq!(gh.calls().len(), 2);
+}
+
+#[test]
+fn syncing_a_run_without_a_pull_request_or_that_does_not_exist_reads_nothing() {
+    let (_dir, store) = store();
+    let bare = store
+        .create(NewRun {
+            title: "no pr".into(),
+            project: "/work".into(),
+            repository: None,
+            session: None,
+            model_routing: None,
+        })
+        .unwrap();
+    let gh = ScriptedGh::new(vec![view("MERGED", false)]);
+    assert!(matches!(sync_run(&store, &gh, &bare.id, 0), Ok(None)));
+    assert!(matches!(sync_run(&store, &gh, "999", 0), Ok(None)));
+    assert!(gh.calls().is_empty());
 }
