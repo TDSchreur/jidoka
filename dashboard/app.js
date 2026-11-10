@@ -155,6 +155,9 @@ const ticketProgress = (run) => {
   return tickets.length ? { done: tickets.filter((t) => t.status === 'done').length, total: tickets.length } : null;
 };
 
+/** Whether a stored reference can open in the Reader: a local path to a Markdown file, which is all the server serves. */
+const isReadable = (value) => !httpUrl(value) && /\.md$/i.test(String(value));
+
 /** A link for a stored reference, only when it is an http(s) URL; nothing otherwise. */
 function RefLink({ value, label }) {
   const url = httpUrl(value);
@@ -397,7 +400,9 @@ function ContextLinks({ run }) {
     ? null
     : httpUrl(run.spec)
       ? html`<${RefLink} value=${run.spec} label=${named('Spec')} />`
-      : html`<${ReaderLink} run=${run} reference=${run.spec} label=${`View spec of ${run.title}`}>View</${ReaderLink}>`;
+      : isReadable(run.spec)
+        ? html`<${ReaderLink} run=${run} reference=${run.spec} label=${`View spec of ${run.title}`}>View</${ReaderLink}>`
+        : null;
   return pr || spec
     ? html`<span class="links">${pr}${spec}</span>`
     : null;
@@ -724,9 +729,9 @@ function TicketList({ run, tickets, byTicket, now }) {
       return html`<li key=${ticket.reference} class=${ticket.status === 'done' ? 'ticket done' : 'ticket'}>
         <p class="ticket-line">
           <span class="ticket-status">${current ? TICKET_STATUS['in-progress'] : (TICKET_STATUS[ticket.status] ?? String(ticket.status))}</span>
-          <span class="ticket-name"><${TicketRef} value=${String(ticket.reference)} />${' '}${httpUrl(ticket.reference)
-            ? ticket.title
-            : html`<${ReaderLink} run=${run} reference=${String(ticket.reference)}>${ticket.title}</${ReaderLink}>`}</span>
+          <span class="ticket-name"><${TicketRef} value=${String(ticket.reference)} />${' '}${isReadable(ticket.reference)
+            ? html`<${ReaderLink} run=${run} reference=${String(ticket.reference)}>${ticket.title}</${ReaderLink}>`
+            : ticket.title}</span>
         </p>
         <${SkillChips} reports=${own} />
         <${ReportList} reports=${own} now=${now} />
@@ -937,7 +942,7 @@ function Detail({ run, now, onClose, onDelete, onSynced }) {
         <${PrLink} run=${run} />
         <${CheckPrButton} run=${run} onSynced=${onSynced} />
         ${spec ? html`<span class="status-item"><a href=${spec.href} target="_blank" rel="noopener noreferrer">Spec ${shortRef(spec)}</a></span>` : null}
-        ${localSpec ? html`<span class="status-item">Spec <${ReaderLink} run=${run} reference=${localSpec}>View</${ReaderLink}></span>` : null}
+        ${localSpec ? html`<span class="status-item">Spec ${isReadable(localSpec) ? html`<${ReaderLink} run=${run} reference=${localSpec}>View</${ReaderLink}>` : localSpec}</span>` : null}
         ${rework !== null ? html`<span class="status-item">Rework${' '}${reworkLabel(rework)}</span>` : null}
         ${ts !== null ? html`<span class="status-item status-updated">Updated${' '}<${SheetTime} at=${ts} now=${now} /></span>` : null}
         ${blocked && run.blocking_reason ? html`<p class="status-reason">${run.blocking_reason}</p>` : null}

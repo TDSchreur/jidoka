@@ -50,8 +50,28 @@ fn build_identity() {
     println!("cargo:rustc-env=JIDOKA_BUILD_RELEASE={release}");
 }
 
+/// Gives the Windows executable product and version information. Unsigned executables
+/// without it are more likely to be flagged by antivirus heuristics.
+#[cfg(windows)]
+fn windows_version_info() {
+    if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows") {
+        let mut resource = winresource::WindowsResource::new();
+        resource
+            .set("ProductName", "Jidoka")
+            .set("FileDescription", "Jidoka command line and dashboard")
+            .set("OriginalFilename", "jidoka.exe");
+        resource
+            .compile()
+            .expect("embed Windows version information");
+    }
+}
+
+#[cfg(not(windows))]
+fn windows_version_info() {}
+
 fn main() {
     build_identity();
+    windows_version_info();
     println!("cargo:rerun-if-changed=skills");
     println!("cargo:rerun-if-changed=.agents/skills");
     println!("cargo:rerun-if-changed=third-party");

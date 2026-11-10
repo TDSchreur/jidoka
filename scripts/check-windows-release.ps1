@@ -13,5 +13,9 @@ $imports | Out-Host
 if ($imports -match '(?i)\b(vcruntime[\w-]*|msvcp[\w-]*|api-ms-win-crt-[\w-]+)\.dll\b') {
     throw 'Executable imports a dynamic Visual C++ runtime'
 }
+$info = (Get-Item -LiteralPath $Executable).VersionInfo
+if ($info.ProductName -ne 'Jidoka' -or -not $info.FileDescription -or -not $info.FileVersion) {
+    throw 'Executable has no Windows version information'
+}
 & $Executable --version
 if ($LASTEXITCODE -ne 0) { throw "Release executable failed with exit code $LASTEXITCODE" }
