@@ -122,6 +122,49 @@ fn removes_only_the_installer_location_not_an_unrelated_path_command() {
     assert!(unrelated.exists());
 }
 
+#[cfg(windows)]
+#[test]
+fn removes_installer_copy_and_preserves_unrelated_command() {
+    let home = tempfile::tempdir().unwrap();
+    let installed = home.path().join("data/Programs/jidoka/jidoka.exe");
+    let unrelated = home.path().join("other/jidoka.exe");
+    fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    fs::create_dir_all(unrelated.parent().unwrap()).unwrap();
+    fs::write(&installed, "installer copy").unwrap();
+    fs::write(&unrelated, "other command").unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_jidoka"));
+    let fixture = isolate_powershell(&mut command);
+    let output = command
+        .args(["uninstall", "--agent", "codex", "--keep-data"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("CODEX_HOME", home.path().join("codex"))
+        .env("LOCALAPPDATA", home.path().join("data"))
+        .env("PATH", unrelated.parent().unwrap())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "uninstall failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.path().join("invocation")).unwrap(),
+        installed.parent().unwrap().to_string_lossy(),
+        "PowerShell received the wrong installer directory"
+    );
+    assert!(
+        !installed.exists(),
+        "installer copy was not removed: {}",
+        installed.display()
+    );
+    assert!(
+        unrelated.exists(),
+        "unrelated command was removed: {}",
+        unrelated.display()
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn reports_uninspectable_installer_location() {

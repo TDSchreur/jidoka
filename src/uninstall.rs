@@ -240,7 +240,7 @@ mod windows_tests {
         );
         let ready = dir.path().join("ready");
         let script = format!(
-            "[IO.File]::WriteAllText($env:JIDOKA_TEST_READY, 'ready'); {REMOVE_AFTER_EXIT}"
+            "function Wait-Process {{ param($Id, $ErrorAction); [IO.File]::WriteAllText($env:JIDOKA_TEST_READY, 'waiting'); Microsoft.PowerShell.Management\\Wait-Process -Id $Id -ErrorAction $ErrorAction }}; {REMOVE_AFTER_EXIT}"
         );
         let mut cleanup = Process(
             powershell()
@@ -263,13 +263,20 @@ mod windows_tests {
             assert!(Instant::now() < deadline, "cleanup did not become ready");
             thread::sleep(Duration::from_millis(20));
         }
-        assert!(target.exists());
+        assert!(
+            target.exists(),
+            "target was removed while the process was running: {}",
+            target.display()
+        );
         assert!(
             cleanup.0.try_wait().unwrap().is_none(),
             "cleanup exited before the process"
         );
         drop(process.0.stdin.take());
-        assert!(process.0.wait().unwrap().success());
+        assert!(
+            process.0.wait().unwrap().success(),
+            "fixture process failed to exit successfully"
+        );
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             if let Some(status) = cleanup.0.try_wait().unwrap() {
@@ -279,6 +286,10 @@ mod windows_tests {
             assert!(Instant::now() < deadline, "cleanup process did not finish");
             thread::sleep(Duration::from_millis(20));
         }
-        assert!(!target.exists());
+        assert!(
+            !target.exists(),
+            "cleanup did not remove {}",
+            target.display()
+        );
     }
 }
