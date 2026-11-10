@@ -2277,7 +2277,8 @@ mod tests {
             "Subagents",
         ] {
             assert!(
-                script.contains(&format!("<th scope=\"col\">{header}</th>")),
+                script.contains(&format!("<th scope=\"col\">{header}</th>"))
+                    || script.contains(&format!("<th scope=\"col\" class=\"text\">{header}</th>")),
                 "{header}"
             );
         }
@@ -3020,13 +3021,17 @@ mod tests {
         // GitHub issues and pull requests, and Azure Boards work items, by number; anything else by its last part.
         assert!(short.contains("/(?:issues|pull|pullrequest|workitems\\/edit)\\/(\\d+)\\/?$/"));
         assert!(short.contains("`#${number[1]}`"));
-        assert!(script.contains("<td><${TicketRef} value=${rowBucket(row)} /></td>"));
+        assert!(
+            script
+                .contains("<td class=\"text wrap\"><${TicketRef} value=${rowBucket(row)} /></td>")
+        );
         assert!(script.contains("title=${url.href}"));
-        // Model and ticket may wrap, so a long name never widens the table.
+        // Model and ticket may wrap, so a long name never widens the table; only cells marked to wrap do.
         let css = stylesheet().await;
         assert!(css.contains(
-            ".usage-table td:nth-child(2), .usage-table td:nth-child(3) { white-space: normal; overflow-wrap: anywhere; }"
+            ".usage-table .wrap { white-space: normal; overflow-wrap: break-word; min-width: 12ch; }"
         ));
+        assert!(!css.contains(".usage-table td:nth-child("));
     }
 
     #[rocket::async_test]

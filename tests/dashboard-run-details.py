@@ -172,6 +172,20 @@ const snap = async (id) => {
     usageTable: !!dialog.querySelector('details.usage table.usage-table'),
     rowCosts: [...dialog.querySelectorAll('details.usage table.usage-table:not(.model-table) tbody tr')].map((tr) => text(tr.lastElementChild)),
     totalCost: text(dialog.querySelector('details.usage table.usage-table:not(.model-table) tfoot td:last-child')),
+    footerLayout: (() => {
+      const table = dialog.querySelector('details.usage table.usage-table:not(.model-table)');
+      if (!table) return null;
+      const span = (cells) => [...cells].reduce((n, cell) => n + cell.colSpan, 0);
+      const heads = table.querySelectorAll('thead th');
+      const foot = table.querySelectorAll('tfoot tr > *');
+      const fresh = foot[1];
+      return {
+        headerColumns: span(heads),
+        footerColumns: span(foot),
+        freshWhiteSpace: getComputedStyle(fresh).whiteSpace,
+      };
+    })(),
+    modelNumbersAlign: [...dialog.querySelectorAll('details.usage table.model-table tbody tr:first-child td')].map((td) => getComputedStyle(td).textAlign),
     modelRows: [...dialog.querySelectorAll('details.usage table.model-table tbody tr')].map((tr) => [...tr.children].map(text)),
     modelHeader: [...dialog.querySelectorAll('details.usage table.model-table thead th')].map(text),
     stopCosts: [...dialog.querySelectorAll('.route > li')].map((li) => text(li.querySelector('.stop-cost'))),
@@ -235,6 +249,12 @@ return {shipped: await snap('run-shipped'), active: await snap('run-active'), bl
         self.assertIn("29,500 fresh", self.shipped["usageSummary"])
         self.assertIn("3,000 fresh", self.active["usageSummary"])
         self.assertNotIn("Token usage", self.blocked["text"])
+
+    def test_token_table_footer_spans_every_column_and_keeps_the_total_on_one_line(self):
+        layout = self.shipped["footerLayout"]
+        self.assertEqual(layout["footerColumns"], layout["headerColumns"])
+        self.assertEqual(layout["freshWhiteSpace"], "nowrap")
+        self.assertEqual(self.shipped["modelNumbersAlign"], ["left", "right", "right", "right"])
 
     def test_estimated_cost_is_shown_per_row_model_stage_and_run_with_unknown_as_text(self):
         # Costs as the server computed them: define $0.50, build $0.25 + $0.05 + one unpriced row, check unpriced.
