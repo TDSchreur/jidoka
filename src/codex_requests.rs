@@ -515,7 +515,14 @@ pub(crate) fn read_codex_requests(
                     }
                     let text = match read_text(&path) {
                         Ok(LogFile::Content(text)) => text,
-                        Ok(LogFile::Skipped | LogFile::TooBig) | Err(_) => continue,
+                        Ok(LogFile::Skipped | LogFile::TooBig) => continue,
+                        Err(error) => {
+                            if recorded.iter().any(|id| file_name.contains(*id)) {
+                                out.notes
+                                    .push(format!("a session log could not be read: {error}"));
+                            }
+                            continue;
+                        }
                     };
                     bytes += text.len() as u64;
                     let Some((id, session_root, subagent)) = codex_meta(&text) else {

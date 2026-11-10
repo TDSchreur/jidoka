@@ -287,6 +287,73 @@ fn a_pull_request_that_is_not_merged_gets_no_offer() {
     assert!(io.said.is_empty() && io.ran.is_empty());
 }
 
+/// A `gh` that fails the state read with a message.
+struct BrokenGh;
+
+impl Gh for BrokenGh {
+    fn run(&self, _args: &[&str]) -> Result<GhOutput, GhError> {
+        Ok(GhOutput {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: "gh exploded".into(),
+        })
+    }
+}
+
+#[test]
+fn a_pull_request_state_that_cannot_be_read_says_why_and_offers_nothing() {
+    let fx = Fixture::new(true);
+    let mut io = Recorder::default();
+    let input = Inputs {
+        repository: &fx.repo,
+        pr: PR,
+        agents: &["claude"],
+        claude_dirs: &[],
+        tty: true,
+        reinstall: true,
+        windows: false,
+    };
+    offer(&input, &BrokenGh, &RealGit, &mut io).unwrap();
+    assert!(io.said.contains("could not be read"), "{}", io.said);
+    assert!(io.said.contains("gh exploded"), "{}", io.said);
+    assert!(io.ran.is_empty() && io.asked.is_empty());
+}
+
+#[test]
+fn a_merge_commit_that_cannot_be_read_gives_the_reason_with_the_pull_hint() {
+    let fx = Fixture::new(true);
+    let mut io = Recorder::default();
+    fx.offer(None, &["claude"], true, true, &mut io).unwrap();
+    assert!(io.said.contains("could not be read ("), "{}", io.said);
+    assert!(io.said.contains("Pull the base branch"));
+}
+
+#[test]
+fn a_failing_ancestry_check_gives_git_s_reason_with_the_pull_hint() {
+    struct BrokenGit;
+    impl Git for BrokenGit {
+        fn status(&self, _dir: &Path, _args: &[&str]) -> Result<i32, String> {
+            Err("fatal: not a valid object name".into())
+        }
+    }
+    let fx = Fixture::new(true);
+    let mut io = Recorder::default();
+    let dirs = [PathBuf::from("/c")];
+    let input = Inputs {
+        repository: &fx.repo,
+        pr: PR,
+        agents: &["claude"],
+        claude_dirs: &dirs,
+        tty: true,
+        reinstall: true,
+        windows: false,
+    };
+    offer(&input, &FakeGh(Some(fx.head.clone())), &BrokenGit, &mut io).unwrap();
+    assert!(io.said.contains("not a valid object name"), "{}", io.said);
+    assert!(io.said.contains("Pull the base branch"));
+    assert!(io.ran.is_empty());
+}
+
 #[test]
 fn no_agents_says_so_and_runs_nothing() {
     let fx = Fixture::new(true);

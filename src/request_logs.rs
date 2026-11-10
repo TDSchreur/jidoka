@@ -185,9 +185,10 @@ pub(crate) fn read_requests(
                     }
                     continue;
                 }
-                Err(_) => {
+                Err(error) => {
                     if is_recorded {
-                        out.notes.push("a session log could not be read".into());
+                        out.notes
+                            .push(format!("a session log could not be read: {error}"));
                     }
                     continue;
                 }

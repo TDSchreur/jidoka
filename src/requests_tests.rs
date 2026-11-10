@@ -1825,3 +1825,68 @@ fn absorbing_a_root_merges_notes_once_ors_the_flags_and_says_when_to_stop() {
     assert!(all.absorb(second));
     assert!(all.root_found && all.truncated);
 }
+
+// Making a file unreadable is a Unix permission trick; it is skipped when the tests run as root.
+#[cfg(unix)]
+mod unreadable_logs {
+    use super::*;
+
+    fn read_error_note(result: &RunRequests) -> bool {
+        result
+            .notes
+            .iter()
+            .any(|n| n.starts_with("a session log could not be read: "))
+    }
+
+    fn analyze_recorded(world: &World) -> RunRequests {
+        let target = run(RUN_A, 0, Some(100), &["sess"]);
+        world.analyze(&target, std::slice::from_ref(&target))
+    }
+
+    #[test]
+    fn an_unreadable_recorded_claude_log_says_why() {
+        let world = World::new();
+        world.session("sess", &[one(10, "m1", text())]);
+        let log = world.dir.path().join("claude/projects/slug/sess.jsonl");
+        if !crate::test_support::make_unreadable(&log) {
+            return;
+        }
+        assert!(read_error_note(&analyze_recorded(&world)));
+    }
+
+    #[test]
+    fn an_unreadable_log_nobody_recorded_is_not_named() {
+        let world = World::new();
+        world.session("other", &[one(10, "m1", text())]);
+        let log = world.dir.path().join("claude/projects/slug/other.jsonl");
+        if !crate::test_support::make_unreadable(&log) {
+            return;
+        }
+        assert!(!read_error_note(&analyze_recorded(&world)));
+    }
+
+    #[test]
+    fn an_unreadable_recorded_copilot_log_says_why() {
+        let world = World::new();
+        world.file("copilot/session-state/sess/events.jsonl", &[String::new()]);
+        let log = world
+            .dir
+            .path()
+            .join("copilot/session-state/sess/events.jsonl");
+        if !crate::test_support::make_unreadable(&log) {
+            return;
+        }
+        assert!(read_error_note(&analyze_recorded(&world)));
+    }
+
+    #[test]
+    fn an_unreadable_recorded_codex_rollout_says_why() {
+        let world = World::new();
+        let relative = "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-sess.jsonl";
+        world.file(relative, &[String::new()]);
+        if !crate::test_support::make_unreadable(&world.dir.path().join(relative)) {
+            return;
+        }
+        assert!(read_error_note(&analyze_recorded(&world)));
+    }
+}

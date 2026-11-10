@@ -1824,3 +1824,32 @@ mod auto_block {
         assert!(done.run().usage.is_none());
     }
 }
+
+// Making a file unreadable is a Unix permission trick; it is skipped when the tests run as root.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_recorded_log_says_why() {
+    let world = World::new();
+    world.write("claude/projects/slug/sess.jsonl", &[mention(RUN_A)]);
+    let log = world.dir.path().join("claude/projects/slug/sess.jsonl");
+    if !crate::test_support::make_unreadable(&log) {
+        return;
+    }
+    let ids = HashSet::from([RUN_A]);
+    let recorded = HashSet::from(["sess"]);
+    let read = read_sessions(
+        &world.roots(),
+        &ids,
+        &recorded,
+        T0,
+        Instant::now() + Duration::from_secs(30),
+        ReadLimits::default(),
+    );
+    assert!(
+        read.notes
+            .iter()
+            .any(|n| n.text.starts_with("a session log could not be read: ")),
+        "{:?}",
+        read.notes
+    );
+}
