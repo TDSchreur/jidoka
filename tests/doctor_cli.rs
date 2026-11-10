@@ -1,4 +1,4 @@
-//! `factory doctor` as a user runs it: exit status, JSON and argument errors.
+//! `jidoka doctor` as a user runs it: exit status, JSON and argument errors.
 #![expect(
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
@@ -6,8 +6,8 @@
 
 use std::process::{Command, Output};
 
-fn factory(args: &[&str], dir: &std::path::Path, home: &std::path::Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_factory"))
+fn jidoka(args: &[&str], dir: &std::path::Path, home: &std::path::Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_jidoka"))
         .args(args)
         .current_dir(dir)
         .env("HOME", home)
@@ -28,7 +28,7 @@ fn factory(args: &[&str], dir: &std::path::Path, home: &std::path::Path) -> Outp
 fn doctor_fails_with_a_json_report_when_nothing_is_set_up() {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    let output = factory(&["doctor", "--json"], dir.path(), home.path());
+    let output = jidoka(&["doctor", "--json"], dir.path(), home.path());
     assert!(!output.status.success());
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["ok"], false);
@@ -39,7 +39,7 @@ fn doctor_fails_with_a_json_report_when_nothing_is_set_up() {
 fn doctor_with_an_agent_reports_only_that_agent() {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    let output = factory(
+    let output = jidoka(
         &["doctor", "--agent", "codex", "--json"],
         dir.path(),
         home.path(),
@@ -53,7 +53,7 @@ fn doctor_with_an_agent_reports_only_that_agent() {
 fn doctor_rejects_unknown_arguments_without_a_report() {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    let output = factory(&["doctor", "--agent", "gemini"], dir.path(), home.path());
+    let output = jidoka(&["doctor", "--agent", "gemini"], dir.path(), home.path());
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown agent"));
@@ -63,10 +63,10 @@ fn doctor_rejects_unknown_arguments_without_a_report() {
 fn help_lists_doctor() {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    let output = factory(&["--help"], dir.path(), home.path());
+    let output = jidoka(&["--help"], dir.path(), home.path());
     assert!(
         String::from_utf8_lossy(&output.stdout)
-            .contains("factory doctor [--agent <codex|claude|copilot>] [--json]")
+            .contains("jidoka doctor [--agent <codex|claude|copilot>] [--json]")
     );
 }
 
@@ -101,7 +101,7 @@ fn doctor_reads_the_repository_it_runs_in() {
                 .success()
         );
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_factory"))
+    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
         .args(["doctor", "--json"])
         .current_dir(repo.path())
         .env("HOME", home.path())
@@ -138,9 +138,9 @@ fn doctor_reads_the_repository_it_runs_in() {
 fn doctor_creates_the_model_routing_policy_once_and_keeps_json_output_valid() {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    let policy = home.path().join(".config/tds-factory/model-routing.json");
+    let policy = home.path().join(".config/jidoka/model-routing.json");
     let run = || {
-        factory(
+        jidoka(
             &[
                 "doctor",
                 "--agent",
@@ -180,7 +180,7 @@ fn doctor_creates_the_model_routing_policy_once_and_keeps_json_output_valid() {
 fn doctor_creates_the_codex_starter_too_and_reports_when_it_cannot_write() {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    let output = factory(
+    let output = jidoka(
         &["doctor", "--agent", "codex", "--create-model-routing"],
         dir.path(),
         home.path(),
@@ -195,14 +195,13 @@ fn doctor_creates_the_codex_starter_too_and_reports_when_it_cannot_write() {
         "{text}"
     );
     let written =
-        std::fs::read_to_string(home.path().join(".config/tds-factory/model-routing.json"))
-            .unwrap();
+        std::fs::read_to_string(home.path().join(".config/jidoka/model-routing.json")).unwrap();
     assert!(written.contains("gpt-6.1-terra"), "{written}");
 
     // A file where the folder should be: doctor stops with the reason and a way out.
     let blocked = tempfile::tempdir().unwrap();
     std::fs::write(blocked.path().join(".config"), "a file").unwrap();
-    let output = factory(
+    let output = jidoka(
         &[
             "doctor",
             "--agent",
@@ -229,7 +228,7 @@ fn doctor_creates_the_codex_starter_too_and_reports_when_it_cannot_write() {
 fn doctor_creates_one_file_for_every_agent_and_checks_each_of_them() {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    let output = factory(
+    let output = jidoka(
         &["doctor", "--create-model-routing", "--json"],
         dir.path(),
         home.path(),
@@ -237,8 +236,7 @@ fn doctor_creates_one_file_for_every_agent_and_checks_each_of_them() {
     let note = String::from_utf8_lossy(&output.stderr);
     assert!(note.contains("claude, codex and copilot"), "{note}");
     let written =
-        std::fs::read_to_string(home.path().join(".config/tds-factory/model-routing.json"))
-            .unwrap();
+        std::fs::read_to_string(home.path().join(".config/jidoka/model-routing.json")).unwrap();
     assert!(
         ["claude", "codex", "copilot"]
             .iter()
@@ -255,7 +253,7 @@ fn doctor_creates_one_file_for_every_agent_and_checks_each_of_them() {
         .collect();
     assert_eq!(agents, ["claude", "codex", "copilot"].into());
     // Asking for one agent checks only its entry.
-    let output = factory(
+    let output = jidoka(
         &["doctor", "--agent", "codex", "--json"],
         dir.path(),
         home.path(),
@@ -274,7 +272,7 @@ fn doctor_creates_one_file_for_every_agent_and_checks_each_of_them() {
 fn doctor_creates_a_copilot_only_policy_when_asked() {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    let output = factory(
+    let output = jidoka(
         &["doctor", "--create-model-routing", "--agent", "copilot"],
         dir.path(),
         home.path(),
@@ -282,8 +280,7 @@ fn doctor_creates_a_copilot_only_policy_when_asked() {
     let note = String::from_utf8_lossy(&output.stdout);
     assert!(note.contains("starter policy for copilot"), "{note}");
     let written =
-        std::fs::read_to_string(home.path().join(".config/tds-factory/model-routing.json"))
-            .unwrap();
+        std::fs::read_to_string(home.path().join(".config/jidoka/model-routing.json")).unwrap();
     assert!(
         written.contains("\"copilot\"")
             && !written.contains("\"claude\"")
@@ -300,10 +297,10 @@ const OLD_SINGLE: &str =
 fn create_over(existing: &str) -> (String, String) {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    let policy = home.path().join(".config/tds-factory/model-routing.json");
+    let policy = home.path().join(".config/jidoka/model-routing.json");
     std::fs::create_dir_all(policy.parent().unwrap()).unwrap();
     std::fs::write(&policy, existing).unwrap();
-    let output = factory(
+    let output = jidoka(
         &["doctor", "--create-model-routing"],
         dir.path(),
         home.path(),

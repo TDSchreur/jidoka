@@ -1,5 +1,5 @@
-//! The model-routing section of `factory doctor`: whether the user's policy can work on this machine.
-//! Only the policy file itself can make the report not ready, because only it stops `factory run start`.
+//! The model-routing section of `jidoka doctor`: whether the user's policy can work on this machine.
+//! Only the policy file itself can make the report not ready, because only it stops `jidoka run start`.
 //! Everything else is a warning or skipped: model routing is optional, and without it a stage uses the
 //! session's model. Nothing here changes a file or calls a model; at most it asks an agent for its `--version`.
 
@@ -15,8 +15,8 @@ const CLAUDE_MIN_VERSION: (u32, u32, u32) = (2, 1, 292);
 const CLAUDE_MODELS: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
 const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
-/// The routing checks for `agent` (all agents when `None`), as `--agent` on `factory doctor` selects. What
-/// the policy does for each agent comes from `Policy::coverage`, the same rule `factory run start` follows;
+/// The routing checks for `agent` (all agents when `None`), as `--agent` on `jidoka doctor` selects. What
+/// the policy does for each agent comes from `Policy::coverage`, the same rule `jidoka run start` follows;
 /// this only adds what the machine needs.
 pub(super) fn checks(root: &Path, machine: &Machine, agent: Option<&str>) -> Vec<Check> {
     let Some(path) = policy_path_in(|name| (machine.var)(name)) else {
@@ -119,7 +119,7 @@ fn host_check(agent: &'static str, machine: &Machine, minimum: Option<(u32, u32,
         (Some(found), None) => Check::skipped(
             "host",
             format!(
-                "`{agent}` {} found; the factory does not know which release first supports a model and effort per subagent, so the version was not checked",
+                "`{agent}` {} found; Jidoka does not know which release first supports a model and effort per subagent, so the version was not checked",
                 version_text(found)
             ),
         ),
@@ -131,7 +131,7 @@ fn codex_checks(machine: &Machine) -> Vec<Check> {
         host_check("codex", machine, None),
         Check::skipped(
             "model",
-            "Codex models and efforts are not checked: the factory keeps no list of them",
+            "Codex models and efforts are not checked: Jidoka keeps no list of them",
         ),
         Check::skipped("overrides", "Codex configuration is not checked"),
     ]
@@ -147,13 +147,13 @@ fn copilot_checks(selection: &ModelRouting, machine: &Machine) -> Vec<Check> {
 }
 
 /// The policy check already rejects Claude Code aliases, which Copilot CLI would run on the session's model.
-/// Which models an account can use is not known to the factory, so availability is left to the user.
+/// Which models an account can use is not known to Jidoka, so availability is left to the user.
 fn copilot_model_check(selection: &ModelRouting) -> Check {
     let count = selection.stages.len();
     Check::pass(
         "model",
         format!(
-            "{count} routed stage(s) name an exact model ID; whether the account can use them is not checked, so compare the models `factory run inspect` observed"
+            "{count} routed stage(s) name an exact model ID; whether the account can use them is not checked, so compare the models `jidoka run inspect` observed"
         ),
     )
 }

@@ -19,7 +19,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env(
             "GIT_CONFIG_GLOBAL",
-            std::env::temp_dir().join("factory-tests-no-such-gitconfig"),
+            std::env::temp_dir().join("jidoka-tests-no-such-gitconfig"),
         )
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@example.com")
@@ -75,7 +75,7 @@ impl Io for Recorder {
     }
     fn run(&mut self, command: &Command) -> Result<(), String> {
         self.ran.push(command.clone());
-        if self.fail && command.program == "factory" {
+        if self.fail && command.program == "jidoka" {
             Err("exit status 1".into())
         } else {
             Ok(())
@@ -93,18 +93,18 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(factory: bool) -> Self {
-        Self::named(factory, "repo")
+    fn new(jidoka: bool) -> Self {
+        Self::named(jidoka, "repo")
     }
 
-    fn named(factory: bool, name: &str) -> Self {
+    fn named(jidoka: bool, name: &str) -> Self {
         let tmp = TempDir::new().unwrap();
         let repo = tmp.path().join(name);
         fs::create_dir_all(&repo).unwrap();
         git(&repo, &["init", "-q", "-b", "develop"]);
-        if factory {
-            fs::write(repo.join("Cargo.toml"), "[package]\nname = \"factory\"\n").unwrap();
-            let skill = repo.join(".agents/skills/factory-procedures");
+        if jidoka {
+            fs::write(repo.join("Cargo.toml"), "[package]\nname = \"jidoka\"\n").unwrap();
+            let skill = repo.join(".agents/skills/jidoka-procedures");
             fs::create_dir_all(&skill).unwrap();
             fs::write(skill.join("SKILL.md"), "x").unwrap();
         } else {
@@ -180,7 +180,7 @@ fn off_a_terminal_the_commands_are_printed_and_nothing_runs() {
     )));
     assert!(
         io.said
-            .contains("factory install --agent codex,claude --config-dir /c")
+            .contains("jidoka install --agent codex,claude --config-dir /c")
     );
 }
 
@@ -196,7 +196,7 @@ fn yes_on_a_terminal_runs_both_commands_in_order() {
     assert_eq!(
         io.asked,
         [format!(
-            "Reinstall the factory for claude from {}? [y/N]",
+            "Reinstall Jidoka for claude from {}? [y/N]",
             fx.repo.display()
         )]
     );
@@ -204,7 +204,7 @@ fn yes_on_a_terminal_runs_both_commands_in_order() {
         io.said.contains("cargo install"),
         "commands come before the question"
     );
-    let [cargo, factory] = &io.ran[..] else {
+    let [cargo, jidoka] = &io.ran[..] else {
         panic!("{:?}", io.ran)
     };
     assert_eq!(cargo.program, "cargo");
@@ -218,13 +218,13 @@ fn yes_on_a_terminal_runs_both_commands_in_order() {
             "--force"
         ]
     );
-    assert_eq!(factory.program, "factory");
+    assert_eq!(jidoka.program, "jidoka");
     assert_eq!(
-        args(factory),
+        args(jidoka),
         ["install", "--agent", "claude", "--config-dir", "/c"]
     );
-    assert_eq!((&cargo.dir, &factory.dir), (&fx.repo, &fx.repo));
-    assert!(io.said.contains("factory dashboard"));
+    assert_eq!((&cargo.dir, &jidoka.dir), (&fx.repo, &fx.repo));
+    assert!(io.said.contains("jidoka dashboard"));
 }
 
 #[test]
@@ -373,9 +373,9 @@ fn a_failing_command_is_named_and_the_cleanup_is_said_to_have_succeeded() {
     let error = fx
         .offer(Some(&fx.head), &["claude"], false, true, &mut io)
         .unwrap_err();
-    assert!(error.0.contains("factory install --agent claude"));
+    assert!(error.0.contains("jidoka install --agent claude"));
     assert!(error.0.contains("cleanup itself succeeded"));
-    assert!(!io.said.contains("factory dashboard"));
+    assert!(!io.said.contains("jidoka dashboard"));
 }
 
 #[test]
@@ -471,7 +471,7 @@ fn runnable_lines_with<'a>(said: &'a str, unsafe_text: &str) -> Vec<&'a str> {
     said.lines()
         .filter(|l| {
             l.trim_start().starts_with("cargo ")
-                || l.trim_start().starts_with("factory ")
+                || l.trim_start().starts_with("jidoka ")
                 || l.trim_start().starts_with("git ")
         })
         .filter(|l| l.contains(unsafe_text))

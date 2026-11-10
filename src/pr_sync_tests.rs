@@ -1,4 +1,4 @@
-//! `factory pr sync` with real git in temporary repositories and a local bare remote.
+//! `jidoka pr sync` with real git in temporary repositories and a local bare remote.
 
 use super::*;
 use std::{cell::RefCell, fs, path::PathBuf};
@@ -19,7 +19,7 @@ fn isolated(command: &mut Command) -> &mut Command {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env(
             "GIT_CONFIG_GLOBAL",
-            std::env::temp_dir().join("factory-tests-no-such-gitconfig"),
+            std::env::temp_dir().join("jidoka-tests-no-such-gitconfig"),
         )
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@example.com")
@@ -254,7 +254,7 @@ fn a_clean_merge_that_touches_none_of_the_change_is_pushed() {
         run_git(&project.wt, &["log", "-1", "--format=%s"]),
         "Merge origin/develop into feature"
     );
-    assert!(render(&synced).contains("factory pr wait"));
+    assert!(render(&synced).contains("jidoka pr wait"));
     let updates = api.updates.borrow();
     let (_, stage, status, args) = updates.last().unwrap();
     assert_eq!((stage.as_str(), status.as_str()), ("finish", "running"));

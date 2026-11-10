@@ -1,5 +1,5 @@
 #!/bin/sh
-# Update this checkout to the latest develop, rebuild factory, reinstall the `factory`
+# Update this checkout to the latest develop, rebuild jidoka, reinstall the `jidoka`
 # command and its skills, and restart the dashboard.
 set -eu
 
@@ -26,19 +26,19 @@ parse_choice() (
   printf '%s\n' "$chosen" | sed 's/^ //; s/ /,/g'
 )
 
-# Prints the chosen agents, asking on the terminal unless FACTORY_AGENT is set.
+# Prints the chosen agents, asking on the terminal unless JIDOKA_AGENT is set.
 choose_agents() {
-  if [ -n "${FACTORY_AGENT:-}" ]; then
-    parse_choice "$FACTORY_AGENT" || { echo "FACTORY_AGENT must list codex, claude, or copilot, separated by commas." >&2; return 1; }
+  if [ -n "${JIDOKA_AGENT:-}" ]; then
+    parse_choice "$JIDOKA_AGENT" || { echo "JIDOKA_AGENT must list codex, claude, or copilot, separated by commas." >&2; return 1; }
     return 0
   fi
   # The script itself may be piped into sh, so ask on the terminal instead of stdin.
   if ! (: </dev/tty) 2>/dev/null; then
-    echo 'No terminal to ask which agents to install for. Set FACTORY_AGENT, for example FACTORY_AGENT=codex,claude.' >&2
+    echo 'No terminal to ask which agents to install for. Set JIDOKA_AGENT, for example JIDOKA_AGENT=codex,claude.' >&2
     return 1
   fi
   while :; do
-    printf '%s' 'Install the TDS Factory skills for which agents?
+    printf '%s' 'Install the Jidoka skills for which agents?
   1) codex
   2) claude
   3) copilot
@@ -49,9 +49,9 @@ Enter one or more numbers or names separated by commas, or "all": ' >/dev/tty
   done
 }
 
-# Stops any running `factory dashboard`; run data lives on disk, so nothing is lost.
+# Stops any running `jidoka dashboard`; run data lives on disk, so nothing is lost.
 stop_dashboard() {
-  pattern='(^|/)factory dashboard$'
+  pattern='(^|/)jidoka dashboard$'
   pkill -f "$pattern" || return 0
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     pgrep -f "$pattern" >/dev/null || return 0
@@ -62,7 +62,7 @@ stop_dashboard() {
 }
 
 start_dashboard() {
-  log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/tds-factory"
+  log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/jidoka"
   mkdir -p "$log_dir"
   nohup "$1" dashboard >"$log_dir/dashboard.log" 2>&1 &
   pid=$!
@@ -81,12 +81,12 @@ restore_changes() {
   fi
 }
 
-# Installs the skills, passing each entry of FACTORY_CLAUDE_CONFIG_DIRS (separated by colons) as
+# Installs the skills, passing each entry of JIDOKA_CLAUDE_CONFIG_DIRS (separated by colons) as
 # --config-dir. The positional parameters serve as an array, so paths with spaces stay intact.
 install_skills() {
   binary=$1
   agents=$2
-  dirs=${FACTORY_CLAUDE_CONFIG_DIRS:-}
+  dirs=${JIDOKA_CLAUDE_CONFIG_DIRS:-}
   set -- install --agent "$agents"
   old_ifs=$IFS
   IFS=:
@@ -115,10 +115,10 @@ main() {
   git pull --ff-only origin develop
   cargo build --release --locked
   cargo install --path . --locked --force
-  command -v factory >/dev/null 2>&1 || echo "Add ${CARGO_HOME:-$HOME/.cargo}/bin to PATH so the factory command resolves." >&2
-  install_skills "$root/target/release/factory" "$agents"
-  "$root/target/release/factory" --version
+  command -v jidoka >/dev/null 2>&1 || echo "Add ${CARGO_HOME:-$HOME/.cargo}/bin to PATH so the Jidoka command resolves." >&2
+  install_skills "$root/target/release/jidoka" "$agents"
+  "$root/target/release/jidoka" --version
   stop_dashboard
-  start_dashboard "$root/target/release/factory"
+  start_dashboard "$root/target/release/jidoka"
 }
 main "$@"

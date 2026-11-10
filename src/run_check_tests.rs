@@ -1,4 +1,4 @@
-//! `factory run check` with real git in temporary repositories and a local bare remote.
+//! `jidoka run check` with real git in temporary repositories and a local bare remote.
 
 use super::*;
 use std::{fs, process::Command};
@@ -15,7 +15,7 @@ fn isolated(command: &mut Command) -> &mut Command {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env(
             "GIT_CONFIG_GLOBAL",
-            std::env::temp_dir().join("factory-tests-no-such-gitconfig"),
+            std::env::temp_dir().join("jidoka-tests-no-such-gitconfig"),
         )
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@example.com")

@@ -24,7 +24,7 @@ impl AzurePr {
     fn parse(url: &str) -> Result<Self, ToolProblem> {
         let Some(path) = url.strip_prefix("https://dev.azure.com/") else {
             return Err(ToolProblem(
-                "Legacy visualstudio.com pull request URLs are not supported; record the canonical https://dev.azure.com/<organization>/<project>/_git/<repository>/pullrequest/<id> URL with `factory run update <run-id> finish running --pr <url>`.".into(),
+                "Legacy visualstudio.com pull request URLs are not supported; record the canonical https://dev.azure.com/<organization>/<project>/_git/<repository>/pullrequest/<id> URL with `jidoka run update <run-id> finish running --pr <url>`.".into(),
             ));
         };
         let parts: Vec<_> = path.split('/').collect();

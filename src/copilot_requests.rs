@@ -1,4 +1,4 @@
-//! Reads the model requests of Copilot `events.jsonl` files for `factory run requests`.
+//! Reads the model requests of Copilot `events.jsonl` files for `jidoka run requests`.
 //!
 //! Like the Claude Code and Codex readers, it keeps of each request only the time, the token counts, a
 //! category taken from its commands and the size of its tool output. A request is a `session.usage_record`;
@@ -156,7 +156,7 @@ fn parse_events(text: &str, session: &str) -> (BTreeMap<String, Request>, usize)
 }
 
 /// Reads the Copilot sessions under `root`: every session that names a run in `ids` in a
-/// `factory run update`, `run inspect`, `run stats` or `run check` command or a `factory pr open`,
+/// `jidoka run update`, `run inspect`, `run stats` or `run check` command or a `jidoka pr open`,
 /// `pr sync` or `pr wait` command, or was recorded for one in `recorded`.
 pub(crate) fn read_copilot_requests(
     root: &Path,

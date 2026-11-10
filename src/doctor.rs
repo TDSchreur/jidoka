@@ -1,4 +1,4 @@
-//! `factory doctor`: a report on whether this project and this machine are ready for the factory.
+//! `jidoka doctor`: a report on whether this project and this machine are ready for Jidoka.
 //! It only reads files, looks on `PATH` and asks `git` read-only questions, asks the pull request host's tool
 //! whether it is signed in (`gh auth status`, `az extension show`, `az account show`), asks `rustup target list --installed`
 //! in a Rust project on a non-Windows host (read-only), and, when a model-routing policy exists, asks an agent for its `--version`. It never runs the project's own commands, calls a model,
@@ -33,7 +33,7 @@ pub(crate) enum Status {
     Missing,
     /// Something is broken or cannot be read.
     Fail,
-    /// A risk to read about that does not stop the factory, such as model routing that will not apply.
+    /// A risk to read about that does not stop Jidoka, such as model routing that will not apply.
     Warning,
     /// Not looked at, with the reason, rather than reported as fine.
     Skipped,
@@ -102,7 +102,7 @@ impl Check {
     fn passed(&self) -> bool {
         self.status == Status::Pass
     }
-    /// Whether this check makes the factory not ready. Warnings and skipped checks never do.
+    /// Whether this check makes Jidoka not ready. Warnings and skipped checks never do.
     fn blocks(&self) -> bool {
         matches!(self.status, Status::Missing | Status::Fail)
     }
@@ -328,7 +328,7 @@ fn read_doc(path: &Path) -> io::Result<String> {
 }
 
 fn setup_docs_check(root: &Path) -> Check {
-    const FIX: &str = "Run `/factory-setup` once in the project and commit its output.";
+    const FIX: &str = "Run `/jidoka-setup` once in the project and commit its output.";
     let mut missing = Vec::new();
     if !root.join("docs/agents/issue-tracker.md").is_file() {
         missing.push("docs/agents/issue-tracker.md".to_string());
@@ -362,7 +362,7 @@ fn setup_docs_check(root: &Path) -> Check {
         Check::missing(
             "setup-docs",
             format!(
-                "the factory setup is incomplete: {} (needed by /factory-full, and by the lighter workflows when a run reads or publishes a spec or tickets)",
+                "Jidoka setup is incomplete: {} (needed by /jidoka-full, and by the lighter workflows when a run reads or publishes a spec or tickets)",
                 missing.join(", ")
             ),
             FIX,
@@ -597,7 +597,7 @@ fn skills_check(agent: &'static str, root: &Path, explicit_dir: bool) -> Check {
     if absent.is_empty() {
         Check::pass(
             "skills",
-            format!("all factory skills are installed in {}", root.display()),
+            format!("all jidoka skills are installed in {}", root.display()),
         )
     } else {
         Check::missing(
@@ -610,11 +610,11 @@ fn skills_check(agent: &'static str, root: &Path, explicit_dir: bool) -> Check {
             if explicit_dir && agent == "claude" {
                 let dir = root.parent().unwrap_or(root);
                 format!(
-                    "Run `factory install --agent claude --config-dir {}`.",
+                    "Run `jidoka install --agent claude --config-dir {}`.",
                     dir.display()
                 )
             } else {
-                format!("Run `factory install --agent {agent}`.")
+                format!("Run `jidoka install --agent {agent}`.")
             },
         )
     }
@@ -663,9 +663,9 @@ pub(crate) fn render(report: &Report) -> String {
         }
     }
     out.push_str(if report.ok {
-        "\nReady: the factory can run here.\n"
+        "\nReady: Jidoka can run here.\n"
     } else {
-        "\nNot ready: fix the items above and run `factory doctor` again.\n"
+        "\nNot ready: fix the items above and run `jidoka doctor` again.\n"
     });
     out
 }
@@ -704,7 +704,7 @@ fn rustup_targets(path: &OsString, home: &Path) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Runs the checks for the current folder and prints the report. Returns whether the factory is ready.
+/// Runs the checks for the current folder and prints the report. Returns whether Jidoka is ready.
 pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
     let machine = Machine {
         home: crate::install::home_dir()?,
@@ -738,7 +738,7 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
     Ok(report.ok)
 }
 
-/// What `factory doctor` was asked to do.
+/// What `jidoka doctor` was asked to do.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Args<'a> {
     pub(crate) agent: Option<&'a str>,
@@ -1038,7 +1038,7 @@ mod tests {
             assert!(
                 fixes
                     .iter()
-                    .any(|fix| fix.contains(&format!("factory install --agent {}", a.id))),
+                    .any(|fix| fix.contains(&format!("jidoka install --agent {}", a.id))),
                 "{fixes:?}"
             );
         }
@@ -1194,7 +1194,7 @@ mod tests {
         let docs = project_check(&report, "setup-docs");
         assert_eq!(docs.status, Status::Missing);
         assert!(docs.message.contains("issue-tracker.md") && docs.message.contains("Agent skills"));
-        assert!(docs.fix.as_ref().unwrap().contains("/factory-setup"));
+        assert!(docs.fix.as_ref().unwrap().contains("/jidoka-setup"));
 
         // A command whose tool is absent is reported, and a script path is looked up in the project.
         fs::write(
@@ -1386,7 +1386,7 @@ mod tests {
         let text = render(&World::ready().with_agent("claude").report(None));
         assert!(text.contains("pass     git:"));
         assert!(text.contains("missing  executable: `codex` is not on PATH"));
-        assert!(text.contains("Fix: Run `factory install --agent codex`."));
+        assert!(text.contains("Fix: Run `jidoka install --agent codex`."));
         assert!(text.contains("claude: usable") && text.contains("codex: not usable"));
         assert!(text.contains("Ready"));
     }
@@ -1473,7 +1473,7 @@ mod tests {
             .home
             .path()
             .join("config")
-            .join("tds-factory")
+            .join("jidoka")
             .join("model-routing.json");
         assert!(path.is_file(), "{message}");
         assert!(message.contains(&path.display().to_string()), "{message}");
@@ -1491,13 +1491,7 @@ mod tests {
         );
         // Created for Codex, the policy names Codex.
         let read = |world: &World| {
-            fs::read_to_string(
-                world
-                    .home
-                    .path()
-                    .join("config/tds-factory/model-routing.json"),
-            )
-            .unwrap()
+            fs::read_to_string(world.home.path().join("config/jidoka/model-routing.json")).unwrap()
         };
         let text = read(&world);
         assert!(
@@ -1528,7 +1522,7 @@ mod tests {
     #[test]
     fn a_link_that_points_nowhere_is_left_alone_and_described_as_such() {
         let world = World::ready().with_config_folder();
-        let folder = world.home.path().join("config/tds-factory");
+        let folder = world.home.path().join("config/jidoka");
         fs::create_dir_all(&folder).unwrap();
         std::os::unix::fs::symlink(
             folder.join("missing.json"),
@@ -1569,10 +1563,7 @@ mod tests {
     #[test]
     fn doctor_leaves_an_existing_policy_alone_and_says_so() {
         let world = World::ready().claude_ready().with_policy(CLAUDE_POLICY);
-        let path = world
-            .home
-            .path()
-            .join("config/tds-factory/model-routing.json");
+        let path = world.home.path().join("config/jidoka/model-routing.json");
         let message = world.create_model_routing(&[RoutingAgent::Claude]).unwrap();
         assert!(
             message.contains("already exists") && message.contains("unchanged"),
@@ -1634,7 +1625,7 @@ mod tests {
         assert_eq!(report.model_routing[0].agent, None);
         let claude: Vec<_> = tagged(&report, "claude").iter().map(|c| c.id).collect();
         assert_eq!(claude, ["host", "model", "effort", "overrides"]);
-        // Codex has its own checks, which skip what the factory cannot judge.
+        // Codex has its own checks, which skip what Jidoka cannot judge.
         let codex = tagged(&report, "codex");
         assert_eq!(codex.len(), 3);
         assert!(
@@ -1785,12 +1776,8 @@ mod tests {
         /// Writes the user's model-routing policy where doctor looks for it, inside the fake home.
         fn with_policy(mut self, policy: &str) -> Self {
             let config = self.home.path().join("config");
-            fs::create_dir_all(config.join("tds-factory")).unwrap();
-            fs::write(
-                config.join("tds-factory").join("model-routing.json"),
-                policy,
-            )
-            .unwrap();
+            fs::create_dir_all(config.join("jidoka")).unwrap();
+            fs::write(config.join("jidoka").join("model-routing.json"), policy).unwrap();
             for name in ["XDG_CONFIG_HOME", "APPDATA"] {
                 self.vars.insert(name.into(), config.clone().into());
             }
@@ -1856,7 +1843,7 @@ mod tests {
     }
 
     #[test]
-    fn an_old_or_missing_claude_is_a_warning_and_the_factory_stays_ready() {
+    fn an_old_or_missing_claude_is_a_warning_and_the_jidoka_stays_ready() {
         let old = World::ready()
             .with_agent("claude")
             .with_version("claude", "2.1.291 (Claude Code)")
@@ -2109,7 +2096,7 @@ mod tests {
         let check = routing_check(&report, "policy");
         assert_eq!(check.status, Status::Fail);
         assert!(
-            check.message.contains("old format") && check.message.contains("factory install"),
+            check.message.contains("old format") && check.message.contains("jidoka install"),
             "{}",
             check.message
         );
@@ -2517,7 +2504,7 @@ mod tests {
         let world = World::ready().claude_ready();
         git(
             world.project.path(),
-            &["config", "factory.prProvider", "example"],
+            &["config", "jidoka.prProvider", "example"],
         );
         let report = world.report(None);
         assert!(report.ok, "{}", render(&report));
@@ -2531,10 +2518,10 @@ mod tests {
     fn an_azure_override_that_does_not_match_origin_is_reported_as_unsupported() {
         let world = with_origin(World::ready().claude_ready(), AZURE_ORIGIN);
         for (key, value) in [
-            ("factory.prProvider", "azure"),
-            ("factory.azureOrganization", "other-org"),
-            ("factory.azureProject", "My Project"),
-            ("factory.azureRepository", "repo"),
+            ("jidoka.prProvider", "azure"),
+            ("jidoka.azureOrganization", "other-org"),
+            ("jidoka.azureProject", "My Project"),
+            ("jidoka.azureRepository", "repo"),
         ] {
             git(world.project.path(), &["config", key, value]);
         }

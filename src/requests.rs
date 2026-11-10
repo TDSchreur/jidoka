@@ -1,4 +1,4 @@
-//! `factory run requests`: the model requests of a run per category, with their tokens.
+//! `jidoka run requests`: the model requests of a run per category, with their tokens.
 
 use crate::{
     codex_requests::read_codex_requests,
@@ -88,7 +88,7 @@ fn add(counts: &mut Counts, request: &Request) {
 }
 
 /// How long before a run's first mark the request that starts it may be. The model writes that request
-/// before `factory run start` executes and creates the run, so it always falls just before the first mark.
+/// before `jidoka run start` executes and creates the run, so it always falls just before the first mark.
 const START_GRACE_MS: u64 = 120_000;
 
 /// Whether `request` is the run's work: it falls inside the run's time, or it is workspace work just
@@ -192,7 +192,7 @@ pub(crate) fn analyze(
         result.notes.push(if !read.root_found && !codex.root_found && !copilot.root_found {
             "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()
         } else {
-            "no session log executed a factory run update for this run and none was recorded for it"
+            "no session log executed a jidoka run update for this run and none was recorded for it"
                 .to_string()
         });
         return result;

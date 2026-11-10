@@ -14,7 +14,7 @@ if ($imports -match '(?i)\b(vcruntime[\w-]*|msvcp[\w-]*|api-ms-win-crt-[\w-]+)\.
     throw 'Executable imports a dynamic Visual C++ runtime'
 }
 $info = (Get-Item -LiteralPath $Executable).VersionInfo
-if ($info.ProductName -ne 'TDS Factory' -or -not $info.FileDescription -or -not $info.FileVersion) {
+if ($info.ProductName -ne 'Jidoka' -or -not $info.FileDescription -or -not $info.FileVersion) {
     throw 'Executable has no Windows version information'
 }
 & $Executable --version

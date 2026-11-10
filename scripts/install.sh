@@ -1,7 +1,7 @@
 #!/bin/sh
-# Install the latest public TDS Factory release on Linux x86-64.
-# Choose the agents to install skills for with FACTORY_AGENT (for example codex,claude)
-# and the Claude config folders with FACTORY_CLAUDE_CONFIG_DIRS (colon-separated; default: one folder)
+# Install the latest public Jidoka release on Linux x86-64.
+# Choose the agents to install skills for with JIDOKA_AGENT (for example codex,claude)
+# and the Claude config folders with JIDOKA_CLAUDE_CONFIG_DIRS (colon-separated; default: one folder)
 # or answer the prompt.
 set -eu
 
@@ -28,19 +28,19 @@ parse_choice() (
   printf '%s\n' "$chosen" | sed 's/^ //; s/ /,/g'
 )
 
-# Prints the chosen agents, asking on the terminal unless FACTORY_AGENT is set.
+# Prints the chosen agents, asking on the terminal unless JIDOKA_AGENT is set.
 choose_agents() {
-  if [ -n "${FACTORY_AGENT:-}" ]; then
-    parse_choice "$FACTORY_AGENT" || { echo "FACTORY_AGENT must list codex, claude, or copilot, separated by commas." >&2; return 1; }
+  if [ -n "${JIDOKA_AGENT:-}" ]; then
+    parse_choice "$JIDOKA_AGENT" || { echo "JIDOKA_AGENT must list codex, claude, or copilot, separated by commas." >&2; return 1; }
     return 0
   fi
   # The script itself may be piped into sh, so ask on the terminal instead of stdin.
   if ! (: </dev/tty) 2>/dev/null; then
-    echo 'No terminal to ask which agents to install for. Set FACTORY_AGENT, for example FACTORY_AGENT=codex,claude.' >&2
+    echo 'No terminal to ask which agents to install for. Set JIDOKA_AGENT, for example JIDOKA_AGENT=codex,claude.' >&2
     return 1
   fi
   while :; do
-    printf '%s' 'Install the TDS Factory skills for which agents?
+    printf '%s' 'Install the Jidoka skills for which agents?
   1) codex
   2) claude
   3) copilot
@@ -51,12 +51,12 @@ Enter one or more numbers or names separated by commas, or "all": ' >/dev/tty
   done
 }
 
-# Installs the skills, passing each entry of FACTORY_CLAUDE_CONFIG_DIRS (separated by colons) as
+# Installs the skills, passing each entry of JIDOKA_CLAUDE_CONFIG_DIRS (separated by colons) as
 # --config-dir. The positional parameters serve as an array, so paths with spaces stay intact.
 install_skills() {
   binary=$1
   agents=$2
-  dirs=${FACTORY_CLAUDE_CONFIG_DIRS:-}
+  dirs=${JIDOKA_CLAUDE_CONFIG_DIRS:-}
   set -- install --agent "$agents"
   old_ifs=$IFS
   IFS=:
@@ -74,20 +74,20 @@ main() {
   command -v curl >/dev/null || { echo 'curl is required.' >&2; exit 1; }
   command -v sha256sum >/dev/null || { echo 'sha256sum is required.' >&2; exit 1; }
   agents=$(choose_agents) || exit 1
-  base='https://github.com/TDSchreur/tds-factory2/releases/latest/download'
+  base='https://github.com/TDSchreur/jidoka/releases/latest/download'
   temp=$(mktemp -d)
   trap 'rm -rf "$temp"' EXIT HUP INT TERM
-  curl -fsSL "$base/factory-linux-x86_64" -o "$temp/factory"
-  curl -fsSL "$base/factory-linux-x86_64.sha256" -o "$temp/checksum"
+  curl -fsSL "$base/jidoka-linux-x86_64" -o "$temp/jidoka"
+  curl -fsSL "$base/jidoka-linux-x86_64.sha256" -o "$temp/checksum"
   expected=$(awk '{print $1}' "$temp/checksum")
-  actual=$(sha256sum "$temp/factory" | awk '{print $1}')
+  actual=$(sha256sum "$temp/jidoka" | awk '{print $1}')
   [ -n "$expected" ] && [ "$actual" = "$expected" ] || { echo 'Download checksum mismatch.' >&2; exit 1; }
   mkdir -p "$HOME/.local/bin"
-  chmod 755 "$temp/factory"
+  chmod 755 "$temp/jidoka"
   # Copy to a temporary file in the destination before replacing the executable.
-  cp "$temp/factory" "$HOME/.local/bin/factory.new"
-  mv -f "$HOME/.local/bin/factory.new" "$HOME/.local/bin/factory"
-  install_skills "$HOME/.local/bin/factory" "$agents"
-  echo 'Installed factory. Ensure ~/.local/bin is on PATH, then run factory dashboard.'
+  cp "$temp/jidoka" "$HOME/.local/bin/jidoka.new"
+  mv -f "$HOME/.local/bin/jidoka.new" "$HOME/.local/bin/jidoka"
+  install_skills "$HOME/.local/bin/jidoka" "$agents"
+  echo 'Installed jidoka. Ensure ~/.local/bin is on PATH, then run jidoka dashboard.'
 }
 main "$@"

@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-/// Creates a run on the factory server at `server` and returns its id.
+/// Creates a run on the Jidoka server at `server` and returns its id.
 pub(crate) fn start_run(
     server: &str,
     token_file: &Path,
@@ -31,7 +31,7 @@ pub(crate) fn start_run(
     Ok(run.id)
 }
 
-/// Sends a CLI run update (stage, status and metadata options) to the factory server at `server`.
+/// Sends a CLI run update (stage, status and metadata options) to the Jidoka server at `server`.
 pub(crate) fn report_run(
     server: &str,
     token_file: &Path,
@@ -51,7 +51,7 @@ pub(crate) fn report_run(
     )
 }
 
-/// Sends an already built update for run `id` to the factory server at `server`.
+/// Sends an already built update for run `id` to the Jidoka server at `server`.
 pub(crate) fn send_update(
     server: &str,
     token_file: &Path,
@@ -83,7 +83,7 @@ fn update_warnings(response: &[u8]) -> Vec<String> {
 pub(crate) enum Probe {
     /// Nothing is listening.
     Absent,
-    /// A Factory dashboard.
+    /// A Jidoka dashboard.
     Running(DashboardIdentity),
     /// Something else is using the port.
     Foreign,
@@ -99,7 +99,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Asks the server at `server` (`host:port`) who it is, through `/api/info`, not the port alone.
-/// Anything that does not answer as a Factory dashboard, including a listener that is slow or odd, is `Foreign`.
+/// Anything that does not answer as a Jidoka dashboard, including a listener that is slow or odd, is `Foreign`.
 pub(crate) fn probe_dashboard(server: &str) -> io::Result<Probe> {
     let address = server
         .to_socket_addrs()?
@@ -142,7 +142,7 @@ fn parse_info(response: &[u8]) -> Option<DashboardIdentity> {
     serde_json::from_slice(&response[end..]).ok()
 }
 
-/// Reads one run from the factory server at `server`.
+/// Reads one run from the Jidoka server at `server`.
 pub(crate) fn fetch_run(server: &str, id: &str) -> Result<Run, Box<dyn std::error::Error>> {
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
         return Err("Invalid run id".into());
@@ -154,7 +154,7 @@ pub(crate) fn fetch_run(server: &str, id: &str) -> Result<Run, Box<dyn std::erro
     )?)?)
 }
 
-/// Reads every run from the factory server at `server`.
+/// Reads every run from the Jidoka server at `server`.
 pub(crate) fn fetch_runs(server: &str) -> Result<Vec<Run>, Box<dyn std::error::Error>> {
     Ok(serde_json::from_slice(&api_request(
         server,
@@ -171,7 +171,7 @@ fn api_post(
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     // Read on every call, so a restarted dashboard needs no manual step. The token is never put in an error.
     let token = crate::token::read_file(token_file)
-        .ok_or("no CLI token for the factory server; start or restart 'factory dashboard'")?;
+        .ok_or("no CLI token for the Jidoka server; start or restart 'jidoka dashboard'")?;
     api_request(server, route, Some((&token, body)))
 }
 
@@ -183,7 +183,7 @@ fn api_request(
     post: Option<(&str, &[u8])>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut stream = TcpStream::connect(server).map_err(|e| {
-        io::Error::new(e.kind(), format!("cannot connect to factory server at {server}; start it with 'factory dashboard': {e}"))
+        io::Error::new(e.kind(), format!("cannot connect to the Jidoka server at {server}; start it with 'jidoka dashboard': {e}"))
     })?;
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
@@ -210,9 +210,7 @@ fn api_request(
         + 4;
     let headers = std::str::from_utf8(&response[..end])?;
     if headers.starts_with("HTTP/1.1 401 ") {
-        return Err(
-            "the factory server rejected the CLI token; restart 'factory dashboard'".into(),
-        );
+        return Err("the Jidoka server rejected the CLI token; restart 'jidoka dashboard'".into());
     }
     if !headers.starts_with("HTTP/1.1 200 ") && !headers.starts_with("HTTP/1.1 201 ") {
         return Err(format!(
@@ -466,7 +464,7 @@ mod tests {
         assert!(
             unreachable
                 .to_string()
-                .contains(&format!("cannot connect to factory server at {address}")),
+                .contains(&format!("cannot connect to the Jidoka server at {address}")),
             "{unreachable}"
         );
     }
@@ -527,7 +525,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(missing.contains("factory dashboard"), "{missing}");
+        assert!(missing.contains("jidoka dashboard"), "{missing}");
         assert!(!missing.contains(&token), "{missing}");
         // A directory in place of the file is unreadable.
         fs::create_dir(&server.token_file).unwrap();
@@ -541,7 +539,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(unreadable.contains("factory dashboard"), "{unreadable}");
+        assert!(unreadable.contains("jidoka dashboard"), "{unreadable}");
         assert!(server.runs().as_array().unwrap().is_empty());
     }
 
@@ -573,7 +571,7 @@ mod tests {
             .unwrap_err()
             .to_string();
             assert!(message.contains("no CLI token"), "{message}");
-            assert!(message.contains("factory dashboard"), "{message}");
+            assert!(message.contains("jidoka dashboard"), "{message}");
             assert!(!message.contains("X-Evil"), "{message}");
         }
         assert!(server.runs().as_array().unwrap().is_empty());
@@ -591,7 +589,7 @@ mod tests {
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("no CLI token"), "{error}");
-            assert!(error.contains("restart 'factory dashboard'"), "{error}");
+            assert!(error.contains("restart 'jidoka dashboard'"), "{error}");
             assert!(!error.contains(&real), "{error}");
         }
         assert!(server.runs().as_array().unwrap().is_empty());
@@ -607,7 +605,7 @@ mod tests {
         let error = start_run(&server.address, &stale, "t", "/w", None, None, None)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("restart 'factory dashboard'"), "{error}");
+        assert!(error.contains("restart 'jidoka dashboard'"), "{error}");
         assert!(
             !error.contains("stale-token-value") && !error.contains(&real),
             "{error}"
@@ -615,7 +613,7 @@ mod tests {
         let error = report_run(&server.address, &stale, "1", "build", "running", &[])
             .unwrap_err()
             .to_string();
-        assert!(error.contains("restart 'factory dashboard'"), "{error}");
+        assert!(error.contains("restart 'jidoka dashboard'"), "{error}");
     }
 
     #[test]
@@ -670,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn probe_recognises_a_factory_dashboard_by_its_info() {
+    fn probe_recognises_a_jidoka_dashboard_by_its_info() {
         let dir = TestDir::new();
         let server = TestServer::start(&dir.0.path().join("runs.json"));
         match probe_dashboard(&server.address).unwrap() {
@@ -834,7 +832,7 @@ mod tests {
             "blocked",
             &[
                 "--mode",
-                "factory-balanced",
+                "jidoka-balanced",
                 "--worktree",
                 "/work/repo.worktrees/x",
                 "--branch",
@@ -863,7 +861,7 @@ mod tests {
         for expected in [
             "Stage         build (blocked)",
             "Status reason Need a decision",
-            "Mode          factory-balanced",
+            "Mode          jidoka-balanced",
             "Repository    /work/repo",
             "Worktree      /work/repo.worktrees/x",
             "Branch        feature/x",
@@ -904,7 +902,7 @@ mod tests {
         let dir = TestDir::new();
         let path = dir.0.path().join("runs.json");
         let server = TestServer::start(&path);
-        for mode in ["factory", "factory-full"] {
+        for mode in ["jidoka", "jidoka-full"] {
             let id = start_run(
                 &server.address,
                 &server.token_file,
@@ -925,8 +923,8 @@ mod tests {
             )
             .unwrap();
             let run = fetch_run(&server.address, &id).unwrap();
-            assert!(crate::inspect::render(&run).contains("Mode          factory-full"));
-            assert_eq!(serde_json::to_value(&run).unwrap()["mode"], "factory-full");
+            assert!(crate::inspect::render(&run).contains("Mode          jidoka-full"));
+            assert_eq!(serde_json::to_value(&run).unwrap()["mode"], "jidoka-full");
         }
     }
 

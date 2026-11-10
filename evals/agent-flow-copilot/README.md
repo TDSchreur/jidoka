@@ -1,6 +1,6 @@
 # Agent flow eval (Copilot)
 
-This eval checks what GitHub Copilot CLI does next in four situations the factory procedures cover: failed verification, resumed work that still matches the plan, resumed work that differs from it, and a pull request that already exists. Run it after installing the skills for Copilot, and before and after changing `factory-procedures` or its references, to see whether a choice shifted. It only measures Copilot; Claude Code and Codex are not covered.
+This eval checks what GitHub Copilot CLI does next in four situations Jidoka procedures cover: failed verification, resumed work that still matches the plan, resumed work that differs from it, and a pull request that already exists. Run it after installing the skills for Copilot, and before and after changing `jidoka-procedures` or its references, to see whether a choice shifted. It only measures Copilot; Claude Code and Codex are not covered.
 
 It calls a paid model once per case in each repetition, so it is not part of CI or `scripts/verify.sh`.
 
@@ -10,7 +10,7 @@ A case with `"validated": true` has been run five times against Copilot, with th
 
 ## Running it
 
-Install the skills first (`factory install --agent copilot`, or `scripts/update-local.sh`), then run:
+Install the skills first (`jidoka install --agent copilot`, or `scripts/update-local.sh`), then run:
 
 ```sh
 evals/agent-flow-copilot/run.sh                 # every case, 3 times each
@@ -31,7 +31,7 @@ The output has one line per case with its passes, its validation status, the act
 
 ## How it works
 
-For each case the runner asks Copilot to read `factory-procedures/SKILL.md` and its references, describes the scenario, and lists the possible actions by key. Copilot must end with `ACTION: <key>`. The session runs in an empty temporary directory with only `view`, `grep` and `glob` available, so no command runs and no file changes. The scenario states the outcome of commands such as `factory run check` instead of running them.
+For each case the runner asks Copilot to read `jidoka-procedures/SKILL.md` and its references, describes the scenario, and lists the possible actions by key. Copilot must end with `ACTION: <key>`. The session runs in an empty temporary directory with only `view`, `grep` and `glob` available, so no command runs and no file changes. The scenario states the outcome of commands such as `jidoka run check` instead of running them.
 
 ## Adding a case
 

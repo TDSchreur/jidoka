@@ -2,14 +2,14 @@
 
 ## Problem and outcome
 
-The skills that `factory install` ships are used by anyone on any kind of project. PR #50 and #51 put this repository's own `scripts/verify.sh` into the workflow skills and the two local `implement-spec-*` skills, and the Finish stage of all three workflow skills says "(`develop` for this project)". For every other project the verify rule never triggers and the branch hint is wrong. Make the shipped text generic, keep the repo-specific answers in this repo's own instructions, and add a guard so it cannot regress.
+The skills that `jidoka install` ships are used by anyone on any kind of project. PR #50 and #51 put this repository's own `scripts/verify.sh` into the workflow skills and the two local `implement-spec-*` skills, and the Finish stage of all three workflow skills says "(`develop` for this project)". For every other project the verify rule never triggers and the branch hint is wrong. Make the shipped text generic, keep the repo-specific answers in this repo's own instructions, and add a guard so it cannot regress.
 
 ## Behavior
 
-- The workflow skills (`factory-full`, `factory-balanced`, `factory-fast`) and `implement-spec-balanced` / `implement-spec-fast` tell the agent to find the project's verification: the commands its agent instructions (`AGENTS.md`, `CLAUDE.md`), contributing docs or build files say to run before merging, which should match what its CI runs. Full runs verification after each ticket; Balanced and Fast run it after the last ticket. All three verify the final commit before Finish. A missing tool or a failing check blocks the run: fix it or mark the run blocked, never skip. If no verification can be found, ask the user once, or when unattended say so in the pull request. The CI-watch paragraph re-runs the project's verification instead of naming a script.
+- The workflow skills (`jidoka-full`, `jidoka-balanced`, `jidoka-fast`) and `implement-spec-balanced` / `implement-spec-fast` tell the agent to find the project's verification: the commands its agent instructions (`AGENTS.md`, `CLAUDE.md`), contributing docs or build files say to run before merging, which should match what its CI runs. Full runs verification after each ticket; Balanced and Fast run it after the last ticket. All three verify the final commit before Finish. A missing tool or a failing check blocks the run: fix it or mark the run blocked, never skip. If no verification can be found, ask the user once, or when unattended say so in the pull request. The CI-watch paragraph re-runs the project's verification instead of naming a script.
 - The Finish stage targets the base branch chosen in Workspace instead of naming `develop`.
 - `scripts/verify.sh` stays this repository's answer, referenced only from `AGENTS.md` and the README. The upstream `skills/implement-spec` is untouched.
-- A test fails when any bundled skill contains this repository's names (`verify.sh`, `tds-factory`, `for this project`), or when a workflow skill contains `develop` as a word. The list lives in one place with a comment saying why.
+- A test fails when any bundled skill contains this repository's names (`verify.sh`, `TDSchreur/jidoka`, `for this project`), or when a workflow skill contains `develop` as a word. The list lives in one place with a comment saying why.
 - `AGENTS.md` and `.github/instructions/agent-skills.instructions.md` state the rule, so every agent that reads them follows it; the instruction's `applyTo` also covers `.agents/skills/**/SKILL.md`.
 
 ## Verification

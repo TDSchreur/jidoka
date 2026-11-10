@@ -431,11 +431,11 @@ mod tests {
         let (_dir, repository, worktree, _) = setup("x.md");
         let in_repository = repository.join(".git/worktrees/x");
         fs::create_dir_all(&in_repository).unwrap();
-        fs::write(in_repository.join("factory-plan.md"), "# git plan").unwrap();
-        fs::write(worktree.join(".git/factory-plan.md"), "# git plan").unwrap();
+        fs::write(in_repository.join("jidoka-plan.md"), "# git plan").unwrap();
+        fs::write(worktree.join(".git/jidoka-plan.md"), "# git plan").unwrap();
         for reference in [
-            in_repository.join("factory-plan.md"),
-            worktree.join(".git/factory-plan.md"),
+            in_repository.join("jidoka-plan.md"),
+            worktree.join(".git/jidoka-plan.md"),
         ] {
             let reference = reference.to_string_lossy().into_owned();
             let run = run(&repository, &worktree, &reference);
@@ -532,7 +532,7 @@ mod tests {
     fn the_old_plan_beside_the_worktree_is_refused() {
         let (_dir, repository, worktree, _) = setup("x.md");
         let mut sibling = worktree.as_os_str().to_owned();
-        sibling.push(".factory-plan.md");
+        sibling.push(".jidoka-plan.md");
         let sibling = PathBuf::from(sibling);
         fs::write(&sibling, "# old plan").unwrap();
         let run = run(&repository, &worktree, &sibling.to_string_lossy());

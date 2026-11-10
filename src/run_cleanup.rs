@@ -1,4 +1,4 @@
-//! `factory run cleanup`: removes the worktree and local branch of a Run whose pull request merged, and only
+//! `jidoka run cleanup`: removes the worktree and local branch of a Run whose pull request merged, and only
 //! when no work would be lost. The remote branch is never touched.
 
 use crate::{

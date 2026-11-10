@@ -1,0 +1,5 @@
+interface:
+  display_name: "Jidoka Procedures"
+  short_description: "Shared procedures read by Jidoka workflows"
+policy:
+  allow_implicit_invocation: false

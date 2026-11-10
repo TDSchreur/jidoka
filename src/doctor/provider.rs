@@ -1,4 +1,4 @@
-//! The provider section of `factory doctor`: which pull request host origin belongs to, whether that
+//! The provider section of `jidoka doctor`: which pull request host origin belongs to, whether that
 //! host's command line tool is installed, and whether it is signed in, as far as a read-only command shows.
 //! None of these checks blocks readiness: a missing tool or sign-in is a warning.
 
@@ -29,7 +29,7 @@ pub(super) fn checks(project: &Path, machine: &Machine) -> Vec<Check> {
                     "the pull request host is not supported as configured: {}",
                     problem.0
                 ),
-                "Fix origin or the factory.prProvider git config, or open pull requests with the host's own tooling and record them with `factory run update <id> <stage> <status> --pr <url>`.",
+                "Fix origin or Jidoka.prProvider git config, or open pull requests with the host's own tooling and record them with `jidoka run update <id> <stage> <status> --pr <url>`.",
             )];
         }
     };
@@ -51,8 +51,8 @@ pub(super) fn checks(project: &Path, machine: &Machine) -> Vec<Check> {
         Host::Unknown => {
             return vec![Check::warning(
                 "host",
-                "origin is not on a host the factory opens pull requests on (GitHub or Azure Repos)",
-                "Open pull requests and watch CI with the host's own tooling, and record the pull request with `factory run update <id> <stage> <status> --pr <url>`. For GitHub Enterprise, run `git config factory.prProvider github`.",
+                "origin is not on a host Jidoka opens pull requests on (GitHub or Azure Repos)",
+                "Open pull requests and watch CI with the host's own tooling, and record the pull request with `jidoka run update <id> <stage> <status> --pr <url>`. For GitHub Enterprise, run `git config jidoka.prProvider github`.",
             )];
         }
     };

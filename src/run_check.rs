@@ -1,4 +1,4 @@
-//! `factory run check`: compares what a run records with the repository, without changing anything.
+//! `jidoka run check`: compares what a run records with the repository, without changing anything.
 
 use crate::{inspect::shown, pr_sync::Git, run_begin::first_line};
 use serde::Serialize;

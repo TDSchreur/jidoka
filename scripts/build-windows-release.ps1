@@ -9,6 +9,6 @@ elseif ($env:RUSTFLAGS) {
 else {
     $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS += ' -C target-feature=+crt-static'
 }
-$env:FACTORY_RELEASE = '1'
+$env:JIDOKA_RELEASE = '1'
 cargo build --release --locked --target x86_64-pc-windows-msvc
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

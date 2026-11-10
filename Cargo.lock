@@ -236,7 +236,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "factory"
+name = "jidoka"
 version = "0.13.0"
 dependencies = [
  "getrandom",

@@ -1,4 +1,4 @@
-//! `factory run inspect` arguments, checked before any server is contacted.
+//! `jidoka run inspect` arguments, checked before any server is contacted.
 #![expect(
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
@@ -6,8 +6,8 @@
 
 use std::process::Command;
 
-fn factory(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_factory"))
+fn jidoka(args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_jidoka"))
         .args(args)
         .output()
         .unwrap()
@@ -20,15 +20,15 @@ fn inspect_refuses_unknown_options_and_bad_ids() {
         &["run", "inspect", "1", "--json", "--json"],
         &["run", "inspect"],
     ] {
-        let output = factory(args);
+        let output = jidoka(args);
         assert!(!output.status.success(), "{args:?}");
         assert!(output.stdout.is_empty(), "{args:?}");
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("factory run inspect <id> [--json]"),
+            String::from_utf8_lossy(&output.stderr).contains("jidoka run inspect <id> [--json]"),
             "{args:?}"
         );
     }
-    let output = factory(&["run", "inspect", "12x"]);
+    let output = jidoka(&["run", "inspect", "12x"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid run id"));
 }
@@ -40,14 +40,14 @@ fn stats_needs_a_run_id_or_all() {
         &["run", "stats", "--bogus"],
         &["run", "stats", "1", "--all"],
     ] {
-        let output = factory(args);
+        let output = jidoka(args);
         assert!(!output.status.success(), "{args:?}");
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("factory run stats <id> | --all"),
+            String::from_utf8_lossy(&output.stderr).contains("jidoka run stats <id> | --all"),
             "{args:?}"
         );
     }
-    let output = factory(&["run", "stats", "12x"]);
+    let output = jidoka(&["run", "stats", "12x"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid run id"));
 }
@@ -63,15 +63,15 @@ fn requests_refuses_unknown_options_and_bad_ids() {
         &["run", "requests", "--all", "--exclude", "12x"],
         &["run", "requests", "--all", "--json", "--json"],
     ] {
-        let output = factory(args);
+        let output = jidoka(args);
         assert!(!output.status.success(), "{args:?}");
         assert!(output.stdout.is_empty(), "{args:?}");
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("factory run requests <id> | --all"),
+            String::from_utf8_lossy(&output.stderr).contains("jidoka run requests <id> | --all"),
             "{args:?}"
         );
     }
-    let output = factory(&["run", "requests", "12x"]);
+    let output = jidoka(&["run", "requests", "12x"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid run id"));
 }
@@ -99,9 +99,9 @@ fn inspect_with_fake_server(data: &std::path::Path, args: &[&str]) -> std::proce
         )
         .unwrap();
     });
-    let output = Command::new(env!("CARGO_BIN_EXE_factory"))
+    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
         .args(args)
-        .env("FACTORY_TEST_ADDRESS", &address)
+        .env("JIDOKA_TEST_ADDRESS", &address)
         .env("XDG_DATA_HOME", data)
         .env("LOCALAPPDATA", data)
         .output()
@@ -119,7 +119,7 @@ fn inspect_shows_the_plan_path_in_text_and_creates_its_folder() {
     let data = tempfile::tempdir().unwrap();
     let output = inspect_with_fake_server(data.path(), &["run", "inspect", "7"]);
     assert!(output.status.success(), "{output:?}");
-    let plan = data.path().join("tds-factory").join("plans").join("7.md");
+    let plan = data.path().join("jidoka").join("plans").join("7.md");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains(&format!("Plan          {}\n", plan.display())),
@@ -138,7 +138,7 @@ fn inspect_shows_the_plan_path_in_json() {
     assert_eq!(
         json["plan"],
         data.path()
-            .join("tds-factory")
+            .join("jidoka")
             .join("plans")
             .join("7.md")
             .to_string_lossy()

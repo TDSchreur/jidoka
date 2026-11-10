@@ -1,4 +1,4 @@
-//! After `factory run cleanup`, offers to reinstall the factory when the Run changed the factory itself: the
+//! After `jidoka run cleanup`, offers to reinstall Jidoka when the Run changed Jidoka itself: the
 //! repository's own build replaces the installed command and skills, so the next Run uses what just merged.
 
 use crate::{
@@ -127,18 +127,18 @@ impl Io for RealIo {
 pub(crate) struct Inputs<'a> {
     pub(crate) repository: &'a Path,
     pub(crate) pr: &'a str,
-    /// The agents with the factory installed.
+    /// The agents with Jidoka installed.
     pub(crate) agents: &'a [&'static str],
     pub(crate) claude_dirs: &'a [PathBuf],
     /// Whether stdin and stdout are a terminal, so that a question can be asked.
     pub(crate) tty: bool,
     pub(crate) reinstall: bool,
-    /// Whether this is Windows, where the running `factory.exe` is locked and cannot replace itself.
+    /// Whether this is Windows, where the running `jidoka.exe` is locked and cannot replace itself.
     pub(crate) windows: bool,
 }
 
-/// Whether `repository` is the factory's own source: its crate is `factory` and it ships the procedures skill.
-pub(crate) fn is_factory(repository: &Path) -> bool {
+/// Whether `repository` is Jidoka's own source: its crate is `jidoka` and it ships the procedures skill.
+pub(crate) fn is_jidoka(repository: &Path) -> bool {
     let Ok(manifest) = fs::read_to_string(repository.join("Cargo.toml")) else {
         return false;
     };
@@ -148,12 +148,12 @@ pub(crate) fn is_factory(repository: &Path) -> bool {
         if line.starts_with('[') {
             in_package = line == "[package]";
         } else if in_package && let Some((key, value)) = line.split_once('=') {
-            named |= key.trim() == "name" && value.trim().trim_matches('"') == "factory";
+            named |= key.trim() == "name" && value.trim().trim_matches('"') == "jidoka";
         }
     }
     named
         && repository
-            .join(".agents/skills/factory-procedures/SKILL.md")
+            .join(".agents/skills/jidoka-procedures/SKILL.md")
             .is_file()
 }
 
@@ -174,9 +174,9 @@ fn commands(input: &Inputs) -> [Command; 2] {
                 .collect(),
             input.repository,
         ),
-        // The freshly installed command, found on PATH like every other use of `factory`.
+        // The freshly installed command, found on PATH like every other use of `jidoka`.
         Command::new(
-            "factory",
+            "jidoka",
             update::install_args(&agents, dirs),
             input.repository,
         ),
@@ -200,12 +200,12 @@ fn listed(commands: &[Command], windows: bool) -> String {
 /// would interpret. The path is shown escaped for reading and is not part of a command.
 fn by_hand(repository: &Path) -> String {
     format!(
-        "  Run cargo install and factory install by hand for this repository (its path has characters a Windows shell would interpret, so no paste-ready command is printed). Path, not a command: {}\n",
+        "  Run cargo install and jidoka install by hand for this repository (its path has characters a Windows shell would interpret, so no paste-ready command is printed). Path, not a command: {}\n",
         shown(&repository.display().to_string())
     )
 }
 
-/// Offers (or, with `reinstall`, performs) the reinstall. Nothing happens unless the repository is the factory
+/// Offers (or, with `reinstall`, performs) the reinstall. Nothing happens unless the repository is Jidoka
 /// itself. An error means a reinstall command failed; the cleanup had already succeeded.
 pub(crate) fn offer(
     input: &Inputs,
@@ -213,7 +213,7 @@ pub(crate) fn offer(
     git: &dyn Git,
     io: &mut dyn Io,
 ) -> Result<(), ToolProblem> {
-    if !is_factory(input.repository) {
+    if !is_jidoka(input.repository) {
         return Ok(());
     }
     // Also after a cleanup that found nothing left to remove, as long as the pull request is merged.
@@ -222,14 +222,14 @@ pub(crate) fn offer(
         Ok(_) => return Ok(()),
         Err(problem) => {
             io.say(&format!(
-                "The state of the pull request could not be read, so the factory was not reinstalled: {}\n",
+                "The state of the pull request could not be read, so Jidoka was not reinstalled: {}\n",
                 shown(first_line(&problem.0))
             ));
             return Ok(());
         }
     }
     if input.agents.is_empty() {
-        io.say("The factory is not installed for any agent, so there is nothing to reinstall.\n");
+        io.say("Jidoka is not installed for any agent, so there is nothing to reinstall.\n");
         return Ok(());
     }
     let commands = commands(input);
@@ -252,7 +252,7 @@ pub(crate) fn offer(
     };
     if !contained {
         io.say(&format!(
-            "The merged change is not in the checkout of {} yet, or its merge commit could not be read{reason}. Pull the base branch there first, then reinstall the factory:\n  {}\n{}",
+            "The merged change is not in the checkout of {} yet, or its merge commit could not be read{reason}. Pull the base branch there first, then reinstall Jidoka:\n  {}\n{}",
             shown(&input.repository.display().to_string()),
             if input.windows && windows_unsafe(&input.repository.to_string_lossy()) {
                 "Pull the base branch there by hand (see the path above).".to_string()
@@ -268,7 +268,7 @@ pub(crate) fn offer(
     }
     if input.windows {
         io.say(&format!(
-            "The running factory.exe is locked on Windows, so run these after this command exits:\n{}",
+            "The running jidoka.exe is locked on Windows, so run these after this command exits:\n{}",
             listed(&commands, input.windows)
         ));
         return Ok(());
@@ -277,19 +277,17 @@ pub(crate) fn offer(
     if !input.reinstall {
         if !input.tty {
             io.say(&format!(
-                "This run changed the factory itself. To reinstall it for {agents}, run:\n{}",
+                "This run changed Jidoka itself. To reinstall it for {agents}, run:\n{}",
                 listed(&commands, input.windows)
             ));
             return Ok(());
         }
         io.say(&format!(
-            "This run changed the factory itself. Reinstalling runs:\n{}",
+            "This run changed Jidoka itself. Reinstalling runs:\n{}",
             listed(&commands, input.windows)
         ));
         let from = shown(&input.repository.display().to_string());
-        if !io.confirm(&format!(
-            "Reinstall the factory for {agents} from {from}? [y/N]"
-        )) {
+        if !io.confirm(&format!("Reinstall Jidoka for {agents} from {from}? [y/N]")) {
             return Ok(());
         }
     }
@@ -302,7 +300,7 @@ pub(crate) fn offer(
             ))
         })?;
     }
-    io.say("Reinstalled the factory. Restart the dashboard to use it: factory dashboard\n");
+    io.say("Reinstalled Jidoka. Restart the dashboard to use it: jidoka dashboard\n");
     Ok(())
 }
 

@@ -22,7 +22,7 @@ pub(crate) enum RoutingAgent {
     Copilot,
 }
 
-/// A Stage's model and effort. Both are free text: the factory keeps no list of valid models. Copilot CLI
+/// A Stage's model and effort. Both are free text: Jidoka keeps no list of valid models. Copilot CLI
 /// entries get a few extra checks (see `validate_for_copilot`), because it ignores what it does not know.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

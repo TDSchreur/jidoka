@@ -1,11 +1,12 @@
 [package]
-name = "factory"
+name = "jidoka"
 version = "0.13.0"
 edition = "2024"
-description = "A small software factory"
+description = "Jidoka — the AI software factory"
+license = "MIT"
 
 [[bin]]
-name = "factory"
+name = "jidoka"
 path = "src/main.rs"
 
 [dependencies]

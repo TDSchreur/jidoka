@@ -45,7 +45,7 @@ impl Default for ReadLimits {
 #[derive(Clone, Debug)]
 pub(crate) struct Roots {
     /// Every Claude config directory's `projects` folder: the resolved one and the ones named in
-    /// `FACTORY_CLAUDE_CONFIG_DIRS`.
+    /// `JIDOKA_CLAUDE_CONFIG_DIRS`.
     pub(crate) claude: Vec<PathBuf>,
     pub(crate) codex: PathBuf,
     pub(crate) copilot: PathBuf,
@@ -53,14 +53,14 @@ pub(crate) struct Roots {
 
 impl Roots {
     /// The agents' usual folders under `home`, honoring `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `COPILOT_HOME` as install does.
-    /// `FACTORY_CLAUDE_CONFIG_DIRS` (the platform's path-list separator) adds Claude config directories.
+    /// `JIDOKA_CLAUDE_CONFIG_DIRS` (the platform's path-list separator) adds Claude config directories.
     /// Empty and relative entries are ignored, and a folder named twice is read once.
     pub(crate) fn from_home(
         home: &Path,
         var: &dyn Fn(&str) -> Option<OsString>,
     ) -> io::Result<Self> {
         let mut claude = vec![agent_home("claude", home, var)?.join("projects")];
-        if let Some(extra) = var("FACTORY_CLAUDE_CONFIG_DIRS") {
+        if let Some(extra) = var("JIDOKA_CLAUDE_CONFIG_DIRS") {
             for dir in std::env::split_paths(&extra) {
                 let Ok(dir) = expand_config_dir(&dir.to_string_lossy(), home) else {
                     continue;
@@ -175,7 +175,7 @@ pub(crate) fn read_text(path: &Path) -> io::Result<LogFile> {
 }
 
 /// The run ids a log names *in a command on the run*: a known run id right after `run update`,
-/// `run inspect`, `run stats`, `run check`, `pr open`, `pr sync` or `pr wait`, as `factory run update <id>`
+/// `run inspect`, `run stats`, `run check`, `pr open`, `pr sync` or `pr wait`, as `jidoka run update <id>`
 /// is written. The command word must start the text or follow whitespace, so `xpr open <id>` does not count.
 /// Run ids also appear in tool output and in files an agent reads (a session that listed every run would
 /// otherwise claim them all), so a bare number does not count. A run id is digits only, so a number inside

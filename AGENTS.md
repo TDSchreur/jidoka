@@ -1,6 +1,6 @@
 # Project instructions
 
-Keep the factory simple and fast to develop. Prefer straightforward solutions and add dependencies only when they solve a real need.
+Keep Jidoka simple and fast to develop. Prefer straightforward solutions and add dependencies only when they solve a real need.
 
 The old project means [TDSchreur/tds-factory](https://github.com/TDSchreur/tds-factory).
 
@@ -17,7 +17,7 @@ Day-to-day pull requests target `develop`. Release pull requests merge `develop`
 
 ## Shipped skills are project-agnostic
 
-The skills that `factory install` bundles (listed in `build.rs`) are used by anyone, on any kind of project. They must not name this repository's scripts, branches, tools or conventions, such as `scripts/verify.sh` or `develop`. Put those in `AGENTS.md`, the README or `.github/instructions/`, and word the skill generically, for example "the project's verification" or "the base branch chosen in Workspace". A test in `src/install.rs` fails when a bundled skill names this repository; search the skills you changed for this repository's names before opening a pull request.
+The skills that `jidoka install` bundles (listed in `build.rs`) are used by anyone, on any kind of project. They must not name this repository's scripts, branches, tools or conventions, such as `scripts/verify.sh` or `develop`. Put those in `AGENTS.md`, the README or `.github/instructions/`, and word the skill generically, for example "the project's verification" or "the base branch chosen in Workspace". A test in `src/install.rs` fails when a bundled skill names this repository; search the skills you changed for this repository's names before opening a pull request.
 
 ## Scoped guides
 
@@ -40,7 +40,7 @@ Read the relevant guide when working on these files or tasks:
 - Test: `cargo test`
 - Dashboard browser tests: `python3 tests/dashboard-<name>.py` for every `tests/dashboard-*.py` (needs `python3` and Chromium or Google Chrome; they share `tests/dashboard_browser.py`, written for Linux and macOS and run on Linux only in CI)
 
-After a pull request merges, run `scripts/update-local.sh` from the main checkout to pull `develop`, rebuild, reinstall the `factory` command and the skills, and restart the dashboard, so local agents always use the latest factory.
+After a pull request merges, run `scripts/update-local.sh` from the main checkout to pull `develop`, rebuild, reinstall the `jidoka` command and the skills, and restart the dashboard, so local agents always use the latest jidoka.
 
 Run `scripts/verify.sh` before finishing any ticket and before opening a pull request. It runs the same checks as CI, in the same order. A missing tool (`rustfmt`, `clippy`, `python3`, Chromium) is a blocker to install (`rustup component add rustfmt clippy` for the Rust ones), not something to skip and leave to CI. These instructions are informed by [Awesome Copilot's Rust instructions](https://github.com/github/awesome-copilot/blob/main/instructions/rust.instructions.md).
 

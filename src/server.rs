@@ -101,8 +101,8 @@ const TOKEN_PLACEHOLDER: &str = "__TOKEN__";
 const PID_PLACEHOLDER: &str = "__PID__";
 /// The header the dashboard sends its session token in.
 const TOKEN_HEADER: &str = "X-Session-Token";
-/// The header the `factory` CLI sends its CLI token in.
-pub(crate) const CLI_TOKEN_HEADER: &str = "X-Factory-Token";
+/// The header the `jidoka` CLI sends its CLI token in.
+pub(crate) const CLI_TOKEN_HEADER: &str = "X-Jidoka-Token";
 const BODY_LIMIT: u64 = 64 * 1024;
 
 fn is_local_authority(authority: &str, port: u16) -> bool {
@@ -121,7 +121,7 @@ impl SessionToken {
     }
 }
 
-/// A second random value, per server process, that the `factory` CLI needs to POST. It is
+/// A second random value, per server process, that the `jidoka` CLI needs to POST. It is
 /// written to a file only the user can read and is never part of any response.
 struct CliToken(String);
 
@@ -397,7 +397,7 @@ fn asset(request: Security, path: PathBuf) -> Result<(ContentType, &'static [u8]
         .ok_or(HttpStatus::NotFound)
 }
 
-/// What a client needs to recognise a running Factory dashboard and compare its build with its own.
+/// What a client needs to recognise a running Jidoka dashboard and compare its build with its own.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct DashboardIdentity {
     pub(crate) pid: u32,
@@ -1776,7 +1776,7 @@ mod tests {
     ) {
         let line = serde_json::json!({"type": "assistant", "timestamp": crate::usage::iso_timestamp(ts), "requestId": response,
             "message": {"id": response, "model": "claude-test", "usage": {"input_tokens": input, "output_tokens": 1}}});
-        let mention = serde_json::json!({"type": "user", "message": {"content": format!("factory run update {run_id}")}});
+        let mention = serde_json::json!({"type": "user", "message": {"content": format!("jidoka run update {run_id}")}});
         let path = home
             .join("claude/projects/-w")
             .join(format!("{session}.jsonl"));
@@ -2085,7 +2085,7 @@ mod tests {
         let plain = start(&api, r#"{"title":"old client","project":"/work"}"#).await;
         assert!(plain.repository.is_none());
 
-        let body = r#"{"stage":"build","status":"running","mode":"factory","branch":"feature/x",
+        let body = r#"{"stage":"build","status":"running","mode":"jidoka","branch":"feature/x",
             "tickets":[{"reference":"https://x.test/1","title":"One"},{"reference":"docs/2.md","title":"Two"}],
             "ticket_status":{"https://x.test/1":"in-progress"},"summaries":{"define":"Planned"}}"#;
         assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
@@ -2349,7 +2349,7 @@ mod tests {
         let dir = TestDir::new();
         let api = client(&dir).await;
         let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
-        let body = r#"{"stage":"build","status":"running","run_reports":[{"kind":"skill","text":"factory-tdd"}]}"#;
+        let body = r#"{"stage":"build","status":"running","run_reports":[{"kind":"skill","text":"jidoka-tdd"}]}"#;
         assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
         let bad =
             r#"{"stage":"build","status":"running","run_reports":[{"kind":"skill","text":""}]}"#;
@@ -2359,7 +2359,7 @@ mod tests {
         );
         let saved = fetch(&api, &run.id).await.1.unwrap();
         assert_eq!(saved.run_reports.len(), 1);
-        assert_eq!(saved.run_reports[0].text, "factory-tdd");
+        assert_eq!(saved.run_reports[0].text, "jidoka-tdd");
     }
 
     #[rocket::async_test]
@@ -2367,7 +2367,7 @@ mod tests {
         let dir = TestDir::new();
         let api = client(&dir).await;
         let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
-        let body = r#"{"stage":"build","status":"running","tickets":[{"reference":"local=42","title":"One"}],"ticket_reports":[{"ticket":"local=42","kind":"skill","text":"factory-tdd"}]}"#;
+        let body = r#"{"stage":"build","status":"running","tickets":[{"reference":"local=42","title":"One"}],"ticket_reports":[{"ticket":"local=42","kind":"skill","text":"jidoka-tdd"}]}"#;
         assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
         let bad = r#"{"stage":"build","status":"running","ticket_reports":[{"ticket":"missing","kind":"activity","text":"oops"}]}"#;
         assert_eq!(
@@ -2376,7 +2376,7 @@ mod tests {
         );
         let saved = fetch(&api, &run.id).await.1.unwrap();
         assert_eq!(saved.ticket_reports.len(), 1);
-        assert_eq!(saved.ticket_reports[0].text, "factory-tdd");
+        assert_eq!(saved.ticket_reports[0].text, "jidoka-tdd");
     }
 
     #[rocket::async_test]
@@ -2391,7 +2391,7 @@ mod tests {
             .into_string()
             .await
             .unwrap();
-        assert!(!page.contains("Factory dashboard"));
+        assert!(!page.contains("Jidoka dashboard"));
         let script = asset("/assets/app.js").await;
         // The indicator is fed by the Run poll and says its state in words, not by colour alone.
         assert!(script.contains("lastOk: Date.now()"));
@@ -3531,7 +3531,7 @@ mod tests {
         assert!(
             heading.contains("aria-hidden=\"true\"") && heading.contains("focusable=\"false\"")
         );
-        assert!(heading.contains("<span class=\"visually-hidden\">TDS Factory</span>"));
+        assert!(heading.contains("<span class=\"visually-hidden\">Jidoka</span>"));
         // Its gradient has an id of its own, and only the dark parts follow the theme.
         assert!(
             heading.contains("id=\"tds-logo-blue\"") && heading.contains("url(#tds-logo-blue)")
@@ -4272,14 +4272,14 @@ mod tests {
 
     #[test]
     fn the_token_file_is_named_per_port_next_to_the_runs_file() {
-        let runs = Path::new("/data/tds-factory/runs.json");
+        let runs = Path::new("/data/jidoka/runs.json");
         assert_eq!(
             token_path(runs, DEFAULT_PORT),
-            Path::new("/data/tds-factory/session-token")
+            Path::new("/data/jidoka/session-token")
         );
         assert_eq!(
             token_path(runs, 4400),
-            Path::new("/data/tds-factory/session-token-4400")
+            Path::new("/data/jidoka/session-token-4400")
         );
     }
 
@@ -4444,7 +4444,7 @@ mod tests {
     fn building_the_server_makes_an_existing_loose_folder_private_before_runs_json_is_written() {
         use std::os::unix::fs::PermissionsExt;
         let dir = TestDir::new();
-        let folder = dir.0.path().join("tds-factory");
+        let folder = dir.0.path().join("jidoka");
         fs::create_dir(&folder).unwrap();
         fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
         let _rocket = build_rocket(&folder.join("runs.json"), 0).unwrap();
@@ -4458,7 +4458,7 @@ mod tests {
     fn building_the_server_creates_a_missing_folder_private() {
         use std::os::unix::fs::PermissionsExt;
         let dir = TestDir::new();
-        let folder = dir.0.path().join("tds-factory");
+        let folder = dir.0.path().join("jidoka");
         let _rocket = build_rocket(&folder.join("runs.json"), 0).unwrap();
         let mode = fs::metadata(&folder).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
@@ -4472,7 +4472,7 @@ mod tests {
         let target = dir.0.path().join("elsewhere");
         fs::create_dir(&target).unwrap();
         fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
-        let link = dir.0.path().join("tds-factory");
+        let link = dir.0.path().join("jidoka");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         let _rocket = build_rocket(&link.join("runs.json"), 0).unwrap();
         let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
@@ -4484,7 +4484,7 @@ mod tests {
     fn writing_the_token_creates_a_missing_folder_private_and_ignores_stale_temp_files() {
         use std::os::unix::fs::PermissionsExt;
         let dir = TestDir::new();
-        let folder = dir.0.path().join("tds-factory");
+        let folder = dir.0.path().join("jidoka");
         fs::create_dir(&folder).unwrap();
         let stale = folder.join("session-token.tmp");
         fs::write(&stale, "stale").unwrap();
@@ -4540,7 +4540,7 @@ mod tests {
         let dir = TestDir::new();
         let target = dir.0.path().join("elsewhere");
         fs::create_dir(&target).unwrap();
-        let link = dir.0.path().join("tds-factory");
+        let link = dir.0.path().join("jidoka");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         let runs = link.join("runs.json");
         for mode in [0o755, 0o710, 0o704] {
@@ -4557,7 +4557,7 @@ mod tests {
     #[test]
     fn a_real_data_folder_gives_no_warning() {
         let dir = TestDir::new();
-        let runs = dir.0.path().join("tds-factory").join("runs.json");
+        let runs = dir.0.path().join("jidoka").join("runs.json");
         assert_eq!(secure_data_dir(&runs).unwrap(), None);
         assert_eq!(secure_data_dir(&runs).unwrap(), None);
     }
@@ -4581,7 +4581,7 @@ mod tests {
     #[test]
     fn a_dangling_symlinked_data_folder_stops_startup_naming_the_folder() {
         let dir = TestDir::new();
-        let link = dir.0.path().join("tds-factory");
+        let link = dir.0.path().join("jidoka");
         std::os::unix::fs::symlink(dir.0.path().join("missing"), &link).unwrap();
         let error = secure_data_dir(&link.join("runs.json")).unwrap_err();
         assert!(

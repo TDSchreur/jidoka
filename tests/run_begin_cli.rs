@@ -1,4 +1,4 @@
-//! `factory run begin` arguments, checked before any run is created.
+//! `jidoka run begin` arguments, checked before any run is created.
 #![expect(
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
@@ -6,9 +6,9 @@
 
 use std::process::Command;
 
-fn factory_in(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+fn jidoka_in(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
     // The user's own settings must not reach the test.
-    Command::new(env!("CARGO_BIN_EXE_factory"))
+    Command::new(env!("CARGO_BIN_EXE_jidoka"))
         .current_dir(dir)
         .env("HOME", dir)
         .env("USERPROFILE", dir)
@@ -35,11 +35,11 @@ fn begin_refuses_bad_arguments_with_the_usage() {
         &["run", "begin", "--run", "12x"],
         &["run", "begin", "--run", "5", "--bogus"],
     ] {
-        let output = factory_in(dir.path(), args);
+        let output = jidoka_in(dir.path(), args);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         assert!(output.stdout.is_empty(), "{args:?}");
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("factory run begin <title>"),
+            String::from_utf8_lossy(&output.stderr).contains("jidoka run begin <title>"),
             "{args:?}"
         );
     }
@@ -48,7 +48,7 @@ fn begin_refuses_bad_arguments_with_the_usage() {
 #[test]
 fn begin_outside_a_repository_creates_no_run_and_says_why() {
     let dir = tempfile::tempdir().unwrap();
-    let output = factory_in(dir.path(), &["run", "begin", "Title"]);
+    let output = jidoka_in(dir.path(), &["run", "begin", "Title"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -62,16 +62,16 @@ const TWO_AGENT_POLICY: &str = r#"{"enabled": true, "agents": {
 #[test]
 fn a_new_run_needs_the_agent_when_the_policy_has_several_but_a_resume_does_not() {
     let dir = tempfile::tempdir().unwrap();
-    let config = dir.path().join(".config/tds-factory");
+    let config = dir.path().join(".config/jidoka");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("model-routing.json"), TWO_AGENT_POLICY).unwrap();
 
-    let new = factory_in(dir.path(), &["run", "begin", "Title"]);
+    let new = jidoka_in(dir.path(), &["run", "begin", "Title"]);
     assert_eq!(new.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&new.stderr).contains("--agent"));
 
     // Outside a repository the resume stops at the repository, never at the policy.
-    let resume = factory_in(dir.path(), &["run", "begin", "--run", "5"]);
+    let resume = jidoka_in(dir.path(), &["run", "begin", "--run", "5"]);
     assert_eq!(resume.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&resume.stderr);
     assert!(

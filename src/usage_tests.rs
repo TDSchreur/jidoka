@@ -197,7 +197,7 @@ fn claude_line(
 }
 
 fn mention(run_id: &str) -> String {
-    json!({"type": "user", "message": {"content": format!("factory run update {run_id} build running --activity SECRET prompt")}}).to_string()
+    json!({"type": "user", "message": {"content": format!("jidoka run update {run_id} build running --activity SECRET prompt")}}).to_string()
 }
 
 /// A Claude Code response line that also records the reasoning effort of its turn.
@@ -505,7 +505,7 @@ fn claude_roots_are_the_resolved_dir_plus_the_listed_ones_without_duplicates() {
     .unwrap();
     let var = |name: &str| match name {
         "CLAUDE_CONFIG_DIR" => Some(env.clone().into_os_string()),
-        "FACTORY_CLAUDE_CONFIG_DIRS" => Some(list.clone()),
+        "JIDOKA_CLAUDE_CONFIG_DIRS" => Some(list.clone()),
         _ => None,
     };
     let roots = Roots::from_home(&home, &var).unwrap();
@@ -519,7 +519,7 @@ fn claude_roots_are_the_resolved_dir_plus_the_listed_ones_without_duplicates() {
     );
     let roots = Roots::from_home(&home, &|_| None).unwrap();
     assert_eq!(roots.claude, [home.join(".claude/projects")]);
-    let empty = |name: &str| (name == "FACTORY_CLAUDE_CONFIG_DIRS").then(OsString::new);
+    let empty = |name: &str| (name == "JIDOKA_CLAUDE_CONFIG_DIRS").then(OsString::new);
     assert_eq!(Roots::from_home(&home, &empty).unwrap().claude.len(), 1);
 }
 
@@ -1220,7 +1220,7 @@ fn nothing_but_counts_and_identifiers_is_kept() {
     );
     let stored =
         serde_json::to_string(&world.collect(&target, std::slice::from_ref(&target))).unwrap();
-    for text in ["SECRET", "prompt", "conversation", "factory run update"] {
+    for text in ["SECRET", "prompt", "conversation", "jidoka run update"] {
         assert!(!stored.contains(text), "{text} leaked into {stored}");
     }
     // Only these keys can appear.
@@ -1277,14 +1277,14 @@ fn a_model_name_that_is_not_a_plain_name_is_dropped() {
 fn only_a_run_command_naming_the_whole_run_id_counts_as_naming_the_run() {
     let ids: HashSet<&str> = [RUN_A].into_iter().collect();
     for yes in [
-        format!("factory run update {RUN_A} build running"),
-        format!("factory run update \"{RUN_A}\" build running"),
-        format!("{{\"command\":\"factory run inspect {RUN_A} --json\"}}"),
-        format!("factory run stats {RUN_A}"),
-        format!("factory run check {RUN_A}"),
-        format!("factory pr open {RUN_A} --title x --body-file b"),
-        format!("factory pr sync {RUN_A} --base develop"),
-        format!("factory pr wait {RUN_A}"),
+        format!("jidoka run update {RUN_A} build running"),
+        format!("jidoka run update \"{RUN_A}\" build running"),
+        format!("{{\"command\":\"jidoka run inspect {RUN_A} --json\"}}"),
+        format!("jidoka run stats {RUN_A}"),
+        format!("jidoka run check {RUN_A}"),
+        format!("jidoka pr open {RUN_A} --title x --body-file b"),
+        format!("jidoka pr sync {RUN_A} --base develop"),
+        format!("jidoka pr wait {RUN_A}"),
     ] {
         assert!(
             !crate::usage_logs::mentioned_runs(&yes, &ids).is_empty(),
@@ -1295,20 +1295,20 @@ fn only_a_run_command_naming_the_whole_run_id_counts_as_naming_the_run() {
         // The id as output or data, not as the target of a command: a session that listed runs names them all.
         format!("Run {RUN_A}: Task"),
         format!("run start printed {RUN_A}"),
-        format!("factory run update {RUN_A}0"),
-        format!("factory run update 0{RUN_A}"),
-        "factory run update 1793872800000000009".to_string(),
-        "factory run update 17938728".to_string(),
+        format!("jidoka run update {RUN_A}0"),
+        format!("jidoka run update 0{RUN_A}"),
+        "jidoka run update 1793872800000000009".to_string(),
+        "jidoka run update 17938728".to_string(),
         format!("see {RUN_A}"),
         // The command word must stand alone: a longer word ending in it is not the command.
         format!("xrun check {RUN_A}"),
         format!("xpr open {RUN_A}"),
-        format!("factory xpr sync {RUN_A}"),
+        format!("jidoka xpr sync {RUN_A}"),
         format!("xpr wait {RUN_A}"),
         // A short PR number after the command is not a run id.
-        "factory pr open 123 --title x".to_string(),
-        "factory pr sync 42".to_string(),
-        "factory pr wait 7".to_string(),
+        "jidoka pr open 123 --title x".to_string(),
+        "jidoka pr sync 42".to_string(),
+        "jidoka pr wait 7".to_string(),
     ] {
         assert!(
             crate::usage_logs::mentioned_runs(&no, &ids).is_empty(),
