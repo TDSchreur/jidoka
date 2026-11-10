@@ -15,7 +15,7 @@ try {
         if ($Uri -like '*.sha256') { (Get-FileHash -Algorithm SHA256 $fixture).Hash | Set-Content -LiteralPath $OutFile }
         else { Copy-Item -LiteralPath $fixture -Destination $OutFile }
     }
-    function Read-Host { param($Prompt) return '2' }
+    function Read-Host { throw 'The installer must not prompt itself' }
 
     $env:JIDOKA_AGENT = 'codex'
     $output = . (Join-Path $root 'scripts/install.ps1') 6>&1
@@ -25,10 +25,10 @@ try {
     if (($env:Path -split ';') -notcontains $bin) { throw 'Current shell PATH was not updated' }
     if (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -notcontains $bin) { throw 'User PATH was not updated' }
 
-    Remove-Item Env:JIDOKA_AGENT
+    $env:JIDOKA_AGENT = 'claude'
     $output = . (Join-Path $root 'scripts/install.ps1') 6>&1
     if ($output | Where-Object { $_.ToString() -like '*Added * to your user PATH*' }) { throw 'Installer reported an unchanged user PATH as added' }
-    if (-not (Get-ChildItem -LiteralPath (Join-Path $env:CLAUDE_CONFIG_DIR 'skills'))) { throw 'Interactive selection did not install Claude skills' }
+    if (-not (Get-ChildItem -LiteralPath (Join-Path $env:CLAUDE_CONFIG_DIR 'skills'))) { throw 'JIDOKA_AGENT=claude did not install Claude skills' }
 
     $first = Join-Path $tempRoot 'claude work'
     $second = Join-Path $tempRoot 'claude-other'
