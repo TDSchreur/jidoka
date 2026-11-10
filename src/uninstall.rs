@@ -39,6 +39,14 @@ pub(crate) fn run(options: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+fn inspect(path: &Path) -> Result<Option<fs::Metadata>, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("cannot inspect {}: {error}", path.display())),
+    }
+}
+
 fn remove(path: &Path) -> Result<(), String> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -59,7 +67,7 @@ fn remove_run_data() -> Result<(), String> {
     let path = crate::data_path(crate::server::DEFAULT_PORT)
         .map_err(|error| format!("cannot find run data: {error}"))?;
     let dir = path.parent().ok_or("cannot find run data directory")?;
-    if fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+    if inspect(dir)?.is_some_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(format!("run data directory {} is a symlink", dir.display()));
     }
     let entries = match fs::read_dir(dir) {
@@ -93,7 +101,7 @@ fn remove_run_data() -> Result<(), String> {
 fn remove_executable(home: &Path) -> Result<(), String> {
     let target = home.join(".local/bin/jidoka");
     // Only the fixed installer destination is eligible, never a command found on PATH.
-    if fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.file_type().is_file()) {
+    if inspect(&target)?.is_some_and(|metadata| metadata.file_type().is_file()) {
         remove(&target)?;
     }
     Ok(())
@@ -109,7 +117,11 @@ fn remove_executable(_home: &Path) -> Result<(), String> {
     let target = bin.join("jidoka.exe");
     let current =
         env::current_exe().map_err(|error| format!("cannot locate running command: {error}"))?;
-    let running_installed = fs::canonicalize(&target).is_ok_and(|path| path == current);
+    let running_installed = match fs::canonicalize(&target) {
+        Ok(path) => path == current,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => return Err(format!("cannot inspect {}: {error}", target.display())),
+    };
     let powershell =
         std::path::PathBuf::from(env::var_os("SystemRoot").ok_or("cannot find SystemRoot")?)
             .join("System32")
@@ -122,7 +134,7 @@ fn remove_executable(_home: &Path) -> Result<(), String> {
         return Err(format!("cannot remove {} from user PATH", bin.display()));
     }
     if !running_installed {
-        if fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.file_type().is_file()) {
+        if inspect(&target)?.is_some_and(|metadata| metadata.file_type().is_file()) {
             remove(&target)?;
         }
         return Ok(());
