@@ -876,6 +876,29 @@ function CheckPrButton({ run, onSynced }) {
 
 /** The Run's route card in a native modal dialog on the right. The browser handles focus containment and Escape. */
 function Detail({ run, now, onClose, onDelete, onSynced }) {
+  const [gateData, setGateData] = useState(null);
+  useEffect(() => {
+    let active = true;
+    let busy = false;
+    async function refreshGates() {
+      if (busy) return;
+      busy = true;
+      try {
+        const response = await fetch(`/api/runs/${encodeURIComponent(run.id)}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error('Could not load gate status');
+        const data = await response.json();
+        if (active) setGateData(data);
+      } catch {
+        if (active) setGateData({ checks_unavailable: 'Could not load gate and check status from the server.' });
+      } finally {
+        busy = false;
+      }
+    }
+    refreshGates();
+    const timer = setInterval(refreshGates, POLL_MS);
+    return () => { active = false; clearInterval(timer); };
+  }, [run.id]);
+
   const dialog = useRef(null);
   // The listener below is added once; it calls whatever `onClose` is current.
   const closing = useRef(onClose);
@@ -948,6 +971,22 @@ function Detail({ run, now, onClose, onDelete, onSynced }) {
         ${ts !== null ? html`<span class="status-item status-updated">Updated${' '}<${SheetTime} at=${ts} now=${now} /></span>` : null}
         ${blocked && run.blocking_reason ? html`<p class="status-reason">${run.blocking_reason}</p>` : null}
       </div>
+      ${Array.isArray(gateData?.stage_gates) && gateData.stage_gates.some((stage) => stage.gates.length) ? html`
+        <section aria-labelledby="gate-heading">
+          <h3 id="gate-heading">Stage gates</h3>
+          ${gateData.stage_gates.filter((stage) => stage.gates.length).map((stage) => html`
+            <div><h4>${STATION_NAME[stage.stage] ?? stage.stage}</h4>
+              <ul>${stage.gates.map((gate) => html`<li>
+                ${gate.name}: ${gate.status === 'recorded-pass' ? 'Recorded pass' : gate.status === 'unknown' ? 'Unknown' : gate.status}
+                — ${gate.description}${gate.rework ? html`<span> (Rework ${gate.rework})</span>` : null}${gate.evidence ? html`<span> Evidence: ${gate.evidence}</span>` : null}
+              </li>`)}</ul>
+            </div>`)}
+        </section>` : null}
+      ${gateData?.checks_unavailable ? html`<p role="status">Check selection unavailable: ${gateData.checks_unavailable}</p>` : null}
+      ${gateData?.checks?.skipped?.length ? html`<section aria-labelledby="skipped-heading">
+        <h3 id="skipped-heading">Checks currently skipped</h3>
+        <ul>${gateData.checks.skipped.map((check) => html`<li>${check.name}: ${check.reason}</li>`)}</ul>
+      </section>` : null}
       <ol class="route" aria-label="Route">
         ${placed
           ? passes.map((pass, index) => html`<${Pass} key=${index} run=${run} pass=${pass} placed=${placed.placed[index]} now=${now} />`)

@@ -449,6 +449,41 @@ fn run_with_cost(run: &Run) -> serde_json::Result<serde_json::Value> {
     Ok(value)
 }
 
+/// Enrich a single run with gate and check status. Diff and HEAD inspection is kept off list polling.
+fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
+    let mut value = run_with_cost(run)?;
+    value["stage_gates"] = serde_json::to_value(crate::run_next::stage_gates(run))?;
+    let paths = match (run.mode, &run.worktree, &run.base_commit) {
+        (None, _, _) => Err("Record the workflow mode to select checks".to_string()),
+        (Some(crate::run::Mode::Fast), _, _) => Ok(Vec::new()),
+        (_, None, _) => Err("Record the worktree to select checks".to_string()),
+        (_, _, None) => Err("Record the base commit to select checks".to_string()),
+        (_, Some(worktree), Some(base)) => {
+            use crate::pr_sync::Git;
+            let range = format!("{base}..HEAD");
+            crate::run_check::ReadOnlyGit
+                .git(
+                    std::path::Path::new(worktree),
+                    &["diff", "--name-only", &range],
+                )
+                .map(|out| out.lines().map(str::to_owned).collect())
+                .map_err(|error| {
+                    format!("Could not inspect the changed paths in {worktree}: {error}")
+                })
+        }
+    };
+    match paths {
+        Ok(paths) => {
+            value["checks"] = serde_json::to_value(crate::run_next::checks_for(
+                run.mode.expect("a mode is required for check selection"),
+                &paths,
+            ))?;
+        }
+        Err(reason) => value["checks_unavailable"] = serde_json::Value::String(reason),
+    }
+    Ok(value)
+}
+
 #[rocket::post("/api/runs", data = "<new>")]
 fn create_run(
     _access: PostAccess,
@@ -555,7 +590,7 @@ fn get_run(
         })?
         .ok_or(HttpStatus::NotFound)
         .and_then(|run| {
-            run_with_cost(&run).map(Json).map_err(|error| {
+            run_detail(&run).map(Json).map_err(|error| {
                 eprintln!("Run cost serialization error: {error}");
                 HttpStatus::InternalServerError
             })

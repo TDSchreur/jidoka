@@ -3,9 +3,10 @@
 import json
 import os
 import re
+import threading
 import unittest
 
-from dashboard_browser import run_dashboard
+from dashboard_browser import Handler, run_dashboard
 
 AT = 1794081806000  # 2026-11-07 20:03:26 UTC
 LANG = ["--lang=en-GB", "--accept-lang=en-GB"]
@@ -466,6 +467,58 @@ return {
             for part in ("muted", "body", "skill", "link"):
                 self.assertGreaterEqual(result[part], 4.5, (part, result))
             self.assertGreaterEqual(result["panelRatio"], 3, result)
+
+    def test_gate_and_skipped_check_text_is_accessible(self):
+        fixture = {**ACTIVE, "stage_gates": [{"stage": "build", "gates": [
+            {"name": "verified", "status": "failed", "description": "verification passed", "evidence": "Tests failed", "rework": 2},
+        ]}, {"stage": "finish", "gates": [{"name": "ci-passed", "status": "unknown", "description": "CI passed"}]}],
+            "checks": {"skipped": [{"name": "code-review", "reason": "fast has no check stage"}]}}
+        result = drive("""
+const dialog = await openRun('run-active');
+await wait(() => dialog.querySelector('[aria-labelledby="gate-heading"]'), 'gate status');
+return {gates: text(dialog.querySelector('[aria-labelledby="gate-heading"]')),
+        skipped: text(dialog.querySelector('[aria-labelledby="skipped-heading"]')),
+        headings: [...dialog.querySelectorAll('h3, h4')].map(text)};
+""", runs=[fixture])
+        self.assertIn("verified: failed", result["gates"])
+        self.assertIn("Evidence: Tests failed", result["gates"])
+        self.assertIn("Rework 2", result["gates"])
+        self.assertIn("ci-passed: Unknown", result["gates"])
+        self.assertIn("code-review: fast has no check stage", result["skipped"])
+        self.assertIn("Stage gates", result["headings"])
+
+    def test_slow_detail_response_survives_list_refresh(self):
+        class SlowDetail(Handler):
+            list_refreshed = threading.Event()
+            list_requests = 0
+
+            def do_GET(self):
+                if self.path == "/api/runs":
+                    type(self).list_requests += 1
+                    if type(self).list_requests >= 2:
+                        type(self).list_refreshed.set()
+                elif self.path == "/api/runs/run-active":
+                    if not type(self).list_refreshed.wait(timeout=15):
+                        self.send_error(504, "List did not refresh")
+                        return
+                super().do_GET()
+
+        fixture = {**ACTIVE, "checks_unavailable": "Delayed detail arrived"}
+        result = drive("""
+const dialog = await openRun('run-active');
+const message = await wait(() => [...dialog.querySelectorAll('[role=status]')].find((el) => text(el).includes('Delayed detail arrived')), 'delayed detail');
+return {message: text(message)};
+""", runs=[fixture], handler=SlowDetail)
+        self.assertIn("Delayed detail arrived", result["message"])
+
+    def test_unavailable_check_selection_is_explained(self):
+        fixture = {**ACTIVE, "checks_unavailable": "Could not inspect the changed paths: repository missing"}
+        result = drive("""
+const dialog = await openRun('run-active');
+const message = await wait(() => [...dialog.querySelectorAll('[role=status]')].find((el) => text(el).includes('Check selection unavailable')), 'check error');
+return {message: text(message)};
+""", runs=[fixture])
+        self.assertIn("repository missing", result["message"])
 
     def test_reduced_motion_disables_the_mark_transition(self):
         normal = drive(self.CONTRAST)

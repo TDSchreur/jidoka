@@ -113,6 +113,80 @@ fn open(run: &Run, gates: &[Gate]) -> Vec<OpenGate> {
         .collect()
 }
 
+/// A snapshot of each stage's exit gates. Unrecorded automatic checks are unknown outside
+/// the current stage; advancing does not persist their outcomes.
+#[derive(Serialize)]
+pub(crate) struct StageGates {
+    stage: Stage,
+    gates: Vec<GateStatus>,
+}
+
+#[derive(Serialize)]
+struct GateStatus {
+    name: Gate,
+    description: &'static str,
+    status: &'static str,
+    evidence: Option<String>,
+    rework: Option<u32>,
+}
+
+pub(crate) fn stage_gates(run: &Run) -> Vec<StageGates> {
+    let Some(mode) = run.mode else {
+        return Vec::new();
+    };
+    stages::stages(mode)
+        .iter()
+        .map(|&stage| {
+            let transition =
+                stages::next(mode, stage, RunStatus::Running).expect("stage belongs to mode");
+            let current = stage == run.stage && run.status != RunStatus::Done;
+            let open_gates = if current {
+                open(run, transition.gates)
+            } else {
+                Vec::new()
+            };
+            let gates = transition
+                .gates
+                .iter()
+                .map(|&gate| {
+                    let result = run.gates.iter().rev().find(|r| {
+                        r.stage == stage && r.gate == gate && (!current || r.rework == run.rework)
+                    });
+                    let status = if gate == Gate::CiPassed {
+                        "unknown"
+                    } else if current {
+                        if open_gates.iter().any(|g| g.name == gate) {
+                            if result.is_some_and(|r| !r.passed) {
+                                "failed"
+                            } else {
+                                "open"
+                            }
+                        } else {
+                            "passed"
+                        }
+                    } else if let Some(result) = result {
+                        if result.passed {
+                            "recorded-pass"
+                        } else {
+                            "failed"
+                        }
+                    } else {
+                        "unknown"
+                    };
+                    GateStatus {
+                        name: gate,
+                        description: describe(gate),
+                        status,
+                        evidence: result.and_then(|r| r.evidence.clone()),
+                        rework: result.and_then(|r| r.rework),
+                    }
+                })
+                .collect();
+            StageGates { stage, gates }
+        })
+        .collect()
+}
+
 /// Placeholder text until the stage chunks are embedded.
 fn instructions(mode: Mode, stage: Stage) -> String {
     format!(
@@ -122,7 +196,7 @@ fn instructions(mode: Mode, stage: Stage) -> String {
     )
 }
 
-fn checks_for(mode: Mode, changed_paths: &[String]) -> Checks {
+pub(crate) fn checks_for(mode: Mode, changed_paths: &[String]) -> Checks {
     let selection = checks::select(mode, changed_paths);
     Checks {
         applicable: selection
