@@ -16,7 +16,7 @@ fn iso(offset_seconds: u64) -> String {
 
 fn run(id: &str, start: u64, end: Option<u64>, sessions: &[&str]) -> Run {
     serde_json::from_value(json!({
-        "id": id, "title": "A title", "project": "/p", "stage": "build", "status": "running",
+        "id": id, "title": "A title", "gates": [], "project": "/p", "stage": "build", "status": "running",
         "timeline": [{"at": T0 + start * 1000, "stage": "build", "rework": null, "ticket": null}],
         "finished_at": end.map(|s| T0 + s * 1000), "sessions": sessions,
     }))
@@ -520,7 +520,7 @@ fn run_id(n: u64) -> String {
 /// A run with usage that is `tracked`, `partial` or missing, done or still running.
 fn pooled_run(n: u64, done: bool, usage: &str) -> Run {
     let mut value = json!({
-        "id": run_id(n), "title": format!("Run {n}"), "project": "/p", "stage": "finish",
+        "id": run_id(n), "title": format!("Run {n}"), "gates": [], "project": "/p", "stage": "finish",
         "status": if done { "done" } else { "running" },
         "timeline": [{"at": T0, "stage": "build", "rework": null, "ticket": null}],
         "finished_at": done.then_some(T0 + 100_000), "sessions": [format!("s{n}")],

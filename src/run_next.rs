@@ -49,8 +49,9 @@ pub(crate) struct Next {
     status: RunStatus,
     rework: Option<u32>,
     instructions: String,
-    /// The gates of the move to the next Stage, all open until Gate results are recorded.
+    /// The gates still open on the move to the next Stage.
     gates: Vec<OpenGate>,
+    gate_results: Vec<crate::run_gate::GateResult>,
     moves: Vec<Move>,
     /// Only in the Check stage.
     checks: Option<Checks>,
@@ -77,9 +78,35 @@ fn describe(gate: Gate) -> &'static str {
     }
 }
 
-fn open(gates: &[Gate]) -> Vec<OpenGate> {
+fn open(run: &Run, gates: &[Gate]) -> Vec<OpenGate> {
     gates
         .iter()
+        .filter(|&&gate| match gate {
+            Gate::TicketsDone => !run.tickets.iter().all(|t| t.status == TicketStatus::Done),
+            Gate::ChecksRecorded | Gate::NoActionableFindings => {
+                !crate::run_gate::latest(run, gate).is_some_and(|r| r.passed)
+            }
+            Gate::Verified => !crate::run_gate::latest(run, gate).is_some_and(|r| {
+                r.passed
+                    && crate::run_gate::head(run, &crate::run_check::ReadOnlyGit)
+                        .ok()
+                        .as_ref()
+                        == r.commit.as_ref()
+            }),
+            Gate::TicketsVerified => !run.tickets.iter().all(|t| {
+                run.gates
+                    .iter()
+                    .rev()
+                    .find(|r| {
+                        r.gate == gate
+                            && r.stage == run.stage
+                            && r.rework == run.rework
+                            && r.ticket.as_deref() == Some(&t.reference)
+                    })
+                    .is_some_and(|r| r.passed)
+            }),
+            Gate::CiPassed => true,
+        })
         .map(|&name| OpenGate {
             name,
             description: describe(name),
@@ -145,7 +172,7 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
     let mut note = None;
     match stages::next(mode, run.stage, run.status) {
         Ok(transition) => {
-            gates = open(transition.gates);
+            gates = open(run, transition.gates);
             let (kind, to) = match transition.to {
                 Destination::Stage(stage) => ("stage", Some(stage)),
                 Destination::Done => ("done", None),
@@ -153,7 +180,7 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
             moves.push(Move {
                 kind,
                 to,
-                gates: open(transition.gates),
+                gates: open(run, transition.gates),
             });
             if let Ok(rework) = stages::rework(mode, run.stage, run.status)
                 && let Destination::Stage(stage) = rework.to
@@ -161,7 +188,7 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
                 moves.push(Move {
                     kind: "rework",
                     to: Some(stage),
-                    gates: open(rework.gates),
+                    gates: open(run, rework.gates),
                 });
             }
         }
@@ -176,6 +203,12 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
         rework: run.rework,
         instructions: instructions(mode, run.stage),
         gates,
+        gate_results: run
+            .gates
+            .iter()
+            .filter(|r| r.stage == run.stage && r.rework == run.rework)
+            .cloned()
+            .collect(),
         moves,
         checks: (run.stage == Stage::Check && mode != Mode::Fast)
             .then(|| checks_for(mode, changed_paths)),
@@ -230,6 +263,24 @@ pub(crate) fn render(next: &Next) -> String {
                 "  skip  {} ({})\n",
                 entry.name,
                 shown(&entry.reason)
+            ));
+        }
+    }
+    if !next.gate_results.is_empty() {
+        out.push_str("\nRecorded gate results\n");
+        for result in &next.gate_results {
+            out.push_str(&format!(
+                "  {}  {}{}{}\n",
+                if result.passed { "pass" } else { "fail" },
+                shown_name(result.gate),
+                result
+                    .ticket
+                    .as_ref()
+                    .map_or(String::new(), |s| format!(" (ticket {})", shown(s))),
+                result
+                    .evidence
+                    .as_ref()
+                    .map_or(String::new(), |s| format!(": {}", shown(s)))
             ));
         }
     }

@@ -163,7 +163,7 @@ pub(crate) fn fetch_runs(server: &str) -> Result<Vec<Run>, Box<dyn std::error::E
     )?)?)
 }
 
-fn api_post(
+pub(crate) fn api_post(
     server: &str,
     token_file: &Path,
     route: &str,
@@ -185,7 +185,12 @@ fn api_request(
     let mut stream = TcpStream::connect(server).map_err(|e| {
         io::Error::new(e.kind(), format!("cannot connect to the Jidoka server at {server}; start it with 'jidoka dashboard': {e}"))
     })?;
-    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+    let timeout = if route.ends_with("/advance") {
+        Duration::from_secs(180)
+    } else {
+        REQUEST_TIMEOUT
+    };
+    stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
     match post {
         Some((cli_token, body)) => {
@@ -298,12 +303,61 @@ mod tests {
     }
 
     #[test]
+    fn gate_results_and_advance_survive_server_restart() {
+        let dir = TestDir::new();
+        let path = dir.0.path().join("runs.json");
+        let server = TestServer::start(&path);
+        let id = start_run(
+            &server.address,
+            &server.token_file,
+            "Review",
+            "/work",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        report_run(
+            &server.address,
+            &server.token_file,
+            &id,
+            "check",
+            "running",
+            &["--mode", "jidoka-balanced"],
+        )
+        .unwrap();
+        for gate in ["checks-recorded", "no-actionable-findings"] {
+            let body = serde_json::json!({"gate": gate, "passed":true, "evidence":"reviewed"});
+            api_post(
+                &server.address,
+                &server.token_file,
+                &format!("/api/runs/{id}/gate"),
+                &serde_json::to_vec(&body).unwrap(),
+            )
+            .unwrap();
+        }
+        api_post(
+            &server.address,
+            &server.token_file,
+            &format!("/api/runs/{id}/advance"),
+            b"{}",
+        )
+        .unwrap();
+        drop(server);
+        let restarted = TestServer::start(&path);
+        let run = fetch_run(&restarted.address, &id).unwrap();
+        assert_eq!(run.stage, crate::run::Stage::Finish);
+        assert_eq!(run.gates.len(), 2);
+        assert_eq!(run.gates[0].evidence.as_deref(), Some("reviewed"));
+    }
+
+    #[test]
     fn cli_reports_run_lifecycle_to_real_server_across_restart() {
         let dir = TestDir::new();
         let path = dir.0.path().join("runs.json");
         fs::write(
             &path,
-            r#"[{"id":"42","title":"old","project":"/work","stage":"define","status":"running"}]"#,
+            r#"[{"id":"42","title":"old","gates":[],"project":"/work","stage":"define","status":"running"}]"#,
         )
         .unwrap();
         let server = TestServer::start(&path);

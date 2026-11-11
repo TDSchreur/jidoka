@@ -330,7 +330,7 @@ mod tests {
 
     fn run_with_summary(summary: &str) -> Run {
         serde_json::from_value(serde_json::json!({
-            "id": "1", "title": "t", "project": "/p", "stage": "build", "status": "running",
+            "id": "1", "title": "t", "gates": [], "project": "/p", "stage": "build", "status": "running",
             "summaries": {"define": summary}
         }))
         .unwrap()
@@ -366,7 +366,7 @@ mod tests {
 
     fn routed_run() -> Run {
         serde_json::from_value(serde_json::json!({
-            "id": "1", "title": "t", "project": "/p", "stage": "build", "status": "running",
+            "id": "1", "title": "t", "gates": [], "project": "/p", "stage": "build", "status": "running",
             "model_routing": {
                 "agent": "claude",
                 "stages": {

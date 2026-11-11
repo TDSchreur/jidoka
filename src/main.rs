@@ -23,6 +23,7 @@ mod run;
 mod run_begin;
 mod run_check;
 mod run_cleanup;
+mod run_gate;
 mod run_next;
 mod server;
 mod setup;
@@ -37,7 +38,7 @@ use run::UPDATE_HELP;
 use server::{ADDRESS, DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...   (asks which agents when none are given on a terminal; else JIDOKA_AGENT, JIDOKA_CLAUDE_CONFIG_DIRS)\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run next <id> [--json]   (current stage, instructions, open gates, allowed moves, summaries, tickets and routed model)\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  jidoka --help | --version\n\nSetup:\n  `jidoka install` writes an install record (agents and Claude config dirs) next to the model routing policy. A command run before Setup prints a hint to run `jidoka install`; after an upgrade, the first command refreshes the installed skills automatically.";
+const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...   (asks which agents when none are given on a terminal; else JIDOKA_AGENT, JIDOKA_CLAUDE_CONFIG_DIRS)\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run next <id> [--json]   (current stage, instructions, open gates, allowed moves, summaries, tickets and routed model)\n  jidoka run gate <id> <gate> <pass|fail> [--evidence <text>]\n  jidoka run advance <id>\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  jidoka --help | --version\n\nSetup:\n  `jidoka install` writes an install record (agents and Claude config dirs) next to the model routing policy. A command run before Setup prints a hint to run `jidoka install`; after an upgrade, the first command refreshes the installed skills automatically.";
 
 /// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
 const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
@@ -157,6 +158,47 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             } else {
                 print!("{}", run_next::render(&next));
             }
+        }
+        ["run", "gate", id, gate, result, options @ ..] if !id.starts_with('-') => {
+            if !id.bytes().all(|b| b.is_ascii_digit()) {
+                return Err("Invalid run id".into());
+            }
+            let gate = serde_json::from_value(serde_json::Value::String((*gate).to_string()))
+                .map_err(|_| "Unknown gate")?;
+            let passed = match *result {
+                "pass" => true,
+                "fail" => false,
+                _ => return Err("Use pass or fail".into()),
+            };
+            let evidence = match options {
+                [] => None,
+                ["--evidence", text] => Some((*text).to_string()),
+                _ => return Err("Use --evidence <text>".into()),
+            };
+            let record = run_gate::Record {
+                gate,
+                passed,
+                evidence,
+            };
+            client::api_post(
+                &cli_address(),
+                &cli_token_file()?,
+                &format!("/api/runs/{id}/gate"),
+                &serde_json::to_vec(&record)?,
+            )?;
+            println!("Gate recorded for run {id}");
+        }
+        ["run", "advance", id] if !id.starts_with('-') => {
+            if !id.bytes().all(|b| b.is_ascii_digit()) {
+                return Err("Invalid run id".into());
+            }
+            client::api_post(
+                &cli_address(),
+                &cli_token_file()?,
+                &format!("/api/runs/{id}/advance"),
+                b"{}",
+            )?;
+            println!("Advanced run {id}");
         }
         ["run", "inspect", id, options @ ..] => {
             let json = match options {

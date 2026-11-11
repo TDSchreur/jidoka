@@ -292,7 +292,7 @@ mod tests {
     use serde_json::json;
 
     fn run(id: &str, title: &str, usage: serde_json::Value) -> Run {
-        serde_json::from_value(json!({"id": id, "title": title, "project": "/p", "stage": "finish", "status": "done", "usage": usage})).unwrap()
+        serde_json::from_value(json!({"id": id, "title": title, "gates": [], "project": "/p", "stage": "finish", "status": "done", "usage": usage})).unwrap()
     }
 
     fn priced() -> serde_json::Value {
@@ -347,7 +347,7 @@ mod tests {
             "{none}"
         );
         assert!(!none.contains("Total fresh"), "{none}");
-        let never: Run = serde_json::from_value(json!({"id": "2", "title": "Old", "project": "/p", "stage": "build", "status": "running"})).unwrap();
+        let never: Run = serde_json::from_value(json!({"id": "2", "title": "Old", "gates": [], "project": "/p", "stage": "build", "status": "running"})).unwrap();
         let text = render_run(&never);
         assert!(
             text.contains("not tracked: usage has not been collected"),
@@ -362,7 +362,7 @@ mod tests {
             run("10", "Tracked run", json!({"status": "tracked", "collected_at": 0, "rows": [{"stage": "build", "model": "m-1", "input": 5, "output": 5}]})),
             run("11", "Partial run", json!({"status": "partial", "collected_at": 0, "no_data": ["define"], "rows": [{"stage": "build", "model": "m-1", "input": 1, "output": 1}]})),
             run("12", "Lost run", json!({"status": "not-tracked", "reason": "logs were not found", "collected_at": 0})),
-            serde_json::from_value(json!({"id": "13", "title": "Never", "project": "/p", "stage": "build", "status": "running"})).unwrap(),
+            serde_json::from_value(json!({"id": "13", "title": "Never", "gates": [], "project": "/p", "stage": "build", "status": "running"})).unwrap(),
         ];
         let text = render_all(&runs);
         let per_model = text.split("Per model").nth(1).unwrap();

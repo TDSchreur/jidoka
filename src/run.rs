@@ -45,6 +45,7 @@ const MAX_REPORTS_PER_RUN: usize = 1000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Run {
+    pub(crate) gates: Vec<crate::run_gate::GateResult>,
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) project: String,
@@ -959,6 +960,7 @@ impl RunStore {
         }
         let created = updated_now()?;
         let run = Run {
+            gates: Vec::new(),
             id: id.to_string(),
             title: new.title,
             project: new.project,
@@ -1184,6 +1186,42 @@ impl RunStore {
             run: runs[index].clone(),
             warnings,
         }))
+    }
+
+    /// Atomically change a run and persist it, restoring the old value on save failure.
+    pub(crate) fn change_gate(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut Run) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let original = self
+            .get(id)
+            .map_err(|e| format!("Could not read the run: {e}"))?
+            .ok_or_else(|| format!("Run {id} not found"))?;
+        let snapshot = serde_json::to_vec(&original).map_err(|e| e.to_string())?;
+        let mut next = original;
+        change(&mut next)?;
+        let now = updated_now().map_err(|e| format!("Could not read the time: {e}"))?;
+        next.updated_at = Some(now);
+        next.agent_updated_at = Some(now);
+        mark(&mut next, now, None);
+        if next.status == RunStatus::Done {
+            next.finished_at = Some(now);
+        }
+        let mut runs = self.shared.runs.lock().map_err(|e| e.to_string())?;
+        let index = runs
+            .iter()
+            .position(|run| run.id == id)
+            .ok_or_else(|| format!("Run {id} not found"))?;
+        if serde_json::to_vec(&runs[index]).map_err(|e| e.to_string())? != snapshot {
+            return Err("The run changed while checking gates; try again".into());
+        }
+        let old = std::mem::replace(&mut runs[index], next);
+        if let Err(error) = save_runs(&self.shared.path, &runs) {
+            runs[index] = old;
+            return Err(format!("Could not save the run: {error}"));
+        }
+        Ok(())
     }
 
     /// Brings the run in line with the latest pause its log shows (`None` when it shows none). A running
