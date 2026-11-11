@@ -271,12 +271,7 @@ pub(crate) fn install_skill_files(
     var: &impl Fn(&str) -> Option<OsString>,
     out: &mut impl io::Write,
 ) -> io::Result<()> {
-    let roots = skills_roots(
-        &selection.agents.join(","),
-        &selection.config_dirs,
-        home,
-        var,
-    )?;
+    let roots = skills_roots(&selection.agents, &selection.config_dirs, home, var)?;
     for root in roots {
         install_to_reporting(&root, out)?;
     }
@@ -338,12 +333,12 @@ pub(crate) fn agent_names(agents: &str) -> Vec<&str> {
 
 /// Resolves the skills folder of every listed agent before anything is installed.
 pub(crate) fn skills_roots(
-    agents: &str,
+    agents: &[impl AsRef<str>],
     config_dirs: &[String],
     home: &Path,
     var: impl Fn(&str) -> Option<OsString>,
 ) -> io::Result<Vec<PathBuf>> {
-    let names = agent_names(agents);
+    let names: Vec<&str> = agents.iter().map(AsRef::as_ref).collect();
     if !config_dirs.is_empty() && !names.contains(&"claude") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1584,20 +1579,20 @@ mod tests {
         let home = Path::new("/home/user");
         let unset = |_: &str| None;
         assert_eq!(
-            skills_roots("codex, claude,codex", &[], home, unset).unwrap(),
+            skills_roots(&agent_names("codex, claude,codex"), &[], home, unset).unwrap(),
             [home.join(".codex/skills"), home.join(".claude/skills")]
         );
         assert_eq!(
-            skills_roots("copilot", &[], home, unset).unwrap(),
+            skills_roots(&["copilot"], &[], home, unset).unwrap(),
             [home.join(".copilot/skills")]
         );
         for invalid in ["", "codex,", "codex,vscode", "all"] {
             assert!(
-                skills_roots(invalid, &[], home, unset).is_err(),
+                skills_roots(&agent_names(invalid), &[], home, unset).is_err(),
                 "{invalid:?}"
             );
         }
-        let error = skills_roots("codex,vscode", &[], home, unset).unwrap_err();
+        let error = skills_roots(&["codex", "vscode"], &[], home, unset).unwrap_err();
         assert!(error.to_string().contains("vscode"));
     }
     fn dirs(flags: &[&str], var: Option<&str>, home: &Path) -> io::Result<Vec<PathBuf>> {
@@ -1663,9 +1658,9 @@ mod tests {
     fn config_dirs_need_the_claude_agent() {
         let home = test_abs("home/user");
         let flags = [text(test_abs("a")), text(test_abs("b"))];
-        assert!(skills_roots("codex", &flags, &home, |_: &str| None).is_err());
+        assert!(skills_roots(&["codex"], &flags, &home, |_: &str| None).is_err());
         assert_eq!(
-            skills_roots("codex,claude", &flags, &home, |_: &str| None).unwrap(),
+            skills_roots(&["codex", "claude"], &flags, &home, |_: &str| None).unwrap(),
             [
                 home.join(".codex/skills"),
                 test_abs("a").join("skills"),
@@ -1712,7 +1707,13 @@ mod tests {
             home.join("config-a").to_string_lossy().into_owned(),
             home.join("config-b").to_string_lossy().into_owned(),
         ];
-        let roots = skills_roots("codex,claude,copilot", &configs, home, |_: &str| None).unwrap();
+        let roots = skills_roots(
+            &["codex", "claude", "copilot"],
+            &configs,
+            home,
+            |_: &str| None,
+        )
+        .unwrap();
         assert_eq!(roots.len(), 4);
         roots
     }
@@ -1809,7 +1810,13 @@ mod tests {
     #[test]
     fn selector_replaces_full_and_all_entry_points_survive_reinstall_for_each_agent() {
         let home = tempfile::tempdir().unwrap();
-        let roots = skills_roots("codex,claude,copilot", &[], home.path(), |_: &str| None).unwrap();
+        let roots = skills_roots(
+            &["codex", "claude", "copilot"],
+            &[],
+            home.path(),
+            |_: &str| None,
+        )
+        .unwrap();
         for root in roots {
             fs::create_dir_all(root.join("jidoka")).unwrap();
             fs::write(

@@ -49,17 +49,31 @@ fn uninstall(
         .collect();
     let (agent_flag, dir_flags) = crate::install::parse_options(&filtered)?;
     let record_path = crate::install_record::path_in(&var);
-    let record = match (&record_path, agent_flag) {
-        (Some(path), Some(_)) => crate::install_record::read(path).ok().flatten(),
+    let flagged_agents: Option<Vec<String>> = agent_flag.map(|list| {
+        crate::install::agent_names(list)
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    });
+    let record = match (&record_path, &flagged_agents) {
+        (Some(path), Some(agents)) => match crate::install_record::read(path) {
+            Ok(record) => record,
+            Err(error) => {
+                remove_skills(agents, &dir_flags, home, &var)?;
+                println!(
+                    "Cannot read the install record {} ({error}); removed only the skills of {}. The install record, the binary and the run data were left in place.",
+                    path.display(),
+                    agents.join(", ")
+                );
+                return Ok(());
+            }
+        },
         (Some(path), None) => crate::install_record::read(path)
             .map_err(|error| format!("{error}; fix or delete that file, or pass --agent"))?,
         (None, _) => None,
     };
-    let agents: Vec<String> = match (agent_flag, &record) {
-        (Some(list), _) => crate::install::agent_names(list)
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
+    let agents: Vec<String> = match (flagged_agents, &record) {
+        (Some(agents), _) => agents,
         (None, Some(record)) => record.agents.clone(),
         (None, None) => return Err("uninstall needs --agent (no install record found)".into()),
     };
@@ -68,13 +82,18 @@ fn uninstall(
     if let Some(record) = &record {
         let recorded = |agent: &String| record.agents.contains(agent);
         if !agents.iter().any(recorded) {
-            return remove_unrecorded(&agents, &dir_flags, home, &var);
+            remove_skills(&agents, &dir_flags, home, &var)?;
+            println!(
+                "Not recorded as set up: {}. The install record, the binary and the run data were left in place.",
+                agents.join(", ")
+            );
+            return Ok(());
         }
         let recorded_dirs =
             crate::install::claude_config_dirs(&record.claude_config_dirs, home, &var)
                 .map_err(|error| format!("cannot read the recorded config directories: {error}"))?;
         if dir_flags.is_empty()
-            && agents.iter().any(|agent| agent == "claude")
+            && agents.contains(&"claude".to_string())
             && recorded(&"claude".to_string())
         {
             skill_dirs = recorded_dirs
@@ -82,17 +101,32 @@ fn uninstall(
                 .map(|dir| dir.to_string_lossy().into_owned())
                 .collect();
         }
-        remaining = remaining_record(record, &agents, &dir_flags, &recorded_dirs, home, &var)?;
+        let removed_dir_keys: Vec<String> = if dir_flags.is_empty() {
+            Vec::new()
+        } else {
+            crate::install::claude_config_dirs(&dir_flags, home, &var)
+                .map_err(|error| format!("cannot select skills: {error}"))?
+                .iter()
+                .map(|dir| dir_key(dir))
+                .collect()
+        };
+        remaining = remaining_record(record, &agents, &removed_dir_keys, &recorded_dirs);
     }
-    let roots = crate::install::skills_roots(&agents.join(","), &skill_dirs, home, &var)
+    let roots = crate::install::skills_roots(&agents, &skill_dirs, home, &var)
         .map_err(|error| format!("cannot select skills: {error}"))?;
     if let (Some(remaining), Some(record_path)) = (&remaining, &record_path) {
         crate::install_record::write(record_path, remaining)
             .map_err(|error| format!("cannot update {}: {error}", record_path.display()))?;
     }
-    for root in roots {
-        for name in crate::install::bundled_skill_names() {
-            remove(&root.join(name))?;
+    remove_skills_in(&roots)?;
+    if let Some(record) = &record {
+        let unrecorded: Vec<&str> = agents
+            .iter()
+            .filter(|agent| !record.agents.contains(agent))
+            .map(String::as_str)
+            .collect();
+        if !unrecorded.is_empty() {
+            println!("Not recorded as set up: {}.", unrecorded.join(", "));
         }
     }
     if let Some(remaining) = &remaining {
@@ -121,34 +155,31 @@ fn uninstall(
     Ok(())
 }
 
-/// Removes the skills of agents the install record does not list; the record, binary and run data stay.
-fn remove_unrecorded(
+/// Removes the bundled skills of the listed agents (in the named Claude config directories, if any).
+fn remove_skills(
     agents: &[String],
     dirs: &[String],
     home: &Path,
     var: &impl Fn(&str) -> Option<OsString>,
 ) -> Result<(), String> {
-    let roots = crate::install::skills_roots(&agents.join(","), dirs, home, var)
+    let roots = crate::install::skills_roots(agents, dirs, home, var)
         .map_err(|error| format!("cannot select skills: {error}"))?;
+    remove_skills_in(&roots)
+}
+
+fn remove_skills_in(roots: &[PathBuf]) -> Result<(), String> {
     for root in roots {
         for name in crate::install::bundled_skill_names() {
             remove(&root.join(name))?;
         }
     }
-    println!(
-        "Not recorded as set up: {}. The install record, the binary and the run data were left in place.",
-        agents.join(", ")
-    );
     Ok(())
 }
 
-/// A directory in a form that compares equal however it was spelled.
+/// A directory in a form that compares equal however it was spelled: resolved when it exists.
 fn dir_key(dir: &Path) -> String {
-    let text: String = dir
-        .components()
-        .collect::<PathBuf>()
-        .to_string_lossy()
-        .into_owned();
+    let resolved = fs::canonicalize(dir).unwrap_or_else(|_| dir.components().collect::<PathBuf>());
+    let text = resolved.to_string_lossy().into_owned();
     if cfg!(windows) {
         text.to_lowercase()
     } else {
@@ -159,15 +190,14 @@ fn dir_key(dir: &Path) -> String {
 /// The record minus what this uninstall removes, or `None` when nothing remains.
 ///
 /// Removing `claude` without naming config directories removes it from every recorded directory;
-/// naming directories keeps `claude` set up for the effective directories that were not named.
+/// naming directories (`removed_dir_keys`, as `dir_key` forms) keeps `claude` set up for the
+/// recorded directories that were not named.
 fn remaining_record(
     record: &crate::install_record::InstallRecord,
     removed_agents: &[String],
-    removed_dirs: &[String],
+    removed_dir_keys: &[String],
     recorded_dirs: &[PathBuf],
-    home: &Path,
-    var: &impl Fn(&str) -> Option<OsString>,
-) -> Result<Option<crate::install_record::InstallRecord>, String> {
+) -> Option<crate::install_record::InstallRecord> {
     let mut agents = Vec::new();
     let mut dirs = Vec::new();
     for agent in &record.agents {
@@ -176,15 +206,10 @@ fn remaining_record(
             if agent == "claude" {
                 dirs.clone_from(&record.claude_config_dirs);
             }
-        } else if agent == "claude" && !removed_dirs.is_empty() {
-            let named: Vec<String> = crate::install::claude_config_dirs(removed_dirs, home, var)
-                .map_err(|error| format!("cannot select skills: {error}"))?
-                .iter()
-                .map(|dir| dir_key(dir))
-                .collect();
+        } else if agent == "claude" && !removed_dir_keys.is_empty() {
             dirs = recorded_dirs
                 .iter()
-                .filter(|dir| !named.contains(&dir_key(dir)))
+                .filter(|dir| !removed_dir_keys.contains(&dir_key(dir)))
                 .map(|dir| dir.to_string_lossy().into_owned())
                 .collect();
             if !dirs.is_empty() {
@@ -192,13 +217,11 @@ fn remaining_record(
             }
         }
     }
-    Ok(
-        (!agents.is_empty()).then(|| crate::install_record::InstallRecord {
-            version: record.version.clone(),
-            agents,
-            claude_config_dirs: dirs,
-        }),
-    )
+    (!agents.is_empty()).then(|| crate::install_record::InstallRecord {
+        version: record.version.clone(),
+        agents,
+        claude_config_dirs: dirs,
+    })
 }
 
 /// Printed when the running binary is not the one the install script placed.
@@ -822,23 +845,76 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn a_failed_record_update_leaves_the_skills() {
         let env = Env::new();
         let dir = env.dir.path().join("cc");
         let skill = env.skill(&dir);
         let codex_skill = env.skill(&env.home().join(".codex"));
         env.record(&["claude", "codex"], &[&dir]);
-        let config = env.record_path().parent().unwrap().to_path_buf();
-        let mode = |bits| std::os::unix::fs::PermissionsExt::from_mode(bits);
-        fs::set_permissions(&config, mode(0o555)).unwrap();
-        let result = env.run(&["--agent", "codex"], None, false);
-        fs::set_permissions(&config, mode(0o755)).unwrap();
-        // Running as root ignores the permissions; then there is nothing to check.
-        if result.is_ok() {
-            return;
-        }
+        let record = env.record_path();
+        let temp = record.with_file_name(format!("install.json.{}.tmp", std::process::id()));
+        fs::create_dir(&temp).unwrap();
+        assert!(env.run(&["--agent", "codex"], None, false).is_err());
         assert!(skill.exists() && codex_skill.exists());
+    }
+
+    #[test]
+    fn an_unreadable_record_with_agent_removes_only_those_skills() {
+        let env = Env::new();
+        let codex_skill = env.skill(&env.home().join(".codex"));
+        let claude_skill = env.skill(&env.home().join(".claude"));
+        let record = env.record_path();
+        fs::create_dir_all(record.parent().unwrap()).unwrap();
+        fs::write(&record, "not json").unwrap();
+        let runs = env.runs_path();
+        Env::write(&runs);
+        let binary = installed_binary(&env);
+        env.run(&["--agent", "codex"], Some(&binary), true).unwrap();
+        assert!(!codex_skill.exists() && claude_skill.exists());
+        assert_eq!(fs::read_to_string(&record).unwrap(), "not json");
+        assert!(runs.exists() && binary.exists());
+    }
+
+    #[test]
+    fn an_unreadable_record_without_agent_is_an_error() {
+        let env = Env::new();
+        let record = env.record_path();
+        fs::create_dir_all(record.parent().unwrap()).unwrap();
+        fs::write(&record, "not json").unwrap();
+        let error = env.run(&[], None, false).unwrap_err();
+        assert!(error.contains("--agent"));
+        assert!(record.exists());
+    }
+
+    #[test]
+    fn mixed_recorded_and_unrecorded_agents_remove_both_skills() {
+        let env = Env::new();
+        let codex_skill = env.skill(&env.home().join(".codex"));
+        let copilot_skill = env.skill(&env.home().join(".copilot"));
+        env.record(&["codex", "claude"], &[]);
+        env.run(&["--agent", "codex,copilot"], None, false).unwrap();
+        assert!(!codex_skill.exists() && !copilot_skill.exists());
+        assert_eq!(recorded(&env).agents, ["claude"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_config_dir_matches_the_recorded_one() {
+        let env = Env::new();
+        let (one, two) = (env.dir.path().join("one"), env.dir.path().join("two"));
+        let one_skill = env.skill(&one);
+        let two_skill = env.skill(&two);
+        let link = env.dir.path().join("link");
+        std::os::unix::fs::symlink(&one, &link).unwrap();
+        env.record(&["claude"], &[&one, &two]);
+        env.run(
+            &["--agent", "claude", "--config-dir", link.to_str().unwrap()],
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(!one_skill.exists() && two_skill.exists());
+        assert_eq!(recorded(&env).claude_config_dirs, [two.to_str().unwrap()]);
     }
 
     #[test]
