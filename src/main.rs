@@ -786,6 +786,23 @@ mod test_support {
 mod tests {
     use super::*;
 
+    #[test]
+    fn help_lists_every_agent_wherever_it_names_one() {
+        let expected = crate::install::AGENTS.join("|");
+        let mut groups = 0;
+        for group in HELP.split('<').skip(1) {
+            let group = group.split('>').next().unwrap();
+            if crate::install::AGENTS
+                .iter()
+                .any(|name| group.contains(name))
+            {
+                assert_eq!(group, expected);
+                groups += 1;
+            }
+        }
+        assert!(groups > 0);
+    }
+
     fn lookup<'a>(
         pairs: &'a [(&'a str, &'a str)],
     ) -> impl Fn(&str) -> Option<std::ffi::OsString> + 'a {

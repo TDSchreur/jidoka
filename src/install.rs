@@ -91,16 +91,8 @@ pub(crate) struct Selection {
 /// The agents Jidoka installs skills for, in the order the install menu lists them.
 pub(crate) const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
 
-/// Fails with the list of valid agents when `name` is not one of them.
-pub(crate) fn validate_agent(name: &str) -> io::Result<()> {
-    if AGENTS.contains(&name) {
-        return Ok(());
-    }
-    Err(unknown_agent(name))
-}
-
 /// `codex, claude, or copilot`.
-fn agent_list() -> String {
+pub(crate) fn agent_list() -> String {
     let (last, rest) = AGENTS.split_last().expect("AGENTS is not empty");
     format!("{}, or {last}", rest.join(", "))
 }
@@ -113,8 +105,8 @@ fn unknown_agent(name: &str) -> io::Error {
 }
 
 /// Turns an answer such as `1,claude`, `2 3` or `all` into agent names, in the order given, without
-/// duplicates. `None` when any entry is not a number, name or `all`.
-pub(crate) fn parse_agent_choice(answer: &str) -> Option<Vec<String>> {
+/// duplicates. Fails naming the first entry that is not a number, name or `all`, and on an empty answer.
+pub(crate) fn parse_agent_choice(answer: &str) -> io::Result<Vec<String>> {
     let mut agents: Vec<String> = Vec::new();
     for entry in answer
         .split(|c: char| c == ',' || c.is_whitespace())
@@ -125,7 +117,7 @@ pub(crate) fn parse_agent_choice(answer: &str) -> Option<Vec<String>> {
             name if AGENTS.contains(&name) => vec![name],
             number => match number.parse::<usize>() {
                 Ok(n) if (1..=AGENTS.len()).contains(&n) => vec![AGENTS[n - 1]],
-                _ => return None,
+                _ => return Err(unknown_agent(number)),
             },
         };
         for name in chosen {
@@ -134,7 +126,10 @@ pub(crate) fn parse_agent_choice(answer: &str) -> Option<Vec<String>> {
             }
         }
     }
-    (!agents.is_empty()).then_some(agents)
+    if agents.is_empty() {
+        return Err(unknown_agent(""));
+    }
+    Ok(agents)
 }
 
 /// Decides the agents and Claude config directories. `--agent` and `--config-dir` win over
@@ -153,16 +148,7 @@ pub(crate) fn select(
         .map(|value| value.to_string_lossy().into_owned())
         .filter(|value| !value.trim().is_empty());
     let agents = match agent_flag.map(str::to_string).or(env_agent) {
-        Some(list) => {
-            let mut agents = Vec::new();
-            for name in list.split(',').map(str::trim) {
-                validate_agent(name)?;
-                if !agents.iter().any(|known| known == name) {
-                    agents.push(name.to_string());
-                }
-            }
-            agents
-        }
+        Some(list) => parse_agent_choice(&list)?,
         None if terminal => ask_agents(input, output)?,
         None => {
             return Err(invalid(
@@ -208,7 +194,7 @@ fn ask_agents(
                 "No answer given. Use --agent or set JIDOKA_AGENT.",
             ));
         }
-        if let Some(agents) = parse_agent_choice(&answer) {
+        if let Ok(agents) = parse_agent_choice(&answer) {
             return Ok(agents);
         }
         writeln!(output, "Invalid choice. Try again.")?;
@@ -737,6 +723,36 @@ mod tests {
         assert!(shown.is_empty() && shown_env.is_empty());
         let (selection, _) = selected(Some("nope"), &[], &[], true, "");
         assert!(selection.is_err());
+    }
+
+    #[test]
+    fn the_flag_and_the_variable_accept_what_the_prompt_accepts() {
+        let all = ["codex", "claude", "copilot"];
+        let (selection, shown) = selected(Some("all"), &[], &[], false, "");
+        assert_eq!(names(selection), all);
+        assert!(shown.is_empty());
+        let (selection, _) = selected(None, &[], &[("JIDOKA_AGENT", "all")], false, "");
+        assert_eq!(names(selection), all);
+        let (selection, _) = selected(None, &[], &[("JIDOKA_AGENT", "3, 1")], false, "");
+        assert_eq!(names(selection), ["copilot", "codex"]);
+        let (selection, _) = selected(Some("claude copilot"), &[], &[], false, "");
+        assert_eq!(names(selection), ["claude", "copilot"]);
+    }
+
+    #[test]
+    fn an_invalid_flag_or_variable_entry_names_the_token_and_the_valid_agents() {
+        for value in ["codex,nope", "9", "0", "claude,,x1"] {
+            let (selection, _) = selected(Some(value), &[], &[], true, "");
+            let message = selection.unwrap_err().to_string();
+            let bad = value.rsplit(',').next().unwrap();
+            assert!(
+                message.contains(&format!("{bad:?}"))
+                    && message.contains("codex, claude, or copilot"),
+                "{value}: {message}"
+            );
+        }
+        let (selection, _) = selected(None, &[], &[("JIDOKA_AGENT", "1,zzz")], false, "");
+        assert!(selection.unwrap_err().to_string().contains("\"zzz\""));
     }
 
     #[test]
