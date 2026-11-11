@@ -1,26 +1,16 @@
 use super::*;
-use crate::{
-    routing::{ModelChoice, ModelRouting, RoutingAgent},
-    run::NewRun,
-};
+use crate::routing::{ModelChoice, ModelRouting, RoutingAgent};
 
 fn run(mode: Mode, stage: Stage, routing: Option<ModelRouting>) -> Run {
-    let dir = std::env::temp_dir().join(format!(
-        "jidoka-next-{}-{}",
-        std::process::id(),
-        mode.name()
-    ));
-    let store = crate::run::RunStore::open(&dir.join("runs.json")).unwrap();
-    let mut run = store
-        .create(NewRun {
-            title: "Title".into(),
-            project: "/work/repo".into(),
-            repository: None,
-            session: None,
-            model_routing: routing,
-        })
-        .unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
+    let mut run: Run = serde_json::from_value(serde_json::json!({
+        "id": "1",
+        "title": "Title",
+        "project": "/work/repo",
+        "stage": "define",
+        "status": "running"
+    }))
+    .unwrap();
+    run.model_routing = routing;
     run.mode = Some(mode);
     run.stage = stage;
     run.summaries.insert(Stage::Define, "the plan".into());
