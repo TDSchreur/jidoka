@@ -131,10 +131,9 @@ fn matches(glob: &str, path: &str) -> bool {
 fn glob_match(glob: &[u8], text: &[u8]) -> bool {
     match glob {
         [] => text.is_empty(),
-        [b'*', b'*', rest @ ..] => {
-            let rest = rest.strip_prefix(b"/").unwrap_or(rest);
-            (0..=text.len()).any(|skip| glob_match(rest, &text[skip..]))
-        }
+        [b'*', b'*', b'/', rest @ ..] => (0..=text.len())
+            .any(|skip| (skip == 0 || text[skip - 1] == b'/') && glob_match(rest, &text[skip..])),
+        [b'*', b'*', rest @ ..] => (0..=text.len()).any(|skip| glob_match(rest, &text[skip..])),
         [b'*', rest @ ..] => {
             let segment = text
                 .iter()
@@ -248,5 +247,7 @@ mod tests {
         ));
         assert!(matches("**/Cargo.toml", "Cargo.toml"));
         assert!(matches("**/Cargo.toml", "crates/a/Cargo.toml"));
+        assert!(!matches("**/Cargo.toml", "myCargo.toml"));
+        assert!(!matches("**/Cargo.toml", "crates/fooCargo.toml"));
     }
 }
