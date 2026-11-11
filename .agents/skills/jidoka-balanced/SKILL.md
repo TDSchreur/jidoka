@@ -1,6 +1,6 @@
 ---
 name: jidoka-balanced
-description: Lightweight-planning jidoka workflow with tests after implementation and one code review, plus a review of each Rework. Usually entered from `jidoka`; use directly only when the user names jidoka-balanced.
+description: Lightweight-planning jidoka workflow with proportionate tests and one initial code review. Usually entered from `jidoka`; use directly only when the user names jidoka-balanced.
 ---
 
 # Jidoka Balanced
@@ -25,15 +25,15 @@ Follow Define rules in [jidoka-procedures](../jidoka-procedures/SKILL.md) for th
 
 When Build is routed (see [Model routing](../jidoka-procedures/references/model-routing.md)), hand each ticket, and a Rework's fixes, to a fresh agent on the build model as it describes; this takes precedence over the build skill's "do not require subagents".
 
-Use `jidoka-implement-balanced` to implement the request or tickets on the run's feature branch: implement each ticket, then add behavior tests through public interfaces without red-green cycles or seam approval. Work sequentially in the run's worktree; do not require other subagents, extra worktrees beyond it, a draft PR, or a code review here. Run the project's relevant checks for each ticket and fix failures before moving on. Run the full verification once after the last ticket on the candidate for Check; follow Verification in [jidoka-procedures](../jidoka-procedures/SKILL.md).
+Use `jidoka-implement-balanced` to implement the request or tickets on the run's feature branch: implement each ticket and add behavior tests as appropriate under project instructions, without red-green cycles or seam approval. Work sequentially in the run's worktree; do not require other subagents, extra worktrees beyond it, a draft PR, or a code review here. Use targeted or quick checks during iteration, following the project’s requirements; follow Verification in [jidoka-procedures](../jidoka-procedures/SKILL.md).
 
 ## Check
 
 Before Check, follow Committing for Check in [jidoka-procedures](../jidoka-procedures/SKILL.md).
 
-Use one `jidoka-code-review` pass with the base commit as the fixed point, and with the spec or acceptance criteria (the recorded spec or saved plan; pass a saved plan's absolute path as the spec source, which needs no tracker). Use `jidoka-security-review` on the same range only when the diff touches input parsing, authentication or secrets, network access, file or process handling, or dependencies; otherwise skip it and say why. Follow [Model routing](../jidoka-procedures/references/model-routing.md) for Check: it says which model and effort `jidoka-code-review`'s agents use.
+Use one `jidoka-code-review` pass with the base commit as the fixed point, and with the spec or acceptance criteria (the recorded spec or saved plan; pass a saved plan's absolute path as the spec source, which needs no tracker). Use `jidoka-security-review` on the same range when the change meaningfully affects a security boundary or sensitive data flow, such as authorization, handling secrets or untrusted input across a boundary; a touched file or dependency alone is not sufficient. Otherwise skip it and say why. Honor an explicit user request for a security review. Follow [Model routing](../jidoka-procedures/references/model-routing.md) for Check: it says which model and effort `jidoka-code-review`'s agents use.
 
-When there are no actionable findings, go to Finish. When there are, start a Rework: return to Build, fix the findings with `jidoka-implement-balanced` (implement, then add or adjust behavior tests), run the relevant checks and then the full verification on the changed code, and commit the fixes together with any new files. Then run Check again with one `jidoka-code-review` pass using the previously reviewed commit as the fixed point, so the review covers exactly the Rework's changes, together with the findings it addressed, plus `jidoka-security-review` over the same range when those changes meet the criteria above. Pin the new `HEAD` as the reviewed commit, replacing the earlier pin. Follow Reworks in [jidoka-procedures](../jidoka-procedures/SKILL.md).
+When there are no actionable findings, go to Finish. Otherwise start a Rework: return to Build, fix the findings directly, run appropriate checks, and commit the fixes including new files. The coordinator checks small, clear fixes against the findings. For substantial or uncertain fixes, repeat a scoped `jidoka-code-review` from the previously reviewed commit, including the findings addressed; repeat the security review when those fixes meaningfully affect a security boundary or sensitive data flow, or the user requests it. Record how the fixes were checked and pin the new `HEAD`. Follow Reworks in [jidoka-procedures](../jidoka-procedures/SKILL.md).
 
 ## Finish
 

@@ -25,7 +25,7 @@ Follow Define rules in [jidoka-procedures](../jidoka-procedures/SKILL.md) for th
 
 When Build is routed (see [Model routing](../jidoka-procedures/references/model-routing.md)), hand each ticket to a fresh agent on the build model as it describes; this takes precedence over the build skill's "do not require subagents".
 
-Use `jidoka-implement-fast` to implement the request or tickets on the run's feature branch without TDD. Work sequentially in the run's worktree; do not require other subagents, extra worktrees beyond it, a draft PR, or a code review here. Run the project's relevant checks as you go and fix failures before moving on. Run the full verification once after the last change and before Finish; follow Verification in [jidoka-procedures](../jidoka-procedures/SKILL.md).
+Use `jidoka-implement-fast` to implement the request or tickets on the run's feature branch without TDD. Work sequentially in the run's worktree; do not require other subagents, extra worktrees beyond it, a draft PR, or a code review here. Use targeted or quick checks during iteration, following the project's requirements; follow Verification in [jidoka-procedures](../jidoka-procedures/SKILL.md).
 
 ## Finish
 

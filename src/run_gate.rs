@@ -340,36 +340,38 @@ mod tests {
         assert_eq!(run.status, RunStatus::Done);
     }
     #[test]
-    fn full_requires_verification_for_each_ticket_and_rework() {
+    fn review_modes_verify_the_final_commit_after_review_and_rework() {
         let git = FakeGit(RefCell::new("abc1234".into()));
-        let mut run = run(Stage::Build);
-        run.mode = Some(Mode::Full);
-        for reference in ["/tmp/ticket.md", "https://example.com/2"] {
+        for mode in [Mode::Balanced, Mode::Full] {
+            *git.0.borrow_mut() = "abc1234".into();
+            let mut run = run(Stage::Build);
+            run.mode = Some(mode);
+            run.rework = Some(1);
             run.tickets.push(Ticket {
-                reference: reference.into(),
+                reference: "ticket".into(),
                 title: "ticket".into(),
                 status: TicketStatus::Done,
             });
+            advance(&mut run, &git, &host()).unwrap();
+            assert_eq!(run.stage, Stage::Check);
+            record(&mut run, result(Gate::ChecksRecorded, true), &git).unwrap();
+            record(&mut run, result(Gate::NoActionableFindings, true), &git).unwrap();
+            assert!(
+                advance(&mut run, &git, &host())
+                    .unwrap_err()
+                    .contains("verified")
+            );
+            record(&mut run, result(Gate::Verified, true), &git).unwrap();
+            *git.0.borrow_mut() = "def5678".into();
+            assert!(
+                advance(&mut run, &git, &host())
+                    .unwrap_err()
+                    .contains("verified")
+            );
+            record(&mut run, result(Gate::Verified, true), &git).unwrap();
+            advance(&mut run, &git, &host()).unwrap();
+            assert_eq!(run.stage, Stage::Finish);
         }
-        record(&mut run, result(Gate::Verified, true), &git).unwrap();
-        run.current_ticket = Some(run.tickets[0].reference.clone());
-        record(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
-        assert!(
-            advance(&mut run, &git, &host())
-                .unwrap_err()
-                .contains("tickets-verified")
-        );
-        run.current_ticket = Some(run.tickets[1].reference.clone());
-        record(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
-        let mut reworked = run.clone();
-        reworked.rework = Some(1);
-        let error = advance(&mut reworked, &git, &host()).unwrap_err();
-        assert!(error.contains("verified:"));
-        assert!(!error.contains("tickets-verified:"));
-        record(&mut reworked, result(Gate::Verified, true), &git).unwrap();
-        advance(&mut reworked, &git, &host()).unwrap();
-        advance(&mut run, &git, &host()).unwrap();
-        assert_eq!(run.stage, Stage::Check);
     }
     #[derive(Default)]
     struct Clock(std::cell::Cell<Duration>);
@@ -507,6 +509,7 @@ mod tests {
         record(&mut run, result(Gate::NoActionableFindings, false), &git).unwrap();
         assert!(advance(&mut run, &git, &host()).is_err());
         record(&mut run, result(Gate::NoActionableFindings, true), &git).unwrap();
+        record(&mut run, result(Gate::Verified, true), &git).unwrap();
         advance(&mut run, &git, &host()).unwrap();
         assert_eq!(run.stage, Stage::Finish);
     }

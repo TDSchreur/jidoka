@@ -76,9 +76,9 @@ fn balanced_check_offers_advance_and_rework_with_applicable_checks() {
 }
 
 #[test]
-fn full_build_requires_per_ticket_verification_and_finish_ends_in_done() {
+fn full_build_requires_tickets_and_finish_ends_in_done() {
     let build_next = build(&run(Mode::Full, Stage::Build, None), &[]).unwrap();
-    assert!(names(&build_next.gates).contains(&Gate::TicketsVerified));
+    assert_eq!(names(&build_next.gates), [Gate::TicketsDone]);
     let finish = build(&run(Mode::Full, Stage::Finish, None), &[]).unwrap();
     assert_eq!(finish.moves[0].kind, "done");
     assert_eq!(finish.moves[0].to, None);
@@ -150,7 +150,10 @@ fn next_shows_recorded_results_and_only_open_review_gates() {
         ticket: None,
     });
     let next = build(&run, &[]).unwrap();
-    assert_eq!(names(&next.gates), [Gate::NoActionableFindings]);
+    assert_eq!(
+        names(&next.gates),
+        [Gate::NoActionableFindings, Gate::Verified]
+    );
     assert!(render(&next).contains("pass  checks-recorded: reviewed"));
     assert_eq!(
         serde_json::to_value(&next).unwrap()["gate_results"][0]["passed"],
@@ -159,6 +162,10 @@ fn next_shows_recorded_results_and_only_open_review_gates() {
     run.rework = Some(1);
     assert_eq!(
         names(&build(&run, &[]).unwrap().gates),
-        [Gate::ChecksRecorded, Gate::NoActionableFindings]
+        [
+            Gate::ChecksRecorded,
+            Gate::NoActionableFindings,
+            Gate::Verified
+        ]
     );
 }

@@ -1,6 +1,6 @@
 ---
 name: jidoka-full
-description: Test-first jidoka workflow with verification after each ticket and both reviews. Usually entered from `jidoka`; use directly only when the user names jidoka-full.
+description: Detailed jidoka workflow with project-directed testing and risk-based reviews. Usually entered from `jidoka`; use directly only when the user names jidoka-full.
 ---
 
 # Jidoka Full
@@ -27,15 +27,15 @@ Follow Define rules in [jidoka-procedures](../jidoka-procedures/SKILL.md) for th
 
 When Build is routed (see [Model routing](../jidoka-procedures/references/model-routing.md)), hand each ticket, and a Rework's fixes, to a fresh agent on the build model as it describes; this takes precedence over the build skill's "do not require subagents".
 
-Use `jidoka-implement` to implement the tickets on the run's feature branch, building each ticket test-first with `jidoka-tdd`. Work sequentially in the run's worktree. Run the project's relevant checks and fix failures before moving on. Run the full verification after every ticket; follow Verification in [jidoka-procedures](../jidoka-procedures/SKILL.md).
+Use `jidoka-implement` to implement the tickets on the run's feature branch. Use test-first development when allowed by project instructions; otherwise follow the project's test approach. Work sequentially in the run's worktree. Use targeted or quick checks during iteration, following the project's requirements; follow Verification in [jidoka-procedures](../jidoka-procedures/SKILL.md).
 
 ## Check
 
 Before Check, follow Committing for Check in [jidoka-procedures](../jidoka-procedures/SKILL.md).
 
-Use `jidoka-code-review` with the base commit as the fixed point, and with the spec, then use `jidoka-security-review` on the same range (base commit to `HEAD`). Follow [Model routing](../jidoka-procedures/references/model-routing.md) for Check: it says which model and effort `jidoka-code-review`'s agents use. When there are no actionable findings, go to Finish.
+Use `jidoka-code-review` with the base commit as the fixed point, and with the spec. Use `jidoka-security-review` on the same range when the change meaningfully affects a security boundary or sensitive data flow, such as authorization or handling secrets or untrusted input across a boundary; a touched file or dependency alone is not sufficient. Otherwise skip it and say why. Honor an explicit user request for a security review. Follow [Model routing](../jidoka-procedures/references/model-routing.md) for Check: it says which model and effort `jidoka-code-review`'s agents use. When there are no actionable findings, go to Finish.
 
-When there are actionable findings, start a Rework: return to Build, fix the findings test-first with `jidoka-tdd`, run the relevant checks and then the full verification, and commit the fixes together with any new files. Then run Check again with both reviews (`jidoka-code-review` and `jidoka-security-review`), each using the previously reviewed commit as the fixed point so the review covers exactly the Rework's changes, together with the findings it addressed. Pin the new `HEAD` as the reviewed commit, replacing the earlier pin. Follow Reworks in [jidoka-procedures](../jidoka-procedures/SKILL.md).
+When there are actionable findings, start a Rework: return to Build, fix the findings using the project’s test approach, run appropriate checks, and commit the fixes together with any new files. The coordinator checks small, clear fixes against the findings. For substantial or uncertain fixes, repeat a scoped `jidoka-code-review` from the previously reviewed commit, including the findings addressed; repeat the security review when those fixes meaningfully affect a security boundary or sensitive data flow, or the user requests it. Record how the fixes were checked and pin the new `HEAD`. Follow Reworks in [jidoka-procedures](../jidoka-procedures/SKILL.md).
 
 ## Finish
 
