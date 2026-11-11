@@ -127,8 +127,13 @@ impl Lock {
                             .write(true)
                             .create_new(true)
                             .open(&path);
-                        if claimed.is_ok() && fs::rename(&aside, &path).is_err() {
-                            let _ = fs::remove_file(&path);
+                        // Close the placeholder before replacing it: Windows cannot replace a
+                        // file that is open. If the rename fails, the placeholder stays as an
+                        // empty fresh lock that keeps the path held, until its holder's drop
+                        // removes it or it goes stale.
+                        if claimed.is_ok() {
+                            drop(claimed);
+                            let _ = fs::rename(&aside, &path);
                         }
                         let _ = fs::remove_file(&aside);
                         return None;

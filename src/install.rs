@@ -104,8 +104,11 @@ fn unknown_agent(name: &str) -> io::Error {
     )
 }
 
-/// Turns an answer such as `1,claude`, `2 3` or `all` into agent names, in the order given, without
-/// duplicates. Fails naming the first entry that is not a number, name or `all`, and on an empty answer.
+/// Turns an answer such as `1,claude`, `2 3` or `all` into agent names, without duplicates.
+///
+/// # Errors
+///
+/// Fails naming the first entry that is not a number, name or `all`, and on an empty answer.
 pub(crate) fn parse_agent_choice(answer: &str) -> io::Result<Vec<String>> {
     let mut agents: Vec<String> = Vec::new();
     for entry in answer
@@ -127,7 +130,10 @@ pub(crate) fn parse_agent_choice(answer: &str) -> io::Result<Vec<String>> {
         }
     }
     if agents.is_empty() {
-        return Err(unknown_agent(""));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("no agent given; use {}", agent_list()),
+        ));
     }
     Ok(agents)
 }
@@ -304,17 +310,6 @@ pub(crate) fn create_default_policy(
         )
     })?;
     Ok((path, done))
-}
-
-/// Splits a comma-separated `--agent` value into trimmed names without duplicates.
-pub(crate) fn agent_names(agents: &str) -> Vec<&str> {
-    let mut names: Vec<&str> = Vec::new();
-    for name in agents.split(',').map(str::trim) {
-        if !names.contains(&name) {
-            names.push(name);
-        }
-    }
-    names
 }
 
 /// Resolves the skills folder of every listed agent before anything is installed.
@@ -703,6 +698,18 @@ mod tests {
         assert_eq!(shown.matches("Invalid choice").count(), 3);
         let (selection, _) = selected(None, &[], &[], true, "");
         assert!(selection.is_err());
+    }
+
+    #[test]
+    fn an_empty_agent_list_says_no_agent_was_given() {
+        for flag in ["", ",", " "] {
+            let (selection, _) = selected(Some(flag), &[], &[], false, "");
+            let message = selection.unwrap_err().to_string();
+            assert_eq!(
+                message, "no agent given; use codex, claude, or copilot",
+                "{flag:?}"
+            );
+        }
     }
 
     #[test]
@@ -1595,19 +1602,19 @@ mod tests {
         let home = Path::new("/home/user");
         let unset = |_: &str| None;
         assert_eq!(
-            skills_roots(&agent_names("codex, claude,codex"), &[], home, unset).unwrap(),
+            skills_roots(
+                &parse_agent_choice("codex, claude,codex").unwrap(),
+                &[],
+                home,
+                unset
+            )
+            .unwrap(),
             [home.join(".codex/skills"), home.join(".claude/skills")]
         );
         assert_eq!(
             skills_roots(&["copilot"], &[], home, unset).unwrap(),
             [home.join(".copilot/skills")]
         );
-        for invalid in ["", "codex,", "codex,vscode", "all"] {
-            assert!(
-                skills_roots(&agent_names(invalid), &[], home, unset).is_err(),
-                "{invalid:?}"
-            );
-        }
         let error = skills_roots(&["codex", "vscode"], &[], home, unset).unwrap_err();
         assert!(error.to_string().contains("vscode"));
     }

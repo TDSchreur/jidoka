@@ -49,12 +49,10 @@ fn uninstall(
         .collect();
     let (agent_flag, dir_flags) = crate::install::parse_options(&filtered)?;
     let record_path = crate::install_record::path_in(&var);
-    let flagged_agents: Option<Vec<String>> = agent_flag.map(|list| {
-        crate::install::agent_names(list)
-            .into_iter()
-            .map(str::to_string)
-            .collect()
-    });
+    let flagged_agents: Option<Vec<String>> = agent_flag
+        .map(crate::install::parse_agent_choice)
+        .transpose()
+        .map_err(|error| error.to_string())?;
     let record = match (&record_path, &flagged_agents) {
         (Some(path), Some(agents)) => match crate::install_record::read(path) {
             Ok(record) => record,
@@ -93,8 +91,8 @@ fn uninstall(
             crate::install::claude_config_dirs(&record.claude_config_dirs, home, &var)
                 .map_err(|error| format!("cannot read the recorded config directories: {error}"))?;
         if dir_flags.is_empty()
-            && agents.contains(&"claude".to_string())
-            && recorded(&"claude".to_string())
+            && agents.iter().any(|agent| agent == "claude")
+            && record.agents.iter().any(|agent| agent == "claude")
         {
             skill_dirs = recorded_dirs
                 .iter()
@@ -167,6 +165,7 @@ fn remove_skills(
     remove_skills_in(&roots)
 }
 
+/// Removes every bundled skill from each of the skills folders.
 fn remove_skills_in(roots: &[PathBuf]) -> Result<(), String> {
     for root in roots {
         for name in crate::install::bundled_skill_names() {
@@ -841,6 +840,19 @@ mod tests {
         env.record(&["codex", "claude"], &[&dir]);
         env.run(&["--agent", "codex, claude"], None, false).unwrap();
         assert!(!skill.exists() && !codex_skill.exists());
+        assert!(!env.record_path().exists());
+    }
+
+    #[test]
+    fn agent_all_removes_every_agents_skills() {
+        let env = Env::new();
+        let dir = env.dir.path().join("cc");
+        let claude = env.skill(&dir);
+        let codex = env.skill(&env.home().join(".codex"));
+        let copilot = env.skill(&env.home().join(".copilot"));
+        env.record(&["codex", "claude", "copilot"], &[&dir]);
+        env.run(&["--agent", "all"], None, false).unwrap();
+        assert!(!claude.exists() && !codex.exists() && !copilot.exists());
         assert!(!env.record_path().exists());
     }
 
