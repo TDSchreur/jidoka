@@ -225,16 +225,16 @@ fn ci_passed(
     };
     let result = pr_wait::wait(Some(url), &options, tool, clock, &mut |_| {}, &mut |_| {})
         .map_err(|error| format!("Could not check CI: {}", error.0))?;
-    require(
-        result.head == commit,
-        "The pull request head does not match the worktree HEAD",
-    )?;
     if result.outcome == pr_wait::Outcome::NotOpen {
         return Err(format!(
             "Pull request closed or merged while checking CI; run `jidoka run sync {}` to reconcile the run",
             run.id
         ));
     }
+    require(
+        result.head == commit,
+        "The pull request head does not match the worktree HEAD",
+    )?;
     require(
         matches!(
             result.outcome,
@@ -356,50 +356,55 @@ mod tests {
 
     #[test]
     fn full_run_walks_stages_and_rework_with_ticket_verification() {
+        use crate::run::{RunStore, parse_update};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("runs.json");
         let git = FakeGit(RefCell::new("abc1234".into()));
-        let mut run = run(Stage::Define);
-        run.mode = Some(Mode::Full);
-        for reference in ["one", "two"] {
-            run.tickets.push(Ticket {
-                reference: reference.into(),
-                title: reference.into(),
-                status: TicketStatus::Pending,
-            });
-        }
-        advance(&mut run, &git, &host()).unwrap();
-        let next = serde_json::to_value(crate::run_next::build(&run, &[]).unwrap()).unwrap();
+        let mut initial = run(Stage::Define);
+        initial.mode = Some(Mode::Full);
+        std::fs::write(&path, serde_json::to_vec(&vec![initial]).unwrap()).unwrap();
+        let store = RunStore::open(&path).unwrap();
+        let update = |stage: &str, options: &[&str]| {
+            store
+                .update("1", parse_update(stage, "running", options).unwrap())
+                .unwrap()
+                .unwrap();
+        };
+        let gate = |record| store.change_gate("1", |run| super::record(run, record, &git));
+        let advance = || store.change_gate("1", |run| super::advance(run, &git, &host()));
+        update(
+            "define",
+            &[
+                "--ticket",
+                "https://example.com/1 One",
+                "--ticket",
+                "https://example.com/2 Two",
+            ],
+        );
+        advance().unwrap();
+        let current = store.get("1").unwrap().unwrap();
+        let next = serde_json::to_value(crate::run_next::build(&current, &[]).unwrap()).unwrap();
         assert!(
             next["instructions"]
                 .as_str()
                 .unwrap()
                 .contains("tickets-verified pass")
         );
-        for reference in ["one", "two"] {
-            run.current_ticket = Some(reference.into());
-            record(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
-            run.tickets
-                .iter_mut()
-                .find(|ticket| ticket.reference == reference)
-                .unwrap()
-                .status = TicketStatus::Done;
+        for reference in ["https://example.com/1", "https://example.com/2"] {
+            update("build", &["--current-ticket", reference]);
+            gate(result(Gate::TicketsVerified, true)).unwrap();
+            update("build", &["--ticket-status", &format!("{reference}=done")]);
         }
-        advance(&mut run, &git, &host()).unwrap();
-        assert_eq!(run.stage, Stage::Check);
-        assert_eq!(
-            stages::rework(Mode::Full, run.stage, run.status)
-                .unwrap()
-                .to,
-            Destination::Stage(Stage::Build)
-        );
-        run.stage = Stage::Build;
-        run.rework = Some(1);
-        advance(&mut run, &git, &host()).unwrap();
-        record(&mut run, result(Gate::ChecksRecorded, true), &git).unwrap();
-        record(&mut run, result(Gate::NoActionableFindings, true), &git).unwrap();
-        record(&mut run, result(Gate::Verified, true), &git).unwrap();
-        advance(&mut run, &git, &host()).unwrap();
-        advance(&mut run, &git, &host()).unwrap();
-        assert_eq!(run.status, RunStatus::Done);
+        advance().unwrap();
+        assert_eq!(store.get("1").unwrap().unwrap().stage, Stage::Check);
+        update("build", &["--rework", "1"]);
+        advance().unwrap();
+        gate(result(Gate::ChecksRecorded, true)).unwrap();
+        gate(result(Gate::NoActionableFindings, true)).unwrap();
+        gate(result(Gate::Verified, true)).unwrap();
+        advance().unwrap();
+        advance().unwrap();
+        assert_eq!(store.get("1").unwrap().unwrap().status, RunStatus::Done);
     }
 
     #[test]
@@ -416,6 +421,30 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("jidoka run sync 1"));
+        assert_eq!(run.status, RunStatus::Running);
+    }
+
+    #[test]
+    fn merge_during_ci_check_reports_sync_even_if_the_head_changed() {
+        struct MergedDuringWait;
+        impl pr_wait::Gh for MergedDuringWait {
+            fn run(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+                let value = if args.contains(&"state,isDraft") {
+                    serde_json::json!({"state":"OPEN","isDraft":false})
+                } else {
+                    serde_json::json!({"state":"MERGED","headRefOid":"new-head","mergeStateStatus":"CLEAN","baseRefName":"main"})
+                };
+                Ok(GhOutput {
+                    code: Some(0),
+                    stdout: value.to_string(),
+                    stderr: String::new(),
+                })
+            }
+        }
+        let git = FakeGit(RefCell::new("abc1234".into()));
+        let mut run = run(Stage::Finish);
+        let error = advance(&mut run, &git, &MergedDuringWait).unwrap_err();
+        assert!(error.contains("jidoka run sync 1"), "{error}");
         assert_eq!(run.status, RunStatus::Running);
     }
 
