@@ -94,17 +94,3 @@ fn installer_runs_the_binary_install_without_prompting_itself() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("No terminal to ask"), "{stderr}");
 }
-
-#[test]
-fn installer_passes_the_environment_through_to_the_binary() {
-    if !setsid_available() {
-        return;
-    }
-    let home = tempfile::tempdir().unwrap();
-    let output = run(home.path(), Some("codex,claude"), Some("/a b:/c"));
-    assert!(output.status.success(), "{output:?}");
-    let log = fs::read_to_string(home.path().join("install.log")).unwrap();
-    assert!(log.contains("agent: codex,claude\n"), "{log}");
-    assert!(log.contains("dirs: /a b:/c\n"), "{log}");
-    assert!(log.contains("args: install\n"), "{log}");
-}

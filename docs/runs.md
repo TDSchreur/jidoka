@@ -47,7 +47,7 @@ Besides its stage and status, a run records the context a new session needs to c
 | `--summary <stage>=<text>` | A short summary per stage, kept after later stages begin. |
 | `--blocking-reason <text>` | The status reason of a blocked run. |
 
-Options left out keep their value, each has a `--clear-*` form (`--clear-tickets`, `--clear-summary <stage>`), and an inconsistent update is refused with the reason and changes nothing. A run recorded before this existed shows its missing context as unknown.
+Options left out keep their value, each has a `--clear-*` form (`--clear-tickets`, `--clear-summary <stage>`), and an inconsistent update is refused with the reason and changes nothing.
 
 `jidoka run inspect <id>` prints a run's context (`--json` for the stored record). The dashboard shows a run's detail as a route card that follows the run along Define, Build, Check and Finish (the worktree and base commit stay in `jidoka run inspect`), shows ticket progress and pull request and spec links on each run's row, and counts the runs of every linked worktree under their repository. A local spec or ticket (a recorded reference that is not an http(s) link, for example from the local tracker) gets a View link, and a local ticket's title opens it, in the Reader: a dialog over the detail that shows the Markdown file rendered. Agents record such references as absolute paths so the dashboard can find them.
 

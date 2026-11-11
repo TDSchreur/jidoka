@@ -2,8 +2,7 @@
 //! `jidoka doctor --create-model-routing` writes.
 //!
 //! The file has an `agents` object with an entry per agent (`claude`, `codex`, `copilot`), each with a `stages` map
-//! from Stage to model and effort and an optional `enabled`. The earlier format (roles and tasks, or the
-//! single-agent form) is recognised only to replace it with the starter (see `install_starter`) and to tell the user to do so.
+//! from Stage to model and effort and an optional `enabled`.
 //!
 //! A run starts in one agent. The caller must say which (`--agent`), and the run records only that agent's
 //! policy: another agent's policy is never used instead.
@@ -350,36 +349,6 @@ impl Agents {
     }
 }
 
-/// Whether `text` is a policy file in the earlier format: roles and tasks in an agent entry, or the
-/// single-agent form (`agent`, `roles` or `tasks` at the top). Text that is not JSON is not old-format.
-#[cfg(test)]
-pub(crate) fn is_old_format(text: &str) -> bool {
-    serde_json::from_str::<Value>(text).is_ok_and(|value| old_format(&value))
-}
-
-/// The top-level keys that mark the single-agent (earlier) format.
-const OLD_TOP_KEYS: [&str; 3] = ["agent", "roles", "tasks"];
-
-/// The keys in an agent entry that mark the earlier format.
-const OLD_ENTRY_KEYS: [&str; 2] = ["roles", "tasks"];
-
-fn old_top_level(value: &Value) -> bool {
-    OLD_TOP_KEYS.iter().any(|key| value.get(key).is_some())
-}
-
-fn old_format(value: &Value) -> bool {
-    let top = old_top_level(value);
-    let entries = value
-        .get("agents")
-        .and_then(Value::as_object)
-        .is_some_and(|agents| {
-            agents
-                .values()
-                .any(|entry| OLD_ENTRY_KEYS.iter().any(|key| entry.get(key).is_some()))
-        });
-    top || entries
-}
-
 /// Where the user-level policy lives: `$XDG_CONFIG_HOME/jidoka/` or `~/.config/jidoka/`,
 /// and `%APPDATA%\jidoka\` on Windows.
 pub(crate) fn policy_path_in(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
@@ -438,11 +407,6 @@ pub(crate) fn read(path: &Path) -> Result<Policy, String> {
     // A switched-off policy is not checked, so a file can be half edited while it is off.
     if value.get("enabled") == Some(&Value::Bool(false)) {
         return Ok(Policy::Off);
-    }
-    if old_format(&value) {
-        return Err(fail(
-            "the model-routing policy is in the old format (roles and tasks, or a single agent); run `jidoka install` or `jidoka doctor --create-model-routing` to replace it with the per-stage starter (your custom values are not migrated)".into(),
-        ));
     }
     // Read again from the text: the typed form refuses repeated keys, which a parsed value would not show.
     let file: File = serde_json::from_str(&text)
@@ -526,67 +490,21 @@ fn starter_stages(agent: RoutingAgent) -> StarterStages {
     }
 }
 
-/// Which switches of a replaced old-format file are off; they are carried into the starter.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub(crate) struct Off {
-    all: bool,
-    claude: bool,
-    codex: bool,
-}
-
-impl Off {
-    /// Only the agents written to the starter carry a switch.
-    fn within(self, agents: &[RoutingAgent]) -> Self {
-        Self {
-            all: self.all,
-            claude: self.claude && agents.contains(&RoutingAgent::Claude),
-            codex: self.codex && agents.contains(&RoutingAgent::Codex),
-        }
-    }
-
-    fn agents(self) -> impl Iterator<Item = RoutingAgent> {
-        [
-            (self.claude, RoutingAgent::Claude),
-            (self.codex, RoutingAgent::Codex),
-        ]
-        .into_iter()
-        .filter_map(|(is_off, agent)| is_off.then_some(agent))
-    }
-
-    fn next_steps(self) -> String {
-        if self == Self::default() {
-            return "Edit the models and efforts, or set \"enabled\": false to switch it off."
-                .to_string();
-        }
-        let mut text = String::from("Edit the models and efforts.");
-        if self.all {
-            text.push_str(" The whole policy is switched off, so runs do not use it yet; remove \"enabled\": false at the top (or set it to true) to switch it on.");
-        }
-        for agent in self.agents() {
-            text.push_str(&format!(
-                " The entry for {} is switched off; remove its \"enabled\": false (or set it to true) to switch it on.",
-                agent.name()
-            ));
-        }
-        text
-    }
-}
-
 /// A starting policy written by `jidoka doctor --create-model-routing`: an entry routing all four Stages
-/// for each agent in `agents`, switched on except what `off` carries over.
-fn starter(agents: &[RoutingAgent], off: Off) -> String {
-    let entry = |agent, is_off: bool| {
+/// for each agent in `agents`.
+fn starter(agents: &[RoutingAgent]) -> String {
+    let entry = |agent| {
         agents.contains(&agent).then(|| StarterEntry {
-            enabled: !is_off,
+            enabled: true,
             stages: starter_stages(agent),
         })
     };
     let file = StarterFile {
-        enabled: !off.all,
+        enabled: true,
         agents: StarterAgents {
-            claude: entry(RoutingAgent::Claude, off.claude),
-            codex: entry(RoutingAgent::Codex, off.codex),
-            copilot: entry(RoutingAgent::Copilot, false),
+            claude: entry(RoutingAgent::Claude),
+            codex: entry(RoutingAgent::Codex),
+            copilot: entry(RoutingAgent::Copilot),
         },
     };
     let mut text = serde_json::to_string_pretty(&file).expect("the starter serializes");
@@ -594,107 +512,21 @@ fn starter(agents: &[RoutingAgent], off: Off) -> String {
     text
 }
 
-/// What `install_starter` did.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Starter {
-    Created,
-    /// An old-format file was deleted and the starter written in its place, with these switches off.
-    Replaced(Off),
-    /// Something is there that is not an old-format file: it is untouched.
-    Left,
-}
-
-impl Starter {
-    /// What the user is told about the new starter at `shown`: what was done, then `about` (a sentence on
-    /// what the starter is, when the caller has one), then how to edit it or switch it off.
-    pub(crate) fn created_message(shown: &str, about: Option<&str>) -> String {
-        Self::compose(
-            format!("Created model routing policy {shown}"),
-            about,
-            Off::default(),
-        )
-    }
-
-    /// What the user is told about the starter at `shown` that replaced an old-format file: what was
-    /// done, then `about`, then what is switched off and how to switch it on.
-    pub(crate) fn replaced_message(shown: &str, off: Off, about: Option<&str>) -> String {
-        Self::compose(
-            format!("Replaced old-format model routing policy {shown} with the per-stage starter"),
-            about,
-            off,
-        )
-    }
-
-    fn compose(done: String, about: Option<&str>, off: Off) -> String {
-        let mut message = format!("{done}.");
-        if let Some(about) = about {
-            message.push(' ');
-            message.push_str(about);
-        }
+/// What the user is told about the new starter at `shown`: what was done, then `about` (a sentence on
+/// what the starter is, when the caller has one), then how to edit it or switch it off.
+pub(crate) fn created_message(shown: &str, about: Option<&str>) -> String {
+    let mut message = format!("Created model routing policy {shown}.");
+    if let Some(about) = about {
         message.push(' ');
-        message.push_str(&off.next_steps());
-        message
+        message.push_str(about);
     }
-}
-
-/// The switches of the file at `path` when it is a regular file (not a link) within the size cap and in
-/// the old format, whether switched on or off: such a file is replaced and its switches carried over.
-fn old_file_switches(path: &Path) -> Option<Off> {
-    let metadata = fs::symlink_metadata(path).ok()?;
-    if !metadata.is_file() || metadata.len() > MAX_POLICY_BYTES {
-        return None;
-    }
-    let mut file = fs::File::open(path).ok()?;
-    // Checked again on the open file, and read bounded, as `read` does.
-    if !file.metadata().is_ok_and(|opened| opened.is_file()) {
-        return None;
-    }
-    let mut text = String::new();
-    (&mut file)
-        .take(MAX_POLICY_BYTES + 1)
-        .read_to_string(&mut text)
-        .ok()?;
-    if text.len() as u64 > MAX_POLICY_BYTES {
-        return None;
-    }
-    let value: Value = serde_json::from_str(&text).ok()?;
-    if !old_format(&value) {
-        return None;
-    }
-    let is_off = |pointer: &str| value.pointer(pointer) == Some(&Value::Bool(false));
-    // The single-agent form has no agent entries; only its top-level switch applies.
-    let single = old_top_level(&value);
-    Some(Off {
-        all: is_off("/enabled"),
-        claude: !single && is_off("/agents/claude/enabled"),
-        codex: !single && is_off("/agents/codex/enabled"),
-    })
-}
-
-/// Like `create_starter`, but an old-format file at `path` is deleted first so the starter replaces it,
-/// keeping its switched-off policy or agents off. A current-format, unrecognised, unreadable or
-/// non-regular file (a link included) is left alone.
-pub(crate) fn install_starter(path: &Path, agents: &[RoutingAgent]) -> io::Result<Starter> {
-    let old = old_file_switches(path).map(|off| off.within(agents));
-    if old.is_some() {
-        fs::remove_file(path)?;
-    }
-    let created = write_starter(path, agents, old.unwrap_or_default())?;
-    Ok(match (created, old) {
-        (true, Some(off)) => Starter::Replaced(off),
-        (true, None) => Starter::Created,
-        (false, _) => Starter::Left,
-    })
+    message.push_str(" Edit the models and efforts, or set \"enabled\": false to switch it off.");
+    message
 }
 
 /// Writes the starter for `agents` to `path`, creating its folder. Whatever is already at `path`, even a
 /// link that points nowhere, is left alone and `false` is returned.
-#[cfg(test)]
 pub(crate) fn create_starter(path: &Path, agents: &[RoutingAgent]) -> io::Result<bool> {
-    write_starter(path, agents, Off::default())
-}
-
-fn write_starter(path: &Path, agents: &[RoutingAgent], off: Off) -> io::Result<bool> {
     if let Some(folder) = path.parent() {
         fs::create_dir_all(folder)?;
     }
@@ -705,7 +537,7 @@ fn write_starter(path: &Path, agents: &[RoutingAgent], off: Off) -> io::Result<b
     {
         Ok(mut file) => {
             // A half-written starter would look like the user's own file and block every run start.
-            if let Err(error) = file.write_all(starter(agents, off).as_bytes()) {
+            if let Err(error) = file.write_all(starter(agents).as_bytes()) {
                 drop(file);
                 return Err(match fs::remove_file(path) {
                     Ok(()) => error,

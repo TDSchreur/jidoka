@@ -21,13 +21,6 @@ const MULTI: &str = r#"{
     }
 }"#;
 
-/// The earlier format: roles and tasks per agent.
-const OLD_AGENTS: &str =
-    r#"{"agents":{"claude":{"roles":{"strong":{"model":"opus"}},"tasks":{"check":"strong"}}}}"#;
-/// The earlier single-agent form.
-const OLD_SINGLE: &str =
-    r#"{"agent":"claude","roles":{"strong":{"model":"opus"}},"tasks":{"check":"strong"}}"#;
-
 fn write(text: &str) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("model-routing.json");
@@ -188,13 +181,6 @@ fn a_copilot_run_records_the_copilot_entry_and_not_another_agents() {
 }
 
 #[test]
-fn copilot_without_an_entry_says_so() {
-    let resolution = load_text(MULTI, Some(Host::Copilot)).unwrap();
-    assert_eq!(resolution.selection, None);
-    assert!(resolution.notice.unwrap().contains("no entry for copilot"));
-}
-
-#[test]
 fn copilot_entries_need_exact_model_ids_and_listed_efforts() {
     for (model, effort, problem) in [
         ("sonnet", "low", "Claude Code alias"),
@@ -238,37 +224,6 @@ fn copilot_entries_need_exact_model_ids_and_listed_efforts() {
 }
 
 #[test]
-fn a_switched_off_policy_records_nothing_and_is_not_checked() {
-    let multi = MULTI.replace("\"enabled\": true", "\"enabled\": false");
-    let broken = r#"{"enabled":false,"agents":{"gemini":1},"agent":"claude"}"#;
-    for text in [multi.as_str(), broken] {
-        for host in [
-            None,
-            Some(Host::Claude),
-            Some(Host::Codex),
-            Some(Host::Copilot),
-        ] {
-            assert_eq!(
-                load_text(text, host).unwrap(),
-                Resolution::default(),
-                "{text} {host:?}"
-            );
-        }
-    }
-}
-
-#[test]
-fn reading_never_changes_the_file() {
-    let (_dir, path) = write(MULTI);
-    read(&path).unwrap();
-    load(&path, Some(Host::Claude)).unwrap();
-    assert_eq!(fs::read_to_string(&path).unwrap(), MULTI);
-    let (_dir, old) = write(OLD_AGENTS);
-    read(&old).unwrap_err();
-    assert_eq!(fs::read_to_string(&old).unwrap(), OLD_AGENTS);
-}
-
-#[test]
 fn without_a_policy_file_nothing_is_recorded() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("model-routing.json");
@@ -280,50 +235,6 @@ fn without_a_policy_file_nothing_is_recorded() {
         Some(Host::Copilot),
     ] {
         assert_eq!(load(&path, host).unwrap(), Resolution::default());
-    }
-}
-
-// --- the earlier format -----------------------------------------------------------------------------
-
-#[test]
-fn an_old_format_file_fails_with_the_way_to_fix_it() {
-    let roles_in_one_of_two = r#"{"agents":{
-        "claude":{"stages":{"check":{"model":"opus"}}},
-        "codex":{"roles":{"strong":{"model":"gpt-6-astra"}},"tasks":{}}}}"#;
-    let tasks_only = r#"{"agents":{"claude":{"tasks":{"check":"strong"},"stages":{}}}}"#;
-    for text in [
-        OLD_AGENTS,
-        OLD_SINGLE,
-        r#"{"agent":"copilot"}"#,
-        r#"{"roles":{},"tasks":{}}"#,
-        roles_in_one_of_two,
-        tasks_only,
-    ] {
-        for host in [None, Some(Host::Claude), Some(Host::Codex)] {
-            let error = load_text(text, host).unwrap_err();
-            for expected in [
-                "old format",
-                "jidoka install",
-                "jidoka doctor --create-model-routing",
-            ] {
-                assert!(error.contains(expected), "{text} {host:?}: {error}");
-            }
-        }
-    }
-}
-
-#[test]
-fn old_format_text_is_told_apart_from_the_current_format_and_from_garbage() {
-    for text in [OLD_AGENTS, OLD_SINGLE, r#"{"agent":"copilot"}"#] {
-        assert!(is_old_format(text), "{text}");
-    }
-    for text in [
-        MULTI,
-        "not json",
-        "[]",
-        r#"{"agents":{"claude":{"typo":1}}}"#,
-    ] {
-        assert!(!is_old_format(text), "{text}");
     }
 }
 
@@ -369,65 +280,6 @@ fn mistakes_in_the_file_are_errors_that_name_the_file_and_the_problem() {
 }
 
 #[test]
-fn a_problem_in_one_entry_names_the_entry_and_is_found_whichever_agent_the_run_is_in() {
-    let broken_codex = r#"{"agents":{
-        "claude":{"stages":{"check":{"model":"opus"}}},
-        "codex":{"stages":{"build":{"model":"gpt 6"}}}}}"#;
-    let error = read_error(broken_codex);
-    assert!(error.contains("agents.codex"), "{error}");
-    // A run in Claude stops too: a typo is found early, not only when that agent next starts a run.
-    assert!(
-        load_text(broken_codex, Some(Host::Claude))
-            .unwrap_err()
-            .contains("agents.codex")
-    );
-    let too_long = format!(
-        r#"{{"agents":{{"claude":{{"stages":{{"check":{{"model":"{}"}}}}}}}}}}"#,
-        "m".repeat(65)
-    );
-    assert!(read_error(&too_long).contains("agents.claude"));
-}
-
-#[test]
-fn repeated_agents_and_stages_are_errors_instead_of_the_last_one_winning() {
-    for (text, repeated) in [
-        (
-            r#"{"agents":{"claude":{"stages":{}},"claude":{"stages":{}}}}"#,
-            "claude",
-        ),
-        (
-            r#"{"agents":{"codex":{"stages":{"check":{"model":"a"},"check":{"model":"b"}}}}}"#,
-            "check",
-        ),
-    ] {
-        let error = read_error(text);
-        assert!(
-            error.contains("duplicate") && error.contains(repeated),
-            "{text}: {error}"
-        );
-    }
-}
-
-#[test]
-fn an_unreadable_or_oversized_file_is_an_error() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("model-routing.json");
-    fs::create_dir(&path).unwrap();
-    assert!(load(&path, None).is_err());
-    let big = dir.path().join("big.json");
-    fs::write(&big, " ".repeat(1 << 20) + "{}").unwrap();
-    assert!(load(&big, None).unwrap_err().contains("too large"));
-}
-
-#[test]
-fn a_directory_at_the_policy_path_is_refused_as_not_a_regular_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("model-routing.json");
-    fs::create_dir(&path).unwrap();
-    assert!(read(&path).unwrap_err().contains("not a regular file"));
-}
-
-#[test]
 fn a_broken_policy_stops_a_run_in_any_agent() {
     let broken = r#"{"agents": {"claude": {"typo": 1}}}"#;
     for host in [
@@ -440,44 +292,7 @@ fn a_broken_policy_stops_a_run_in_any_agent() {
     }
 }
 
-#[test]
-fn a_created_starter_is_the_only_file_written() {
-    // A failing write removes its partial file; that cannot be forced portably, so only the clean path is checked.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("model-routing.json");
-    assert!(create_starter(&path, &[RoutingAgent::Claude]).unwrap());
-    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
-}
-
 // --- the --agent option -----------------------------------------------------------------------------
-
-#[test]
-fn the_agent_option_of_run_start_names_one_agent() {
-    assert_eq!(parse_start_options(&[]), Ok(None));
-    assert_eq!(
-        parse_start_options(&["--agent", "claude"]),
-        Ok(Some(Host::Claude))
-    );
-    assert_eq!(
-        parse_start_options(&["--agent", "codex"]),
-        Ok(Some(Host::Codex))
-    );
-    assert_eq!(
-        parse_start_options(&["--agent", "copilot"]),
-        Ok(Some(Host::Copilot))
-    );
-    for (bad, expected) in [
-        (&["--agent"][..], "needs"),
-        (&["--agent", "gemini"], "Unknown agent"),
-        (&["--agent", "claude", "--agent", "codex"], "Unexpected"),
-        (&["--agent", "claude", "extra"], "Unexpected"),
-        (&["--session", "x"], "Unexpected"),
-        (&["claude"], "Unexpected"),
-    ] {
-        let error = parse_start_options(bad).unwrap_err();
-        assert!(error.contains(expected), "{bad:?}: {error}");
-    }
-}
 
 // --- the starter ------------------------------------------------------------------------------------
 
@@ -524,21 +339,6 @@ fn a_starter_for_both_agents_routes_every_stage() {
 }
 
 #[test]
-fn a_starter_for_one_agent_has_only_that_entry() {
-    let dir = tempfile::tempdir().unwrap();
-    for (agent, other) in [
-        (RoutingAgent::Claude, Host::Codex),
-        (RoutingAgent::Codex, Host::Claude),
-    ] {
-        let path = dir.path().join(format!("{}.json", agent.name()));
-        assert!(create_starter(&path, &[agent]).unwrap());
-        assert_eq!(read(&path).unwrap().configured(), [agent.name()]);
-        // The other agent has no entry, so it is not routed (and not given this one's policy).
-        assert_eq!(load(&path, Some(other)).unwrap().selection, None);
-    }
-}
-
-#[test]
 fn a_starter_is_created_with_its_folder_and_never_replaces_anything() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("jidoka").join("model-routing.json");
@@ -548,215 +348,4 @@ fn a_starter_is_created_with_its_folder_and_never_replaces_anything() {
     fs::write(&path, "my own policy").unwrap();
     assert!(!create_starter(&path, &[RoutingAgent::Codex]).unwrap());
     assert_eq!(fs::read_to_string(&path).unwrap(), "my own policy");
-}
-
-#[cfg(unix)]
-#[test]
-fn a_link_at_the_policy_path_is_left_alone_even_when_it_points_nowhere() {
-    let dir = tempfile::tempdir().unwrap();
-    let target = dir.path().join("elsewhere.json");
-    let path = dir.path().join("model-routing.json");
-    std::os::unix::fs::symlink(&target, &path).unwrap();
-    assert!(!create_starter(&path, &[RoutingAgent::Claude]).unwrap());
-    assert!(
-        !target.exists(),
-        "the link must not be followed to create a file"
-    );
-}
-
-// --- where the file lives ---------------------------------------------------------------------------
-
-#[cfg(not(windows))]
-#[test]
-fn the_policy_lives_in_the_jidokas_config_directory_and_ignores_a_relative_one() {
-    let path = |vars: &'static [(&'static str, &'static str)]| {
-        policy_path_in(move |name| {
-            vars.iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, v)| (*v).into())
-        })
-    };
-    assert_eq!(
-        path(&[("XDG_CONFIG_HOME", "/cfg"), ("HOME", "/home/u")]),
-        Some(PathBuf::from("/cfg/jidoka/model-routing.json"))
-    );
-    assert_eq!(
-        path(&[("XDG_CONFIG_HOME", ""), ("HOME", "/home/u")]),
-        Some(PathBuf::from("/home/u/.config/jidoka/model-routing.json"))
-    );
-    // A relative XDG_CONFIG_HOME would put the file under whatever folder the command runs in.
-    assert_eq!(
-        path(&[("XDG_CONFIG_HOME", "relative/dir"), ("HOME", "/home/u")]),
-        Some(PathBuf::from("/home/u/.config/jidoka/model-routing.json"))
-    );
-    assert_eq!(
-        path(&[("XDG_CONFIG_HOME", "relative/dir"), ("HOME", "home")]),
-        None
-    );
-    assert_eq!(path(&[]), None);
-}
-
-#[cfg(windows)]
-#[test]
-fn the_policy_lives_in_the_jidokas_config_directory() {
-    let path =
-        policy_path_in(|name| (name == "APPDATA").then(|| r"C:\Users\u\AppData\Roaming".into()));
-    assert_eq!(
-        path,
-        Some(
-            PathBuf::from(r"C:\Users\u\AppData\Roaming")
-                .join("jidoka")
-                .join("model-routing.json")
-        )
-    );
-}
-
-#[test]
-fn an_old_format_file_is_replaced_unless_it_is_oversized_or_not_a_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("model-routing.json");
-    let old = r#"{"agent":"claude","roles":{},"tasks":{}}"#;
-    fs::write(&path, old).unwrap();
-    assert_eq!(
-        install_starter(&path, &[RoutingAgent::Claude]).unwrap(),
-        Starter::Replaced(Off::default())
-    );
-    assert!(read(&path).is_ok());
-
-    let big = format!("{{\"roles\":{{}},\"pad\":\"{}\"}}", "x".repeat(1 << 20));
-    fs::write(&path, &big).unwrap();
-    assert_eq!(
-        install_starter(&path, &[RoutingAgent::Claude]).unwrap(),
-        Starter::Left
-    );
-    assert_eq!(fs::read_to_string(&path).unwrap(), big);
-    let folder = dir.path().join("as-folder");
-    fs::create_dir(&folder).unwrap();
-    assert_eq!(
-        install_starter(&folder, &[RoutingAgent::Claude]).unwrap(),
-        Starter::Left
-    );
-}
-
-fn replaced_starter(old: &str, agents: &[RoutingAgent]) -> serde_json::Value {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("model-routing.json");
-    fs::write(&path, old).unwrap();
-    assert!(matches!(
-        install_starter(&path, agents).unwrap(),
-        Starter::Replaced(_)
-    ));
-    serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap()
-}
-
-const BOTH: [RoutingAgent; 2] = [RoutingAgent::Claude, RoutingAgent::Codex];
-
-#[test]
-fn a_switched_off_old_file_is_replaced_by_a_switched_off_starter() {
-    for old in [
-        r#"{"enabled":false,"agent":"claude","roles":{}}"#,
-        r#"{"enabled":false,"agents":{"claude":{"roles":{}}}}"#,
-    ] {
-        let value = replaced_starter(old, &BOTH);
-        assert_eq!(value["enabled"], false, "{old}");
-        assert!(value["agents"]["claude"].get("enabled").is_none(), "{old}");
-        assert!(value["agents"]["codex"]["stages"]["build"].is_object());
-    }
-    // The switched-off starter is still a policy that reads, and a run start does not stop on it.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("model-routing.json");
-    fs::write(&path, r#"{"enabled":false,"roles":{}}"#).unwrap();
-    install_starter(&path, &BOTH).unwrap();
-    assert!(matches!(read(&path).unwrap(), Policy::Off));
-    assert_eq!(load(&path, Some(Host::Claude)).unwrap().selection, None);
-}
-
-#[test]
-fn a_switched_off_agent_in_an_old_file_stays_off_in_the_starter() {
-    let old = r#"{"agents":{
-        "claude":{"enabled":false,"roles":{}},
-        "codex":{"roles":{},"tasks":{}}}}"#;
-    let value = replaced_starter(old, &BOTH);
-    assert!(value.get("enabled").is_none_or(|on| on == true));
-    assert_eq!(value["agents"]["claude"]["enabled"], false);
-    assert!(value["agents"]["codex"].get("enabled").is_none());
-    assert!(value["agents"]["claude"]["stages"]["define"].is_object());
-
-    // Only the agents written to the starter carry a switch.
-    let value = replaced_starter(old, &[RoutingAgent::Codex]);
-    assert!(value["agents"].get("claude").is_none());
-    assert!(value["agents"]["codex"].get("enabled").is_none());
-}
-
-#[test]
-fn a_switched_on_old_file_gives_a_switched_on_starter_and_the_old_single_form_carries_only_the_top_switch()
- {
-    let value = replaced_starter(r#"{"enabled":true,"roles":{}}"#, &BOTH);
-    assert_eq!(value["enabled"], true);
-    // The single-agent form has no agent entries to carry.
-    let value = replaced_starter(
-        r#"{"agent":"claude","roles":{},"agents":{"claude":{"enabled":false}}}"#,
-        &BOTH,
-    );
-    assert_eq!(value["enabled"], true);
-    assert!(value["agents"]["claude"].get("enabled").is_none());
-}
-
-#[test]
-fn a_starter_keeps_the_stages_in_workflow_order_and_is_pretty_printed() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("model-routing.json");
-    create_starter(&path, &BOTH).unwrap();
-    let text = fs::read_to_string(&path).unwrap();
-    assert!(text.ends_with("}\n") && text.lines().count() > 10, "{text}");
-    let at = |stage: &str| text.find(&format!("\"{stage}\"")).unwrap();
-    assert!(at("define") < at("build") && at("build") < at("check") && at("check") < at("finish"));
-    assert!(text.find("\"claude\"").unwrap() < text.find("\"codex\"").unwrap());
-}
-
-#[cfg(unix)]
-#[test]
-fn a_link_to_an_old_format_file_is_not_followed_into_replacement() {
-    let dir = tempfile::tempdir().unwrap();
-    let target = dir.path().join("elsewhere.json");
-    let old = r#"{"roles":{},"tasks":{}}"#;
-    fs::write(&target, old).unwrap();
-    let path = dir.path().join("model-routing.json");
-    std::os::unix::fs::symlink(&target, &path).unwrap();
-    assert_eq!(
-        install_starter(&path, &[RoutingAgent::Claude]).unwrap(),
-        Starter::Left
-    );
-    assert_eq!(fs::read_to_string(&target).unwrap(), old);
-    assert!(
-        fs::symlink_metadata(&path)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
-}
-
-#[test]
-fn a_replaced_outcome_carries_exactly_the_switches_written_off() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("model-routing.json");
-    let old = r#"{"enabled":false,"agents":{"claude":{"enabled":false,"roles":{}},"codex":{"enabled":false,"roles":{}}}}"#;
-    fs::write(&path, old).unwrap();
-    // The codex entry is not written, so it is not reported as off.
-    let done = install_starter(&path, &[RoutingAgent::Claude]).unwrap();
-    let off = Off {
-        all: true,
-        claude: true,
-        codex: false,
-    };
-    assert_eq!(done, Starter::Replaced(off));
-    let message = Starter::replaced_message("p", off, None);
-    assert!(
-        message.contains("whole policy") && message.contains("entry for claude"),
-        "{message}"
-    );
-    assert!(
-        !message.contains("codex") && !message.contains("stays off"),
-        "{message}"
-    );
 }

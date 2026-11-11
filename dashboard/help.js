@@ -610,7 +610,6 @@ function Commands() {
         items=${[
           [html`<${Code}>jidoka install --agent codex|claude|copilot<//>`, 'Installs the skills for an agent, or for several, separated by commas. It replaces Jidoka’s own skill folders and leaves other skills alone.'],
           [html`<${Code}>jidoka doctor<//>`, html`Checks whether the repository and your machine are ready, and says how to fix each problem. <${Code}>--agent<//> checks one agent, <${Code}>--json<//> prints JSON, and <${Code}>--create-model-routing<//> writes a starter model routing policy.`],
-          [html`<${Code}>jidoka check<//>`, 'Looks up the latest release and says whether you are up to date.'],
           [html`<${Code}>jidoka --version<//>`, 'Prints the version and the build it came from.'],
         ]}
       />

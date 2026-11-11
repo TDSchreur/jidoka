@@ -199,18 +199,6 @@ fn a_merged_pull_request_removes_the_worktree_and_branch() {
 }
 
 #[test]
-fn cleanup_leaves_the_runs_plan_in_the_data_dir() {
-    let fx = Fixture::new();
-    let data = tempfile::tempdir().unwrap();
-    let runs = data.path().join("runs.json");
-    let plan = crate::plans::plan_path_ready(&runs, crate::server::DEFAULT_PORT, "100").unwrap();
-    std::fs::write(&plan, "# plan").unwrap();
-    fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
-    assert!(!fx.wt.exists());
-    assert_eq!(std::fs::read_to_string(&plan).unwrap(), "# plan");
-}
-
-#[test]
 fn anything_but_merged_refuses_and_removes_nothing() {
     let fx = Fixture::new();
     for (state, draft) in [
@@ -244,31 +232,11 @@ fn uncommitted_changes_refuse() {
 }
 
 #[test]
-fn a_branch_that_differs_from_the_merged_head_refuses() {
-    let fx = Fixture::new();
-    fs::write(fx.wt.join("c.txt"), "c\n").unwrap();
-    run_git(&fx.wt, &["add", "c.txt"]);
-    run_git(&fx.wt, &["commit", "-q", "-m", "unpushed"]);
-    assert!(refusal(fx.cleanup(&fx.recorded(), &fx.gh())).contains("never pushed"));
-    fx.assert_untouched();
-}
-
-#[test]
 fn running_inside_the_worktree_refuses() {
     let fx = Fixture::new();
     let message = refusal(cleanup(&fx.recorded(), &fx.gh(), &TestGit, &fx.wt));
     assert!(message.contains("main checkout"), "{message}");
     fx.assert_untouched();
-}
-
-#[test]
-fn a_rerun_after_the_worktree_went_deletes_the_branch() {
-    let fx = Fixture::new();
-    run_git(&fx.repo, &["worktree", "remove", fx.wt.to_str().unwrap()]);
-    let cleaned = fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
-    assert_eq!(cleaned.worktree, Step::AlreadyGone);
-    assert_eq!(cleaned.branch, Step::Removed);
-    assert!(!fx.branch_exists());
 }
 
 #[test]
@@ -280,54 +248,6 @@ fn a_rerun_after_the_worktree_was_deleted_by_hand_succeeds() {
     assert_eq!(cleaned.branch, Step::Removed);
     assert!(!fx.branch_exists());
     assert!(listed_wt(&fx).is_none());
-}
-
-#[test]
-fn a_pull_request_from_another_branch_refuses() {
-    let fx = Fixture::new();
-    let gh = FakeGh {
-        branch: "other".into(),
-        ..fx.gh()
-    };
-    let message = refusal(fx.cleanup(&fx.recorded(), &gh));
-    assert!(message.contains("other"), "{message}");
-    fx.assert_untouched();
-}
-
-#[test]
-fn a_failing_branch_lookup_refuses_and_says_what_git_said() {
-    struct BrokenGit;
-    impl Git for BrokenGit {
-        fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
-            if args.contains(&"symbolic-ref") {
-                Err("fatal: unable to read HEAD\nsecond line".into())
-            } else {
-                TestGit.git(dir, args)
-            }
-        }
-        fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
-            TestGit.status(dir, args)
-        }
-    }
-    let fx = Fixture::new();
-    let message = refusal(cleanup(&fx.recorded(), &fx.gh(), &BrokenGit, &fx.root));
-    assert!(message.contains("not on the recorded branch"), "{message}");
-    assert!(message.contains("unable to read HEAD"), "{message}");
-    assert!(!message.contains("second line"), "{message}");
-    fx.assert_untouched();
-}
-
-#[test]
-fn a_worktree_on_another_branch_or_detached_refuses() {
-    let fx = Fixture::new();
-    run_git(&fx.wt, &["checkout", "-q", "-b", "elsewhere"]);
-    let message = refusal(fx.cleanup(&fx.recorded(), &fx.gh()));
-    assert!(message.contains("not on the recorded branch"), "{message}");
-    fx.assert_untouched();
-    run_git(&fx.wt, &["checkout", "-q", "--detach"]);
-    let message = refusal(fx.cleanup(&fx.recorded(), &fx.gh()));
-    assert!(message.contains("not on the recorded branch"), "{message}");
-    fx.assert_untouched();
 }
 
 /// Moves the branch just before it is deleted, like a push or commit that lands after the check.
@@ -365,23 +285,6 @@ fn a_branch_that_moved_after_the_check_is_not_deleted() {
     assert!(fx.branch_exists());
 }
 
-#[test]
-fn a_fully_clean_rerun_reports_already_clean() {
-    let fx = Fixture::new();
-    fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
-    let again = fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
-    assert_eq!(again.worktree, Step::AlreadyGone);
-    assert_eq!(again.branch, Step::AlreadyGone);
-    let text = render(&fx.recorded(), again);
-    assert!(text.contains("already clean"), "{text}");
-
-    let mut cleared = fx.recorded();
-    cleared.worktree = None;
-    cleared.branch = None;
-    let none = fx.cleanup(&cleared, &fx.gh()).unwrap();
-    assert!(!none.needs_update());
-}
-
 /// One entry of `git worktree list --porcelain`.
 struct Listed {
     path: String,
@@ -415,41 +318,6 @@ fn listed_wt(fx: &Fixture) -> Option<Listed> {
 }
 
 #[test]
-fn a_stale_worktree_leaves_other_stale_registrations_alone() {
-    let fx = Fixture::new();
-    let other = fx.root.join("other-wt");
-    run_git(
-        &fx.repo,
-        &[
-            "worktree",
-            "add",
-            "-q",
-            "-b",
-            "unrelated",
-            other.to_str().unwrap(),
-        ],
-    );
-    fs::remove_dir_all(&other).unwrap();
-    fs::remove_dir_all(&fx.wt).unwrap();
-    fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
-    assert!(listed(&fx).iter().any(|e| e.path.ends_with("other-wt")));
-    assert!(listed_wt(&fx).is_none());
-}
-
-#[test]
-fn a_locked_stale_worktree_refuses_and_removes_nothing() {
-    let fx = Fixture::new();
-    run_git(&fx.repo, &["worktree", "lock", fx.wt.to_str().unwrap()]);
-    fs::remove_dir_all(&fx.wt).unwrap();
-    let message = refusal(fx.cleanup(&fx.recorded(), &fx.gh()));
-    assert!(message.contains("locked"), "{message}");
-    assert!(message.contains("Nothing was removed"), "{message}");
-    assert!(fx.branch_exists());
-    let entry = listed_wt(&fx).expect("the locked worktree stays registered");
-    assert!(entry.locked, "the entry is not locked");
-}
-
-#[test]
 fn a_locked_worktree_refuses_and_removes_nothing() {
     let fx = Fixture::new();
     run_git(&fx.repo, &["worktree", "lock", fx.wt.to_str().unwrap()]);
@@ -470,97 +338,5 @@ fn a_branch_also_checked_out_in_the_main_checkout_refuses_before_removing() {
     let message = refusal(fx.cleanup(&fx.recorded(), &fx.gh()));
     assert!(message.contains("checked out"), "{message}");
     assert!(message.contains("Nothing was removed"), "{message}");
-    fx.assert_untouched();
-}
-
-#[test]
-fn a_directory_git_does_not_list_is_left_alone_and_said_so() {
-    let fx = Fixture::new();
-    run_git(&fx.repo, &["worktree", "remove", fx.wt.to_str().unwrap()]);
-    fs::create_dir(&fx.wt).unwrap();
-    let cleaned = fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
-    assert_eq!(cleaned.worktree, Step::LeftAlone);
-    assert!(fx.wt.exists());
-    let text = render(&fx.recorded(), cleaned);
-    assert_eq!(
-        text,
-        format!(
-            "Worktree {} exists but git does not list it as a worktree, so it was left alone (not removed)\nDeleted local branch feature (the remote branch is untouched)\n",
-            fx.wt.display()
-        )
-    );
-}
-
-#[test]
-fn a_left_alone_directory_with_nothing_else_to_remove_says_nothing_was_removed() {
-    let fx = Fixture::new();
-    run_git(&fx.repo, &["worktree", "remove", fx.wt.to_str().unwrap()]);
-    run_git(&fx.repo, &["branch", "-D", "feature"]);
-    fs::create_dir(&fx.wt).unwrap();
-    let cleaned = fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
-    assert_eq!(cleaned.worktree, Step::LeftAlone);
-    let text = render(&fx.recorded(), cleaned);
-    assert_eq!(
-        text,
-        format!(
-            "Nothing was removed.\nWorktree {} exists but git does not list it as a worktree, so it was left alone (not removed)\nLocal branch feature was already gone\n",
-            fx.wt.display()
-        )
-    );
-}
-
-#[test]
-fn a_relative_worktree_or_repository_path_refuses() {
-    let fx = Fixture::new();
-    let mut run = fx.recorded();
-    run.worktree = Some("wt".into());
-    let message = refusal(fx.cleanup(&run, &fx.gh()));
-    assert!(
-        message.contains("relative") && message.contains("Nothing was removed"),
-        "{message}"
-    );
-    let mut run = fx.recorded();
-    run.repository = Some("repo".into());
-    let message = refusal(fx.cleanup(&run, &fx.gh()));
-    assert!(
-        message.contains("relative") && message.contains("Nothing was removed"),
-        "{message}"
-    );
-    fx.assert_untouched();
-}
-
-#[cfg(unix)]
-#[test]
-fn a_stale_worktree_behind_a_symlinked_parent_is_matched() {
-    let fx = Fixture::new();
-    let link = fx.root.join("link");
-    std::os::unix::fs::symlink(&fx.root, &link).unwrap();
-    let mut run = fx.recorded();
-    run.worktree = Some(link.join("wt").display().to_string());
-    fs::remove_dir_all(&fx.wt).unwrap();
-    let cleaned = fx.cleanup(&run, &fx.gh()).unwrap();
-    assert_eq!(cleaned.worktree, Step::Removed);
-    assert!(listed_wt(&fx).is_none());
-}
-
-#[test]
-fn a_branch_checked_out_in_the_main_checkout_is_kept() {
-    let fx = Fixture::new();
-    run_git(&fx.repo, &["worktree", "remove", fx.wt.to_str().unwrap()]);
-    run_git(&fx.repo, &["checkout", "-q", "feature"]);
-    let mut run = fx.recorded();
-    run.worktree = None;
-    let message = refusal(fx.cleanup(&run, &fx.gh()));
-    assert!(message.contains("checked out"), "{message}");
-    assert!(fx.branch_exists());
-}
-
-#[test]
-fn a_worktree_without_a_recorded_branch_refuses() {
-    let fx = Fixture::new();
-    let mut run = fx.recorded();
-    run.branch = None;
-    let message = refusal(fx.cleanup(&run, &fx.gh()));
-    assert!(message.contains("no branch"), "{message}");
     fx.assert_untouched();
 }

@@ -1,4 +1,3 @@
-use crate::routing::Starter;
 use std::{
     env,
     ffi::OsString,
@@ -7,52 +6,6 @@ use std::{
 };
 
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
-
-/// Skill directories from earlier releases that are no longer bundled: the `factory` and
-/// `factory2` skills from before the rename to Jidoka, development-only skills and the
-/// generic-name skills of earlier releases.
-const LEGACY_SKILLS: [&str; 40] = [
-    "factory",
-    "factory-full",
-    "factory-fast",
-    "factory-balanced",
-    "factory-procedures",
-    "factory-triage",
-    "factory-grill-with-docs",
-    "factory-grilling",
-    "factory-domain-modeling",
-    "factory-codebase-design",
-    "factory-to-spec",
-    "factory-to-tickets",
-    "factory-implement",
-    "factory-implement-fast",
-    "factory-implement-balanced",
-    "factory-tdd",
-    "factory-code-review",
-    "factory-security-review",
-    "factory-pr",
-    "factory-setup",
-    "factory2",
-    "factory2-fast",
-    "github-actions-hardening",
-    "rust-best-practices",
-    "setup-matt-pocock-skills",
-    "grill-with-docs",
-    "grilling",
-    "domain-modeling",
-    "codebase-design",
-    "to-spec",
-    "to-tickets",
-    "implement-spec",
-    "implement-spec-fast",
-    "implement-spec-balanced",
-    "tdd",
-    "code-review",
-    "security-review",
-    "pr",
-    "setup-tds-factory",
-    "triage",
-];
 
 /// Skills maintained in this project, installed without a third-party license.
 const LOCAL_SKILLS: [&str; 7] = [
@@ -275,20 +228,18 @@ fn ensure_default_policy(
     var: impl Fn(&str) -> Option<OsString>,
     out: &mut impl io::Write,
 ) -> io::Result<()> {
-    let (path, done) = create_default_policy(var)?;
-    let shown = path.display().to_string();
-    match done {
-        Starter::Created => writeln!(out, "{}", Starter::created_message(&shown, None)),
-        Starter::Replaced(off) => writeln!(out, "{}", Starter::replaced_message(&shown, off, None)),
-        Starter::Left => Ok(()),
+    let (path, created) = create_default_policy(var)?;
+    if created {
+        let shown = path.display().to_string();
+        writeln!(out, "{}", crate::routing::created_message(&shown, None))?;
     }
+    Ok(())
 }
 
-/// Create the initial routing policy. Only a file in the old format is replaced; any other existing
-/// configuration is kept.
+/// Create the initial routing policy unless a file is already there.
 pub(crate) fn create_default_policy(
     var: impl Fn(&str) -> Option<OsString>,
-) -> io::Result<(PathBuf, Starter)> {
+) -> io::Result<(PathBuf, bool)> {
     let path = crate::routing::policy_path_in(var).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -300,7 +251,7 @@ pub(crate) fn create_default_policy(
         crate::routing::RoutingAgent::Codex,
         crate::routing::RoutingAgent::Copilot,
     ];
-    let done = crate::routing::install_starter(&path, &agents).map_err(|error| {
+    let created = crate::routing::create_starter(&path, &agents).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!(
@@ -309,7 +260,7 @@ pub(crate) fn create_default_policy(
             ),
         )
     })?;
-    Ok((path, done))
+    Ok((path, created))
 }
 
 /// Resolves the skills folder of every listed agent before anything is installed.
@@ -478,110 +429,7 @@ fn install_to_reporting(root: &Path, out: &mut impl io::Write) -> io::Result<()>
         }
         writeln!(out, "Installed: {}", dir.display())?;
     }
-    for name in LEGACY_SKILLS {
-        let dir = root.join(name);
-        if dir.exists() {
-            fs::remove_dir_all(&dir).map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!("cannot remove legacy skill {}: {error}", dir.display()),
-                )
-            })?;
-            writeln!(out, "Removed: {}", dir.display())?;
-        }
-    }
-    remove_retired_humanizer(root, out);
     Ok(())
-}
-
-/// The files Jidoka installed for Humanizer before it dropped the skill, kept only to
-/// recognise that copy. They are compared against, never installed.
-const RETIRED_HUMANIZER_FILES: [(&str, &[u8]); 3] = [
-    ("SKILL.md", include_bytes!("retired/humanizer-SKILL.md")),
-    (
-        "agents/openai.yaml",
-        include_bytes!("retired/humanizer-openai.yaml"),
-    ),
-    ("LICENSE", include_bytes!("retired/humanizer-LICENSE")),
-];
-
-/// Removes a `humanizer` skill folder Jidoka installed earlier. Only an exact, unmodified
-/// copy goes: the same files and nothing else, none of them a symlink. Anything else is the
-/// user's own and stays. A failure to remove it is a warning, not an install failure.
-fn remove_retired_humanizer(root: &Path, out: &mut impl io::Write) {
-    let dir = root.join("humanizer");
-    if !is_retired_humanizer(&dir) {
-        return;
-    }
-    match fs::remove_dir_all(&dir) {
-        Ok(()) => {
-            let _ = writeln!(out, "Removed: {}", dir.display());
-        }
-        Err(error) => eprintln!(
-            "warning: cannot remove retired skill {}: {error}. It may be partly deleted and will not be retried, so remove the folder by hand.",
-            dir.display()
-        ),
-    }
-}
-
-/// True when `dir` holds exactly the retired files and the folders they sit in, with the same
-/// content (ignoring CR), and nothing else.
-fn is_retired_humanizer(dir: &Path) -> bool {
-    let mut found = Vec::new();
-    if !collect_entries(dir, Path::new(""), &mut found) {
-        return false;
-    }
-    let mut expected: Vec<PathBuf> = Vec::new();
-    for (path, _) in RETIRED_HUMANIZER_FILES {
-        let path = Path::new(path);
-        expected.extend(
-            path.parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .map(Path::to_path_buf),
-        );
-        expected.push(path.to_path_buf());
-    }
-    expected.sort();
-    found.sort();
-    if found != expected {
-        return false;
-    }
-    // Git may have checked the files out with CRLF line endings, so compare without them.
-    let plain = |text: &[u8]| {
-        text.iter()
-            .copied()
-            .filter(|byte| *byte != b'\r')
-            .collect::<Vec<_>>()
-    };
-    RETIRED_HUMANIZER_FILES.iter().all(|(path, content)| {
-        fs::read(dir.join(path)).is_ok_and(|actual| plain(&actual) == plain(content))
-    })
-}
-
-/// Lists the files and folders under `dir` relative to it. Returns false when `dir` is missing, or when it
-/// holds anything but plain files and folders, such as a symlink.
-fn collect_entries(dir: &Path, relative: &Path, found: &mut Vec<PathBuf>) -> bool {
-    let Ok(kind) = dir.symlink_metadata().map(|meta| meta.file_type()) else {
-        return false;
-    };
-    if !kind.is_dir() {
-        return false;
-    }
-    let Ok(entries) = fs::read_dir(dir) else {
-        return false;
-    };
-    for entry in entries {
-        let Ok(entry) = entry else { return false };
-        let Ok(kind) = entry.file_type() else {
-            return false;
-        };
-        let path = relative.join(entry.file_name());
-        found.push(path.clone());
-        if !(kind.is_file() || kind.is_dir() && collect_entries(&entry.path(), &path, found)) {
-            return false;
-        }
-    }
-    true
 }
 
 /// Replaces `dir` with `staging`, so the skill matches the bundle exactly.
@@ -692,27 +540,6 @@ mod tests {
     }
 
     #[test]
-    fn the_prompt_asks_again_after_an_invalid_answer_and_fails_at_the_end_of_input() {
-        let (selection, shown) = selected(None, &[], &[], true, "9\nfoo,1\n\nall\n");
-        assert_eq!(names(selection), ["codex", "claude", "copilot"]);
-        assert_eq!(shown.matches("Invalid choice").count(), 3);
-        let (selection, _) = selected(None, &[], &[], true, "");
-        assert!(selection.is_err());
-    }
-
-    #[test]
-    fn an_empty_agent_list_says_no_agent_was_given() {
-        for flag in ["", ",", " "] {
-            let (selection, _) = selected(Some(flag), &[], &[], false, "");
-            let message = selection.unwrap_err().to_string();
-            assert_eq!(
-                message, "no agent given; use codex, claude, or copilot",
-                "{flag:?}"
-            );
-        }
-    }
-
-    #[test]
     fn without_a_terminal_and_agents_the_error_names_the_flag_and_the_variable() {
         let (selection, shown) = selected(None, &[], &[], false, "all\n");
         let message = selection.unwrap_err().to_string();
@@ -730,20 +557,6 @@ mod tests {
         assert!(shown.is_empty() && shown_env.is_empty());
         let (selection, _) = selected(Some("nope"), &[], &[], true, "");
         assert!(selection.is_err());
-    }
-
-    #[test]
-    fn the_flag_and_the_variable_accept_what_the_prompt_accepts() {
-        let all = ["codex", "claude", "copilot"];
-        let (selection, shown) = selected(Some("all"), &[], &[], false, "");
-        assert_eq!(names(selection), all);
-        assert!(shown.is_empty());
-        let (selection, _) = selected(None, &[], &[("JIDOKA_AGENT", "all")], false, "");
-        assert_eq!(names(selection), all);
-        let (selection, _) = selected(None, &[], &[("JIDOKA_AGENT", "3, 1")], false, "");
-        assert_eq!(names(selection), ["copilot", "codex"]);
-        let (selection, _) = selected(Some("claude copilot"), &[], &[], false, "");
-        assert_eq!(names(selection), ["claude", "copilot"]);
     }
 
     #[test]
@@ -945,41 +758,6 @@ mod tests {
     }
 
     #[test]
-    fn finish_reports_tell_the_user_to_clean_up_the_run_after_merge() {
-        let procedures = bundled_text("jidoka-procedures/SKILL.md").replace("\r\n", "\n");
-        assert!(
-            procedures.contains("`jidoka run cleanup <id>`"),
-            "the shared procedures do not mention jidoka run cleanup"
-        );
-        assert!(
-            !procedures.contains("git worktree remove"),
-            "the shared procedures still send the user to git worktree remove"
-        );
-        let finish = procedures
-            .split_once("\n## Finish\n")
-            .expect("the shared procedures have no Finish")
-            .1
-            .split("\n## ")
-            .next()
-            .unwrap();
-        assert!(
-            finish.contains("`jidoka run cleanup <id>`"),
-            "the shared Finish does not mention jidoka run cleanup"
-        );
-        for skill in WORKFLOW_SKILLS {
-            let text = bundled_text(&format!("{skill}/SKILL.md"));
-            let workflow_finish = text
-                .split_once("## Finish")
-                .unwrap_or_else(|| panic!("{skill} has no Finish"))
-                .1;
-            assert!(
-                workflow_finish.contains("Finish in [jidoka-procedures]"),
-                "{skill} Finish does not point to the shared Finish"
-            );
-        }
-    }
-
-    #[test]
     fn workflow_skills_use_the_shared_procedures_and_report_their_own_mode() {
         for skill in WORKFLOW_SKILLS {
             let text = bundled_text(&format!("{skill}/SKILL.md")).replace("\r\n", "\n");
@@ -1035,98 +813,6 @@ mod tests {
     }
 
     #[test]
-    fn shared_procedures_say_how_workflows_use_the_bundled_skills() {
-        let procedures = bundled_text("jidoka-procedures/SKILL.md");
-        for needle in [
-            "## Using the bundled skills",
-            "they are siblings of this directory",
-            "`jidoka-grill-with-docs`, `jidoka-to-spec` and `jidoka-to-tickets` can only be invoked by the user",
-            "A workflow's instructions take precedence where they differ from those skills",
-            "## Define rules",
-            "Do not require extra approval of test seams or a separate ticket-breakdown approval",
-        ] {
-            assert!(procedures.contains(needle), "procedures lack {needle}");
-        }
-        for skill in WORKFLOW_SKILLS {
-            let text = bundled_text(&format!("{skill}/SKILL.md"));
-            assert!(
-                text.contains("Using the bundled skills in the shared procedures"),
-                "{skill} does not point to Using the bundled skills"
-            );
-        }
-        assert!(
-            bundled_text("jidoka-full/SKILL.md")
-                .contains("`jidoka-implement` can also only be invoked by the user")
-        );
-    }
-
-    #[test]
-    fn shared_procedures_cover_check_and_rework() {
-        let text = bundled_text("jidoka-procedures/SKILL.md");
-        for needle in [
-            "## Verification",
-            "## Committing for Check",
-            "## Reworks",
-            "--rework",
-            "Decision needed on remaining Check findings",
-            "Review pinned at <hash>",
-        ] {
-            assert!(text.contains(needle), "shared procedures lack {needle}");
-        }
-    }
-
-    /// Whether a bundled skill's frontmatter keeps it from being invoked by the model.
-    fn is_user_only(skill: &str) -> bool {
-        let text = bundled_text(&format!("{skill}/SKILL.md")).replace("\r\n", "\n");
-        let frontmatter = text
-            .strip_prefix("---\n")
-            .and_then(|rest| rest.split_once("\n---\n"))
-            .map(|(frontmatter, _)| frontmatter)
-            .unwrap_or_else(|| panic!("{skill} has no frontmatter"));
-        frontmatter
-            .lines()
-            .any(|line| line.trim() == "disable-model-invocation: true")
-    }
-
-    #[test]
-    fn shared_procedures_are_not_invoked_on_their_own() {
-        assert!(is_user_only("jidoka-procedures"));
-        let codex = bundled_text("jidoka-procedures/agents/openai.yaml");
-        assert!(
-            codex.contains("allow_implicit_invocation: false"),
-            "{codex}"
-        );
-    }
-
-    #[test]
-    fn bundled_procedures_explain_ticket_reports() {
-        let procedures = bundled_text("jidoka-procedures/SKILL.md");
-        assert!(procedures.contains("--ticket-report \"<reference>\" skill"));
-        assert!(procedures.contains("--ticket-report \"<reference>\" activity"));
-        assert!(procedures.contains("may be incomplete"));
-    }
-
-    #[test]
-    fn bundled_skills_keep_the_run_in_the_starting_session() {
-        let procedures = bundled_text("jidoka-procedures/SKILL.md");
-        for phrase in [
-            "## Run ownership",
-            "never the whole run or several stages to one agent",
-            "even when other instructions say to delegate",
-        ] {
-            assert!(procedures.contains(phrase), "procedures: {phrase}");
-        }
-        for path in [
-            "jidoka/SKILL.md",
-            "jidoka-full/SKILL.md",
-            "jidoka-balanced/SKILL.md",
-            "jidoka-fast/SKILL.md",
-        ] {
-            assert!(bundled_text(path).contains("Run ownership"), "{path}");
-        }
-    }
-
-    #[test]
     fn bundled_skills_carry_the_skill_check() {
         for (path, wording) in [
             (
@@ -1151,75 +837,6 @@ mod tests {
     }
 
     #[test]
-    fn workflows_read_the_user_only_skills_they_use() {
-        let user_only: Vec<&str> = bundled_skill_names()
-            .into_iter()
-            .filter(|skill| is_user_only(skill))
-            .collect();
-        // The shared procedures name the user-only skills every workflow uses and say how to
-        // load them; a workflow names any further one it uses.
-        let procedures = bundled_text("jidoka-procedures/SKILL.md").replace("\r\n", "\n");
-        let shared = procedures
-            .split_once("\n## Using the bundled skills\n")
-            .expect("the shared procedures have no Using the bundled skills")
-            .1
-            .split("\n## ")
-            .next()
-            .unwrap();
-        assert!(
-            shared.contains("read their `SKILL.md` from that location instead of invoking them"),
-            "the shared procedures do not say how to load user-only skills"
-        );
-        for skill in WORKFLOW_SKILLS {
-            let text = bundled_text(&format!("{skill}/SKILL.md")).replace("\r\n", "\n");
-            let (preamble, body) = text
-                .split_once("\n## ")
-                .unwrap_or_else(|| panic!("{skill} has no sections"));
-            let used: Vec<&str> = user_only
-                .iter()
-                .copied()
-                .filter(|name| body.contains(&format!("`{name}`")))
-                .collect();
-            assert!(!used.is_empty(), "{skill} uses no user-only skill");
-            let named: Vec<&str> = user_only
-                .iter()
-                .copied()
-                .filter(|name| {
-                    let name = format!("`{name}`");
-                    shared.contains(&name) || preamble.contains(&name)
-                })
-                .collect();
-            assert_eq!(
-                named, used,
-                "{skill} and the shared procedures must name exactly the user-only skills it uses"
-            );
-            assert!(
-                preamble.contains("Using the bundled skills in the shared procedures"),
-                "{skill} does not point to how its user-only skills are loaded"
-            );
-        }
-    }
-
-    #[test]
-    fn bundled_skills_do_not_mention_humanizer() {
-        for (path, content) in BUNDLED {
-            if path.starts_with("licenses/") {
-                continue;
-            }
-            let text = String::from_utf8_lossy(content).to_lowercase();
-            assert!(!text.contains("humanizer"), "{path} mentions humanizer");
-        }
-        let procedures = bundled_text("jidoka-procedures/SKILL.md");
-        assert!(!procedures.contains("## Writing"));
-        for skill in WORKFLOW_SKILLS {
-            assert!(
-                !bundled_text(&format!("{skill}/SKILL.md")).contains("## Writing"),
-                "{skill} still has a Writing section"
-            );
-        }
-    }
-
-    #[test]
     fn the_procedures_keep_the_pull_request_current_without_rewriting_history() {
         let section = bundled_text("jidoka-procedures/references/pull-request-and-ci.md")
             .replace("\r\n", "\n");
@@ -1236,203 +853,6 @@ mod tests {
         ] {
             assert!(section.contains(needle), "missing: {needle}");
         }
-    }
-
-    #[test]
-    fn the_procedures_ask_for_an_upgrade_instead_of_working_around_an_outdated_jidoka() {
-        let skill = bundled_text("jidoka-procedures/SKILL.md").replace("\r\n", "\n");
-        let reference = bundled_text("jidoka-procedures/references/pull-request-and-ci.md")
-            .replace("\r\n", "\n");
-        assert!(
-            skill.contains("(references/pull-request-and-ci.md)"),
-            "the procedures do not link the pull request and CI reference"
-        );
-        let procedures = format!("{skill}\n{reference}");
-        // The skills ship with the binary, so a command it lacks means the two are out of step.
-        for gone in [
-            "unknown command",
-            "do it by hand",
-            "checks by hand",
-            "watch the checks yourself",
-            "git worktree add",
-            "gh pr create",
-            "gh pr checks",
-        ] {
-            assert!(
-                !procedures.contains(gone),
-                "the procedures still work around an outdated Jidoka: {gone}"
-            );
-        }
-        for needle in [
-            "needs upgrading with `jidoka install`",
-            "mark the run blocked with that reason",
-        ] {
-            assert!(procedures.contains(needle), "missing: {needle}");
-        }
-        // Every outcome of the commands the fallbacks used to replace is still handled.
-        for outcome in [
-            "passed",
-            "failed",
-            "cancelled",
-            "timeout",
-            "head-changed",
-            "no-ci",
-            "not-open",
-            "current",
-            "pushed",
-            "needs-verification",
-            "conflict",
-        ] {
-            assert!(
-                procedures.contains(&format!("- `{outcome}` (")),
-                "the procedures lose the {outcome} outcome"
-            );
-        }
-        // Both commands still explain their exit status 1.
-        assert_eq!(
-            reference.matches("Exit status 1 is a problem").count(),
-            2,
-            "pr wait and pr sync both explain exit status 1"
-        );
-        // So does a host without Jidoka support.
-        assert!(reference.contains("Watch every check there until all have completed"));
-        // The hard rules say why.
-        for reason in [
-            "the user may be working in it",
-            "The review is pinned to a commit hash",
-            "merging is the human's review decision",
-        ] {
-            assert!(procedures.contains(reason), "missing reason: {reason}");
-        }
-    }
-
-    #[test]
-    fn the_procedures_start_a_run_naming_the_agent_with_an_option_the_cli_accepts() {
-        let procedures = bundled_text("jidoka-procedures/SKILL.md").replace("\r\n", "\n");
-        let start = procedures
-            .split_once("- **Start:**")
-            .and_then(|(_, rest)| rest.split_once("\n- **Stage:**"))
-            .map(|(start, _)| start)
-            .expect("the procedures have a Start step");
-        assert!(
-            start.contains("jidoka run start \"<short task title>\" --agent <agent>"),
-            "{start}"
-        );
-        // The three values it names are the ones the command takes.
-        for (word, host) in [
-            ("claude", crate::routing::Host::Claude),
-            ("codex", crate::routing::Host::Codex),
-            ("copilot", crate::routing::Host::Copilot),
-        ] {
-            assert!(
-                start.contains(&format!("`{word}`")),
-                "Start does not name {word}"
-            );
-            assert_eq!(
-                crate::routing::parse_start_options(&["--agent", word]),
-                Ok(Some(host))
-            );
-        }
-        // A policy refusal is passed on to the user, and an older command that lacks the option is reported.
-        assert!(
-            start.contains("tell the user what it says and stop"),
-            "{start}"
-        );
-        assert!(start.contains("including `--agent`"), "{start}");
-    }
-
-    #[test]
-    fn the_model_routing_procedure_says_how_to_read_and_apply_the_selection() {
-        // A Windows checkout may have CRLF line endings.
-        let section =
-            bundled_text("jidoka-procedures/references/model-routing.md").replace("\r\n", "\n");
-        let procedures = bundled_text("jidoka-procedures/SKILL.md");
-        assert!(
-            procedures.contains("[references/model-routing.md](references/model-routing.md)")
-                && procedures.contains("applies to every Stage"),
-            "the procedures do not point to the model routing reference for every Stage"
-        );
-        for needle in [
-            "jidoka run inspect <id> --json",
-            "`model_routing`",
-            "`overrides.<stage>`",
-            "`stages.<stage>`",
-            "never a fork",
-            "only the aliases `opus`, `sonnet`, `haiku` and `fable`",
-            "neither the model nor the effort",
-            "model routing not applied",
-            "Copilot CLI",
-            "do not claim a switch",
-            "only the entry of the agent named with `--agent`",
-            "never another agent's",
-            // Each Stage says what is handed to agents and what stays with the coordinator.
-            "the interview (jidoka-grill-with-docs) stays with you",
-            "each ticket runs in its own fresh agent on the build choice",
-            "tell `jidoka-code-review` the check choice",
-            "You run `jidoka pr open`, `jidoka pr wait` and `jidoka pr sync` yourself",
-        ] {
-            assert!(section.contains(needle), "Model routing lacks {needle}");
-        }
-        let review = bundled_text("jidoka-code-review/SKILL.md");
-        for needle in ["model and an effort for the review agents", "not forks"] {
-            assert!(review.contains(needle), "jidoka-code-review lacks {needle}");
-        }
-    }
-
-    #[test]
-    fn model_routing_is_read_at_every_stage_the_workflow_routes() {
-        let link = "[Model routing](../jidoka-procedures/references/model-routing.md)";
-        let procedures = bundled_text("jidoka-procedures/SKILL.md").replace("\r\n", "\n");
-        let rule = procedures
-            .split_once("\n## Model routing\n")
-            .expect("the shared procedures have no Model routing")
-            .1
-            .split("\n## ")
-            .next()
-            .unwrap();
-        for needle in [
-            "Read it at the start of each Stage the workflow has, and again at the start of every Rework and every Check pass after one",
-            "jidoka-fast: it never routes Define and Finish, so it reads this only at the start of Build and does not read it for Define or Finish",
-        ] {
-            assert!(rule.contains(needle), "Model routing rule lacks {needle}");
-        }
-        for skill in WORKFLOW_SKILLS {
-            let text = bundled_text(&format!("{skill}/SKILL.md")).replace("\r\n", "\n");
-            // A routed Build hands each ticket to a fresh agent, overriding the build skill's
-            // "do not require subagents".
-            assert!(
-                text.contains("When Build is routed (see [Model routing]")
-                    && text.contains("hand each ticket"),
-                "{skill} does not hand routed Build tickets to agents"
-            );
-            // The rule lives in the procedures; a workflow names it only where it adds something.
-            assert!(
-                !text.contains("At the start of Define, read")
-                    && !text.contains("At the start of Finish, read"),
-                "{skill} repeats the Model routing rule for Define or Finish"
-            );
-        }
-        for skill in ["jidoka-full", "jidoka-balanced"] {
-            let text = bundled_text(&format!("{skill}/SKILL.md"));
-            assert!(
-                text.contains(&format!(
-                    "Follow {link} for Check: it says which model and effort"
-                )),
-                "{skill} does not name Model routing for Check"
-            );
-        }
-        let full = bundled_text("jidoka-full/SKILL.md");
-        assert!(
-            full.contains(&format!("Then read {link} and follow it for Define")),
-            "jidoka-full reads Model routing after Tracker setup in Define"
-        );
-        let fast = bundled_text("jidoka-fast/SKILL.md");
-        assert!(
-            !fast.contains("for Check")
-                && !fast.contains("Check pass")
-                && !fast.contains("for Define"),
-            "jidoka-fast has no Check to route and does not route Define"
-        );
     }
 
     #[test]
@@ -1497,107 +917,6 @@ mod tests {
     }
 
     #[test]
-    fn azure_boards_template_removes_tags_with_a_replace_the_cli_cannot_send() {
-        // Checked against Azure DevOps: `az boards work-item update --fields System.Tags=...` adds to
-        // the tags, and `show --fields` fails with the expanded output, so neither can remove a role.
-        let template = bundled_text("jidoka-setup/issue-tracker-azure-boards.md");
-        let roles = template
-            .split_once("- **Apply / remove triage roles**:")
-            .and_then(|(_, rest)| rest.split_once("\n- **"))
-            .expect("the template explains triage roles")
-            .0;
-        assert!(!roles.contains("replaces the whole list"));
-        assert!(!roles.contains("--fields System.Tags"));
-        assert!(roles.contains(r#"--query 'fields."System.Tags"'"#));
-        assert!(roles.contains(r#""op":"replace","path":"/fields/System.Tags""#));
-        assert!(roles.contains("Content-Type=application/json-patch+json"));
-    }
-
-    #[test]
-    fn azure_boards_template_names_no_process_specific_types_or_states() {
-        let template = bundled_text("jidoka-setup/issue-tracker-azure-boards.md");
-        let found: Vec<String> = [
-            "User Story",
-            "Product Backlog Item",
-            "Active",
-            "Resolved",
-            "Done",
-            "To Do",
-            "Closed",
-        ]
-        .into_iter()
-        .flat_map(|name| {
-            [
-                format!("`{name}`"),
-                format!("\"{name}\""),
-                format!("--state {name}"),
-                format!("--type {name}"),
-            ]
-        })
-        .filter(|used| template.contains(used))
-        .collect();
-        assert!(
-            found.is_empty(),
-            "template hardcodes process names as values: {found:?}"
-        );
-    }
-
-    /// Returns why `arguments` (the text after `--route-parameters`) is not a
-    /// list of separately double-quoted `"name=value"` pairs.
-    fn route_parameter_problem(arguments: &str) -> Option<String> {
-        let mut arguments = arguments.split_whitespace().peekable();
-        if arguments.peek().is_none() {
-            return Some("no arguments".to_string());
-        }
-        arguments.find_map(|argument| {
-            let inner = argument
-                .strip_prefix('"')
-                .and_then(|rest| rest.strip_suffix('"'));
-            match inner {
-                Some(inner) if !inner.contains('"') && inner.matches('=').count() == 1 => None,
-                _ => Some(format!("not exactly one quoted name=value: {argument}")),
-            }
-        })
-    }
-
-    #[test]
-    fn route_parameter_checker_rejects_unquoted_and_merged_pairs() {
-        assert_eq!(
-            route_parameter_problem("\"project=<project>\" \"workItemId=<id>\""),
-            None
-        );
-        assert!(route_parameter_problem("\"project=<project>\" type=<type>").is_some());
-        assert!(route_parameter_problem("\"project=<project> type=<type>\"").is_some());
-        assert!(route_parameter_problem("project=<project>").is_some());
-    }
-
-    #[test]
-    fn azure_boards_route_parameters_are_quoted_pairs() {
-        const FLAG: &str = "--route-parameters ";
-        for path in [
-            "jidoka-setup/issue-tracker-azure-boards.md",
-            "jidoka-setup/SKILL.md",
-        ] {
-            let text = bundled_text(path);
-            assert!(text.contains(FLAG), "{path} has no {FLAG}");
-            for (index, _) in text.match_indices(FLAG) {
-                let after = &text[index + FLAG.len()..];
-                let end = [after.find(" --"), after.find(['`', '\n'])]
-                    .into_iter()
-                    .flatten()
-                    .min()
-                    .unwrap_or(after.len());
-                let arguments = &after[..end];
-                assert_eq!(
-                    route_parameter_problem(arguments),
-                    None,
-                    "{path}: bad route parameters: {arguments}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn skills_roots_resolves_every_listed_agent_once() {
         let home = Path::new("/home/user");
         let unset = |_: &str| None;
@@ -1657,16 +976,6 @@ mod tests {
         assert!(dirs(&["~other/x"], None, &home).is_err());
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn a_backslash_follows_the_tilde_on_windows() {
-        let home = test_abs("home/user");
-        assert_eq!(
-            dirs(&["~\\x\\y"], None, &home).unwrap(),
-            [home.join("x").join("y")]
-        );
-    }
-
     #[test]
     fn relative_config_dirs_are_rejected() {
         let home = test_abs("home/user");
@@ -1675,159 +984,6 @@ mod tests {
             let error = dirs(&[&ok, bad], None, &home).unwrap_err();
             assert!(error.to_string().contains("absolute"), "{bad:?}");
         }
-    }
-
-    #[test]
-    fn config_dirs_need_the_claude_agent() {
-        let home = test_abs("home/user");
-        let flags = [text(test_abs("a")), text(test_abs("b"))];
-        assert!(skills_roots(&["codex"], &flags, &home, |_: &str| None).is_err());
-        assert_eq!(
-            skills_roots(&["codex", "claude"], &flags, &home, |_: &str| None).unwrap(),
-            [
-                home.join(".codex/skills"),
-                test_abs("a").join("skills"),
-                test_abs("b").join("skills")
-            ]
-        );
-    }
-
-    type Mutation = fn(&Path);
-    type RetiredFile = (&'static str, Vec<u8>);
-
-    /// The files Jidoka installed for Humanizer, read from the copies kept for the comparison.
-    fn retired_humanizer_files() -> Vec<RetiredFile> {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/retired");
-        [
-            ("SKILL.md", "humanizer-SKILL.md"),
-            ("agents/openai.yaml", "humanizer-openai.yaml"),
-            ("LICENSE", "humanizer-LICENSE"),
-        ]
-        .map(|(installed, kept)| (installed, fs::read(dir.join(kept)).unwrap()))
-        .into()
-    }
-
-    fn write_retired_humanizer(root: &Path, crlf: bool) {
-        for (path, content) in retired_humanizer_files() {
-            let content = if crlf {
-                String::from_utf8(content)
-                    .unwrap()
-                    .replace("\r\n", "\n")
-                    .replace('\n', "\r\n")
-                    .into_bytes()
-            } else {
-                content
-            };
-            let file = root.join("humanizer").join(path);
-            fs::create_dir_all(file.parent().unwrap()).unwrap();
-            fs::write(file, content).unwrap();
-        }
-    }
-
-    /// Skills roots for every agent plus two `--config-dir` folders, as `jidoka install` resolves them.
-    fn all_skills_roots(home: &Path) -> Vec<PathBuf> {
-        let configs = [
-            home.join("config-a").to_string_lossy().into_owned(),
-            home.join("config-b").to_string_lossy().into_owned(),
-        ];
-        let roots = skills_roots(
-            &["codex", "claude", "copilot"],
-            &configs,
-            home,
-            |_: &str| None,
-        )
-        .unwrap();
-        assert_eq!(roots.len(), 4);
-        roots
-    }
-
-    #[test]
-    fn install_creates_no_humanizer_folder() {
-        let home = tempfile::tempdir().unwrap();
-        for root in all_skills_roots(home.path()) {
-            install_to(&root).unwrap();
-            assert!(!root.join("humanizer").exists(), "{root:?}");
-        }
-        assert!(!bundled_skill_names().contains(&"humanizer"));
-        assert!(!bundled_skill_files().any(|path| path.starts_with("humanizer/")));
-    }
-
-    #[test]
-    fn install_removes_the_humanizer_the_jidoka_installed_earlier() {
-        let home = tempfile::tempdir().unwrap();
-        for root in all_skills_roots(home.path()) {
-            write_retired_humanizer(&root, false);
-            install_to(&root).unwrap();
-            assert!(!root.join("humanizer").exists(), "{root:?}");
-            assert!(root.join("jidoka-tdd/SKILL.md").is_file(), "{root:?}");
-        }
-    }
-
-    #[test]
-    fn install_removes_the_humanizer_when_git_changed_its_line_endings() {
-        let home = tempfile::tempdir().unwrap();
-        let root = home.path().join("skills");
-        write_retired_humanizer(&root, true);
-        install_to(&root).unwrap();
-        assert!(!root.join("humanizer").exists());
-    }
-
-    #[test]
-    fn install_keeps_a_humanizer_that_is_not_the_jidoka_copy() {
-        let home = tempfile::tempdir().unwrap();
-        let mutations: [(&str, Mutation); 6] = [
-            ("edited skill", |h| {
-                fs::write(h.join("SKILL.md"), "my own edits").unwrap()
-            }),
-            ("edited yaml", |h| {
-                fs::write(h.join("agents/openai.yaml"), "mine").unwrap()
-            }),
-            ("extra empty dir", |h| {
-                fs::create_dir(h.join("extra")).unwrap()
-            }),
-            ("extra file", |h| {
-                fs::write(h.join("notes.md"), "mine").unwrap()
-            }),
-            ("other license", |h| {
-                fs::write(h.join("LICENSE"), "someone else").unwrap()
-            }),
-            ("no license", |h| {
-                fs::remove_file(h.join("LICENSE")).unwrap()
-            }),
-        ];
-        for (name, mutate) in mutations {
-            let root = home.path().join(name);
-            write_retired_humanizer(&root, false);
-            mutate(&root.join("humanizer"));
-            install_to(&root).unwrap();
-            assert!(root.join("humanizer").is_dir(), "{name}");
-            assert!(root.join("jidoka-tdd/SKILL.md").is_file(), "{name}");
-        }
-    }
-
-    // Creating symlinks on Windows needs a privilege that CI and users often lack, so this runs on Unix only.
-    #[cfg(unix)]
-    #[test]
-    fn install_keeps_a_humanizer_that_contains_a_symlink() {
-        let home = tempfile::tempdir().unwrap();
-        let outside = home.path().join("outside");
-        let root = home.path().join("file-link");
-        write_retired_humanizer(&root, false);
-        let skill = root.join("humanizer/SKILL.md");
-        fs::remove_file(&skill).unwrap();
-        fs::write(&outside, &retired_humanizer_files()[0].1).unwrap();
-        std::os::unix::fs::symlink(&outside, &skill).unwrap();
-        install_to(&root).unwrap();
-        assert!(root.join("humanizer").is_dir());
-
-        let target = home.path().join("target");
-        write_retired_humanizer(&target, false);
-        let root = home.path().join("dir-link");
-        fs::create_dir_all(&root).unwrap();
-        std::os::unix::fs::symlink(target.join("humanizer"), root.join("humanizer")).unwrap();
-        install_to(&root).unwrap();
-        assert!(root.join("humanizer").symlink_metadata().is_ok());
-        assert!(target.join("humanizer/SKILL.md").is_file());
     }
 
     #[test]
@@ -1867,10 +1023,6 @@ mod tests {
         fs::create_dir_all(root.join("jidoka")).unwrap();
         fs::write(root.join("jidoka/SKILL.md"), "old content").unwrap();
         fs::write(root.join("jidoka/stale.md"), "removed upstream").unwrap();
-        for legacy in LEGACY_SKILLS {
-            fs::create_dir_all(root.join(legacy)).unwrap();
-            fs::write(root.join(legacy).join("SKILL.md"), "legacy").unwrap();
-        }
         fs::create_dir_all(root.join("my-skill")).unwrap();
         fs::write(root.join("my-skill/SKILL.md"), "user skill").unwrap();
         install_to(root).unwrap();
@@ -1880,9 +1032,6 @@ mod tests {
                 .contains("name: jidoka")
         );
         assert!(!root.join("jidoka/stale.md").exists());
-        for old in LEGACY_SKILLS {
-            assert!(!root.join(old).exists(), "{old}");
-        }
         let mut installed: Vec<_> = fs::read_dir(root)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())

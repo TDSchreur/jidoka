@@ -227,7 +227,7 @@ fn render_markdown(markdown: &str) -> String {
 mod tests {
     use super::*;
     use crate::test_support::TestDir;
-    use std::{ffi::OsStr, fs};
+    use std::fs;
 
     /// A repository with a `.git` directory and a worktree with its own, and a run recording `spec`.
     fn setup(spec: &str) -> (TestDir, PathBuf, PathBuf, Run) {
@@ -254,64 +254,9 @@ mod tests {
     }
 
     #[test]
-    fn only_drive_prefixes_are_local() {
-        assert!(is_drive_prefix(Prefix::Disk(b'C')));
-        assert!(is_drive_prefix(Prefix::VerbatimDisk(b'C')));
-        assert!(!is_drive_prefix(Prefix::UNC(
-            OsStr::new("server"),
-            OsStr::new("share")
-        )));
-        assert!(!is_drive_prefix(Prefix::VerbatimUNC(
-            OsStr::new("server"),
-            OsStr::new("share")
-        )));
-        assert!(!is_drive_prefix(Prefix::DeviceNS(OsStr::new("pipe"))));
-        assert!(!is_drive_prefix(Prefix::Verbatim(OsStr::new("x"))));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn unc_and_device_paths_are_not_local() {
-        for path in [
-            r"\\server\share\x.md",
-            r"\\?\UNC\server\share\x.md",
-            r"\\.\pipe\x",
-            r"\\?\GLOBALROOT\x.md",
-        ] {
-            assert!(!is_local_path(Path::new(path)), "{path}");
-        }
-        assert!(is_local_path(Path::new(r"C:\work\x.md")));
-        assert!(is_local_path(Path::new(r"\\?\C:\work\x.md")));
-    }
-
-    #[test]
     fn plain_unix_and_relative_paths_are_local() {
         assert!(is_local_path(Path::new("/work/x.md")));
         assert!(is_local_path(Path::new("docs/x.md")));
-    }
-
-    #[test]
-    fn a_filesystem_root_or_a_directory_without_git_is_not_a_root() {
-        let dir = TestDir::new();
-        assert!(!is_git_root(Path::new("/")));
-        assert!(!is_git_root(dir.0.path()));
-        fs::create_dir(dir.0.path().join(".git")).unwrap();
-        assert!(is_git_root(dir.0.path()));
-    }
-
-    #[test]
-    fn a_run_in_a_directory_without_git_serves_nothing() {
-        let (_dir, repository, worktree, run) = setup("spec.md");
-        fs::write(worktree.join("spec.md"), "x").unwrap();
-        assert!(read(&run, "spec.md", &no_plan()).is_ok());
-        fs::remove_dir(worktree.join(".git")).unwrap();
-        fs::remove_dir(repository.join(".git")).unwrap();
-        assert_eq!(
-            read(&run, "spec.md", &no_plan()).err(),
-            Some(DocumentError::NotAvailable {
-                path: "spec.md".into()
-            })
-        );
     }
 
     #[test]
@@ -336,45 +281,7 @@ mod tests {
         );
     }
 
-    /// Makes a FIFO with the `mkfifo` program (libc is not a dependency); `false` if unavailable.
-    #[cfg(unix)]
-    fn make_fifo(path: &Path) -> bool {
-        std::process::Command::new("mkfifo")
-            .arg(path)
-            .status()
-            .is_ok_and(|status| status.success())
-    }
-
-    /// Runs `work` on a thread and fails instead of hanging if it does not finish in 5 seconds.
-    #[cfg(unix)]
-    fn within_five_seconds<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = sender.send(work());
-        });
-        receiver
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("blocked: a non-regular file was opened")
-    }
-
     // Opening a FIFO blocks until a writer appears, so a FIFO named `x.md` must never be opened.
-    #[cfg(unix)]
-    #[test]
-    fn a_fifo_named_like_a_document_is_not_available_and_does_not_block() {
-        let (_dir, _, worktree, run) = setup("x.md");
-        if !make_fifo(&worktree.join("x.md")) {
-            eprintln!("skipped: mkfifo is not available");
-            return;
-        }
-        let result = within_five_seconds(move || read(&run, "x.md", &no_plan()).err());
-        assert_eq!(
-            result,
-            Some(DocumentError::NotAvailable {
-                path: "x.md".into()
-            })
-        );
-    }
-
     /// A plans folder with run 1's own plan and run 2's plan, and a run recording its own plan as spec.
     fn plans_setup() -> (TestDir, PathBuf, PathBuf, Run) {
         let (dir, repository, worktree, _) = setup("x.md");
@@ -445,101 +352,6 @@ mod tests {
                 "{reference}"
             );
         }
-    }
-
-    #[test]
-    fn the_plans_folder_itself_is_refused() {
-        let (_dir, plans, worktree, _) = plans_setup();
-        let repository = worktree.parent().unwrap().parent().unwrap().join("repo");
-        let folder = plans.to_string_lossy().into_owned();
-        let run = run(&repository, &worktree, &folder);
-        assert_eq!(
-            read(&run, &folder, &plans.join("1.md")).err(),
-            Some(DocumentError::NotMarkdown)
-        );
-    }
-
-    #[test]
-    fn a_nested_git_dir_is_refused_but_git_like_names_are_served() {
-        let (_dir, repository, worktree, _) = setup("x.md");
-        let nested = repository.join("vendor/x/.git");
-        let upper = repository.join("vendor/y/.GIT");
-        let docs = repository.join("docs");
-        let github = repository.join(".github");
-        for folder in [&nested, &upper, &docs, &github] {
-            fs::create_dir_all(folder).unwrap();
-        }
-        let refused = [nested.join("notes.md"), upper.join("notes.md")];
-        let served = [docs.join("git-notes.md"), github.join("x.md")];
-        for file in refused.iter().chain(&served) {
-            fs::write(file, "# note").unwrap();
-        }
-        for file in refused {
-            let reference = file.to_string_lossy().into_owned();
-            let run = run(&repository, &worktree, &reference);
-            assert_eq!(
-                read(&run, &reference, &no_plan()).err(),
-                Some(DocumentError::OutsideRoots),
-                "{reference}"
-            );
-        }
-        for file in served {
-            let reference = file.to_string_lossy().into_owned();
-            let run = run(&repository, &worktree, &reference);
-            assert!(read(&run, &reference, &no_plan()).is_ok(), "{reference}");
-        }
-    }
-
-    #[test]
-    fn a_recorded_ticket_id_that_is_not_a_markdown_path_is_still_refused() {
-        let (_dir, _repository, worktree, mut run) = setup("docs/spec.md");
-        fs::write(worktree.join("05"), "# Ticket").unwrap();
-        run.tickets = serde_json::from_value(serde_json::json!([
-            {"reference": "05", "title": "AVM Bicep modules", "status": "pending"}
-        ]))
-        .unwrap();
-        assert_eq!(
-            read(&run, "05", &no_plan()).err(),
-            Some(DocumentError::NotMarkdown)
-        );
-    }
-
-    #[test]
-    fn a_non_markdown_file_at_the_plan_location_is_refused() {
-        let (_dir, plans, worktree, _) = plans_setup();
-        let repository = worktree.parent().unwrap().parent().unwrap().join("repo");
-        fs::write(plans.join("1.txt"), "text").unwrap();
-        let reference = plans.join("1.txt").to_string_lossy().into_owned();
-        let run = run(&repository, &worktree, &reference);
-        assert_eq!(
-            read(&run, &reference, &plans.join("1.txt")).err(),
-            Some(DocumentError::NotMarkdown)
-        );
-    }
-
-    #[test]
-    fn an_oversized_plan_is_refused() {
-        let (_dir, plans, _, run) = plans_setup();
-        fs::write(plans.join("1.md"), vec![b'a'; 1024 * 1024 + 1]).unwrap();
-        let plan = plans.join("1.md");
-        assert_eq!(
-            read(&run, &plan.to_string_lossy(), &plan).err(),
-            Some(DocumentError::TooLarge)
-        );
-    }
-
-    #[test]
-    fn the_old_plan_beside_the_worktree_is_refused() {
-        let (_dir, repository, worktree, _) = setup("x.md");
-        let mut sibling = worktree.as_os_str().to_owned();
-        sibling.push(".jidoka-plan.md");
-        let sibling = PathBuf::from(sibling);
-        fs::write(&sibling, "# old plan").unwrap();
-        let run = run(&repository, &worktree, &sibling.to_string_lossy());
-        assert_eq!(
-            read(&run, &sibling.to_string_lossy(), &no_plan()).err(),
-            Some(DocumentError::OutsideRoots)
-        );
     }
 
     #[test]

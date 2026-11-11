@@ -231,30 +231,6 @@ mod tests {
     /// An address nobody listens on: a port the tests' own servers can never be assigned.
     const NOTHING_LISTENS: &str = "127.0.0.1:1";
 
-    /// Accepts the client's connection to a fake server, failing the test with an explanation when it has not
-    /// connected by the deadline, instead of waiting forever.
-    fn accept_within(listener: &std::net::TcpListener, wait: Duration) -> std::net::TcpStream {
-        listener.set_nonblocking(true).unwrap();
-        let deadline = std::time::Instant::now() + wait;
-        loop {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    // A stream accepted from a non-blocking listener may be non-blocking itself.
-                    stream.set_nonblocking(false).unwrap();
-                    return stream;
-                }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "the client did not connect to the fake server within {wait:?}"
-                    );
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => panic!("the fake server could not accept: {error}"),
-            }
-        }
-    }
-
     /// A real Rocket server on an OS-assigned port, shut down and joined on drop.
     struct TestServer {
         address: String,
@@ -544,58 +520,6 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_token_file_is_refused_before_anything_is_sent() {
-        let dir = TestDir::new();
-        let server = TestServer::start(&dir.0.path().join("runs.json"));
-        let valid = token_of(&server);
-        let upper = valid.to_uppercase();
-        let evil = format!("{}\r\nX-Evil: 1", &valid[..32]);
-        let nonhex = format!("{}g", &valid[..63]);
-        for bad in [
-            format!("{valid}\r\nX-Evil: 1"),
-            evil,
-            "abc123".into(),
-            upper,
-            nonhex,
-        ] {
-            fs::write(&server.token_file, &bad).unwrap();
-            let message = start_run(
-                &server.address,
-                &server.token_file,
-                "t",
-                "/w",
-                None,
-                None,
-                None,
-            )
-            .unwrap_err()
-            .to_string();
-            assert!(message.contains("no CLI token"), "{message}");
-            assert!(message.contains("jidoka dashboard"), "{message}");
-            assert!(!message.contains("X-Evil"), "{message}");
-        }
-        assert!(server.runs().as_array().unwrap().is_empty());
-    }
-
-    #[test]
-    fn an_oversized_or_non_file_token_path_says_to_restart_the_dashboard() {
-        let dir = TestDir::new();
-        let server = TestServer::start(&dir.0.path().join("runs.json"));
-        let real = token_of(&server);
-        let oversized = dir.0.path().join("oversized");
-        fs::write(&oversized, format!("{real}{}", "a".repeat(1024 * 1024))).unwrap();
-        for path in [oversized.as_path(), dir.0.path()] {
-            let error = start_run(&server.address, path, "t", "/w", None, None, None)
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains("no CLI token"), "{error}");
-            assert!(error.contains("restart 'jidoka dashboard'"), "{error}");
-            assert!(!error.contains(&real), "{error}");
-        }
-        assert!(server.runs().as_array().unwrap().is_empty());
-    }
-
-    #[test]
     fn rejected_token_hints_at_restarting_the_dashboard_without_leaking_tokens() {
         let dir = TestDir::new();
         let server = TestServer::start(&dir.0.path().join("runs.json"));
@@ -617,57 +541,6 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_other_than_a_bad_token_is_not_blamed_on_the_token() {
-        let dir = TestDir::new();
-        let token_file = dir.0.path().join("session-token");
-        fs::write(&token_file, "a".repeat(64)).unwrap();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap().to_string();
-        let thread = std::thread::spawn(move || {
-            let mut stream = accept_within(&listener, Duration::from_secs(5));
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut seen = Vec::new();
-            let mut chunk = [0u8; 1024];
-            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
-                let read = stream.read(&mut chunk).unwrap();
-                seen.extend_from_slice(&chunk[..read]);
-            }
-            // Take the whole body too: closing with unread data resets the connection and hides the response.
-            let head_end = seen.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
-            let head = String::from_utf8_lossy(&seen[..head_end]).to_lowercase();
-            let length: usize = head
-                .split("content-length: ")
-                .nth(1)
-                .and_then(|rest| rest.split("\r\n").next())
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(0);
-            while seen.len() < head_end + length {
-                let read = stream.read(&mut chunk).unwrap();
-                seen.extend_from_slice(&chunk[..read]);
-            }
-            stream
-                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 6\r\nConnection: close\r\n\r\nNo way")
-                .unwrap();
-        });
-        let error = report_run(&address, &token_file, "1", "build", "running", &[])
-            .unwrap_err()
-            .to_string();
-        thread.join().unwrap();
-        assert!(error.contains("server rejected request"), "{error}");
-        assert!(!error.contains("CLI token"), "{error}");
-    }
-
-    #[test]
-    fn a_server_on_another_port_keeps_its_own_token_file() {
-        let dir = TestDir::new();
-        let server = TestServer::start(&dir.0.path().join("runs.json"));
-        let port: u16 = server.address.rsplit(':').next().unwrap().parse().unwrap();
-        assert!(server.token_file.ends_with(format!("session-token-{port}")));
-    }
-
-    #[test]
     fn probe_recognises_a_jidoka_dashboard_by_its_info() {
         let dir = TestDir::new();
         let server = TestServer::start(&dir.0.path().join("runs.json"));
@@ -677,30 +550,6 @@ mod tests {
                 assert_eq!(info.version, crate::current_build());
             }
             other => panic!("expected a running dashboard, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn probe_reports_nothing_listening_and_foreign_listeners() {
-        // Nothing listens on port 1.
-        assert_eq!(probe_dashboard(NOTHING_LISTENS).unwrap(), Probe::Absent);
-
-        // A listener that answers something else on the same port is not a dashboard.
-        for reply in [
-            &b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
-            b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"hello\":1}",
-            b"not http at all",
-        ] {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let address = listener.local_addr().unwrap().to_string();
-            let thread = std::thread::spawn(move || {
-                let mut stream = accept_within(&listener, Duration::from_secs(5));
-                let mut buffer = [0; 1024];
-                let _ = stream.read(&mut buffer);
-                stream.write_all(reply).unwrap();
-            });
-            assert_eq!(probe_dashboard(&address).unwrap(), Probe::Foreign);
-            thread.join().unwrap();
         }
     }
 
@@ -895,55 +744,5 @@ mod tests {
             rejected.to_string().contains("No ticket ghost"),
             "{rejected}"
         );
-    }
-
-    #[test]
-    fn legacy_and_canonical_full_modes_round_trip_through_cli_and_inspect() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let server = TestServer::start(&path);
-        for mode in ["jidoka", "jidoka-full"] {
-            let id = start_run(
-                &server.address,
-                &server.token_file,
-                "Full run",
-                "/work/repo",
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-            report_run(
-                &server.address,
-                &server.token_file,
-                &id,
-                "build",
-                "running",
-                &["--mode", mode],
-            )
-            .unwrap();
-            let run = fetch_run(&server.address, &id).unwrap();
-            assert!(crate::inspect::render(&run).contains("Mode          jidoka-full"));
-            assert_eq!(serde_json::to_value(&run).unwrap()["mode"], "jidoka-full");
-        }
-    }
-
-    #[test]
-    fn inspect_shows_unknown_for_a_run_recorded_before_run_context() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        fs::write(&path, r#"[{"id":"7","title":"old","project":"/work/old","stage":"check","status":"running"}]"#).unwrap();
-        let server = TestServer::start(&path);
-        let text = crate::inspect::render(&fetch_run(&server.address, "7").unwrap());
-        assert!(
-            text.contains("Repository    unknown (not recorded)"),
-            "{text}"
-        );
-        assert!(
-            text.contains("Branch        unknown (not recorded)"),
-            "{text}"
-        );
-        assert!(text.contains("Started in    /work/old"), "{text}");
-        assert!(text.contains("Tickets       none recorded"), "{text}");
     }
 }

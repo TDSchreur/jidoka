@@ -8,7 +8,7 @@ Day-to-day work targets `develop`; releases merge `develop` into `master`. See [
 
 ## Verify your change
 
-Run `scripts/verify.sh` before finishing a change and opening a pull request. It runs the same checks as CI, in the same order, and stops at the first failure; it needs `cargo`, `rustfmt` and `clippy` (`rustup component add rustfmt clippy`), plus `python3` and Chromium or Google Chrome for the dashboard browser tests (set `CHROMIUM` to the browser path if it is not on `PATH` as `chromium`, `chromium-browser` or `google-chrome`). When a Windows target is installed (`x86_64-pc-windows-gnu` preferred), it also runs clippy for it after the Linux clippy step (a local extra: CI lints on Linux only); without one it prints how to add it (`rustup target add x86_64-pc-windows-gnu`) and continues. The individual commands are:
+Run `scripts/verify.sh --quick` while iterating: it skips the Windows clippy step and runs the dashboard browser tests only when `dashboard/` or `tests/*.py` changed. Run `scripts/verify.sh` before opening a pull request. It runs the same checks as CI, in the same order, and stops at the first failure; it needs `cargo`, `rustfmt` and `clippy` (`rustup component add rustfmt clippy`), plus `python3` and Chromium or Google Chrome for the dashboard browser tests (set `CHROMIUM` to the browser path if it is not on `PATH` as `chromium`, `chromium-browser` or `google-chrome`). When a Windows target is installed (`x86_64-pc-windows-gnu` preferred), it also runs clippy for it after the Linux clippy step (a local extra: CI lints on Linux only); without one it prints how to add it (`rustup target add x86_64-pc-windows-gnu`) and continues. The individual commands are:
 
 ```sh
 cargo fmt --check
@@ -23,10 +23,6 @@ for test in tests/dashboard-*.py; do python3 "$test"; done
 The [Rust skill](.agents/skills/rust/SKILL.md) and [project instructions](AGENTS.md) guide Rust development in this repository.
 
 Add a `changelog.d` fragment for user-visible changes, and update the docs in `docs/` when a command, option or install step changes. See [the docs instructions](.github/instructions/update-docs-on-code-change.instructions.md).
-
-## Development machine
-
-To switch a Linux x86-64 development machine between the latest release and the current `origin/develop`, run `scripts/switch-jidoka.sh release` or `scripts/switch-jidoka.sh develop` from this checkout. The script fetches and builds `develop` in a temporary checkout without changing your working tree, stops the dashboard, removes the existing Cargo and `~/.local/bin` jidoka executables, and installs the selected version in `~/.local/bin`. It prompts for a comma-separated list of agents, or uses `JIDOKA_AGENT` when set. Selected agents receive the bundled skills for that version. Restart the dashboard afterwards. Ensure `~/.local/bin` is on your PATH.
 
 ## Dashboard front end
 

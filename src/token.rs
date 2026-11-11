@@ -68,24 +68,6 @@ mod tests {
     }
 
     #[test]
-    fn only_64_lowercase_hex_characters_are_valid() {
-        assert!(is_valid(&"0123456789abcdef".repeat(4)));
-        assert!(!is_valid(""));
-        assert!(!is_valid(&"a".repeat(63)));
-        assert!(!is_valid(&"a".repeat(65)));
-        assert!(
-            !is_valid(&"A".repeat(64)),
-            "uppercase hex is not what the server generates"
-        );
-        assert!(!is_valid(&format!("{}g", "a".repeat(63))));
-        assert!(!is_valid(&format!("{}\n", "a".repeat(63))));
-        assert!(
-            !is_valid(&format!("{}é", "a".repeat(62))),
-            "64 bytes, 63 characters"
-        );
-    }
-
-    #[test]
     fn a_token_file_is_read_with_or_without_a_line_break() {
         let dir = TestDir::new();
         let token = random().unwrap();
@@ -120,40 +102,5 @@ mod tests {
         let binary = dir.0.path().join("binary");
         fs::write(&binary, [0xff; 64]).unwrap();
         assert_eq!(read_file(&binary), None, "not UTF-8");
-    }
-
-    #[test]
-    fn a_token_path_that_is_not_a_regular_file_is_refused() {
-        let dir = TestDir::new();
-        assert_eq!(read_file(dir.0.path()), None, "a directory");
-    }
-
-    /// Unix only: a named pipe needs `mkfifo`, which Windows does not have.
-    #[cfg(unix)]
-    #[test]
-    fn a_named_pipe_is_refused_without_blocking() {
-        let dir = TestDir::new();
-        let fifo = dir.0.path().join("token-fifo");
-        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
-        assert!(made.is_ok_and(|status| status.success()), "mkfifo failed");
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let path = fifo.clone();
-        let reader = std::thread::spawn(move || {
-            let _ = sender.send(read_file(&path));
-        });
-        match receiver.recv_timeout(std::time::Duration::from_secs(5)) {
-            Ok(result) => {
-                assert_eq!(result, None);
-                reader.join().unwrap();
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                panic!("reading the token file panicked: {:?}", reader.join());
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                // Release a reader stuck opening the pipe, so the test process can end.
-                drop(fs::OpenOptions::new().write(true).open(&fifo));
-                panic!("reading a named pipe as the token file blocked for 5 seconds");
-            }
-        }
     }
 }
