@@ -879,15 +879,25 @@ function Detail({ run, now, onClose, onDelete, onSynced }) {
   const [gateData, setGateData] = useState(null);
   useEffect(() => {
     let active = true;
-    fetch(`/api/runs/${encodeURIComponent(run.id)}`, { cache: 'no-store' })
-      .then((response) => {
+    let busy = false;
+    async function refreshGates() {
+      if (busy) return;
+      busy = true;
+      try {
+        const response = await fetch(`/api/runs/${encodeURIComponent(run.id)}`, { cache: 'no-store' });
         if (!response.ok) throw new Error('Could not load gate status');
-        return response.json();
-      })
-      .then((data) => { if (active) setGateData(data); })
-      .catch(() => { if (active) setGateData({ checks_unavailable: 'Could not load gate and check status from the server.' }); });
-    return () => { active = false; };
-  }, [run]);
+        const data = await response.json();
+        if (active) setGateData(data);
+      } catch {
+        if (active) setGateData({ checks_unavailable: 'Could not load gate and check status from the server.' });
+      } finally {
+        busy = false;
+      }
+    }
+    refreshGates();
+    const timer = setInterval(refreshGates, POLL_MS);
+    return () => { active = false; clearInterval(timer); };
+  }, [run.id]);
 
   const dialog = useRef(null);
   // The listener below is added once; it calls whatever `onClose` is current.
