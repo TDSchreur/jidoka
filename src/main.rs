@@ -635,7 +635,7 @@ fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::erro
 }
 
 /// The ids of the agent sessions this command runs in, when the agent exposes them: Claude Code sets
-/// `CLAUDE_CODE_SESSION_ID`; Codex sets `CODEX_SESSION_ID` (the root session) and `CODEX_THREAD_ID`.
+/// `CLAUDE_CODE_SESSION_ID`; Codex sets `CODEX_SESSION_ID` (the root session) and `CODEX_THREAD_ID`; Copilot CLI sets `COPILOT_AGENT_SESSION_ID`.
 fn current_sessions() -> Vec<String> {
     sessions_from(&|name| env::var_os(name))
 }
@@ -646,6 +646,7 @@ fn sessions_from(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<String
         "CLAUDE_CODE_SESSION_ID",
         "CODEX_SESSION_ID",
         "CODEX_THREAD_ID",
+        "COPILOT_AGENT_SESSION_ID",
     ] {
         let Some(id) = var(name).and_then(|value| value.into_string().ok()) else {
             continue;
@@ -861,6 +862,8 @@ mod tests {
         let claude = [("CLAUDE_CODE_SESSION_ID", id)];
         assert_eq!(sessions_from(&lookup(&claude)), [id]);
         let invalid = [("CODEX_SESSION_ID", "bad id!"), ("CODEX_THREAD_ID", "x")];
+        let copilot = [("COPILOT_AGENT_SESSION_ID", id)];
+        assert_eq!(sessions_from(&lookup(&copilot)), [id]);
         assert!(sessions_from(&lookup(&invalid)).is_empty());
         assert!(sessions_from(&lookup(&[])).is_empty());
     }
