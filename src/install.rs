@@ -91,16 +91,8 @@ pub(crate) struct Selection {
 /// The agents Jidoka installs skills for, in the order the install menu lists them.
 pub(crate) const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
 
-/// Fails with the list of valid agents when `name` is not one of them.
-pub(crate) fn validate_agent(name: &str) -> io::Result<()> {
-    if AGENTS.contains(&name) {
-        return Ok(());
-    }
-    Err(unknown_agent(name))
-}
-
 /// `codex, claude, or copilot`.
-fn agent_list() -> String {
+pub(crate) fn agent_list() -> String {
     let (last, rest) = AGENTS.split_last().expect("AGENTS is not empty");
     format!("{}, or {last}", rest.join(", "))
 }
@@ -112,9 +104,12 @@ fn unknown_agent(name: &str) -> io::Error {
     )
 }
 
-/// Turns an answer such as `1,claude`, `2 3` or `all` into agent names, in the order given, without
-/// duplicates. `None` when any entry is not a number, name or `all`.
-pub(crate) fn parse_agent_choice(answer: &str) -> Option<Vec<String>> {
+/// Turns an answer such as `1,claude`, `2 3` or `all` into agent names, without duplicates.
+///
+/// # Errors
+///
+/// Fails naming the first entry that is not a number, name or `all`, and on an empty answer.
+pub(crate) fn parse_agent_choice(answer: &str) -> io::Result<Vec<String>> {
     let mut agents: Vec<String> = Vec::new();
     for entry in answer
         .split(|c: char| c == ',' || c.is_whitespace())
@@ -125,7 +120,7 @@ pub(crate) fn parse_agent_choice(answer: &str) -> Option<Vec<String>> {
             name if AGENTS.contains(&name) => vec![name],
             number => match number.parse::<usize>() {
                 Ok(n) if (1..=AGENTS.len()).contains(&n) => vec![AGENTS[n - 1]],
-                _ => return None,
+                _ => return Err(unknown_agent(number)),
             },
         };
         for name in chosen {
@@ -134,7 +129,13 @@ pub(crate) fn parse_agent_choice(answer: &str) -> Option<Vec<String>> {
             }
         }
     }
-    (!agents.is_empty()).then_some(agents)
+    if agents.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("no agent given; use {}", agent_list()),
+        ));
+    }
+    Ok(agents)
 }
 
 /// Decides the agents and Claude config directories. `--agent` and `--config-dir` win over
@@ -153,16 +154,7 @@ pub(crate) fn select(
         .map(|value| value.to_string_lossy().into_owned())
         .filter(|value| !value.trim().is_empty());
     let agents = match agent_flag.map(str::to_string).or(env_agent) {
-        Some(list) => {
-            let mut agents = Vec::new();
-            for name in list.split(',').map(str::trim) {
-                validate_agent(name)?;
-                if !agents.iter().any(|known| known == name) {
-                    agents.push(name.to_string());
-                }
-            }
-            agents
-        }
+        Some(list) => parse_agent_choice(&list)?,
         None if terminal => ask_agents(input, output)?,
         None => {
             return Err(invalid(
@@ -208,7 +200,7 @@ fn ask_agents(
                 "No answer given. Use --agent or set JIDOKA_AGENT.",
             ));
         }
-        if let Some(agents) = parse_agent_choice(&answer) {
+        if let Ok(agents) = parse_agent_choice(&answer) {
             return Ok(agents);
         }
         writeln!(output, "Invalid choice. Try again.")?;
@@ -271,12 +263,7 @@ pub(crate) fn install_skill_files(
     var: &impl Fn(&str) -> Option<OsString>,
     out: &mut impl io::Write,
 ) -> io::Result<()> {
-    let roots = skills_roots(
-        &selection.agents.join(","),
-        &selection.config_dirs,
-        home,
-        var,
-    )?;
+    let roots = skills_roots(&selection.agents, &selection.config_dirs, home, var)?;
     for root in roots {
         install_to_reporting(&root, out)?;
     }
@@ -325,25 +312,14 @@ pub(crate) fn create_default_policy(
     Ok((path, done))
 }
 
-/// Splits a comma-separated `--agent` value into trimmed names without duplicates.
-pub(crate) fn agent_names(agents: &str) -> Vec<&str> {
-    let mut names: Vec<&str> = Vec::new();
-    for name in agents.split(',').map(str::trim) {
-        if !names.contains(&name) {
-            names.push(name);
-        }
-    }
-    names
-}
-
 /// Resolves the skills folder of every listed agent before anything is installed.
 pub(crate) fn skills_roots(
-    agents: &str,
+    agents: &[impl AsRef<str>],
     config_dirs: &[String],
     home: &Path,
     var: impl Fn(&str) -> Option<OsString>,
 ) -> io::Result<Vec<PathBuf>> {
-    let names = agent_names(agents);
+    let names: Vec<&str> = agents.iter().map(AsRef::as_ref).collect();
     if !config_dirs.is_empty() && !names.contains(&"claude") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -725,6 +701,18 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_agent_list_says_no_agent_was_given() {
+        for flag in ["", ",", " "] {
+            let (selection, _) = selected(Some(flag), &[], &[], false, "");
+            let message = selection.unwrap_err().to_string();
+            assert_eq!(
+                message, "no agent given; use codex, claude, or copilot",
+                "{flag:?}"
+            );
+        }
+    }
+
+    #[test]
     fn without_a_terminal_and_agents_the_error_names_the_flag_and_the_variable() {
         let (selection, shown) = selected(None, &[], &[], false, "all\n");
         let message = selection.unwrap_err().to_string();
@@ -742,6 +730,36 @@ mod tests {
         assert!(shown.is_empty() && shown_env.is_empty());
         let (selection, _) = selected(Some("nope"), &[], &[], true, "");
         assert!(selection.is_err());
+    }
+
+    #[test]
+    fn the_flag_and_the_variable_accept_what_the_prompt_accepts() {
+        let all = ["codex", "claude", "copilot"];
+        let (selection, shown) = selected(Some("all"), &[], &[], false, "");
+        assert_eq!(names(selection), all);
+        assert!(shown.is_empty());
+        let (selection, _) = selected(None, &[], &[("JIDOKA_AGENT", "all")], false, "");
+        assert_eq!(names(selection), all);
+        let (selection, _) = selected(None, &[], &[("JIDOKA_AGENT", "3, 1")], false, "");
+        assert_eq!(names(selection), ["copilot", "codex"]);
+        let (selection, _) = selected(Some("claude copilot"), &[], &[], false, "");
+        assert_eq!(names(selection), ["claude", "copilot"]);
+    }
+
+    #[test]
+    fn an_invalid_flag_or_variable_entry_names_the_token_and_the_valid_agents() {
+        for value in ["codex,nope", "9", "0", "claude,,x1"] {
+            let (selection, _) = selected(Some(value), &[], &[], true, "");
+            let message = selection.unwrap_err().to_string();
+            let bad = value.rsplit(',').next().unwrap();
+            assert!(
+                message.contains(&format!("{bad:?}"))
+                    && message.contains("codex, claude, or copilot"),
+                "{value}: {message}"
+            );
+        }
+        let (selection, _) = selected(None, &[], &[("JIDOKA_AGENT", "1,zzz")], false, "");
+        assert!(selection.unwrap_err().to_string().contains("\"zzz\""));
     }
 
     #[test]
@@ -1584,20 +1602,20 @@ mod tests {
         let home = Path::new("/home/user");
         let unset = |_: &str| None;
         assert_eq!(
-            skills_roots("codex, claude,codex", &[], home, unset).unwrap(),
+            skills_roots(
+                &parse_agent_choice("codex, claude,codex").unwrap(),
+                &[],
+                home,
+                unset
+            )
+            .unwrap(),
             [home.join(".codex/skills"), home.join(".claude/skills")]
         );
         assert_eq!(
-            skills_roots("copilot", &[], home, unset).unwrap(),
+            skills_roots(&["copilot"], &[], home, unset).unwrap(),
             [home.join(".copilot/skills")]
         );
-        for invalid in ["", "codex,", "codex,vscode", "all"] {
-            assert!(
-                skills_roots(invalid, &[], home, unset).is_err(),
-                "{invalid:?}"
-            );
-        }
-        let error = skills_roots("codex,vscode", &[], home, unset).unwrap_err();
+        let error = skills_roots(&["codex", "vscode"], &[], home, unset).unwrap_err();
         assert!(error.to_string().contains("vscode"));
     }
     fn dirs(flags: &[&str], var: Option<&str>, home: &Path) -> io::Result<Vec<PathBuf>> {
@@ -1663,9 +1681,9 @@ mod tests {
     fn config_dirs_need_the_claude_agent() {
         let home = test_abs("home/user");
         let flags = [text(test_abs("a")), text(test_abs("b"))];
-        assert!(skills_roots("codex", &flags, &home, |_: &str| None).is_err());
+        assert!(skills_roots(&["codex"], &flags, &home, |_: &str| None).is_err());
         assert_eq!(
-            skills_roots("codex,claude", &flags, &home, |_: &str| None).unwrap(),
+            skills_roots(&["codex", "claude"], &flags, &home, |_: &str| None).unwrap(),
             [
                 home.join(".codex/skills"),
                 test_abs("a").join("skills"),
@@ -1712,7 +1730,13 @@ mod tests {
             home.join("config-a").to_string_lossy().into_owned(),
             home.join("config-b").to_string_lossy().into_owned(),
         ];
-        let roots = skills_roots("codex,claude,copilot", &configs, home, |_: &str| None).unwrap();
+        let roots = skills_roots(
+            &["codex", "claude", "copilot"],
+            &configs,
+            home,
+            |_: &str| None,
+        )
+        .unwrap();
         assert_eq!(roots.len(), 4);
         roots
     }
@@ -1809,7 +1833,13 @@ mod tests {
     #[test]
     fn selector_replaces_full_and_all_entry_points_survive_reinstall_for_each_agent() {
         let home = tempfile::tempdir().unwrap();
-        let roots = skills_roots("codex,claude,copilot", &[], home.path(), |_: &str| None).unwrap();
+        let roots = skills_roots(
+            &["codex", "claude", "copilot"],
+            &[],
+            home.path(),
+            |_: &str| None,
+        )
+        .unwrap();
         for root in roots {
             fs::create_dir_all(root.join("jidoka")).unwrap();
             fs::write(

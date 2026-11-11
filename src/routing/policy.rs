@@ -73,10 +73,13 @@ impl From<RoutingAgent> for Host {
 pub(crate) fn parse_start_options(options: &[&str]) -> Result<Option<Host>, String> {
     match options {
         [] => Ok(None),
-        ["--agent"] => Err("--agent needs codex, claude, or copilot.".into()),
-        ["--agent", name] => Host::parse(name)
-            .map(Some)
-            .ok_or_else(|| format!("Unknown agent {name:?}; use codex, claude, or copilot.")),
+        ["--agent"] => Err(format!("--agent needs {}.", crate::install::agent_list())),
+        ["--agent", name] => Host::parse(name).map(Some).ok_or_else(|| {
+            format!(
+                "Unknown agent {name:?}; use {}.",
+                crate::install::agent_list()
+            )
+        }),
         ["--agent", _, extra, ..] | [extra, ..] => Err(format!("Unexpected option {extra:?}.")),
     }
 }

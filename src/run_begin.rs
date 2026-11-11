@@ -97,7 +97,8 @@ fn parse_common(title: &str, options: &[&str], needs_title: bool) -> Result<Opti
                 let name = value("--agent")?;
                 if crate::routing::Host::parse(name).is_none() {
                     return Err(format!(
-                        "Unknown agent {name:?}; use codex, claude, or copilot."
+                        "Unknown agent {name:?}; use {}.",
+                        crate::install::agent_list()
                     ));
                 }
                 parsed.agent = Some(name.to_string());

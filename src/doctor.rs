@@ -18,7 +18,8 @@ use std::{
 mod provider;
 mod routing;
 
-pub(crate) const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
+use crate::install::{AGENTS, agent_list};
+
 /// Project files are not trusted: anything larger is not read.
 const MAX_DOC_BYTES: u64 = 1 << 20;
 /// How much of an agent's `--version` output doctor shows: a version line is short, so this only guards against
@@ -181,7 +182,7 @@ pub(crate) fn diagnose(
         Some(name) => vec![*AGENTS.iter().find(|known| **known == name).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("unknown agent {name:?}; use codex, claude, or copilot"),
+                format!("unknown agent {name:?}; use {}", agent_list()),
             )
         })?],
     };
@@ -583,7 +584,7 @@ fn skills_checks(agent: &'static str, machine: &Machine) -> Vec<Check> {
         Err(error) => vec![Check::fail(
             "skills",
             error.to_string(),
-            "Use codex, claude, or copilot.",
+            format!("Use {}.", agent_list()),
         )],
     }
 }
@@ -833,11 +834,9 @@ pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
                     return Err("--agent can be given only once.".into());
                 }
                 Some(name) => {
-                    return Err(format!(
-                        "Unknown agent {name:?}; use codex, claude, or copilot."
-                    ));
+                    return Err(format!("Unknown agent {name:?}; use {}.", agent_list()));
                 }
-                None => return Err("--agent needs codex, claude, or copilot.".into()),
+                None => return Err(format!("--agent needs {}.", agent_list())),
             },
             other => return Err(format!("Unknown option {other:?}.")),
         }
