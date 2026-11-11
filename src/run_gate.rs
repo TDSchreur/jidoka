@@ -211,7 +211,11 @@ fn ci_passed(
         .map_err(|error| format!("Could not read pull request state: {}", error.0))?;
     require(
         state == pr_state::PrState::Open,
-        &format!("Pull request is {}", state.label()),
+        &format!(
+            "Pull request is {}; if it merged, run `jidoka run sync {}` to reconcile the run",
+            state.label(),
+            run.id
+        ),
     )?;
     let commit = head(run, git)?;
     let options = pr_wait::Options {
@@ -225,6 +229,12 @@ fn ci_passed(
         result.head == commit,
         "The pull request head does not match the worktree HEAD",
     )?;
+    if result.outcome == pr_wait::Outcome::NotOpen {
+        return Err(format!(
+            "Pull request closed or merged while checking CI; run `jidoka run sync {}` to reconcile the run",
+            run.id
+        ));
+    }
     require(
         matches!(
             result.outcome,
@@ -317,6 +327,99 @@ mod tests {
         assert_eq!(run.stage, Stage::Finish);
     }
     #[test]
+    fn full_build_requires_a_passing_result_for_each_ticket() {
+        let git = FakeGit(RefCell::new("abc1234".into()));
+        let mut run = run(Stage::Build);
+        run.mode = Some(Mode::Full);
+        for reference in ["one", "two"] {
+            run.tickets.push(Ticket {
+                reference: reference.into(),
+                title: reference.into(),
+                status: TicketStatus::Done,
+            });
+        }
+        assert!(
+            advance(&mut run, &git, &host())
+                .unwrap_err()
+                .contains("tickets-verified")
+        );
+        run.current_ticket = Some("one".into());
+        record(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
+        assert!(advance(&mut run, &git, &host()).is_err());
+        run.current_ticket = Some("two".into());
+        record(&mut run, result(Gate::TicketsVerified, false), &git).unwrap();
+        assert!(advance(&mut run, &git, &host()).is_err());
+        record(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
+        advance(&mut run, &git, &host()).unwrap();
+        assert_eq!(run.stage, Stage::Check);
+    }
+
+    #[test]
+    fn full_run_walks_stages_and_rework_with_ticket_verification() {
+        let git = FakeGit(RefCell::new("abc1234".into()));
+        let mut run = run(Stage::Define);
+        run.mode = Some(Mode::Full);
+        for reference in ["one", "two"] {
+            run.tickets.push(Ticket {
+                reference: reference.into(),
+                title: reference.into(),
+                status: TicketStatus::Pending,
+            });
+        }
+        advance(&mut run, &git, &host()).unwrap();
+        let next = serde_json::to_value(crate::run_next::build(&run, &[]).unwrap()).unwrap();
+        assert!(
+            next["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("tickets-verified pass")
+        );
+        for reference in ["one", "two"] {
+            run.current_ticket = Some(reference.into());
+            record(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
+            run.tickets
+                .iter_mut()
+                .find(|ticket| ticket.reference == reference)
+                .unwrap()
+                .status = TicketStatus::Done;
+        }
+        advance(&mut run, &git, &host()).unwrap();
+        assert_eq!(run.stage, Stage::Check);
+        assert_eq!(
+            stages::rework(Mode::Full, run.stage, run.status)
+                .unwrap()
+                .to,
+            Destination::Stage(Stage::Build)
+        );
+        run.stage = Stage::Build;
+        run.rework = Some(1);
+        advance(&mut run, &git, &host()).unwrap();
+        record(&mut run, result(Gate::ChecksRecorded, true), &git).unwrap();
+        record(&mut run, result(Gate::NoActionableFindings, true), &git).unwrap();
+        record(&mut run, result(Gate::Verified, true), &git).unwrap();
+        advance(&mut run, &git, &host()).unwrap();
+        advance(&mut run, &git, &host()).unwrap();
+        assert_eq!(run.status, RunStatus::Done);
+    }
+
+    #[test]
+    fn merged_pull_request_advise_sync_instead_of_accepting_unchecked_ci() {
+        let git = FakeGit(RefCell::new("abc1234".into()));
+        let mut run = run(Stage::Finish);
+        let error = advance(
+            &mut run,
+            &git,
+            &FakeGh {
+                state: "MERGED",
+                ..host()
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("jidoka run sync 1"));
+        assert_eq!(run.status, RunStatus::Running);
+    }
+
+    #[test]
     fn finish_checks_pr_state_ci_and_head() {
         let git = FakeGit(RefCell::new("abc1234".into()));
         for host in [
@@ -352,6 +455,10 @@ mod tests {
                 title: "ticket".into(),
                 status: TicketStatus::Done,
             });
+            if mode == Mode::Full {
+                run.current_ticket = Some("ticket".into());
+                record(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
+            }
             advance(&mut run, &git, &host()).unwrap();
             assert_eq!(run.stage, Stage::Check);
             record(&mut run, result(Gate::ChecksRecorded, true), &git).unwrap();

@@ -78,7 +78,10 @@ fn balanced_check_offers_advance_and_rework_with_applicable_checks() {
 #[test]
 fn full_build_requires_tickets_and_finish_ends_in_done() {
     let build_next = build(&run(Mode::Full, Stage::Build, None), &[]).unwrap();
-    assert_eq!(names(&build_next.gates), [Gate::TicketsDone]);
+    assert_eq!(
+        names(&build_next.gates),
+        [Gate::TicketsDone, Gate::TicketsVerified]
+    );
     let finish = build(&run(Mode::Full, Stage::Finish, None), &[]).unwrap();
     assert_eq!(finish.moves[0].kind, "done");
     assert_eq!(finish.moves[0].to, None);
@@ -195,4 +198,20 @@ fn next_supplies_only_current_stage_and_routing_when_selected() {
     }
     let routed = build(&run(Mode::Balanced, Stage::Build, Some(routing())), &[]).unwrap();
     assert!(routed.instructions.contains("# Model routing"));
+}
+
+#[test]
+fn build_instructions_are_focused_and_full_explains_each_ticket_gate() {
+    let output = build(&run(Mode::Full, Stage::Build, Some(routing())), &[]).unwrap();
+    assert!(output.instructions.contains("tickets-verified pass"));
+    assert!(output.instructions.contains("--current-ticket"));
+    assert!(!output.instructions.contains("## Committing for Check"));
+    assert!(!output.instructions.contains("## Reworks"));
+    assert!(!output.instructions.contains("On Copilot CLI"));
+    assert!(
+        output.instructions.len() < 8000,
+        "stage guidance unexpectedly large"
+    );
+    let check = build(&run(Mode::Balanced, Stage::Check, None), &[]).unwrap();
+    assert!(check.instructions.contains("## Committing for Check"));
 }
