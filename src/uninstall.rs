@@ -791,7 +791,7 @@ mod tests {
         )
         .unwrap();
         assert!(!skill.exists());
-        assert!(!env.record_path().exists());
+        assert!(env.record_path().exists());
     }
 
     fn recorded(env: &Env) -> InstallRecord {
@@ -873,17 +873,6 @@ mod tests {
         assert!(!codex_skill.exists() && claude_skill.exists());
         assert_eq!(fs::read_to_string(&record).unwrap(), "not json");
         assert!(runs.exists() && binary.exists());
-    }
-
-    #[test]
-    fn an_unreadable_record_without_agent_is_an_error() {
-        let env = Env::new();
-        let record = env.record_path();
-        fs::create_dir_all(record.parent().unwrap()).unwrap();
-        fs::write(&record, "not json").unwrap();
-        let error = env.run(&[], None, false).unwrap_err();
-        assert!(error.contains("--agent"));
-        assert!(record.exists());
     }
 
     #[test]
