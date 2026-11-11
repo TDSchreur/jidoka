@@ -10,7 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `finish done` needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
+pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `finish done` needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
 /// Tickets one update may list; a spec split into more pieces than this is too big to track on one board.
@@ -415,11 +415,6 @@ fn has_control(value: &str) -> bool {
     value.chars().any(char::is_control)
 }
 
-/// An absolute `http(s)` URL with a host and no credentials, so a reference never carries a secret.
-fn check_http_url(name: &str, value: &str) -> Result<(), String> {
-    check_http_url_with(name, value, true)
-}
-
 /// A URL that is stored and shown as a reference also may not carry a query string or fragment,
 /// which is where tokens usually hide.
 fn check_plain_url(name: &str, value: &str) -> Result<(), String> {
@@ -570,7 +565,10 @@ impl UpdateRun {
             return Err("Rework must be a whole number from 1 to 99".into());
         }
         if let FieldUpdate::Set(value) = &self.current_ticket {
-            check_http_url("Current ticket", value)?;
+            check_reference("Current ticket", value, MAX_PATH_BYTES)?;
+            if value.chars().any(char::is_whitespace) {
+                return Err("Current ticket reference must not contain spaces".into());
+            }
         }
         if let FieldUpdate::Set(value) = &self.worktree {
             check_text("Worktree", value, MAX_PATH_BYTES)?;
@@ -1198,7 +1196,9 @@ impl RunStore {
             .get(id)
             .map_err(|e| format!("Could not read the run: {e}"))?
             .ok_or_else(|| format!("Run {id} not found"))?;
-        let snapshot = serde_json::to_vec(&original).map_err(|e| e.to_string())?;
+        let mut comparison = original.clone();
+        comparison.pr_status = None;
+        let snapshot = serde_json::to_vec(&comparison).map_err(|e| e.to_string())?;
         let mut next = original;
         change(&mut next)?;
         let now = updated_now().map_err(|e| format!("Could not read the time: {e}"))?;
@@ -1213,9 +1213,12 @@ impl RunStore {
             .iter()
             .position(|run| run.id == id)
             .ok_or_else(|| format!("Run {id} not found"))?;
-        if serde_json::to_vec(&runs[index]).map_err(|e| e.to_string())? != snapshot {
+        let mut current = runs[index].clone();
+        current.pr_status = None;
+        if serde_json::to_vec(&current).map_err(|e| e.to_string())? != snapshot {
             return Err("The run changed while checking gates; try again".into());
         }
+        next.pr_status = runs[index].pr_status.clone();
         let old = std::mem::replace(&mut runs[index], next);
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs[index] = old;

@@ -100,7 +100,6 @@ fn open(run: &Run, gates: &[Gate]) -> Vec<OpenGate> {
                     .find(|r| {
                         r.gate == gate
                             && r.stage == run.stage
-                            && r.rework == run.rework
                             && r.ticket.as_deref() == Some(&t.reference)
                     })
                     .is_some_and(|r| r.passed)

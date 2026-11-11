@@ -98,6 +98,9 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long one API call waits on a read or write: the dashboard answers locally, so this only catches a hung server.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Advance can wait through the CI discovery grace and still needs time for host requests.
+const ADVANCE_TIMEOUT: Duration = Duration::from_secs(180);
+
 /// Asks the server at `server` (`host:port`) who it is, through `/api/info`, not the port alone.
 /// Anything that does not answer as a Jidoka dashboard, including a listener that is slow or odd, is `Foreign`.
 pub(crate) fn probe_dashboard(server: &str) -> io::Result<Probe> {
@@ -186,7 +189,7 @@ fn api_request(
         io::Error::new(e.kind(), format!("cannot connect to the Jidoka server at {server}; start it with 'jidoka dashboard': {e}"))
     })?;
     let timeout = if route.ends_with("/advance") {
-        Duration::from_secs(180)
+        ADVANCE_TIMEOUT
     } else {
         REQUEST_TIMEOUT
     };

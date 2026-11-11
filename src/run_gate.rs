@@ -112,37 +112,47 @@ fn advance_with_clock(
     let transition = stages::next(mode, run.stage, run.status)?;
     let mut failures = Vec::new();
     for gate in transition.gates {
-        let (pass, remedy) = match gate {
+        let (result, remedy) = match gate {
             Gate::TicketsDone => (
-                run.tickets.iter().all(|t| t.status == TicketStatus::Done),
+                require(
+                    run.tickets.iter().all(|t| t.status == TicketStatus::Done),
+                    "Some tickets are not done",
+                ),
                 "mark every ticket done with `jidoka run update <id> build running --ticket-status <ref>=done`",
             ),
             Gate::Verified => (
-                latest(run, *gate)
-                    .is_some_and(|r| r.passed && head(run, git).ok().as_ref() == r.commit.as_ref()),
+                verified(run, git),
                 "run full verification and record `jidoka run gate <id> verified pass`",
             ),
             Gate::TicketsVerified => (
-                run.tickets.iter().all(|t| {
-                    run.gates
-                        .iter()
-                        .rev()
-                        .find(|r| {
-                            r.gate == *gate
-                                && r.stage == run.stage
-                                && r.rework == run.rework
-                                && r.ticket.as_deref() == Some(&t.reference)
-                        })
-                        .is_some_and(|r| r.passed)
-                }),
-                "set the current ticket with `jidoka run update <id> build running --current-ticket <url>`, verify it, then run `jidoka run gate <id> tickets-verified pass`",
+                require(
+                    run.tickets.iter().all(|t| {
+                        run.gates
+                            .iter()
+                            .rev()
+                            .find(|r| {
+                                r.gate == *gate
+                                    && r.stage == run.stage
+                                    && r.ticket.as_deref() == Some(&t.reference)
+                            })
+                            .is_some_and(|r| r.passed)
+                    }),
+                    "A ticket has no passing verification",
+                ),
+                "set the current ticket with `jidoka run update <id> build running --current-ticket <reference>`, verify it, then run `jidoka run gate <id> tickets-verified pass`",
             ),
             Gate::ChecksRecorded => (
-                latest(run, *gate).is_some_and(|r| r.passed),
+                require(
+                    latest(run, *gate).is_some_and(|r| r.passed),
+                    "No passing result was recorded",
+                ),
                 "record `jidoka run gate <id> checks-recorded pass`",
             ),
             Gate::NoActionableFindings => (
-                latest(run, *gate).is_some_and(|r| r.passed),
+                require(
+                    latest(run, *gate).is_some_and(|r| r.passed),
+                    "No passing result was recorded",
+                ),
                 "record `jidoka run gate <id> no-actionable-findings pass` or start Rework",
             ),
             Gate::CiPassed => (
@@ -150,9 +160,9 @@ fn advance_with_clock(
                 "open the pull request and pass CI; run `jidoka pr wait <id>`",
             ),
         };
-        if !pass {
+        if let Err(reason) = result {
             failures.push(format!(
-                "{}: {}",
+                "{}: {reason}; {}",
                 serde_json::to_value(gate)
                     .ok()
                     .and_then(|v| v.as_str().map(str::to_owned))
@@ -171,27 +181,57 @@ fn advance_with_clock(
     Ok(())
 }
 
-fn ci_passed(run: &Run, git: &dyn Git, tool: &dyn pr_wait::Gh, clock: &dyn pr_wait::Clock) -> bool {
-    let Some(url) = run.pr.as_deref() else {
-        return false;
-    };
-    if !matches!(pr_state::read(tool, url), Ok(pr_state::PrState::Open)) {
-        return false;
+fn require(condition: bool, reason: &str) -> Result<(), String> {
+    if condition {
+        Ok(())
+    } else {
+        Err(reason.to_string())
     }
-    let Ok(commit) = head(run, git) else {
-        return false;
-    };
+}
+
+fn verified(run: &Run, git: &dyn Git) -> Result<(), String> {
+    let result = latest(run, Gate::Verified)
+        .filter(|r| r.passed)
+        .ok_or("No passing verification was recorded")?;
+    let current = head(run, git)?;
+    require(
+        result.commit.as_deref() == Some(current.as_str()),
+        "The verification commit does not match HEAD",
+    )
+}
+
+fn ci_passed(
+    run: &Run,
+    git: &dyn Git,
+    tool: &dyn pr_wait::Gh,
+    clock: &dyn pr_wait::Clock,
+) -> Result<(), String> {
+    let url = run.pr.as_deref().ok_or("No pull request is recorded")?;
+    let state = pr_state::read(tool, url)
+        .map_err(|error| format!("Could not read pull request state: {}", error.0))?;
+    require(
+        state == pr_state::PrState::Open,
+        &format!("Pull request is {}", state.label()),
+    )?;
+    let commit = head(run, git)?;
     let options = pr_wait::Options {
         timeout: CI_TIMEOUT,
         pushed_head: None,
         ..Default::default()
     };
-    pr_wait::wait(Some(url), &options, tool, clock, &mut |_| {}, &mut |_| {}).is_ok_and(|result| {
+    let result = pr_wait::wait(Some(url), &options, tool, clock, &mut |_| {}, &mut |_| {})
+        .map_err(|error| format!("Could not check CI: {}", error.0))?;
+    require(
+        result.head == commit,
+        "The pull request head does not match the worktree HEAD",
+    )?;
+    require(
         matches!(
             result.outcome,
             pr_wait::Outcome::Passed | pr_wait::Outcome::NoCi
-        ) && result.head == commit
-    })
+        ),
+        &format!("CI outcome is {:?}", result.outcome),
+    )
 }
 
 #[cfg(test)]
@@ -304,7 +344,7 @@ mod tests {
         let git = FakeGit(RefCell::new("abc1234".into()));
         let mut run = run(Stage::Build);
         run.mode = Some(Mode::Full);
-        for reference in ["https://example.com/1", "https://example.com/2"] {
+        for reference in ["/tmp/ticket.md", "https://example.com/2"] {
             run.tickets.push(Ticket {
                 reference: reference.into(),
                 title: "ticket".into(),
@@ -323,7 +363,11 @@ mod tests {
         record(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
         let mut reworked = run.clone();
         reworked.rework = Some(1);
-        assert!(advance(&mut reworked, &git, &host()).is_err());
+        let error = advance(&mut reworked, &git, &host()).unwrap_err();
+        assert!(error.contains("verified:"));
+        assert!(!error.contains("tickets-verified:"));
+        record(&mut reworked, result(Gate::Verified, true), &git).unwrap();
+        advance(&mut reworked, &git, &host()).unwrap();
         advance(&mut run, &git, &host()).unwrap();
         assert_eq!(run.stage, Stage::Check);
     }
@@ -386,6 +430,35 @@ mod tests {
         assert!(advance_with_clock(&mut run, &git, &late_failure, &clock).is_err());
         assert_eq!(run.status, RunStatus::Running);
         assert!(clock.0.get() < Duration::from_secs(90));
+    }
+
+    struct BrokenGit;
+    impl Git for BrokenGit {
+        fn git(&self, _: &Path, _: &[&str]) -> Result<String, String> {
+            Err("repository unavailable".into())
+        }
+    }
+    struct BrokenHost;
+    impl pr_wait::Gh for BrokenHost {
+        fn run(&self, _: &[&str]) -> Result<GhOutput, GhError> {
+            Err(GhError::Other("host unavailable".into()))
+        }
+    }
+    #[test]
+    fn failed_external_checks_report_the_cause_and_remedy() {
+        let git = FakeGit(RefCell::new("abc1234".into()));
+        let mut build = run(Stage::Build);
+        record(&mut build, result(Gate::Verified, true), &git).unwrap();
+        let error = advance(&mut build, &BrokenGit, &host()).unwrap_err();
+        assert!(
+            error.contains("repository unavailable") && error.contains("jidoka run gate"),
+            "{error}"
+        );
+        let error = advance(&mut run(Stage::Finish), &git, &BrokenHost).unwrap_err();
+        assert!(
+            error.contains("host unavailable") && error.contains("jidoka pr wait"),
+            "{error}"
+        );
     }
 
     struct Azure;

@@ -882,3 +882,81 @@ fn blocking_and_resuming_record_events_without_touching_the_timeline() {
     assert_eq!(json["events"][0]["kind"], "blocked");
     assert_eq!(json["events"][1]["kind"], "resumed");
 }
+
+#[test]
+fn gate_change_preserves_concurrent_pr_refresh_and_rejects_run_updates() {
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    let run = new_run(&store, "task");
+    let url = "https://github.com/owner/repo/pull/1";
+    store
+        .update(
+            &run.id,
+            parse_update("define", "running", &["--pr", url]).unwrap(),
+        )
+        .unwrap();
+    store
+        .change_gate(&run.id, |next| {
+            store
+                .set_pr_status(
+                    &run.id,
+                    PrStatus {
+                        url: url.into(),
+                        state: crate::pr_state::PrState::Open,
+                        reason: None,
+                        checked_at: 42,
+                    },
+                )
+                .unwrap();
+            next.stage = Stage::Build;
+            Ok(())
+        })
+        .unwrap();
+    let current = store.get(&run.id).unwrap().unwrap();
+    assert_eq!(current.stage, Stage::Build);
+    assert_eq!(current.pr_status.unwrap().checked_at, 42);
+    let error = store
+        .change_gate(&run.id, |next| {
+            store
+                .update(
+                    &run.id,
+                    parse_update("build", "blocked", &["--blocking-reason", "waiting"]).unwrap(),
+                )
+                .unwrap();
+            next.stage = Stage::Check;
+            Ok(())
+        })
+        .unwrap_err();
+    assert!(error.contains("changed while checking"));
+    let current = store.get(&run.id).unwrap().unwrap();
+    assert_eq!(current.stage, Stage::Build);
+    assert_eq!(current.status, RunStatus::Blocked);
+}
+
+#[test]
+fn current_ticket_accepts_local_references() {
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    let run = new_run(&store, "task");
+    let updated = store
+        .update(
+            &run.id,
+            parse_update(
+                "build",
+                "running",
+                &[
+                    "--ticket",
+                    "/tmp/ticket.md Local ticket",
+                    "--current-ticket",
+                    "/tmp/ticket.md",
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        updated.run.current_ticket.as_deref(),
+        Some("/tmp/ticket.md")
+    );
+}
