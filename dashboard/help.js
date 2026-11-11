@@ -599,7 +599,7 @@ function Commands() {
         items=${[
           [html`<${Code}>jidoka run start "title"<//>`, 'Creates a Run and prints its id. Run it from the Run’s worktree.'],
           [
-            html`<${Code}>jidoka run update ${'<id>'} ${'<stage>'} ${'<status>'}<//>`,
+            html`<${Code}>jidoka run update ${'<id>'} ${'<status>'}<//>`,
             html`Stages are define, build, check and finish. Statuses are running, blocked and done. Options leave a field alone when omitted, and most have a <${Code}>--clear-${'<name>'}<//> form (tickets clear with <${Code}>--clear-tickets<//>, and a summary with <${Code}>--clear-summary<//> and a Stage name): <${Code}>--activity<//>, <${Code}>--blocking-reason<//>, <${Code}>--rework<//>, <${Code}>--mode<//>, <${Code}>--worktree<//>, <${Code}>--branch<//>, <${Code}>--base-commit<//>, <${Code}>--spec<//>, <${Code}>--pr<//>, <${Code}>--ticket<//>, <${Code}>--summary<//> and more. <${Code}>jidoka --help<//> lists them.`,
           ],
         ]}
@@ -679,7 +679,7 @@ function ModelRouting() {
         </li>
         <li>
           To give one Stage another model for one Run, use${' '}
-          <${Code}>jidoka run update ${'<id>'} ${'<stage>'} ${'<status>'} --model-routing check=sonnet:medium<//>
+          <${Code}>jidoka run update ${'<id>'} ${'<status>'} --model-routing check=sonnet:medium<//>
           (<${Code}>${'<stage>'}=${'<model>'}[:${'<effort>'}]<//>).
         </li>
       </ul>

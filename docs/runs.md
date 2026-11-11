@@ -29,7 +29,7 @@ jidoka run begin --run <run-id> [--base <branch>] [--branch <name>] [--mode ...]
 
 ## Reporting runs manually
 
-For manual tracking, `jidoka run start "Task title"` prints a run ID (add `--agent claude`, `--agent codex` or `--agent copilot` to say which agent the run is in; model routing needs it when the policy file covers several agents), and `jidoka run update <id> build running` updates it. Stages are `define`, `build`, `check`, and `finish`; statuses are `running`, `blocked`, and `done`.
+For manual tracking, `jidoka run start "Task title"` prints a run ID (add `--agent claude`, `--agent codex` or `--agent copilot` to say which agent the run is in; model routing needs it when the policy file covers several agents), and `jidoka run update <id> running` updates it. Stages are `define`, `build`, `check`, and `finish`; statuses are `running`, `blocked`, and `done`.
 
 ### Run context
 
@@ -53,7 +53,7 @@ Options left out keep their value, each has a `--clear-*` form (`--clear-tickets
 
 `jidoka run gate <id> <gate> <pass|fail> [--evidence "<text>"]` records a result for the current stage and Rework. Record `verified` after full verification; the command captures the worktree's HEAD. Fast requires it in Build; Balanced and Full require it in Check on the final reviewed candidate and current Rework, rather than on each Build exit. Full also requires a passing `tickets-verified` result for each ticket before leaving Build. Set `--current-ticket <reference>`, run the project's required verification after that ticket, and record `jidoka run gate <id> tickets-verified pass` before moving to the next ticket. In Check, record `checks-recorded` after the applicable reviews and `no-actionable-findings` when their findings have been resolved. A later result for the same gate replaces the earlier result for advancement. Ticket completion and CI are checked automatically.
 
-`jidoka run advance <id>` checks the current stage's gates and moves to the next stage, or marks Finish done. A failed gate leaves the run unchanged and gives the command to resolve it. Verification must match the current HEAD, and Finish requires an open pull request whose head matches the worktree and whose CI passed or has no checks. CI is read from GitHub or Azure DevOps. If no checks appear, the command waits through the 90-second discovery period before accepting that the project has no CI. During this transition period, `run update` can still change the stage directly.
+`jidoka run advance <id>` checks the current stage's gates and moves to the next stage, or marks Finish done. A failed gate leaves the run unchanged and gives the command to resolve it. `jidoka run advance <id> --force --reason "<text>"` skips the gates when they cannot be met, still follows the stage graph, and records "Forced advance from <stage>: <text>" as a run report; `--force` needs a reason and a reason needs `--force`. A run's stage changes only through `run advance`, apart from a Rework. Verification must match the current HEAD, and Finish requires an open pull request whose head matches the worktree and whose CI passed or has no checks. CI is read from GitHub or Azure DevOps. If no checks appear, the command waits through the 90-second discovery period before accepting that the project has no CI.
 
 Run storage now includes gate results. Existing stored runs are not migrated: finish or abandon in-flight runs before upgrading.
 
@@ -98,20 +98,20 @@ It reads the pull request state fresh and refuses, with exit status 1 and nothin
 Run updates also accept optional reporting fields:
 
 ```sh
-jidoka run update <id> build running --activity "Implementing ticket #42" --current-ticket "https://github.com/owner/repo/issues/42"
-jidoka run update <id> build running --ticket-report "https://github.com/owner/repo/issues/42" skill "jidoka-tdd" --ticket-report "https://github.com/owner/repo/issues/42" activity "Tests passed"
-jidoka run update <id> build blocked --blocking-reason "Waiting for credentials"
-jidoka run update <id> build running --clear-blocking-reason
-jidoka run update <id> build running --rework 1 --activity "Fixing Check findings"
-jidoka run update <id> finish done --summary finish="<what shipped>" --clear-activity --clear-current-ticket
+jidoka run update <id> running --activity "Implementing ticket #42" --current-ticket "https://github.com/owner/repo/issues/42"
+jidoka run update <id> running --ticket-report "https://github.com/owner/repo/issues/42" skill "jidoka-tdd" --ticket-report "https://github.com/owner/repo/issues/42" activity "Tests passed"
+jidoka run update <id> blocked --blocking-reason "Waiting for credentials"
+jidoka run update <id> running --clear-blocking-reason
+jidoka run update <id> running --rework 1 --activity "Fixing Check findings"
+jidoka run update <id> done --summary finish="<what shipped>" --clear-activity --clear-current-ticket
 ```
 
-Omitted fields keep their stored values, including when changing stage or status. Use `--clear-activity`, `--clear-current-ticket`, `--clear-blocking-reason`, and `--clear-rework` to remove them explicitly. Setting and clearing the same field in one command, or repeating a field option, is an error. Activity and blocking reason must be nonblank and at most 2,000 bytes; a current-ticket reference must be an HTTP(S) URL, local path or identifier of at most 4,096 bytes without spaces. Empty strings are rejected; use a clear flag instead. `--rework` records which [Rework](../GLOSSARY.md) the run is on, as a whole number from 1 to 99; the dashboard shows it as "Rework 1/3", or "Rework 4 (past the cap of 3)" when the user granted an extra Rework.
+Omitted fields keep their stored values. `run update` never changes the stage: `done` is accepted only while the run is in Finish (with a Finish summary), and `--rework <n>` on a running or resumed run in Check moves it back to Build (the run's mode must be recorded); in any other stage `--rework` only sets the count. Use `--clear-activity`, `--clear-current-ticket`, `--clear-blocking-reason`, and `--clear-rework` to remove them explicitly. Setting and clearing the same field in one command, or repeating a field option, is an error. Activity and blocking reason must be nonblank and at most 2,000 bytes; a current-ticket reference must be an HTTP(S) URL, local path or identifier of at most 4,096 bytes without spaces. Empty strings are rejected; use a clear flag instead. `--rework` records which [Rework](../GLOSSARY.md) the run is on, as a whole number from 1 to 99; the dashboard shows it as "Rework 1/3", or "Rework 4 (past the cap of 3)" when the user granted an extra Rework.
 
-The API uses `activity`, `current_ticket`, `blocking_reason`, and `rework` on `POST /api/runs/<id>` alongside the required `stage` and `status`. Omit a metadata field to preserve it, send a value (a string, or a number for `rework`) to replace it, or send JSON `null` to clear it. Unknown update fields are rejected. For example:
+The API uses `activity`, `current_ticket`, `blocking_reason`, and `rework` on `POST /api/runs/<id>` alongside the required `status`. Omit a metadata field to preserve it, send a value (a string, or a number for `rework`) to replace it, or send JSON `null` to clear it. Unknown update fields are rejected. For example:
 
 ```json
-{"stage":"build","status":"running","activity":"Implementing ticket #42","blocking_reason":null}
+{"status":"running","activity":"Implementing ticket #42","blocking_reason":null}
 ```
 
 Run details list every pass through a stage (each Build and Check, including Reworks) with its start time, duration and the activity it started with. Run reports are displayed in the last pass of the stage they were filed under that had started by then (the nearest pass of that stage otherwise; by time for older runs that recorded no stage), including when no tickets exist. Ticket reports are displayed under their ticket in run details when that pass lists the ticket, and in the pass otherwise. When a run is blocked or resumed, run details show a "Blocked: <reason>" or "Resumed" line in the pass that holds it; `jidoka run inspect` lists them under "Events" (`events` in `--json`); events that match no pass show under "Other reports". Pauses the agent's log shows (see [Pauses](usage-tracking.md#pauses)) and idle gaps appear the same way. They are agent-reported and may be incomplete; no reports does not mean no work occurred. Each report is limited to 500 bytes; run and ticket reports are each limited to 100 per update and 1,000 per run. Do not report secrets or transcripts.

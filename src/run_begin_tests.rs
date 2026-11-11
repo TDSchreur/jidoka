@@ -140,7 +140,7 @@ impl Project {
 }
 
 /// One call of `RunApi::update`: run, stage, status and options.
-type Update = (String, String, String, Vec<String>);
+type Update = (String, String, Vec<String>);
 
 #[derive(Default)]
 struct FakeApi {
@@ -185,13 +185,12 @@ impl RunApi for FakeApi {
         Ok(self.session_runs.borrow().clone())
     }
 
-    fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
+    fn update(&self, id: &str, status: &str, options: &[&str]) -> Result<(), String> {
         if self.fail_updates.get() {
             return Err("the server is not reachable".into());
         }
         self.updates.borrow_mut().push((
             id.into(),
-            stage.into(),
             status.into(),
             options.iter().map(|o| o.to_string()).collect(),
         ));
@@ -239,11 +238,8 @@ fn a_fresh_run_gets_a_worktree_from_the_fetched_base_and_records_it() {
     );
 
     let updates = api.updates.borrow();
-    let (id, stage, status, args) = updates.last().unwrap();
-    assert_eq!(
-        (id.as_str(), stage.as_str(), status.as_str()),
-        ("100", "define", "running")
-    );
+    let (id, status, args) = updates.last().unwrap();
+    assert_eq!((id.as_str(), status.as_str()), ("100", "running"));
     assert_eq!(value_after(args, "--mode").as_deref(), Some("jidoka-full"));
     assert_eq!(
         value_after(args, "--worktree").as_deref(),
@@ -350,11 +346,8 @@ fn blocked(result: Result<Begun, BeginError>) -> (String, String, String) {
 
 fn assert_marked_blocked(api: &FakeApi, reason: &str) {
     let updates = api.updates.borrow();
-    let (id, stage, status, args) = updates.last().expect("the run was updated");
-    assert_eq!(
-        (id.as_str(), stage.as_str(), status.as_str()),
-        ("100", "define", "blocked")
-    );
+    let (id, status, args) = updates.last().expect("the run was updated");
+    assert_eq!((id.as_str(), status.as_str()), ("100", "blocked"));
     assert_eq!(
         value_after(args, "--blocking-reason").as_deref(),
         Some(reason)
@@ -435,7 +428,7 @@ fn a_retry_after_a_run_without_a_worktree_completes_the_workspace() {
     assert!(PathBuf::from(&begun.worktree).join(".git").exists());
     assert!(api.created.borrow().is_empty(), "no second run");
     let updates = api.updates.borrow();
-    assert_eq!(updates.last().unwrap().2, "running");
+    assert_eq!(updates.last().unwrap().1, "running");
 }
 
 #[test]

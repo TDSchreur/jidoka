@@ -818,7 +818,12 @@ mod auto_block {
         }
 
         fn agent_update(&self, status: RunStatus, reason: Option<&str>) {
-            let mut update = UpdateRun::new(Stage::Build, status);
+            let mut update = UpdateRun::new(status);
+            if status == RunStatus::Done {
+                update
+                    .summaries
+                    .insert(Stage::Finish, Some("Shipped".into()));
+            }
             if let Some(reason) = reason {
                 update.blocking_reason = FieldUpdate::Set(reason.into());
             }
@@ -887,6 +892,7 @@ mod auto_block {
 
         // Done runs are not collected at all.
         let done = Fixture::new();
+        done.store.set_stage(&done.id, Stage::Finish);
         done.agent_update(RunStatus::Done, None);
         collect_active(&done.store, &done.settings, now).unwrap();
         assert!(done.run().usage.is_none());
@@ -1008,10 +1014,11 @@ fn completed_routed_stage_persists_model_warning_without_duplicates() {
     };
     collect_and_store(&store, RUN_A, &settings).unwrap();
     assert!(store.get(RUN_A).unwrap().unwrap().run_reports.is_empty());
+    store.set_stage(RUN_A, Stage::Check);
     store
         .update(
             RUN_A,
-            crate::run::UpdateRun::new(Stage::Check, crate::run::RunStatus::Running),
+            crate::run::UpdateRun::new(crate::run::RunStatus::Running),
         )
         .unwrap();
     collect_and_store(&store, RUN_A, &settings).unwrap();

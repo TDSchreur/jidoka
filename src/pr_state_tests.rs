@@ -90,10 +90,9 @@ fn run_with_pr(store: &RunStore, pr: &str) -> String {
             model_routing: None,
         })
         .unwrap();
-    let update: UpdateRun = serde_json::from_str(&format!(
-        r#"{{"stage":"finish","status":"running","pr":"{pr}"}}"#
-    ))
-    .unwrap();
+    let update: UpdateRun =
+        serde_json::from_str(&format!(r#"{{"status":"running","pr":"{pr}"}}"#)).unwrap();
+    store.set_stage(&run.id, Stage::Finish);
     store.update(&run.id, update).unwrap();
     run.id
 }
@@ -153,10 +152,8 @@ fn a_new_pull_request_url_is_checked_at_once_and_runs_without_one_are_left_alone
     assert_eq!(refresh(&store, &gh, 0).unwrap(), 1);
     // The Run now records another pull request: its stored state is for the old URL, so it is read again.
     let other = "https://github.com/o/r/pull/8";
-    let update: UpdateRun = serde_json::from_str(&format!(
-        r#"{{"stage":"finish","status":"running","pr":"{other}"}}"#
-    ))
-    .unwrap();
+    let update: UpdateRun =
+        serde_json::from_str(&format!(r#"{{"status":"running","pr":"{other}"}}"#)).unwrap();
     store.update(&id, update).unwrap();
     assert_eq!(refresh(&store, &gh, 1).unwrap(), 1);
     let status = stored(&store, &id).unwrap();
@@ -228,10 +225,8 @@ fn the_head_of_a_pull_request_is_its_commit_and_branch() {
 
 fn run_waiting_for_ci(store: &RunStore) -> String {
     let id = run_with_pr(store, PR);
-    let update: UpdateRun = serde_json::from_str(
-        r#"{"stage":"finish","status":"running","activity":"Waiting for CI"}"#,
-    )
-    .unwrap();
+    let update: UpdateRun =
+        serde_json::from_str(r#"{"status":"running","activity":"Waiting for CI"}"#).unwrap();
     store.update(&id, update).unwrap();
     id
 }

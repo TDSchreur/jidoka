@@ -48,7 +48,7 @@ The workflows' shared Pull request and CI procedure names the tool for each host
 
 ## Watching CI
 
-`jidoka pr wait <run-id>` watches the checks of the run's pull request and prints one CI outcome, so an agent does not poll with repeated model requests. It reads the pull request URL recorded on the run (`jidoka run update <id> finish running --pr <url>`) and uses the GitHub CLI (`gh`, signed in with `gh auth login`) for GitHub, or the Azure CLI with the `azure-devops` extension (signed in with `az login` or `az devops login`) for Azure DevOps Services.
+`jidoka pr wait <run-id>` watches the checks of the run's pull request and prints one CI outcome, so an agent does not poll with repeated model requests. It reads the pull request URL recorded on the run (`jidoka run update <id> running --pr <url>`) and uses the GitHub CLI (`gh`, signed in with `gh auth login`) for GitHub, or the Azure CLI with the `azure-devops` extension (signed in with `az login` or `az devops login`) for Azure DevOps Services.
 
 | Outcome | Exit status | Meaning |
 | --- | ---: | --- |

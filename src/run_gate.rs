@@ -3,7 +3,10 @@ use crate::{
     pr_state,
     pr_sync::Git,
     pr_wait,
-    run::{Run, RunStatus, Stage, TicketStatus},
+    run::{
+        MAX_REPORTS_PER_RUN, MAX_TEXT_BYTES, ReportKind, Run, RunReport, RunStatus, Stage,
+        TicketStatus, updated_now,
+    },
     stages::{self, Destination, Gate},
 };
 use serde::{Deserialize, Serialize};
@@ -118,7 +121,7 @@ fn advance_with_clock(
                     run.tickets.iter().all(|t| t.status == TicketStatus::Done),
                     "Some tickets are not done",
                 ),
-                "mark every ticket done with `jidoka run update <id> build running --ticket-status <ref>=done`",
+                "mark every ticket done with `jidoka run update <id> running --ticket-status <ref>=done`",
             ),
             Gate::Verified => (
                 verified(run, git),
@@ -139,7 +142,7 @@ fn advance_with_clock(
                     }),
                     "A ticket has no passing verification",
                 ),
-                "set the current ticket with `jidoka run update <id> build running --current-ticket <reference>`, verify it, then run `jidoka run gate <id> tickets-verified pass`",
+                "set the current ticket with `jidoka run update <id> running --current-ticket <reference>`, verify it, then run `jidoka run gate <id> tickets-verified pass`",
             ),
             Gate::ChecksRecorded => (
                 require(
@@ -174,10 +177,70 @@ fn advance_with_clock(
     if !failures.is_empty() {
         return Err(format!("Cannot advance:\n{}", failures.join("\n")));
     }
-    match transition.to {
+    apply(run, transition.to);
+    Ok(())
+}
+
+fn apply(run: &mut Run, to: Destination) {
+    match to {
         Destination::Stage(stage) => run.stage = stage,
         Destination::Done => run.status = RunStatus::Done,
     }
+}
+
+/// The body of `POST /api/runs/<id>/advance`: an optional forced advance with the reason for it.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AdvanceRequest {
+    #[serde(default)]
+    pub(crate) force: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reason: Option<String>,
+}
+
+impl AdvanceRequest {
+    /// The reason for a forced advance, or `None` for a normal one.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when `force` and a nonempty `reason` do not come together.
+    pub(crate) fn forced_reason(&self) -> Result<Option<&str>, String> {
+        let reason = self.reason.as_deref().map(str::trim);
+        match (self.force, reason) {
+            (true, Some(reason)) if !reason.is_empty() => Ok(Some(reason)),
+            (true, _) => Err("--force needs a nonempty --reason \"<text>\"".into()),
+            (false, None) => Ok(None),
+            (false, Some(_)) => Err("--reason is only for --force".into()),
+        }
+    }
+}
+
+/// Moves the run along the stage graph without checking Gates and records `reason` as a run report.
+///
+/// # Errors
+///
+/// Returns a message when the mode is unrecorded, the run cannot move, or the reason does not fit a report.
+pub(crate) fn advance_forced(run: &mut Run, reason: &str) -> Result<(), String> {
+    let mode = run.mode.ok_or("Record the run's mode first")?;
+    let transition = stages::next(mode, run.stage, run.status)?;
+    let text = format!("Forced advance from {}: {reason}", run.stage.name());
+    if text.len() > MAX_TEXT_BYTES || text.chars().any(char::is_control) {
+        return Err(format!(
+            "The reason must be short ({MAX_TEXT_BYTES} bytes with the prefix) and contain no control characters"
+        ));
+    }
+    if run.run_reports.len() >= MAX_REPORTS_PER_RUN {
+        return Err(format!(
+            "A run can hold at most {MAX_REPORTS_PER_RUN} run reports"
+        ));
+    }
+    run.run_reports.push(RunReport {
+        kind: ReportKind::Activity,
+        text,
+        stage: run.stage,
+        at: updated_now().map_err(|error| format!("Could not read the time: {error}"))?,
+    });
+    apply(run, transition.to);
     Ok(())
 }
 
@@ -302,6 +365,29 @@ mod tests {
         }
     }
     #[test]
+    fn forced_advance_skips_gates_records_the_reason_and_needs_one() {
+        let mut run = run(Stage::Build);
+        advance_forced(&mut run, "Tickets done by hand").unwrap();
+        assert_eq!(run.stage, Stage::Finish);
+        assert_eq!(
+            run.run_reports.last().unwrap().text,
+            "Forced advance from build: Tickets done by hand"
+        );
+        let request = |force, reason: Option<&str>| AdvanceRequest {
+            force,
+            reason: reason.map(String::from),
+        };
+        assert!(request(true, None).forced_reason().is_err());
+        assert!(request(true, Some(" ")).forced_reason().is_err());
+        assert!(request(false, Some("why")).forced_reason().is_err());
+        assert_eq!(
+            request(true, Some("why")).forced_reason().unwrap(),
+            Some("why")
+        );
+        assert_eq!(request(false, None).forced_reason().unwrap(), None);
+    }
+
+    #[test]
     fn build_requires_tickets_and_verification_of_current_head() {
         let git = FakeGit(RefCell::new("abc1234".into()));
         let mut run = run(Stage::Build);
@@ -364,23 +450,20 @@ mod tests {
         initial.mode = Some(Mode::Full);
         std::fs::write(&path, serde_json::to_vec(&vec![initial]).unwrap()).unwrap();
         let store = RunStore::open(&path).unwrap();
-        let update = |stage: &str, options: &[&str]| {
+        let update = |options: &[&str]| {
             store
-                .update("1", parse_update(stage, "running", options).unwrap())
+                .update("1", parse_update("running", options).unwrap())
                 .unwrap()
                 .unwrap();
         };
         let gate = |record| store.change_gate("1", |run| super::record(run, record, &git));
         let advance = || store.change_gate("1", |run| super::advance(run, &git, &host()));
-        update(
-            "define",
-            &[
-                "--ticket",
-                "https://example.com/1 One",
-                "--ticket",
-                "https://example.com/2 Two",
-            ],
-        );
+        update(&[
+            "--ticket",
+            "https://example.com/1 One",
+            "--ticket",
+            "https://example.com/2 Two",
+        ]);
         advance().unwrap();
         let current = store.get("1").unwrap().unwrap();
         let next = serde_json::to_value(crate::run_next::build(&current, &[]).unwrap()).unwrap();
@@ -391,13 +474,13 @@ mod tests {
                 .contains("tickets-verified pass")
         );
         for reference in ["https://example.com/1", "https://example.com/2"] {
-            update("build", &["--current-ticket", reference]);
+            update(&["--current-ticket", reference]);
             gate(result(Gate::TicketsVerified, true)).unwrap();
-            update("build", &["--ticket-status", &format!("{reference}=done")]);
+            update(&["--ticket-status", &format!("{reference}=done")]);
         }
         advance().unwrap();
         assert_eq!(store.get("1").unwrap().unwrap().stage, Stage::Check);
-        update("build", &["--rework", "1"]);
+        update(&["--rework", "1"]);
         advance().unwrap();
         gate(result(Gate::ChecksRecorded, true)).unwrap();
         gate(result(Gate::NoActionableFindings, true)).unwrap();

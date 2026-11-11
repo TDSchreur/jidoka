@@ -1,5 +1,6 @@
 use crate::pr_state::PrStatus;
 use crate::routing::{ModelChoice, ModelRouting};
+use crate::stages::{self, Destination};
 use crate::usage::{Collection, Mark, Pause, PauseKind, Usage};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -10,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `finish done` needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
+pub(crate) const UPDATE_HELP: &str = "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework (on a running run in Check, --rework <n> also moves it back to Build for a Rework; elsewhere it only sets the count)\n  --mode <jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `done` is only accepted in Finish and needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
 /// Tickets one update may list; a spec split into more pieces than this is too big to track on one board.
@@ -25,7 +26,7 @@ pub(crate) const MAX_MARKS: usize = 1000;
 pub(crate) const MAX_EVENTS: usize = 1000;
 /// Longest title, ticket title, ticket report or run report, in bytes: enough for a sentence or two that still fits
 /// a dashboard card.
-const MAX_TEXT_BYTES: usize = 500;
+pub(crate) const MAX_TEXT_BYTES: usize = 500;
 /// Longest path, URL or reference, in bytes; the common 4096-byte `PATH_MAX`, which no real path exceeds.
 const MAX_PATH_BYTES: usize = 4096;
 /// Longest activity, blocking reason or stage summary, in bytes: a short paragraph.
@@ -41,7 +42,7 @@ const BASE_COMMIT_LENGTH: std::ops::RangeInclusive<usize> = 7..=64;
 /// Ticket reports or run reports one update may submit; matches `MAX_TICKETS`, one report per ticket.
 const MAX_REPORTS_PER_UPDATE: usize = 100;
 /// Ticket reports or run reports a run may hold in total, so a long run cannot grow its record without bound.
-const MAX_REPORTS_PER_RUN: usize = 1000;
+pub(crate) const MAX_REPORTS_PER_RUN: usize = 1000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Run {
@@ -324,7 +325,6 @@ impl NewRun {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct UpdateRun {
-    pub(crate) stage: Stage,
     pub(crate) status: RunStatus,
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub(crate) activity: FieldUpdate,
@@ -531,9 +531,8 @@ fn io_invalid(message: impl Into<String>) -> io::Error {
 }
 
 impl UpdateRun {
-    pub(crate) fn new(stage: Stage, status: RunStatus) -> Self {
+    pub(crate) fn new(status: RunStatus) -> Self {
         Self {
-            stage,
             status,
             activity: FieldUpdate::Keep,
             current_ticket: FieldUpdate::Keep,
@@ -676,15 +675,9 @@ fn split_pair<'a>(flag: &str, value: &'a str) -> Result<(&'a str, &'a str), Stri
         .ok_or_else(|| format!("{flag} needs the form <name>=<value>, got {value:?}"))
 }
 
-pub(crate) fn parse_update(
-    stage: &str,
-    status: &str,
-    options: &[&str],
-) -> Result<UpdateRun, String> {
-    let mut update = UpdateRun::new(
-        serde_json::from_value(stage.into()).map_err(|e| e.to_string())?,
-        serde_json::from_value(status.into()).map_err(|e| e.to_string())?,
-    );
+pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, String> {
+    let mut update =
+        UpdateRun::new(serde_json::from_value(status.into()).map_err(|e| e.to_string())?);
     let mut tickets: Vec<NewTicket> = Vec::new();
     let mut overrides: BTreeMap<Stage, ModelChoice> = BTreeMap::new();
     let mut args = options.iter();
@@ -889,33 +882,6 @@ struct Shared {
     collection: Collection,
 }
 
-#[derive(Debug)]
-pub(crate) struct UpdateOutcome {
-    pub(crate) run: Run,
-    /// Notes on an update that was accepted but looks wrong; each is one line telling the agent what to do.
-    pub(crate) warnings: Vec<String>,
-}
-
-/// Warns, without refusing, when an update skips a stage or finishes Build without a spec.
-fn update_warnings(previous: Stage, next: &Run) -> Vec<String> {
-    let mut warnings = Vec::new();
-    if next.status == RunStatus::Done && previous != next.stage {
-        warnings.push(format!(
-            "Stage {} was set to done but never entered (the run was in {}); set each stage to running first.",
-            next.stage.name(),
-            previous.name()
-        ));
-    }
-    let leaves_build = (next.stage == Stage::Build && next.status == RunStatus::Done)
-        || (next.stage == Stage::Check && previous != Stage::Check);
-    if leaves_build && next.mode == Some(Mode::Full) && next.spec.is_none() {
-        warnings.push(
-            "This Full run has no spec recorded; record it with --spec <url|path>.".to_string(),
-        );
-    }
-    warnings
-}
-
 impl RunStore {
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
         Ok(Self {
@@ -1002,7 +968,7 @@ impl RunStore {
 
     /// Applies an update to a copy first, so an inconsistent update changes nothing, and
     /// restores the stored record when saving fails.
-    pub(crate) fn update(&self, id: &str, update: UpdateRun) -> io::Result<Option<UpdateOutcome>> {
+    pub(crate) fn update(&self, id: &str, update: UpdateRun) -> io::Result<Option<Run>> {
         update.validate().map_err(io_invalid)?;
         let mut runs = self.shared.runs.lock().map_err(lock_error)?;
         let Some(index) = runs.iter().position(|run| run.id == id) else {
@@ -1011,8 +977,7 @@ impl RunStore {
         let updated_at = updated_now()?;
         let mut next = runs[index].clone();
         let was_blocked = matches!(next.status, RunStatus::Blocked);
-        let previous_stage = next.stage;
-        next.stage = update.stage;
+        let was_running = matches!(next.status, RunStatus::Running);
         next.status = update.status;
         let started_with = match &update.activity {
             FieldUpdate::Set(text) => Some(text.clone()),
@@ -1021,6 +986,7 @@ impl RunStore {
         update.activity.apply(&mut next.activity);
         update.current_ticket.apply(&mut next.current_ticket);
         update.blocking_reason.apply(&mut next.blocking_reason);
+        let rework_set = matches!(update.rework, FieldUpdate::Set(_));
         update.rework.apply(&mut next.rework);
         update.mode.apply(&mut next.mode);
         update.worktree.apply(&mut next.worktree);
@@ -1028,7 +994,27 @@ impl RunStore {
         update.base_commit.map_hex().apply(&mut next.base_commit);
         update.spec.apply(&mut next.spec);
         update.pr.apply(&mut next.pr);
-        let warnings = update_warnings(previous_stage, &next);
+        if (was_running || was_blocked)
+            && update.status == RunStatus::Running
+            && next.stage == Stage::Check
+            && rework_set
+        {
+            let mode = next
+                .mode
+                .ok_or_else(|| io_invalid("Record the run's mode before starting a Rework"))?;
+            if let Destination::Stage(stage) = stages::rework(mode, next.stage, next.status)
+                .map_err(io_invalid)?
+                .to
+            {
+                next.stage = stage;
+            }
+        }
+        if update.status == RunStatus::Done && next.stage != Stage::Finish {
+            return Err(io_invalid(format!(
+                "A run is done only after Finish; it is in {}. Use `jidoka run advance <id>`",
+                next.stage.name()
+            )));
+        }
         match update.tickets {
             FieldUpdate::Keep => {}
             FieldUpdate::Clear => next.tickets.clear(),
@@ -1088,7 +1074,7 @@ impl RunStore {
                 ticket: report.ticket,
                 kind: report.kind,
                 text: report.text,
-                stage: update.stage,
+                stage: next.stage,
                 at: updated_at,
             });
         }
@@ -1101,7 +1087,7 @@ impl RunStore {
             next.run_reports.push(RunReport {
                 kind: report.kind,
                 text: report.text,
-                stage: update.stage,
+                stage: next.stage,
                 at: updated_at,
             });
         }
@@ -1130,8 +1116,7 @@ impl RunStore {
                 }
             }
         }
-        if update.stage == Stage::Finish
-            && update.status == RunStatus::Done
+        if update.status == RunStatus::Done
             && next
                 .summaries
                 .get(&Stage::Finish)
@@ -1180,10 +1165,17 @@ impl RunStore {
             runs[index] = old;
             return Err(error);
         }
-        Ok(Some(UpdateOutcome {
-            run: runs[index].clone(),
-            warnings,
-        }))
+        Ok(Some(runs[index].clone()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_stage(&self, id: &str, stage: Stage) {
+        let mut runs = self.shared.runs.lock().unwrap();
+        runs.iter_mut()
+            .find(|run| run.id == id)
+            .expect("test run exists")
+            .stage = stage;
+        save_runs(&self.shared.path, &runs).unwrap();
     }
 
     /// Atomically change a run and persist it, restoring the old value on save failure.

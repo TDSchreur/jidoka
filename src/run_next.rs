@@ -66,7 +66,7 @@ pub(crate) struct Next {
 fn describe(gate: Gate) -> &'static str {
     match gate {
         Gate::TicketsDone => {
-            "every ticket is done (jidoka run update <id> ... --ticket-status <ref>=done)"
+            "every ticket is done (jidoka run update <id> running --ticket-status <ref>=done)"
         }
         Gate::Verified => "the full verification passed on the head commit",
         Gate::TicketsVerified => "verification passed after each ticket",
@@ -275,7 +275,7 @@ pub(crate) fn changed_paths(run: &Run, git: &dyn Git) -> Vec<String> {
 /// Returns a message when the run has no recorded mode.
 pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String> {
     let mode = run.mode.ok_or_else(|| {
-        "the run has no recorded mode; record it with `jidoka run update <id> <stage> running --mode <mode>`"
+        "the run has no recorded mode; record it with `jidoka run update <id> running --mode <mode>`"
             .to_string()
     })?;
     let mut moves = Vec::new();
@@ -408,6 +408,14 @@ pub(crate) fn render(next: &Next) -> String {
     for mv in &next.moves {
         let target = mv.to.map_or("done", Stage::name);
         out.push_str(&format!("\nMove to {target} ({})\n", mv.kind));
+        if mv.kind == "rework" {
+            out.push_str(&format!(
+                "  with: jidoka run update {} running --rework <n> --activity \"<findings>\"\n",
+                next.run
+            ));
+        } else {
+            out.push_str(&format!("  with: jidoka run advance {}\n", next.run));
+        }
         if mv.gates.is_empty() {
             out.push_str("  no gates\n");
         }
