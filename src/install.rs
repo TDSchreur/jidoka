@@ -793,7 +793,7 @@ mod tests {
             ),
             ("jidoka-pr/SKILL.md", &["**Skill check:**"][..]),
             (
-                "jidoka-procedures/references/model-routing.md",
+                "jidoka-procedures/chunks/model-routing.md",
                 &["Changing agent skills"][..],
             ),
         ] {
@@ -1051,7 +1051,7 @@ mod tests {
         assert!(!root.join("jidoka-balanced/LICENSE").exists());
         assert!(root.join("jidoka-procedures/SKILL.md").is_file());
         assert!(
-            root.join("jidoka-procedures/references/model-routing.md")
+            root.join("jidoka-procedures/chunks/model-routing.md")
                 .is_file()
         );
         assert!(

@@ -6,4 +6,6 @@ Use `jidoka-code-review` with the base commit as the fixed point, and with the s
 
 When there are actionable findings, start a Rework: return to Build, fix the findings using the project’s test approach, run appropriate checks, and commit the fixes together with any new files. The coordinator checks small, clear fixes against the findings. For substantial or uncertain fixes, repeat a scoped `jidoka-code-review` from the previously reviewed commit, including the findings addressed; repeat the security review when those fixes meaningfully affect a security boundary or sensitive data flow, or the user requests it. Record how the fixes were checked and pin the new `HEAD`. Follow Reworks in the shared procedures included below.
 
+Record completed checks with `jidoka run gate <id> checks-recorded pass`; when no actionable findings remain, record `jidoka run gate <id> no-actionable-findings pass`.
+
 Before leaving Check, run the project's full verification on the clean, final reviewed commit and record it with `jidoka run gate <id> verified pass`. Finish can reuse this result while the checked code and relevant inputs remain unchanged.
