@@ -1168,3 +1168,47 @@ fn azure_rejects_a_push_destination_in_a_different_repository() {
     assert!(error.0.contains("push"), "{}", error.0);
     assert_eq!(project.remote_branch("feature"), None);
 }
+
+#[test]
+fn azure_reads_the_body_from_its_file_and_reports_how_far_over_the_limit_it_is() {
+    let project = Project::new();
+    let gh = FakeGh::default();
+    *gh.remote_url.borrow_mut() = Some("https://dev.azure.com/o/P/_git/R".into());
+    gh.list.borrow_mut().push_back(ok("[]"));
+    gh.create
+        .borrow_mut()
+        .push_back(ok(r#"{"pullRequestId":3}"#));
+    let opts = options(&project);
+    open(&run_of(&project), &opts, &gh, &FakeApi::default()).unwrap();
+    let calls = gh.calls.borrow();
+    let (_, create) = calls
+        .iter()
+        .find(|(_, c)| c.starts_with("repos pr create"))
+        .unwrap();
+    let file = opts.body_file.to_string_lossy();
+    assert!(
+        create.contains(&format!("--description @{file}")),
+        "{create}"
+    );
+
+    let long = Project::new();
+    let gh = FakeGh::default();
+    *gh.remote_url.borrow_mut() = Some("https://dev.azure.com/o/P/_git/R".into());
+    gh.list.borrow_mut().push_back(ok("[]"));
+    let opts = options(&long);
+    fs::write(&opts.body_file, "x".repeat(4005)).unwrap();
+    let error = open(&run_of(&long), &opts, &gh, &FakeApi::default()).unwrap_err();
+    assert!(
+        error.0.contains("4005") && error.0.contains("at least 5"),
+        "{}",
+        error.0
+    );
+    assert_eq!(long.remote_branch("feature"), None, "nothing was pushed");
+}
+
+#[test]
+fn a_title_azure_cmd_cannot_take_is_refused_on_windows_only() {
+    assert!(check_title_for_az("Add 100% \"more\"", true).is_err());
+    assert!(check_title_for_az("Add 100% \"more\"", false).is_ok());
+    assert!(check_title_for_az("Add the thing", true).is_ok());
+}

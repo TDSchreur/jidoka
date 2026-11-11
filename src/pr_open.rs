@@ -476,10 +476,29 @@ impl AzureRepo {
     }
 }
 
+/// Windows runs `az.cmd` through `cmd.exe`, and Rust refuses arguments that `cmd.exe` would re-parse.
+/// Checking the title before the push keeps a refusal from leaving a pushed branch without a pull request.
+fn check_title_for_az(title: &str, windows: bool) -> Result<(), ToolProblem> {
+    if windows
+        && title
+            .chars()
+            .any(|c| matches!(c, '"' | '%') || c.is_control())
+    {
+        return Err(ToolProblem(
+            "The title must not contain double quotes or percent signs; Azure CLI on Windows cannot take them.".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn az_json(gh: &dyn Gh, dir: &Path, args: &[&str]) -> Result<serde_json::Value, ToolProblem> {
     let result = gh.az(dir, args).map_err(|error| match error {
         GhError::NotInstalled => ToolProblem("Azure CLI (`az`) is not installed. Install it and the azure-devops extension, then sign in.".into()),
-        GhError::Other(_) => ToolProblem("Could not start Azure CLI. Check its installation.".into()),
+        GhError::Other(text) => ToolProblem(format!(
+            "Could not start Azure CLI ({}): {}",
+            shown(&crate::doctor::az_program().to_string_lossy()),
+            shown(first_line(&text))
+        )),
     })?;
     if result.code != Some(0) {
         // CLI output can contain credentials or remote URLs; do not include it in diagnostics.
@@ -566,12 +585,27 @@ fn open_azure(
     let description = if existing.is_none() {
         let text = std::fs::read_to_string(&options.body_file)
             .map_err(|_| ToolProblem("The pull request body could not be read as UTF-8.".into()))?;
-        if text.chars().count() > AZURE_DESCRIPTION_LIMIT || text.contains('\0') {
+        let length = text.chars().count();
+        if length > AZURE_DESCRIPTION_LIMIT {
             return Err(ToolProblem(format!(
-                "Azure pull request descriptions must be at most {AZURE_DESCRIPTION_LIMIT} characters and contain no NUL bytes."
+                "The pull request body has {length} characters; Azure allows at most {AZURE_DESCRIPTION_LIMIT}. Cut at least {}.",
+                length - AZURE_DESCRIPTION_LIMIT
             )));
         }
-        Some(format!("--description={text}"))
+        if text.contains('\0') {
+            return Err(ToolProblem(
+                "The pull request body must not contain NUL bytes.".into(),
+            ));
+        }
+        check_title_for_az(&options.title, cfg!(windows))?;
+        // `az` reads `@<file>` itself. A multi-line body cannot be an argument of `az.cmd` on Windows.
+        Some(format!(
+            "@{}",
+            options
+                .body_file
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+        ))
     } else {
         None
     };
@@ -614,6 +648,7 @@ fn open_azure(
             "--target-branch",
             &base,
             &format!("--title={}", options.title),
+            "--description",
             &description,
             "--output",
             "json",
