@@ -66,7 +66,8 @@ fn a_corrupt_record_does_not_block_uninstall_with_an_agent() {
         &["uninstall", "--agent", "claude", "--keep-data"],
     );
     assert!(output.status.success(), "{output:?}");
-    assert!(!record.exists());
+    assert!(record.exists());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Cannot read the install record"));
 }
 
 fn install(home: &Path, agents: &str, dir: &Path) {
@@ -177,4 +178,25 @@ fn an_agent_that_is_not_recorded_leaves_the_record_and_says_so() {
     );
     assert_eq!(std::fs::read_to_string(&record).unwrap(), before);
     assert!(dir.join("skills/jidoka").exists());
+}
+
+#[test]
+fn an_unrecorded_agent_named_next_to_a_recorded_one_is_reported() {
+    let home = tempfile::tempdir().unwrap();
+    let output = jidoka(home.path(), &["install", "--agent", "codex"]);
+    assert!(output.status.success(), "{output:?}");
+    let record = home.path().join("config/jidoka/install.json");
+    assert!(record.exists());
+    let output = jidoka(
+        home.path(),
+        &["uninstall", "--agent", "codex,copilot", "--keep-data"],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Not recorded as set up: copilot."),
+        "{stdout}"
+    );
+    assert!(!record.exists());
+    assert!(!home.path().join(".codex/skills/jidoka").exists());
 }
