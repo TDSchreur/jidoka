@@ -24,6 +24,7 @@ mod run_check;
 mod run_cleanup;
 mod server;
 mod setup;
+mod stages;
 mod stats;
 mod token;
 mod usage;
