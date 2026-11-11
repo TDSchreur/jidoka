@@ -1135,3 +1135,44 @@ async fn run_api_exposes_gate_status_and_skipped_checks() {
     let finish = gates.iter().find(|s| s["stage"] == "finish").unwrap();
     assert_eq!(finish["gates"][0]["status"], "unknown");
 }
+
+#[rocket::async_test]
+async fn check_selection_explains_missing_diff_and_is_not_computed_on_list() {
+    let dir = TestDir::new();
+    fs::write(dir.0.path().join("runs.json"), r#"[{"id":"42","title":"t","project":"/work","mode":"jidoka-balanced","stage":"check","status":"running","gates":[]}]"#).unwrap();
+    let api = client(&dir).await;
+    let list = api
+        .get("/api/runs")
+        .header(Header::new("Host", "127.0.0.1:4311"))
+        .dispatch()
+        .await;
+    let list: serde_json::Value = serde_json::from_str(&list.into_string().await.unwrap()).unwrap();
+    assert!(list[0].get("stage_gates").is_none());
+    assert!(list[0].get("checks_unavailable").is_none());
+    let detail = api
+        .get("/api/runs/42")
+        .header(Header::new("Host", "127.0.0.1:4311"))
+        .dispatch()
+        .await;
+    let detail: serde_json::Value =
+        serde_json::from_str(&detail.into_string().await.unwrap()).unwrap();
+    assert_eq!(
+        detail["checks_unavailable"],
+        "Record the worktree to select checks"
+    );
+    assert!(detail.get("checks").is_none());
+
+    let run: Run = serde_json::from_value(serde_json::json!({
+        "id": "43", "title": "t", "project": "/work", "mode": "jidoka-balanced",
+        "stage": "check", "status": "running", "gates": [],
+        "worktree": dir.0.path().join("missing"), "base_commit": "abcdef0"
+    }))
+    .unwrap();
+    let failure = run_detail(&run).unwrap();
+    assert!(
+        failure["checks_unavailable"]
+            .as_str()
+            .unwrap()
+            .contains("Could not inspect the changed paths")
+    );
+}

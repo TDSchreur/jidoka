@@ -83,6 +83,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         route = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
         if route == "/api/runs":
             data, kind = json.dumps(self.runs).encode(), "application/json"
+        elif route.startswith("/api/runs/") and route.count("/") == 3:
+            run_id = route.removeprefix("/api/runs/")
+            run = next((run for run in self.runs if run["id"] == run_id), None)
+            if run is None:
+                self.send_error(404)
+                return
+            data, kind = json.dumps(run).encode(), "application/json"
         elif route == "/":
             data, kind = (ROOT / "index.html").read_bytes() + self.check.encode(), "text/html"
         elif route.startswith("/assets/"):

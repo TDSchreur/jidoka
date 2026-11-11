@@ -474,6 +474,7 @@ return {
             "checks": {"skipped": [{"name": "code-review", "reason": "fast has no check stage"}]}}
         result = drive("""
 const dialog = await openRun('run-active');
+await wait(() => dialog.querySelector('[aria-labelledby="gate-heading"]'), 'gate status');
 return {gates: text(dialog.querySelector('[aria-labelledby="gate-heading"]')),
         skipped: text(dialog.querySelector('[aria-labelledby="skipped-heading"]')),
         headings: [...dialog.querySelectorAll('h3, h4')].map(text)};
@@ -484,6 +485,15 @@ return {gates: text(dialog.querySelector('[aria-labelledby="gate-heading"]')),
         self.assertIn("ci-passed: Unknown", result["gates"])
         self.assertIn("code-review: fast has no check stage", result["skipped"])
         self.assertIn("Stage gates", result["headings"])
+
+    def test_unavailable_check_selection_is_explained(self):
+        fixture = {**ACTIVE, "checks_unavailable": "Could not inspect the changed paths: repository missing"}
+        result = drive("""
+const dialog = await openRun('run-active');
+const message = await wait(() => [...dialog.querySelectorAll('[role=status]')].find((el) => text(el).includes('Check selection unavailable')), 'check error');
+return {message: text(message)};
+""", runs=[fixture])
+        self.assertIn("repository missing", result["message"])
 
     def test_reduced_motion_disables_the_mark_transition(self):
         normal = drive(self.CONTRAST)
