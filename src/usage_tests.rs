@@ -965,3 +965,63 @@ fn codex_models_without_an_official_price_stay_unknown_and_make_totals_partial()
     assert!(total.partial);
     assert_eq!(total.unpriced_models, ["codex-auto-review"]);
 }
+
+#[test]
+fn completed_routed_stage_persists_model_warning_without_duplicates() {
+    let world = World::new();
+    let path = world.dir.path().join("runs.json");
+    fs::write(&path, json!([{ "id": RUN_A, "title": "task", "gates": [], "project": "/p", "stage": "build", "status": "running",
+        "timeline": [{"at": T0, "stage": "build"}],
+        "model_routing": {"agent": "claude", "stages": {"build": {"model": "sonnet"}}} }]).to_string()).unwrap();
+    let store = crate::run::RunStore::open(&path).unwrap();
+    world.write(
+        "claude/projects/-w/S1.jsonl",
+        &[
+            mention(RUN_A),
+            claude_line(
+                "S1",
+                10,
+                "m1",
+                "r1",
+                "claude-opus-5",
+                (10, 0, 0, 1),
+                0,
+                false,
+            ),
+            claude_line(
+                "S1",
+                11,
+                "m2",
+                "r2",
+                "claude-sonnet-5",
+                (10, 0, 0, 1),
+                0,
+                false,
+            ),
+        ],
+    );
+    let settings = UsageSettings {
+        enabled: true,
+        roots: world.roots(),
+        budget: Duration::from_secs(10),
+        settle: Vec::new(),
+    };
+    collect_and_store(&store, RUN_A, &settings).unwrap();
+    assert!(store.get(RUN_A).unwrap().unwrap().run_reports.is_empty());
+    store
+        .update(
+            RUN_A,
+            crate::run::UpdateRun::new(Stage::Check, crate::run::RunStatus::Running),
+        )
+        .unwrap();
+    collect_and_store(&store, RUN_A, &settings).unwrap();
+    collect_and_store(&store, RUN_A, &settings).unwrap();
+    let reopened = crate::run::RunStore::open(&path)
+        .unwrap()
+        .get(RUN_A)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reopened.run_reports.len(), 1);
+    assert!(reopened.run_reports[0].text.contains("claude-opus-5"));
+    assert!(crate::inspect::render(&reopened).contains("Model routing warning"));
+}

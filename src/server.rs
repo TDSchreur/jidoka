@@ -561,12 +561,14 @@ fn advance_run(
     _access: PostAccess,
     id: &str,
     store: &State<RunStore>,
+    collector: &State<Collector>,
 ) -> Result<&'static str, (HttpStatus, String)> {
     store
         .change_gate(id, |run| {
             crate::run_gate::advance(run, &crate::pr_sync::RealGit, &crate::pr_wait::RealGh)
         })
         .map_err(|error| (HttpStatus::BadRequest, error))?;
+    collector.after_update(store, id);
     Ok("Run advanced")
 }
 
