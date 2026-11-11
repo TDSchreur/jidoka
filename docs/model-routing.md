@@ -63,3 +63,5 @@ Write one policy file, `model-routing.json`, in Jidoka's config folder: `$XDG_CO
   - Runs without a selection, or recorded in the earlier shape, show no Model routing section.
 
 Copilot CLI is routed through the `task` tool's `model` and `reasoning_effort` options. Which models an account can use differs, and an unavailable one silently falls back to the session's model, so check the observed models in `jidoka run inspect`. See [the findings](reports/copilot-model-routing-findings.md).
+
+After a routed Stage finishes, usage collection records a non-blocking activity report for each observed model that differs from its assigned model. `jidoka run inspect` shows these warnings and `--json` includes them in `run_reports`. The coordinating session keeps its own model, so a warning alone does not prove a subagent used the wrong model. Missing or disabled usage produces no warning.

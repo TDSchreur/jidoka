@@ -250,6 +250,11 @@ pub(crate) fn render(run: &Run) -> String {
     if let Some(routing) = &run.model_routing {
         out.push_str(&routing_section(routing, run.usage.as_ref()));
     }
+    for report in &run.run_reports {
+        if report.text.starts_with(crate::routing::WARNING_PREFIX) {
+            out.push_str(&format!("  {}\n", shown(&report.text)));
+        }
+    }
     if let Some(ticket) = &run.current_ticket {
         out.push_str(&field("Current ticket", Some(ticket)));
     }

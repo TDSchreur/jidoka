@@ -1307,10 +1307,48 @@ impl RunStore {
         let Some(run) = runs.iter_mut().find(|run| run.id == id) else {
             return Ok(());
         };
-        let old = run.usage.replace(usage);
+        let old = run.clone();
+        if let Some(routing) = &run.model_routing {
+            for row in &usage.rows {
+                let completed = run.status == RunStatus::Done
+                    || run
+                        .timeline
+                        .windows(2)
+                        .any(|marks| marks[0].stage == row.stage && marks[1].stage != row.stage);
+                if let Some(choice) = routing.choice_for(row.stage)
+                    && completed
+                    && !crate::routing::model_matches(&choice.model, &row.model)
+                {
+                    // Log model names are untrusted and can exceed a run report's size limit.
+                    let model: String = row.model.chars().take(50).collect();
+                    let model = crate::inspect::shown(&model);
+                    let text = format!(
+                        "{}{} usage recorded model {} while {} was assigned; the coordinator may use a different model",
+                        crate::routing::WARNING_PREFIX,
+                        row.stage.name(),
+                        model,
+                        choice.model
+                    );
+                    if run.run_reports.len() < MAX_REPORTS_PER_RUN
+                        && !run
+                            .run_reports
+                            .iter()
+                            .any(|report| report.stage == row.stage && report.text == text)
+                    {
+                        run.run_reports.push(RunReport {
+                            kind: ReportKind::Activity,
+                            text,
+                            stage: row.stage,
+                            at: usage.collected_at,
+                        });
+                    }
+                }
+            }
+        }
+        run.usage = Some(usage);
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             if let Some(run) = runs.iter_mut().find(|run| run.id == id) {
-                run.usage = old;
+                *run = old;
             }
             return Err(error);
         }
