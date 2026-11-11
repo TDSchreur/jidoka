@@ -27,7 +27,7 @@ fn run(
         .map(|(at, stage, rework, ticket)| json!({"at": T0 + at * 1000, "stage": stage, "rework": rework, "ticket": ticket}))
         .collect();
     serde_json::from_value(json!({
-        "id": id, "title": "t", "project": "/p", "stage": "build", "status": "running",
+        "id": id, "title": "t", "gates": [], "project": "/p", "stage": "build", "status": "running",
         "timeline": timeline, "finished_at": finished.map(|s| T0 + s * 1000), "sessions": sessions,
         "tickets": [{"reference": "t1", "title": "One", "status": "done"}, {"reference": "t2", "title": "Two", "status": "pending"}]
     }))
@@ -659,7 +659,7 @@ fn a_run_from_before_usage_tracking_is_not_tracked_and_a_late_timeline_is_partia
             claude_line("S1", 10, "m", "r", "m-1", (3, 0, 0, 1), 0, false),
         ],
     );
-    let legacy: Run = serde_json::from_value(json!({"id": RUN_A, "title": "old", "project": "/p", "stage": "build", "status": "running"})).unwrap();
+    let legacy: Run = serde_json::from_value(json!({"id": RUN_A, "title": "old", "gates": [], "project": "/p", "stage": "build", "status": "running"})).unwrap();
     let usage = world.collect(&legacy, std::slice::from_ref(&legacy));
     assert_eq!(usage.status, UsageStatus::NotTracked);
     assert!(
@@ -764,7 +764,7 @@ mod auto_block {
             let path = world.dir.path().join("runs.json");
             fs::write(
                 &path,
-                json!([{"id": id, "title": "task", "project": "/work", "stage": "build", "status": "running",
+                json!([{"id": id, "title": "task", "gates": [], "project": "/work", "stage": "build", "status": "running",
                     "updated_at": began, "timeline": [{"at": began, "stage": "build"}]}])
                 .to_string(),
             )

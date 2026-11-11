@@ -5,12 +5,17 @@ fn run(mode: Mode, stage: Stage, routing: Option<ModelRouting>) -> Run {
     let mut run: Run = serde_json::from_value(serde_json::json!({
         "id": "1",
         "title": "Title",
-        "project": "/work/repo",
+        "gates": [], "project": "/work/repo",
         "stage": "define",
         "status": "running"
     }))
     .unwrap();
     run.model_routing = routing;
+    run.tickets.push(Ticket {
+        reference: "ticket".into(),
+        title: "A ticket".into(),
+        status: TicketStatus::Pending,
+    });
     run.mode = Some(mode);
     run.stage = stage;
     run.summaries.insert(Stage::Define, "the plan".into());
@@ -130,4 +135,30 @@ fn options_accept_only_json() {
     assert_eq!(parse_options(&[]), Ok(false));
     assert_eq!(parse_options(&["--json"]), Ok(true));
     assert!(parse_options(&["--x"]).is_err());
+}
+
+#[test]
+fn next_shows_recorded_results_and_only_open_review_gates() {
+    let mut run = run(Mode::Balanced, Stage::Check, None);
+    run.gates.push(crate::run_gate::GateResult {
+        gate: Gate::ChecksRecorded,
+        stage: Stage::Check,
+        rework: None,
+        passed: true,
+        evidence: Some("reviewed".into()),
+        commit: None,
+        ticket: None,
+    });
+    let next = build(&run, &[]).unwrap();
+    assert_eq!(names(&next.gates), [Gate::NoActionableFindings]);
+    assert!(render(&next).contains("pass  checks-recorded: reviewed"));
+    assert_eq!(
+        serde_json::to_value(&next).unwrap()["gate_results"][0]["passed"],
+        true
+    );
+    run.rework = Some(1);
+    assert_eq!(
+        names(&build(&run, &[]).unwrap().gates),
+        [Gate::ChecksRecorded, Gate::NoActionableFindings]
+    );
 }

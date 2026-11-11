@@ -246,7 +246,7 @@ mod tests {
 
     fn run(repository: &Path, worktree: &Path, spec: &str) -> Run {
         serde_json::from_value(serde_json::json!({
-            "id": "1", "title": "t", "project": repository.to_string_lossy(),
+            "id": "1", "title": "t", "gates": [], "project": repository.to_string_lossy(),
             "repository": repository.to_string_lossy(), "worktree": worktree.to_string_lossy(),
             "spec": spec, "stage": "build", "status": "running", "tickets": [],
         }))

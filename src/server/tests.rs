@@ -971,7 +971,7 @@ async fn update_response_carries_warnings_beside_the_run() {
     let path = dir.0.path().join("runs.json");
     fs::write(
         &path,
-        r#"[{"id":"42","title":"old","project":"/work","stage":"define","status":"running"}]"#,
+        r#"[{"id":"42","title":"old","gates":[],"project":"/work","stage":"define","status":"running"}]"#,
     )
     .unwrap();
     let api = client(&dir).await;

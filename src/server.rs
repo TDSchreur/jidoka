@@ -506,6 +506,35 @@ fn update_run(
     Ok(Json(body))
 }
 
+#[rocket::post("/api/runs/<id>/gate", data = "<record>")]
+fn record_gate(
+    _access: PostAccess,
+    id: &str,
+    record: Json<crate::run_gate::Record>,
+    store: &State<RunStore>,
+) -> Result<&'static str, (HttpStatus, String)> {
+    store
+        .change_gate(id, |run| {
+            crate::run_gate::record(run, record.into_inner(), &crate::pr_sync::RealGit)
+        })
+        .map_err(|error| (HttpStatus::BadRequest, error))?;
+    Ok("Gate recorded")
+}
+
+#[rocket::post("/api/runs/<id>/advance")]
+fn advance_run(
+    _access: PostAccess,
+    id: &str,
+    store: &State<RunStore>,
+) -> Result<&'static str, (HttpStatus, String)> {
+    store
+        .change_gate(id, |run| {
+            crate::run_gate::advance(run, &crate::pr_sync::RealGit, &crate::pr_wait::RealGh)
+        })
+        .map_err(|error| (HttpStatus::BadRequest, error))?;
+    Ok("Run advanced")
+}
+
 #[rocket::get("/api/runs/<id>")]
 fn get_run(
     request: Security,
@@ -907,6 +936,8 @@ fn build_rocket_with_tokens(
                 get_document,
                 create_run,
                 update_run,
+                record_gate,
+                advance_run,
                 sync_run,
                 delete_run
             ],
