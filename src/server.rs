@@ -443,6 +443,28 @@ fn list_runs(
 /// table as it is now. The cost is never stored.
 fn run_with_cost(run: &Run) -> serde_json::Result<serde_json::Value> {
     let mut value = serde_json::to_value(run)?;
+    value["stage_gates"] = serde_json::to_value(crate::run_next::stage_gates(run))?;
+    if let Some(mode) = run.mode {
+        // Fast skips every check independently of the diff. Other modes need a readable diff.
+        let paths = match (&run.worktree, &run.base_commit) {
+            _ if mode == crate::run::Mode::Fast => Some(Vec::new()),
+            (Some(worktree), Some(base)) => {
+                use crate::pr_sync::Git;
+                let range = format!("{base}..HEAD");
+                crate::run_check::ReadOnlyGit
+                    .git(
+                        std::path::Path::new(worktree),
+                        &["diff", "--name-only", &range],
+                    )
+                    .ok()
+                    .map(|out| out.lines().map(str::to_owned).collect())
+            }
+            _ => None,
+        };
+        if let Some(paths) = paths {
+            value["checks"] = serde_json::to_value(crate::run_next::checks_for(mode, &paths))?;
+        }
+    }
     if let Some(usage) = &run.usage {
         value["usage"] = crate::cost::usage_json(usage, crate::cost::PRICES)?;
     }

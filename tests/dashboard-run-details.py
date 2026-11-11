@@ -467,6 +467,24 @@ return {
                 self.assertGreaterEqual(result[part], 4.5, (part, result))
             self.assertGreaterEqual(result["panelRatio"], 3, result)
 
+    def test_gate_and_skipped_check_text_is_accessible(self):
+        fixture = {**ACTIVE, "stage_gates": [{"stage": "build", "gates": [
+            {"name": "verified", "status": "failed", "description": "verification passed", "evidence": "Tests failed", "rework": 2},
+        ]}, {"stage": "finish", "gates": [{"name": "ci-passed", "status": "unknown", "description": "CI passed"}]}],
+            "checks": {"skipped": [{"name": "code-review", "reason": "fast has no check stage"}]}}
+        result = drive("""
+const dialog = await openRun('run-active');
+return {gates: text(dialog.querySelector('[aria-labelledby="gate-heading"]')),
+        skipped: text(dialog.querySelector('[aria-labelledby="skipped-heading"]')),
+        headings: [...dialog.querySelectorAll('h3, h4')].map(text)};
+""", runs=[fixture])
+        self.assertIn("verified: failed", result["gates"])
+        self.assertIn("Evidence: Tests failed", result["gates"])
+        self.assertIn("Rework 2", result["gates"])
+        self.assertIn("ci-passed: Unknown", result["gates"])
+        self.assertIn("code-review: fast has no check stage", result["skipped"])
+        self.assertIn("Stage gates", result["headings"])
+
     def test_reduced_motion_disables_the_mark_transition(self):
         normal = drive(self.CONTRAST)
         reduced = drive(self.CONTRAST, extra_args=[*LANG, "--force-prefers-reduced-motion"])

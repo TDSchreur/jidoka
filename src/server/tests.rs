@@ -1101,3 +1101,37 @@ async fn the_cli_token_is_in_no_response() {
     }
     assert!(bodies.iter().all(|body| !body.contains(&cli)));
 }
+
+#[rocket::async_test]
+async fn run_api_exposes_gate_status_and_skipped_checks() {
+    let dir = TestDir::new();
+    fs::write(dir.0.path().join("runs.json"), r#"[{"id":"42","title":"t","project":"/work","mode":"jidoka-fast","stage":"build","status":"running","gates":[{"gate":"verified","stage":"build","rework":null,"passed":false,"evidence":"Tests failed","commit":null,"ticket":null}]}]"#).unwrap();
+    let api = client(&dir).await;
+    let response = api
+        .get("/api/runs/42")
+        .header(Header::new("Host", "127.0.0.1:4311"))
+        .dispatch()
+        .await;
+    assert_eq!(response.status(), HttpStatus::Ok);
+    let body: serde_json::Value =
+        serde_json::from_str(&response.into_string().await.unwrap()).unwrap();
+    let gates = body["stage_gates"].as_array().unwrap();
+    let build = gates.iter().find(|s| s["stage"] == "build").unwrap();
+    let verified = build["gates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["name"] == "verified")
+        .unwrap();
+    assert_eq!(verified["status"], "failed");
+    assert_eq!(verified["evidence"], "Tests failed");
+    assert_eq!(body["checks"]["skipped"][0]["name"], "code-review");
+    assert!(
+        body["checks"]["skipped"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no check stage")
+    );
+    let finish = gates.iter().find(|s| s["stage"] == "finish").unwrap();
+    assert_eq!(finish["gates"][0]["status"], "unknown");
+}
