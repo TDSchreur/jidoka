@@ -386,7 +386,14 @@ pub(crate) fn home_dir() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cannot find your home directory"))
 }
 
-/// The files `install` writes, as paths such as `jidoka/SKILL.md`, relative to the skills folder.
+pub(crate) fn bundled_skill_text(path: &str) -> Option<&'static str> {
+    BUNDLED
+        .iter()
+        .find(|(name, _)| *name == path)
+        .and_then(|(_, bytes)| std::str::from_utf8(bytes).ok())
+}
+
+/// The files `install` writes, relative to the skills folder.
 pub(crate) fn bundled_skill_files() -> impl Iterator<Item = &'static str> {
     BUNDLED
         .iter()
@@ -679,7 +686,9 @@ mod tests {
 
     #[test]
     fn shared_procedures_record_run_context_with_options_the_cli_accepts_and_continue_safely() {
-        let text = bundled_text("jidoka-procedures/SKILL.md");
+        let text = ["run-reporting", "define-rules", "workspace"]
+            .map(|chunk| bundled_text(&format!("jidoka-procedures/chunks/{chunk}.md")))
+            .join("\n");
         let context = text
             .split_once("- **Context:**")
             .and_then(|(_, rest)| rest.split_once("- **Done:**"))
@@ -758,57 +767,16 @@ mod tests {
     }
 
     #[test]
-    fn workflow_skills_use_the_shared_procedures_and_report_their_own_mode() {
+    fn workflow_skills_bootstrap_the_stage_machine() {
         for skill in WORKFLOW_SKILLS {
-            let text = bundled_text(&format!("{skill}/SKILL.md")).replace("\r\n", "\n");
-            assert!(
-                text.contains("(../jidoka-procedures/SKILL.md)"),
-                "{skill} does not link the shared procedures"
-            );
-            let shared = text
-                .split_once("## Shared procedures\n")
-                .unwrap_or_else(|| panic!("{skill} has no Shared procedures"))
-                .1
-                .split("\n## ")
-                .next()
-                .unwrap();
-            assert!(
-                shared.contains(
-                    "Run reporting, Continuing a run (to continue an existing run) and Workspace in [jidoka-procedures]"
-                ),
-                "{skill} does not point to Run reporting, Continuing a run and Workspace"
-            );
-            for section in ["Tracker setup", "Define rules", "Finish"] {
-                assert!(
-                    text.contains(&format!("{section} in [jidoka-procedures]")),
-                    "{skill} does not point to {section}"
-                );
+            let text = bundled_text(&format!("{skill}/SKILL.md"));
+            for instruction in [
+                "../jidoka-procedures/SKILL.md",
+                "jidoka run next",
+                "jidoka run advance",
+            ] {
+                assert!(text.contains(instruction), "{skill} lacks {instruction}");
             }
-            assert!(
-                text.contains("Verification in [jidoka-procedures]"),
-                "{skill} lacks Verification"
-            );
-            if skill != "jidoka-fast" {
-                for section in ["Committing for Check", "Reworks"] {
-                    assert!(
-                        text.contains(&format!("{section} in [jidoka-procedures]")),
-                        "{skill} lacks {section}"
-                    );
-                }
-            }
-            assert!(
-                !text.contains("Waiting for a decision"),
-                "{skill} still reports a decision wait as running"
-            );
-            assert_eq!(
-                text.contains("Saving the plan in [jidoka-procedures]"),
-                skill != "jidoka-full",
-                "{skill} saves a conversational plan only in the lighter workflows"
-            );
-            assert!(
-                text.contains(&format!("`--mode {skill}`")),
-                "{skill} reports its own mode"
-            );
         }
     }
 
@@ -816,7 +784,7 @@ mod tests {
     fn bundled_skills_carry_the_skill_check() {
         for (path, wording) in [
             (
-                "jidoka-procedures/SKILL.md",
+                "jidoka-procedures/chunks/committing-for-check.md",
                 &["Skill check:", "wording only"][..],
             ),
             (
@@ -877,6 +845,18 @@ mod tests {
                     .any(|w| w == "develop")
             {
                 offenders.push(format!("{path}: develop"));
+            }
+        }
+        for (path, content) in crate::run_next::STAGE_CHUNKS {
+            let text = String::from_utf8_lossy(content).to_lowercase();
+            for term in PROJECT_SPECIFIC.into_iter().chain(["develop"]) {
+                if text
+                    .split(|c: char| !c.is_alphanumeric() && c != '/' && c != '.')
+                    .any(|word| word == term)
+                    || (term != "develop" && text.contains(term))
+                {
+                    offenders.push(format!("stages/{path}: {term}"));
+                }
             }
         }
         assert!(

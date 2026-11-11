@@ -169,3 +169,30 @@ fn next_shows_recorded_results_and_only_open_review_gates() {
         ]
     );
 }
+
+#[test]
+fn next_supplies_only_current_stage_and_routing_when_selected() {
+    for mode in [Mode::Fast, Mode::Balanced, Mode::Full] {
+        for &stage in stages::stages(mode) {
+            let next = build(&run(mode, stage, None), &[]).unwrap();
+            assert!(next.instructions.contains(&format!(
+                "{}: {}",
+                match mode {
+                    Mode::Fast => "Fast",
+                    Mode::Balanced => "Balanced",
+                    Mode::Full => "Full",
+                },
+                match stage {
+                    Stage::Define => "Define",
+                    Stage::Build => "Build",
+                    Stage::Check => "Check",
+                    Stage::Finish => "Finish",
+                }
+            )));
+            assert!(!next.instructions.contains("# Model routing"));
+            assert!(!next.instructions.contains("No instructions for this stage"));
+        }
+    }
+    let routed = build(&run(Mode::Balanced, Stage::Build, Some(routing())), &[]).unwrap();
+    assert!(routed.instructions.contains("# Model routing"));
+}
