@@ -1,6 +1,6 @@
 ## Changed
 
-- `JIDOKA_AGENT` and `--agent` accept `all` and menu numbers on both `jidoka install` and `jidoka uninstall`. An empty agent list gives a clear error.
+- `--agent` on `jidoka install` and `jidoka uninstall`, and `JIDOKA_AGENT` on `jidoka install`, accept `all` and menu numbers. An empty agent list gives a clear error.
 - `jidoka uninstall` names agents that were not recorded when they are mixed with recorded ones.
 
 ## Fixed

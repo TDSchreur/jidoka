@@ -110,10 +110,9 @@ impl Lock {
                     }
                     // Rename first: only one process can move the stale file away. If the moved
                     // file turns out fresh, another process replaced the stale lock between our
-                    // check and the rename, so put it back: claim the free path with a
-                    // placeholder (if someone else took it, drop the moved-aside lock), then
-                    // rename the original over the placeholder, keeping its mtime. The path is
-                    // never free once claimed, so a lock created since is never replaced.
+                    // check and the rename, so put an equivalent lock back: claim the path with
+                    // `create_new` (a lock created since is never replaced) and give it the
+                    // original's modified time. The original holder's drop removes it as before.
                     let nanos = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .map_or(0, |age| age.as_nanos());
@@ -123,17 +122,14 @@ impl Lock {
                     }
                     after_rename();
                     if !is_stale(&aside) {
-                        let claimed = fs::OpenOptions::new()
+                        let restored = fs::OpenOptions::new()
                             .write(true)
                             .create_new(true)
                             .open(&path);
-                        // Close the placeholder before replacing it: Windows cannot replace a
-                        // file that is open. If the rename fails, the placeholder stays as an
-                        // empty fresh lock that keeps the path held, until its holder's drop
-                        // removes it or it goes stale.
-                        if claimed.is_ok() {
-                            drop(claimed);
-                            let _ = fs::rename(&aside, &path);
+                        if let Ok(file) = restored {
+                            let _ = fs::metadata(&aside)
+                                .and_then(|meta| meta.modified())
+                                .and_then(|time| file.set_modified(time));
                         }
                         let _ = fs::remove_file(&aside);
                         return None;
@@ -467,7 +463,7 @@ mod tests {
     fn a_fresh_lock_renamed_aside_is_put_back() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("install.lock");
-        fs::write(&path, "other").unwrap();
+        fs::write(&path, "").unwrap();
         let calls = std::cell::Cell::new(0);
         // Stale on the first check, fresh once moved aside: another process replaced it.
         let age = |_: &Path| {
@@ -479,7 +475,7 @@ mod tests {
             })
         };
         assert!(Lock::take_with(path.clone(), age).is_none());
-        assert_eq!(fs::read_to_string(&path).unwrap(), "other");
+        assert!(path.exists());
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
@@ -487,8 +483,14 @@ mod tests {
     fn a_put_back_lock_keeps_its_mtime() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("install.lock");
-        fs::write(&path, "other").unwrap();
-        let before = fs::metadata(&path).unwrap().modified().unwrap();
+        fs::write(&path, "").unwrap();
+        let before = SystemTime::now() - Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(before)
+            .unwrap();
         let calls = std::cell::Cell::new(0);
         let age = |_: &Path| {
             calls.set(calls.get() + 1);

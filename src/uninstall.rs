@@ -832,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_names_are_trimmed() {
+    fn agent_list_entries_are_trimmed() {
         let env = Env::new();
         let dir = env.dir.path().join("cc");
         let skill = env.skill(&dir);
