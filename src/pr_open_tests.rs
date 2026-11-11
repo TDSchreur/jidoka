@@ -1207,8 +1207,51 @@ fn azure_reads_the_body_from_its_file_and_reports_how_far_over_the_limit_it_is()
 }
 
 #[test]
-fn a_title_azure_cmd_cannot_take_is_refused_on_windows_only() {
-    assert!(check_title_for_az("Add 100% \"more\"", true).is_err());
-    assert!(check_title_for_az("Add 100% \"more\"", false).is_ok());
-    assert!(check_title_for_az("Add the thing", true).is_ok());
+fn text_azure_cmd_cannot_take_is_refused_on_windows_only() {
+    assert!(check_az_text("title", "Add 100% \"more\"", true).is_err());
+    assert!(check_az_text("title", "two\nlines", true).is_err());
+    assert!(check_az_text("title", "Add 100% \"more\"", false).is_ok());
+    assert!(check_az_text("title", "Add the thing", true).is_ok());
+}
+
+#[test]
+fn a_canonical_windows_path_loses_its_verbatim_prefix_for_az() {
+    assert_eq!(az_file_argument(r"\\?\C:\x\body.md"), r"@C:\x\body.md");
+    assert_eq!(
+        az_file_argument(r"\\?\UNC\srv\share\b.md"),
+        r"@\\srv\share\b.md"
+    );
+    assert_eq!(az_file_argument("/tmp/body.md"), "@/tmp/body.md");
+}
+
+#[test]
+fn azure_refuses_a_body_with_a_nul_byte_before_pushing() {
+    let project = Project::new();
+    let gh = FakeGh::default();
+    *gh.remote_url.borrow_mut() = Some("https://dev.azure.com/o/P/_git/R".into());
+    gh.list.borrow_mut().push_back(ok("[]"));
+    let opts = options(&project);
+    fs::write(&opts.body_file, "a\0b").unwrap();
+    let error = open(&run_of(&project), &opts, &gh, &FakeApi::default()).unwrap_err();
+    assert!(error.0.contains("NUL"), "{}", error.0);
+    assert_eq!(project.remote_branch("feature"), None);
+}
+
+#[test]
+fn a_failure_to_start_azure_cli_names_the_program_and_the_cause() {
+    struct Broken;
+    impl Gh for Broken {
+        fn run(&self, _: &Path, _: &[&str]) -> Result<GhOutput, GhError> {
+            unreachable!()
+        }
+        fn az(&self, _: &Path, _: &[&str]) -> Result<GhOutput, GhError> {
+            Err(GhError::Other("batch file arguments are invalid".into()))
+        }
+    }
+    let error = az_json(&Broken, Path::new("."), &["repos"]).unwrap_err();
+    assert!(
+        error.0.contains("az") && error.0.contains("batch file arguments are invalid"),
+        "{}",
+        error.0
+    );
 }

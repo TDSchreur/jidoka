@@ -477,18 +477,28 @@ impl AzureRepo {
 }
 
 /// Windows runs `az.cmd` through `cmd.exe`, and Rust refuses arguments that `cmd.exe` would re-parse.
-/// Checking the title before the push keeps a refusal from leaving a pushed branch without a pull request.
-fn check_title_for_az(title: &str, windows: bool) -> Result<(), ToolProblem> {
+/// Checking them before the push keeps a refusal from leaving a pushed branch without a pull request.
+fn check_az_text(what: &str, text: &str, windows: bool) -> Result<(), ToolProblem> {
     if windows
-        && title
+        && text
             .chars()
             .any(|c| matches!(c, '"' | '%') || c.is_control())
     {
-        return Err(ToolProblem(
-            "The title must not contain double quotes or percent signs; Azure CLI on Windows cannot take them.".into(),
-        ));
+        return Err(ToolProblem(format!(
+            "The {what} must not contain double quotes, percent signs or control characters; Azure CLI on Windows cannot take them."
+        )));
     }
     Ok(())
+}
+
+/// The `@<file>` value that makes `az` read an argument from a file. Canonical Windows paths carry a
+/// `\\?\` prefix that is dropped, so `\\?\UNC\server\share` becomes `\\server\share`.
+fn az_file_argument(path: &str) -> String {
+    let plain = match path.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => path.strip_prefix(r"\\?\").unwrap_or(path).to_string(),
+    };
+    format!("@{plain}")
 }
 
 fn az_json(gh: &dyn Gh, dir: &Path, args: &[&str]) -> Result<serde_json::Value, ToolProblem> {
@@ -597,15 +607,11 @@ fn open_azure(
                 "The pull request body must not contain NUL bytes.".into(),
             ));
         }
-        check_title_for_az(&options.title, cfg!(windows))?;
+        let file = az_file_argument(&options.body_file.to_string_lossy());
+        check_az_text("title", &options.title, cfg!(windows))?;
+        check_az_text("path of the body file", &file, cfg!(windows))?;
         // `az` reads `@<file>` itself. A multi-line body cannot be an argument of `az.cmd` on Windows.
-        Some(format!(
-            "@{}",
-            options
-                .body_file
-                .to_string_lossy()
-                .trim_start_matches(r"\\?\")
-        ))
+        Some(file)
     } else {
         None
     };
