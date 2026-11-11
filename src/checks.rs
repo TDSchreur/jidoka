@@ -4,10 +4,9 @@
 //! A Check applies when the Workflow mode's floor includes it or when a changed path matches one of
 //! its triggers. Adding a Check means adding one entry to [`CATALOG`].
 
-// The commands that use this module arrive in later tickets of the stage machine.
 #![allow(
     dead_code,
-    reason = "used by `run next` and `run advance`, which are added later"
+    reason = "the chunk, gate and model route are used by `run advance` and the stage chunks, added later"
 )]
 
 use crate::run::Mode;
