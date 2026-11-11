@@ -2,8 +2,7 @@
 //! (GitHub with `gh`, Azure Repos with `az`) and kept on the Run so the dashboard can show it.
 
 use crate::pr_wait::{
-    Gh, ToolProblem, azure_pr_head, azure_pr_merge_commit, azure_pr_status, is_azure_pr_url,
-    problem, run_gh,
+    Gh, ToolProblem, azure_pr_head, azure_pr_status, is_azure_pr_url, problem, run_gh,
 };
 use crate::run::{FieldUpdate, Run, RunStatus, RunStore, Stage, UpdateRun};
 use serde::{Deserialize, Serialize};
@@ -145,23 +144,6 @@ pub(crate) fn head(tool: &dyn Gh, url: &str) -> Result<Head, ToolProblem> {
         commit: valid_commit(commit)?,
         branch,
     })
-}
-
-/// The commit a merged pull request created: GitHub's `mergeCommit`, or Azure's `lastMergeCommit`.
-pub(crate) fn merge_commit(tool: &dyn Gh, url: &str) -> Result<String, ToolProblem> {
-    let commit = match host(url)? {
-        Host::Azure => azure_pr_merge_commit(tool, url)?,
-        Host::GitHub(pull_request) => {
-            let data = view_json(tool, &pull_request, "mergeCommit")?;
-            // `mergeCommit` is an object with an `oid`.
-            data["mergeCommit"]
-                .as_str()
-                .or_else(|| data["mergeCommit"]["oid"].as_str())
-                .unwrap_or("")
-                .to_string()
-        }
-    };
-    valid_commit(commit)
 }
 
 fn valid_commit(commit: String) -> Result<String, ToolProblem> {

@@ -202,6 +202,7 @@ pub(crate) fn diagnose(
     project_checks.push(verification_check(&root, &machine.path));
     // A warning never blocks, so this check stays out of `shared_ok`.
     let windows_lint = windows_lint_check(&root, machine);
+    let skills_version = skills_version_check(machine);
     let agents: Vec<AgentReport> = agent_ids
         .into_iter()
         .map(|id| {
@@ -216,6 +217,7 @@ pub(crate) fn diagnose(
         .collect();
     let shared_ok = project_checks.iter().all(Check::passed);
     project_checks.extend(windows_lint);
+    project_checks.extend(skills_version);
     let agents_ok = match agent {
         Some(_) => agents.iter().all(|a| a.usable),
         None => agents.iter().any(|a| a.usable),
@@ -618,6 +620,31 @@ fn skills_check(agent: &'static str, root: &Path, explicit_dir: bool) -> Check {
             },
         )
     }
+}
+
+/// Compares the install record's version with this binary. No (or an unreadable) record adds no check.
+/// A warning never blocks: the next `jidoka` command refreshes the skills by itself.
+fn skills_version_check(machine: &Machine) -> Option<Check> {
+    let path = crate::install_record::path_in(machine.var)?;
+    let record = crate::install_record::read(&path).ok()??;
+    let binary = env!("CARGO_PKG_VERSION");
+    Some(if record.version == binary {
+        Check::pass(
+            "skills-version",
+            format!("skills match this jidoka ({binary})"),
+        )
+    } else {
+        let installed = if record.version.is_empty() {
+            "an unknown version"
+        } else {
+            &record.version
+        };
+        Check::warning(
+            "skills-version",
+            format!("skills are outdated: installed from {installed}, this jidoka is {binary}"),
+            "Run any `jidoka` command or `jidoka install`.",
+        )
+    })
 }
 
 /// The human-readable report.
@@ -1360,6 +1387,63 @@ mod tests {
                 .filter(|c| c.id == "skills")
                 .count(),
             1
+        );
+    }
+
+    fn write_record(world: &mut World, version: &str) {
+        let base = world.home.path().join("cfg");
+        world
+            .vars
+            .insert("XDG_CONFIG_HOME".into(), base.clone().into());
+        world.vars.insert("APPDATA".into(), base.into());
+        let path = crate::install_record::path_in(|name| world.vars.get(name).cloned()).unwrap();
+        let record = crate::install_record::InstallRecord {
+            version: version.into(),
+            agents: vec![],
+            claude_config_dirs: vec![],
+        };
+        crate::install_record::write(&path, &record).unwrap();
+    }
+
+    #[test]
+    fn a_record_behind_the_binary_is_reported_outdated_with_the_fix() {
+        for version in ["0.0.1", ""] {
+            let mut world = World::ready().with_agent("claude");
+            write_record(&mut world, version);
+            let report = world.report(Some("claude"));
+            let check = project_check(&report, "skills-version");
+            assert_eq!(check.status, Status::Warning, "{version:?}");
+            assert!(check.message.contains("outdated"));
+            assert!(check.message.contains(env!("CARGO_PKG_VERSION")));
+            let fix = check.fix.as_deref().unwrap();
+            assert!(fix.contains("jidoka install") && fix.contains("any `jidoka` command"));
+            assert!(report.ok, "a warning never blocks");
+            let json = serde_json::to_value(&report).unwrap();
+            assert!(
+                json["project"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|c| { c["id"] == "skills-version" && c["status"] == "warning" })
+            );
+        }
+    }
+
+    #[test]
+    fn a_matching_record_passes_and_no_record_adds_no_check() {
+        let mut world = World::ready().with_agent("claude");
+        assert!(
+            !world
+                .report(Some("claude"))
+                .project
+                .iter()
+                .any(|c| c.id == "skills-version")
+        );
+        write_record(&mut world, env!("CARGO_PKG_VERSION"));
+        let report = world.report(Some("claude"));
+        assert_eq!(
+            project_check(&report, "skills-version").status,
+            Status::Pass
         );
     }
 

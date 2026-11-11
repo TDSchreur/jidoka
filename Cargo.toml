@@ -1,6 +1,6 @@
 [package]
 name = "jidoka"
-version = "0.14.1"
+version = "0.14.2"
 edition = "2024"
 description = "Jidoka — the AI software factory"
 license = "MIT"
@@ -16,8 +16,14 @@ serde_json = "1.0.154"
 percent-encoding = "2"
 getrandom = "0.4.3"
 time = { version = "0.3", features = ["parsing"] }
-sha2 = "0.11.1"
 pulldown-cmark = { version = "0.13.6", default-features = false, features = ["html"] }
+
+[target.'cfg(not(windows))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[target.'cfg(windows)'.dependencies]
+ureq = { version = "3", default-features = false, features = ["native-tls-no-default"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 tempfile = "3"

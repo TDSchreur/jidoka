@@ -1,41 +1,7 @@
 # Install the latest public Jidoka release on Windows x86-64.
-# Choose the agents to install skills for with $env:JIDOKA_AGENT (for example codex,claude)
-# and the Claude config folders with $env:JIDOKA_CLAUDE_CONFIG_DIRS (separated by semicolons)
-# or answer the prompt.
+# `jidoka.exe install` asks which agents to install skills for; $env:JIDOKA_AGENT (for example codex,claude) and
+# $env:JIDOKA_CLAUDE_CONFIG_DIRS (separated by semicolons) skip the questions.
 $ErrorActionPreference = 'Stop'
-
-# Turns a choice such as "1,3", "claude copilot" or "all" into agent names; $null when invalid.
-function ConvertTo-JidokaAgents([string]$Choice) {
-    $known = @{ '1' = 'codex'; '2' = 'claude'; '3' = 'copilot'; 'codex' = 'codex'; 'claude' = 'claude'; 'copilot' = 'copilot' }
-    $agents = @()
-    foreach ($token in ($Choice -split '[,\s]+' | Where-Object { $_ })) {
-        if ($token -eq 'all') { $agents += 'codex', 'claude', 'copilot' }
-        elseif ($known.ContainsKey($token)) { $agents += $known[$token] }
-        else { return $null }
-    }
-    if (-not $agents) { return $null }
-    return @($agents | Select-Object -Unique)
-}
-
-# Returns the chosen agents, asking unless JIDOKA_AGENT is set.
-function Get-JidokaAgents {
-    if ($env:JIDOKA_AGENT) {
-        $agents = ConvertTo-JidokaAgents $env:JIDOKA_AGENT
-        if (-not $agents) { throw 'JIDOKA_AGENT must list codex, claude, or copilot, separated by commas.' }
-        return $agents
-    }
-    $noPrompt = 'No terminal to ask which agents to install for. Set $env:JIDOKA_AGENT, for example codex,claude.'
-    while ($true) {
-        try {
-            $answer = Read-Host "Install the Jidoka skills for which agents?`n  1) codex`n  2) claude`n  3) copilot`nEnter one or more numbers or names separated by commas, or 'all'"
-        }
-        catch { throw $noPrompt }
-        if ($null -eq $answer) { throw $noPrompt }
-        $agents = ConvertTo-JidokaAgents $answer
-        if ($agents) { return $agents }
-        Write-Host 'Invalid choice. Try again.'
-    }
-}
 
 # Report the native code in both decimal and its Windows hexadecimal form.
 function Assert-JidokaExitCode([int]$ExitCode, [string]$Action) {
@@ -77,7 +43,6 @@ function Install-Jidoka {
     if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -notin @('AMD64', 'x86')) {
         throw 'Only Windows x86-64 is supported by this installer.'
     }
-    $agents = (Get-JidokaAgents) -join ','
     $base = 'https://github.com/TDSchreur/jidoka/releases/latest/download'
     $temp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
     New-Item -ItemType Directory -Path $temp | Out-Null
@@ -105,11 +70,7 @@ function Install-Jidoka {
         New-Item -ItemType Directory -Force -Path $bin | Out-Null
         $destination = Join-Path $bin 'jidoka.exe'
         Copy-Item -Force $download $destination
-        $installArgs = @('install', '--agent', $agents)
-        foreach ($dir in ([string]$env:JIDOKA_CLAUDE_CONFIG_DIRS -split ';')) {
-            if ($dir) { $installArgs += '--config-dir', $dir }
-        }
-        & $destination @installArgs
+        & $destination install
         Assert-JidokaExitCode $LASTEXITCODE 'skill installation'
         $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
         if ($null -eq $userPath) { $userPath = '' }

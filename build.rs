@@ -50,6 +50,23 @@ fn build_identity() {
     println!("cargo:rustc-env=JIDOKA_BUILD_RELEASE={release}");
 }
 
+/// Standard application manifest: runs as the invoking user and targets Windows 10 and 11.
+#[cfg(windows)]
+const WINDOWS_MANIFEST: &str = r#"<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+</assembly>"#;
+
 /// Gives the Windows executable product and version information. Unsigned executables
 /// without it are more likely to be flagged by antivirus heuristics.
 #[cfg(windows)]
@@ -59,7 +76,11 @@ fn windows_version_info() {
         resource
             .set("ProductName", "Jidoka")
             .set("FileDescription", "Jidoka command line and dashboard")
-            .set("OriginalFilename", "jidoka.exe");
+            .set("OriginalFilename", "jidoka.exe")
+            .set("InternalName", "jidoka")
+            .set("CompanyName", "T.D. Schreur")
+            .set("LegalCopyright", "Copyright (c) 2026 T.D. Schreur")
+            .set_manifest(WINDOWS_MANIFEST);
         resource
             .compile()
             .expect("embed Windows version information");

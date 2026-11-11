@@ -40,7 +40,10 @@ Read the relevant guide when working on these files or tasks:
 - Test: `cargo test`
 - Dashboard browser tests: `python3 tests/dashboard-<name>.py` for every `tests/dashboard-*.py` (needs `python3` and Chromium or Google Chrome; they share `tests/dashboard_browser.py`, written for Linux and macOS and run on Linux only in CI)
 
-After a pull request merges, run `scripts/update-local.sh` from the main checkout to pull `develop`, rebuild, reinstall the `jidoka` command and the skills, and restart the dashboard, so local agents always use the latest jidoka.
+After a pull request merges, finish from the main checkout so local agents always use the latest jidoka:
+
+1. `jidoka run cleanup <run-id>` removes the run's worktree and local branch.
+2. `JIDOKA_AGENT=all scripts/update-local.sh` pulls `develop`, rebuilds, reinstalls the `jidoka` command and the skills for all agents, and restarts the dashboard.
 
 Run `scripts/verify.sh` before finishing any ticket and before opening a pull request. It runs the same checks as CI, in the same order. A missing tool (`rustfmt`, `clippy`, `python3`, Chromium) is a blocker to install (`rustup component add rustfmt clippy` for the Rust ones), not something to skip and leave to CI. These instructions are informed by [Awesome Copilot's Rust instructions](https://github.com/github/awesome-copilot/blob/main/instructions/rust.instructions.md).
 

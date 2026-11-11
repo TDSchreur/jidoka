@@ -4,13 +4,11 @@
     reason = "integration test helpers fail the test by panicking"
 )]
 
-use std::process::Command;
+mod common;
 
 fn jidoka(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_jidoka"))
-        .args(args)
-        .output()
-        .unwrap()
+    let home = tempfile::tempdir().unwrap();
+    common::jidoka_in(home.path()).args(args).output().unwrap()
 }
 
 #[test]
@@ -99,7 +97,7 @@ fn inspect_with_fake_server(data: &std::path::Path, args: &[&str]) -> std::proce
         )
         .unwrap();
     });
-    let output = Command::new(env!("CARGO_BIN_EXE_jidoka"))
+    let output = common::jidoka_in(data)
         .args(args)
         .env("JIDOKA_TEST_ADDRESS", &address)
         .env("XDG_DATA_HOME", data)
