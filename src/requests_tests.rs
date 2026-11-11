@@ -396,6 +396,27 @@ fn copilot_result(at: u64, id: &str, content: &str) -> String {
 }
 
 #[test]
+fn copilot_logs_claim_a_run_through_a_shell_variable_but_not_through_a_prompt() {
+    let ids = HashSet::from([RUN_A]);
+    let via_variable = copilot_message(
+        1,
+        "c1",
+        &[copilot_call(
+            "t1",
+            "bash",
+            json!({"command": format!("id={RUN_A} && jidoka run update $id define running")}),
+        )],
+    );
+    assert_eq!(
+        crate::copilot_requests::copilot_claims(&via_variable, &ids),
+        HashSet::from([RUN_A.to_string()])
+    );
+    let prompt_only =
+        json!({"type": "user.message", "data": {"content": format!("Run: {RUN_A}")}}).to_string();
+    assert!(crate::copilot_requests::copilot_claims(&prompt_only, &ids).is_empty());
+}
+
+#[test]
 fn copilot_requests_are_categorized_by_their_tool_calls_and_subagents_shown_apart() {
     let world = World::new();
     world.file(

@@ -749,7 +749,7 @@ fn read_copilot(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
         let Some(text) = pass.load(&path, &session, out) else {
             continue;
         };
-        let mentions = mentioned_runs(&text, pass.ids);
+        let mentions = crate::copilot_requests::copilot_claims(&text, pass.ids);
         if mentions.is_empty() && !pass.recorded.contains(session.as_str()) {
             continue;
         }
