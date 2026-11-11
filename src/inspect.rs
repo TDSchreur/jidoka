@@ -251,7 +251,7 @@ pub(crate) fn render(run: &Run) -> String {
         out.push_str(&routing_section(routing, run.usage.as_ref()));
     }
     for report in &run.run_reports {
-        if report.text.starts_with("Model routing warning: ") {
+        if report.text.starts_with(crate::routing::WARNING_PREFIX) {
             out.push_str(&format!("  {}\n", shown(&report.text)));
         }
     }

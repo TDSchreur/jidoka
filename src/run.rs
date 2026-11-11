@@ -1323,7 +1323,8 @@ impl RunStore {
                     let model: String = row.model.chars().take(50).collect();
                     let model = crate::inspect::shown(&model);
                     let text = format!(
-                        "Model routing warning: {} usage recorded model {} while {} was assigned; the coordinator may use a different model",
+                        "{}{} usage recorded model {} while {} was assigned; the coordinator may use a different model",
+                        crate::routing::WARNING_PREFIX,
                         row.stage.name(),
                         model,
                         choice.model
