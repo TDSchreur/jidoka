@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 mod policy;
 pub(crate) use policy::{
-    Coverage, Host, Policy, Resolution, Starter, install_starter, load, parse_start_options,
+    Coverage, Host, Policy, Resolution, create_starter, created_message, load, parse_start_options,
     policy_path_in, read,
 };
 

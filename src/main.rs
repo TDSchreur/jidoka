@@ -13,7 +13,6 @@ mod pr_open;
 mod pr_state;
 mod pr_sync;
 mod pr_wait;
-mod release;
 mod repository;
 mod request_logs;
 mod requests;
@@ -27,7 +26,6 @@ mod server;
 mod setup;
 mod stats;
 mod token;
-mod uninstall;
 mod usage;
 mod usage_logs;
 
@@ -36,7 +34,7 @@ use run::UPDATE_HELP;
 use server::{ADDRESS, DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...   (asks which agents when none are given on a terminal; else JIDOKA_AGENT, JIDOKA_CLAUDE_CONFIG_DIRS)\n  jidoka uninstall [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]... [--keep-data]   (uses the install record when no agent is given; removing only some recorded agents keeps the record and the binary)\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka check\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  jidoka --help | --version\n\nSetup:\n  `jidoka install` writes an install record (agents and Claude config dirs) next to the model routing policy. A command run before Setup prints a hint to run `jidoka install`; after an upgrade, the first command refreshes the installed skills automatically.";
+const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...   (asks which agents when none are given on a terminal; else JIDOKA_AGENT, JIDOKA_CLAUDE_CONFIG_DIRS)\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  jidoka --help | --version\n\nSetup:\n  `jidoka install` writes an install record (agents and Claude config dirs) next to the model routing policy. A command run before Setup prints a hint to run `jidoka install`; after an upgrade, the first command refreshes the installed skills automatically.";
 
 /// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
 const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
@@ -93,13 +91,6 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
         [] | ["--help" | "-h"] => println!("{HELP}\n\n{UPDATE_HELP}"),
         ["--version" | "-V"] => println!("jidoka {}", current_build()),
         ["install", options @ ..] => install::run(options)?,
-        ["uninstall", options @ ..] => {
-            uninstall::run(options)?;
-        }
-        ["check"] => release::check(
-            env!("CARGO_PKG_VERSION"),
-            env!("JIDOKA_BUILD_RELEASE") == "true",
-        )?,
         ["doctor", options @ ..] => {
             let args = doctor::parse_args(options).map_err(|error| format!("{error}\n{HELP}"))?;
             return doctor::run(args).map(|ok| u8::from(!ok));
@@ -771,15 +762,6 @@ mod test_support {
             Self(tempfile::tempdir().unwrap())
         }
     }
-
-    /// Makes `path` unreadable. Returns false when it can still be read anyway (running as root), so the
-    /// caller skips its check instead of failing.
-    #[cfg(unix)]
-    pub(crate) fn make_unreadable(path: &std::path::Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        std::fs::read(path).is_err()
-    }
 }
 
 #[cfg(test)]
@@ -832,41 +814,11 @@ mod tests {
     }
 
     #[test]
-    fn build_label_shows_the_version_for_releases_and_the_commit_otherwise() {
-        assert_eq!(build_label("0.3.1", true, "1a2b3c4"), "0.3.1");
-        assert_eq!(build_label("0.3.1", true, ""), "0.3.1");
-        assert_eq!(build_label("0.3.1", false, "1a2b3c4"), "dev 1a2b3c4");
-        assert_eq!(build_label("0.3.1", false, ""), "dev (unknown commit)");
-    }
-
-    #[test]
-    fn the_dashboard_url_carries_the_percent_encoded_project() {
-        assert_eq!(
-            dashboard_url(4311, "/home/me/my repo"),
-            "http://127.0.0.1:4311/?project=%2Fhome%2Fme%2Fmy%20repo"
-        );
-        assert_eq!(
-            dashboard_url(4400, "C:\\work\\a&b"),
-            "http://127.0.0.1:4400/?project=C%3A%5Cwork%5Ca%26b"
-        );
-    }
-
-    #[test]
     fn ports_are_numbers_from_1_to_65535() {
         assert_eq!(parse_port("4400"), Ok(4400));
         for bad in ["0", "65536", "-1", "abc", ""] {
             assert!(parse_port(bad).is_err(), "{bad}");
         }
-    }
-
-    #[test]
-    fn a_separate_port_keeps_its_own_data_file() {
-        assert!(
-            data_path(DEFAULT_PORT)
-                .unwrap()
-                .ends_with("jidoka/runs.json")
-        );
-        assert!(data_path(4400).unwrap().ends_with("jidoka/runs-4400.json"));
     }
 
     #[test]

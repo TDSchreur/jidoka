@@ -1,5 +1,7 @@
 #!/bin/sh
 # Run the checks CI runs, in the same order, and stop at the first failure.
+# With --quick (for iterating) it skips the Windows clippy step and runs the dashboard browser tests only when the
+# dashboard or its tests changed since the merge base with origin/develop. Run it without --quick before a pull request.
 # Keep in sync with the `check` job in .github/workflows/ci.yml. CI lints on Linux only; the Windows clippy step below
 # is an extra local check that runs when the Windows target is installed.
 set -eu
@@ -29,12 +31,26 @@ installed_windows_target() {
   fi
 }
 
+# True when the dashboard or its browser tests changed; also true when that cannot be determined.
+dashboard_changed() {
+  command -v git >/dev/null 2>&1 || return 0
+  base=$(git merge-base HEAD origin/develop 2>/dev/null) || return 0
+  { git diff --name-only "$base"; git ls-files --others --exclude-standard; } 2>/dev/null |
+    grep -Eq '^(dashboard/|tests/.*\.py$)'
+}
+
 step() {
   printf '\n==> %s\n' "$*"
   "$@" || { printf 'FAILED: %s\n' "$*" >&2; exit 1; }
 }
 
 main() {
+  quick=0
+  case "${1:-}" in
+    --quick) quick=1 ;;
+    '') ;;
+    *) printf 'usage: verify.sh [--quick]\n' >&2; exit 2 ;;
+  esac
   case "$0" in
     */*) cd "${0%/*}/.." ;;
     *) cd .. ;;
@@ -42,20 +58,30 @@ main() {
   command -v cargo >/dev/null 2>&1 || missing cargo
   cargo fmt --version >/dev/null 2>&1 || missing rustfmt
   cargo clippy --version >/dev/null 2>&1 || missing clippy
-  command -v python3 >/dev/null 2>&1 || { printf 'python3 is not available. Install Python 3 to run the dashboard browser tests.\n' >&2; exit 1; }
-  browser >/dev/null || { printf 'Chromium is not available. Install chromium or google-chrome (or set CHROMIUM to its path) to run the dashboard browser tests.\n' >&2; exit 1; }
+  browser_tests=1
+  if [ "$quick" = 1 ] && ! dashboard_changed; then browser_tests=0; fi
+  if [ "$browser_tests" = 1 ]; then
+    command -v python3 >/dev/null 2>&1 || { printf 'python3 is not available. Install Python 3 to run the dashboard browser tests.\n' >&2; exit 1; }
+    browser >/dev/null || { printf 'Chromium is not available. Install chromium or google-chrome (or set CHROMIUM to its path) to run the dashboard browser tests.\n' >&2; exit 1; }
+  fi
   step cargo fmt --check
   step cargo clippy --all-targets --locked -- -D warnings
-  if windows_target=$(installed_windows_target); then
+  if [ "$quick" = 1 ]; then
+    :
+  elif windows_target=$(installed_windows_target); then
     step cargo clippy --all-targets --locked --target "$windows_target" -- -D warnings
   else
     printf '\n==> Skipped Windows clippy: no Windows target is installed. Add one with: rustup target add x86_64-pc-windows-gnu\n'
   fi
   step cargo test --locked
-  step python3 -m unittest discover -s tests -p 'test_*.py'
-  for test in tests/dashboard-*.py; do
-    step python3 "$test"
-  done
+  if [ "$browser_tests" = 1 ]; then
+    step python3 -m unittest discover -s tests -p 'test_*.py'
+    for test in tests/dashboard-*.py; do
+      step python3 "$test"
+    done
+  else
+    printf '\n==> Skipped dashboard browser tests (quick mode, no dashboard changes)\n'
+  fi
   printf '\nAll checks passed.\n'
 }
 main "$@"

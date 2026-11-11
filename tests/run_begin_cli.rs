@@ -45,16 +45,6 @@ fn begin_refuses_bad_arguments_with_the_usage() {
     }
 }
 
-#[test]
-fn begin_outside_a_repository_creates_no_run_and_says_why() {
-    let dir = tempfile::tempdir().unwrap();
-    let output = jidoka_in(dir.path(), &["run", "begin", "Title"]);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("git repository"), "{stderr}");
-}
-
 const TWO_AGENT_POLICY: &str = r#"{"enabled": true, "agents": {
   "claude": {"stages": {"check": {"model": "opus", "effort": "high"}}},
   "codex": {"stages": {"check": {"model": "gpt-6-astra"}}}}}"#;

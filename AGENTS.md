@@ -15,6 +15,18 @@ Day-to-day pull requests target `develop`. Release pull requests merge `develop`
 - Consult the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) when designing public APIs.
 - Follow existing conventions and keep changes proportional to the task. TDD is not required.
 
+## Move fast
+
+Jidoka is not a big enterprise application. Move fast, try new ideas, and breaking things is fine, especially while the project is on 0.x.
+
+- Do not use TDD. Write only the minimum tests needed to cover new or fixed behavior, and skip tests for exploratory work.
+- Do not add compatibility layers or migrations for breaking changes; mention them in the changelog fragment.
+
+## Parity rules
+
+- GitHub and Azure DevOps get the same level of support. When something cannot be implemented for one of them, discuss it with the user and record an ADR in `docs/adr/` before proceeding.
+- Claude, Codex and Copilot get the same level of support. When something cannot be implemented for one of them, discuss it with the user and record an ADR in `docs/adr/` before proceeding.
+
 ## Shipped skills are project-agnostic
 
 The skills that `jidoka install` bundles (listed in `build.rs`) are used by anyone, on any kind of project. They must not name this repository's scripts, branches, tools or conventions, such as `scripts/verify.sh` or `develop`. Put those in `AGENTS.md`, the README or `.github/instructions/`, and word the skill generically, for example "the project's verification" or "the base branch chosen in Workspace". A test in `src/install.rs` fails when a bundled skill names this repository; search the skills you changed for this repository's names before opening a pull request.
@@ -45,7 +57,7 @@ After a pull request merges, finish from the main checkout so local agents alway
 1. `jidoka run cleanup <run-id>` removes the run's worktree and local branch.
 2. `JIDOKA_AGENT=all scripts/update-local.sh` pulls `develop`, rebuilds, reinstalls the `jidoka` command and the skills for all agents, and restarts the dashboard.
 
-Run `scripts/verify.sh` before finishing any ticket and before opening a pull request. It runs the same checks as CI, in the same order. A missing tool (`rustfmt`, `clippy`, `python3`, Chromium) is a blocker to install (`rustup component add rustfmt clippy` for the Rust ones), not something to skip and leave to CI. These instructions are informed by [Awesome Copilot's Rust instructions](https://github.com/github/awesome-copilot/blob/main/instructions/rust.instructions.md).
+While iterating and when finishing a ticket, run `scripts/verify.sh --quick`: it skips the Windows clippy step and runs the dashboard browser tests only when the dashboard or its tests changed. Run `scripts/verify.sh` without `--quick` before opening a pull request; it runs the same checks as CI, in the same order. A missing tool (`rustfmt`, `clippy`, `python3`, Chromium) is a blocker to install (`rustup component add rustfmt clippy` for the Rust ones), not something to skip and leave to CI. These instructions are informed by [Awesome Copilot's Rust instructions](https://github.com/github/awesome-copilot/blob/main/instructions/rust.instructions.md).
 
 ## Agent skills
 

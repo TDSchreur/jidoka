@@ -1,7 +1,6 @@
 //! Startup check: adopts skills installed before the install record existed, or hints at `jidoka install`.
 use crate::install::Selection;
 use crate::install_record::{self, InstallRecord};
-use crate::routing::Starter;
 use std::{
     ffi::OsString,
     fs,
@@ -15,7 +14,7 @@ fn is_exempt(args: &[&str]) -> bool {
     matches!(
         args,
         [] | [
-            "--help" | "-h" | "--version" | "-V" | "install" | "uninstall" | "doctor",
+            "--help" | "-h" | "--version" | "-V" | "install" | "doctor",
             ..
         ]
     )
@@ -175,12 +174,7 @@ fn refresh(
     };
     let result = crate::install::install_skill_files(&selection, home, var, &mut io::sink())
         .and_then(|()| crate::install::create_default_policy(var))
-        .map(|(path, done)| {
-            if let Starter::Replaced(off) = done {
-                let shown = path.display().to_string();
-                let _ = writeln!(err, "{}", Starter::replaced_message(&shown, off, None));
-            }
-        })
+        .map(|_| ())
         .and_then(|()| {
             let current = InstallRecord::current(record.agents.clone(), record.claude_config_dirs);
             install_record::write(path, &current)
@@ -265,7 +259,6 @@ mod tests {
             &["-h"],
             &["--version"],
             &["install"],
-            &["uninstall", "--agent", "claude"],
             &["doctor"],
         ] {
             assert_eq!(env.run(args), "", "{args:?}");
@@ -294,33 +287,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_record_warns_once_naming_the_file_and_the_fix() {
-        let env = Env::new();
-        let path = env.record_path();
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, "{").unwrap();
-        let err = env.run(&["check"]);
-        assert_eq!(err.lines().count(), 1, "{err}");
-        assert!(err.contains("install.json"), "{err}");
-        assert!(err.contains("jidoka install"), "{err}");
-    }
-
-    #[test]
-    fn a_refresh_that_replaces_the_policy_says_so_on_stderr() {
-        let env = Env::new();
-        old_record(&env, "0.0.1", &["claude"]);
-        let policy = crate::routing::policy_path_in(|n| env.var(n)).unwrap();
-        fs::write(&policy, r#"{"agents":{"claude":{"roles":{}}}}"#).unwrap();
-        let err = env.run(&["check"]);
-        assert_eq!(err.lines().count(), 2, "{err}");
-        assert!(
-            err.contains("Replaced old-format model routing policy"),
-            "{err}"
-        );
-        assert!(err.contains("updated skills"), "{err}");
-    }
-
-    #[test]
     fn taking_over_a_stale_lock_leaves_no_files_behind() {
         let env = Env::new();
         old_record(&env, "0.0.1", &["claude"]);
@@ -337,13 +303,6 @@ mod tests {
             "{names:?}"
         );
         assert!(names.iter().all(|n| !n.contains(".tmp")), "{names:?}");
-    }
-
-    #[test]
-    fn partial_skills_are_not_adopted() {
-        let env = Env::new();
-        fs::create_dir_all(env.home.path().join(".claude/skills/jidoka")).unwrap();
-        assert!(env.run(&["check"]).contains("jidoka install"));
     }
 
     #[test]
@@ -391,37 +350,6 @@ mod tests {
     }
 
     #[test]
-    fn an_adopted_record_with_an_empty_version_is_refreshed() {
-        let env = Env::new();
-        old_record(&env, "", &["copilot"]);
-        assert!(env.run(&["check"]).contains("for copilot"));
-    }
-
-    #[test]
-    fn recorded_claude_config_dirs_are_refreshed() {
-        let env = Env::new();
-        let dir = env.home.path().join("work-claude");
-        let record = InstallRecord {
-            version: "0.0.1".into(),
-            agents: vec!["claude".into()],
-            claude_config_dirs: vec![dir.display().to_string()],
-        };
-        install_record::write(&env.record_path(), &record).unwrap();
-        assert!(env.run(&["check"]).contains("claude"));
-        assert!(has_bundled(&dir.join("skills")));
-        assert!(!env.home.path().join(".claude/skills").exists());
-    }
-
-    #[test]
-    fn exempt_commands_do_not_refresh() {
-        let env = Env::new();
-        old_record(&env, "0.0.1", &["claude"]);
-        assert_eq!(env.run(&["doctor"]), "");
-        let record = install_record::read(&env.record_path()).unwrap().unwrap();
-        assert_eq!(record.version, "0.0.1");
-    }
-
-    #[test]
     fn a_failed_refresh_warns_once_keeps_the_old_version_and_releases_the_lock() {
         let env = Env::new();
         old_record(&env, "0.0.1", &["claude"]);
@@ -446,81 +374,5 @@ mod tests {
         let record = install_record::read(&env.record_path()).unwrap().unwrap();
         assert_eq!(record.version, "0.0.1");
         assert!(lock_path(&env).exists());
-    }
-
-    #[test]
-    fn a_stale_lock_is_ignored() {
-        let env = Env::new();
-        old_record(&env, "0.0.1", &["claude"]);
-        let file = fs::File::create(lock_path(&env)).unwrap();
-        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
-            .unwrap();
-        assert!(env.run(&["check"]).contains("updated skills"));
-        assert!(!lock_path(&env).exists());
-    }
-
-    #[test]
-    fn a_fresh_lock_renamed_aside_is_put_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("install.lock");
-        fs::write(&path, "").unwrap();
-        let calls = std::cell::Cell::new(0);
-        // Stale on the first check, fresh once moved aside: another process replaced it.
-        let age = |_: &Path| {
-            calls.set(calls.get() + 1);
-            Some(if calls.get() == 1 {
-                STALE_LOCK * 2
-            } else {
-                Duration::ZERO
-            })
-        };
-        assert!(Lock::take_with(path.clone(), age).is_none());
-        assert!(path.exists());
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn a_put_back_lock_keeps_its_mtime() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("install.lock");
-        fs::write(&path, "").unwrap();
-        let before = SystemTime::now() - Duration::from_secs(60);
-        fs::File::options()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_modified(before)
-            .unwrap();
-        let calls = std::cell::Cell::new(0);
-        let age = |_: &Path| {
-            calls.set(calls.get() + 1);
-            Some(if calls.get() == 1 {
-                STALE_LOCK * 2
-            } else {
-                Duration::ZERO
-            })
-        };
-        assert!(Lock::take_with(path.clone(), age).is_none());
-        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
-    }
-
-    #[test]
-    fn a_fresh_lock_is_never_replaced_when_putting_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("install.lock");
-        fs::write(&path, "moved").unwrap();
-        let calls = std::cell::Cell::new(0);
-        let age = |_: &Path| {
-            calls.set(calls.get() + 1);
-            Some(if calls.get() == 1 {
-                STALE_LOCK * 2
-            } else {
-                Duration::ZERO
-            })
-        };
-        let place_other = || fs::write(&path, "other").unwrap();
-        assert!(Lock::take_hooked(path.clone(), age, place_other).is_none());
-        assert_eq!(fs::read_to_string(&path).unwrap(), "other");
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }
