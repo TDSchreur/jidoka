@@ -994,7 +994,7 @@ impl RunStore {
         update.base_commit.map_hex().apply(&mut next.base_commit);
         update.spec.apply(&mut next.spec);
         update.pr.apply(&mut next.pr);
-        if was_running
+        if (was_running || was_blocked)
             && update.status == RunStatus::Running
             && next.stage == Stage::Check
             && rework_set
@@ -1002,12 +1002,11 @@ impl RunStore {
             let mode = next
                 .mode
                 .ok_or_else(|| io_invalid("Record the run's mode before starting a Rework"))?;
-            match stages::rework(mode, next.stage, next.status)
+            if let Destination::Stage(stage) = stages::rework(mode, next.stage, next.status)
                 .map_err(io_invalid)?
                 .to
             {
-                Destination::Stage(stage) => next.stage = stage,
-                Destination::Done => {}
+                next.stage = stage;
             }
         }
         if update.status == RunStatus::Done && next.stage != Stage::Finish {
