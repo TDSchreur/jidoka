@@ -96,16 +96,6 @@ impl Lock {
         age: impl Fn(&Path) -> Option<Duration>,
         after_rename: impl Fn(),
     ) -> Option<Self> {
-        Self::take_linking(path, age, after_rename, |from, to| fs::hard_link(from, to))
-    }
-
-    /// `take_hooked` with the function that puts a moved-aside lock back injected.
-    fn take_linking(
-        path: PathBuf,
-        age: impl Fn(&Path) -> Option<Duration>,
-        after_rename: impl Fn(),
-        link: impl Fn(&Path, &Path) -> io::Result<()>,
-    ) -> Option<Self> {
         let is_stale = |file: &Path| age(file).is_some_and(|age| age > STALE_LOCK);
         for _ in 0..2 {
             match fs::OpenOptions::new()
@@ -120,10 +110,10 @@ impl Lock {
                     }
                     // Rename first: only one process can move the stale file away. If the moved
                     // file turns out fresh, another process replaced the stale lock between our
-                    // check and the rename, so try to put it back with a hard link, which never
-                    // replaces a lock created since. A tiny window remains in which that
-                    // process's lock is briefly missing, and if someone else took the lock in
-                    // it, the moved-aside lock is dropped; that is acceptable for a refresh lock.
+                    // check and the rename, so put it back: claim the free path with a
+                    // placeholder (if someone else took it, drop the moved-aside lock), then
+                    // rename the original over the placeholder, keeping its mtime. The path is
+                    // never free once claimed, so a lock created since is never replaced.
                     let nanos = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .map_or(0, |age| age.as_nanos());
@@ -133,16 +123,12 @@ impl Lock {
                     }
                     after_rename();
                     if !is_stale(&aside) {
-                        match link(&aside, &path) {
-                            Ok(()) => {}
-                            // A lock created since is never replaced.
-                            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                            // Links are unsupported here: move the lock back if the path is
-                            // still free. A tiny window remains, as described above.
-                            Err(_) if !path.exists() => {
-                                let _ = fs::rename(&aside, &path);
-                            }
-                            Err(_) => {}
+                        let claimed = fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .open(&path);
+                        if claimed.is_ok() && fs::rename(&aside, &path).is_err() {
+                            let _ = fs::remove_file(&path);
                         }
                         let _ = fs::remove_file(&aside);
                         return None;
@@ -493,10 +479,11 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_lock_is_put_back_by_rename_when_links_are_unsupported() {
+    fn a_put_back_lock_keeps_its_mtime() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("install.lock");
         fs::write(&path, "other").unwrap();
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
         let calls = std::cell::Cell::new(0);
         let age = |_: &Path| {
             calls.set(calls.get() + 1);
@@ -506,10 +493,8 @@ mod tests {
                 Duration::ZERO
             })
         };
-        let no_links = |_: &Path, _: &Path| Err(io::Error::from(io::ErrorKind::Unsupported));
-        assert!(Lock::take_linking(path.clone(), age, || {}, no_links).is_none());
-        assert_eq!(fs::read_to_string(&path).unwrap(), "other");
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert!(Lock::take_with(path.clone(), age).is_none());
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
     }
 
     #[test]
