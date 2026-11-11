@@ -1,0 +1,294 @@
+//! `jidoka run next`: what a run does now, in the order the agent needs it.
+
+use crate::{
+    checks,
+    inspect::shown,
+    pr_sync::Git,
+    routing::ModelChoice,
+    run::{Mode, Run, RunStatus, Stage, Ticket, TicketStatus},
+    stages::{self, Destination, Gate},
+};
+use serde::Serialize;
+use std::{collections::BTreeMap, path::Path};
+
+/// A Gate that is still open, with what satisfies it.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub(crate) struct OpenGate {
+    name: Gate,
+    description: &'static str,
+}
+
+/// A legal move out of the current Stage.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub(crate) struct Move {
+    /// `stage`, `done` or `rework`.
+    kind: &'static str,
+    to: Option<Stage>,
+    gates: Vec<OpenGate>,
+}
+
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub(crate) struct CheckEntry {
+    name: &'static str,
+    reason: String,
+}
+
+/// The Checks of the Check stage: those that apply to the diff and those skipped.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub(crate) struct Checks {
+    applicable: Vec<CheckEntry>,
+    skipped: Vec<CheckEntry>,
+}
+
+#[derive(Serialize, Debug)]
+pub(crate) struct Next {
+    run: String,
+    title: String,
+    mode: Mode,
+    stage: Stage,
+    status: RunStatus,
+    rework: Option<u32>,
+    instructions: String,
+    /// The gates of the move to the next Stage, all open until Gate results are recorded.
+    gates: Vec<OpenGate>,
+    moves: Vec<Move>,
+    /// Only in the Check stage.
+    checks: Option<Checks>,
+    summaries: BTreeMap<Stage, String>,
+    tickets: Vec<Ticket>,
+    /// The routed model for this Stage; none when routing is off or leaves the Stage out.
+    model: Option<ModelChoice>,
+    /// Why there is no move, when the run is blocked or done.
+    note: Option<String>,
+}
+
+fn describe(gate: Gate) -> &'static str {
+    match gate {
+        Gate::TicketsDone => {
+            "every ticket is done (jidoka run update <id> ... --ticket-status <ref>=done)"
+        }
+        Gate::Verified => "the full verification passed on the head commit",
+        Gate::TicketsVerified => "verification passed after each ticket",
+        Gate::ChecksRecorded => "every applicable check has a recorded result",
+        Gate::NoActionableFindings => {
+            "the checks left no actionable findings; otherwise start a Rework"
+        }
+        Gate::CiPassed => "CI passed on the pull request's head commit, or the project has no CI",
+    }
+}
+
+fn open(gates: &[Gate]) -> Vec<OpenGate> {
+    gates
+        .iter()
+        .map(|&name| OpenGate {
+            name,
+            description: describe(name),
+        })
+        .collect()
+}
+
+/// Placeholder text until the stage chunks are embedded.
+fn instructions(mode: Mode, stage: Stage) -> String {
+    format!(
+        "Do the {} stage of {}: follow that stage in the workflow skill.",
+        stage.name(),
+        mode.name()
+    )
+}
+
+fn checks_for(mode: Mode, changed_paths: &[String]) -> Checks {
+    let selection = checks::select(mode, changed_paths);
+    Checks {
+        applicable: selection
+            .applicable
+            .into_iter()
+            .map(|a| CheckEntry {
+                name: a.check.name,
+                reason: match a.reason {
+                    checks::Reason::Floor => format!("{} always runs it", mode.name()),
+                    checks::Reason::Triggered { path } => format!("{} changed", shown(&path)),
+                },
+            })
+            .collect(),
+        skipped: selection
+            .skipped
+            .into_iter()
+            .map(|s| CheckEntry {
+                name: s.check.name,
+                reason: s.reason,
+            })
+            .collect(),
+    }
+}
+
+/// The paths changed between the run's base commit and its head, when the run records both.
+pub(crate) fn changed_paths(run: &Run, git: &dyn Git) -> Vec<String> {
+    let (Some(worktree), Some(base)) = (&run.worktree, &run.base_commit) else {
+        return Vec::new();
+    };
+    let range = format!("{base}..HEAD");
+    git.git(Path::new(worktree), &["diff", "--name-only", &range])
+        .map(|out| out.lines().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// # Errors
+///
+/// Returns a message when the run has no recorded mode.
+pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String> {
+    let mode = run.mode.ok_or_else(|| {
+        "the run has no recorded mode; record it with `jidoka run update <id> <stage> running --mode <mode>`"
+            .to_string()
+    })?;
+    let mut moves = Vec::new();
+    let mut gates = Vec::new();
+    let mut note = None;
+    match stages::next(mode, run.stage, run.status) {
+        Ok(transition) => {
+            gates = open(transition.gates);
+            let (kind, to) = match transition.to {
+                Destination::Stage(stage) => ("stage", Some(stage)),
+                Destination::Done => ("done", None),
+            };
+            moves.push(Move {
+                kind,
+                to,
+                gates: open(transition.gates),
+            });
+            if let Ok(rework) = stages::rework(mode, run.stage, run.status)
+                && let Destination::Stage(stage) = rework.to
+            {
+                moves.push(Move {
+                    kind: "rework",
+                    to: Some(stage),
+                    gates: open(rework.gates),
+                });
+            }
+        }
+        Err(reason) => note = Some(reason),
+    }
+    Ok(Next {
+        run: run.id.clone(),
+        title: run.title.clone(),
+        mode,
+        stage: run.stage,
+        status: run.status,
+        rework: run.rework,
+        instructions: instructions(mode, run.stage),
+        gates,
+        moves,
+        checks: (run.stage == Stage::Check && mode != Mode::Fast)
+            .then(|| checks_for(mode, changed_paths)),
+        summaries: run.summaries.clone(),
+        tickets: run.tickets.clone(),
+        model: run
+            .model_routing
+            .as_ref()
+            .and_then(|routing| routing.choice_for(run.stage))
+            .cloned(),
+        note,
+    })
+}
+
+pub(crate) fn render(next: &Next) -> String {
+    let mut out = format!("Run {}: {}\n", next.run, shown(&next.title));
+    out.push_str(&format!(
+        "Stage {} ({}), {}{}\n",
+        next.stage.name(),
+        match next.status {
+            RunStatus::Running => "running",
+            RunStatus::Blocked => "blocked",
+            RunStatus::Done => "done",
+        },
+        next.mode.name(),
+        next.rework
+            .map_or(String::new(), |n| format!(", rework {n}"))
+    ));
+    match &next.model {
+        Some(choice) => out.push_str(&format!(
+            "Model {}{}\n",
+            shown(&choice.model),
+            choice
+                .effort
+                .as_deref()
+                .map_or(String::new(), |e| format!(", effort {}", shown(e)))
+        )),
+        None => out.push_str("Model not routed\n"),
+    }
+    out.push_str(&format!("\nInstructions\n  {}\n", next.instructions));
+    if let Some(checks) = &next.checks {
+        out.push_str("\nChecks\n");
+        for entry in &checks.applicable {
+            out.push_str(&format!(
+                "  run   {} ({})\n",
+                entry.name,
+                shown(&entry.reason)
+            ));
+        }
+        for entry in &checks.skipped {
+            out.push_str(&format!(
+                "  skip  {} ({})\n",
+                entry.name,
+                shown(&entry.reason)
+            ));
+        }
+    }
+    if let Some(note) = &next.note {
+        out.push_str(&format!("\nNo move: {note}\n"));
+    }
+    for mv in &next.moves {
+        let target = mv.to.map_or("done", Stage::name);
+        out.push_str(&format!("\nMove to {target} ({})\n", mv.kind));
+        if mv.gates.is_empty() {
+            out.push_str("  no gates\n");
+        }
+        for gate in &mv.gates {
+            out.push_str(&format!(
+                "  open  {}: {}\n",
+                shown_name(gate.name),
+                gate.description
+            ));
+        }
+    }
+    if !next.tickets.is_empty() {
+        out.push_str("\nTickets\n");
+        for ticket in &next.tickets {
+            let mark = match ticket.status {
+                TicketStatus::Pending => "pending",
+                TicketStatus::InProgress => "in-progress",
+                TicketStatus::Done => "done",
+            };
+            out.push_str(&format!(
+                "  [{mark}] {} {}\n",
+                shown(&ticket.reference),
+                shown(&ticket.title)
+            ));
+        }
+    }
+    if !next.summaries.is_empty() {
+        out.push_str("\nSummaries\n");
+        for (stage, text) in &next.summaries {
+            out.push_str(&format!("  {}: {}\n", stage.name(), shown(text)));
+        }
+    }
+    out
+}
+
+fn shown_name(gate: Gate) -> String {
+    serde_json::to_value(gate)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+pub(crate) fn parse_options(options: &[&str]) -> Result<bool, String> {
+    match options {
+        [] => Ok(false),
+        ["--json"] => Ok(true),
+        _ => Err("Invalid arguments.".to_string()),
+    }
+}
+
+#[cfg(test)]
+#[path = "run_next_tests.rs"]
+mod tests;
