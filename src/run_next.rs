@@ -187,13 +187,38 @@ pub(crate) fn stage_gates(run: &Run) -> Vec<StageGates> {
         .collect()
 }
 
-/// Placeholder text until the stage chunks are embedded.
-fn instructions(mode: Mode, stage: Stage) -> String {
-    format!(
-        "Do the {} stage of {}: follow that stage in the workflow skill.",
-        stage.name(),
-        mode.name()
-    )
+include!(concat!(env!("OUT_DIR"), "/stage_chunks.rs"));
+
+fn instructions(mode: Mode, stage: Stage, routed: bool) -> String {
+    let mode_dir = match mode {
+        Mode::Fast => "fast",
+        Mode::Balanced => "balanced",
+        Mode::Full => "full",
+    };
+    let path = format!("{mode_dir}/{}.md", stage.name());
+    let stage_text = STAGE_CHUNKS
+        .iter()
+        .find(|(name, _)| *name == path)
+        .map(|(_, bytes)| std::str::from_utf8(bytes).expect("stage chunk is UTF-8"))
+        .unwrap_or("No instructions for this stage in this mode.");
+    let mut output = stage_text.to_owned();
+    let shared: &[&str] = match stage {
+        Stage::Define => &["run-reporting", "define-rules", "tracker-setup"],
+        Stage::Build => &["run-reporting", "committing-for-check"],
+        Stage::Check => &["run-reporting", "committing-for-check"],
+        Stage::Finish => &["run-reporting", "finish"],
+    };
+    for name in shared
+        .iter()
+        .copied()
+        .chain(routed.then_some("model-routing"))
+    {
+        let path = format!("jidoka-procedures/chunks/{name}.md");
+        let chunk = crate::install::bundled_skill_text(&path).expect("shared procedure is bundled");
+        output.push_str("\n\n");
+        output.push_str(chunk);
+    }
+    output
 }
 
 pub(crate) fn checks_for(mode: Mode, changed_paths: &[String]) -> Checks {
@@ -274,7 +299,14 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
         stage: run.stage,
         status: run.status,
         rework: run.rework,
-        instructions: instructions(mode, run.stage),
+        instructions: instructions(
+            mode,
+            run.stage,
+            run.model_routing
+                .as_ref()
+                .and_then(|routing| routing.choice_for(run.stage))
+                .is_some(),
+        ),
         gates,
         gate_results: run
             .gates

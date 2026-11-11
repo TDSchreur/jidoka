@@ -96,6 +96,7 @@ fn main() {
     println!("cargo:rerun-if-changed=skills");
     println!("cargo:rerun-if-changed=.agents/skills");
     println!("cargo:rerun-if-changed=third-party");
+    println!("cargo:rerun-if-changed=stages");
     let mut output = Vec::new();
     for name in [
         "jidoka-grill-with-docs",
@@ -143,6 +144,19 @@ fn main() {
         ));
     }
     output.sort();
+    let mut stage_output = Vec::new();
+    files(Path::new("stages"), Path::new("stages"), &mut stage_output);
+    stage_output.sort();
+    let stage_dest = Path::new(&env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"))
+        .join("stage_chunks.rs");
+    fs::write(
+        stage_dest,
+        format!(
+            "pub(crate) static STAGE_CHUNKS: &[(&str, &[u8])] = &[\n{}\n];",
+            stage_output.join("\n")
+        ),
+    )
+    .expect("write stage chunks");
     let dest = Path::new(&env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"))
         .join("bundled_skills.rs");
     fs::write(
