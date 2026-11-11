@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) enum Gate {
     /// Every ticket is `done`.
     TicketsDone,
-    /// The full verification passed on the head commit. Build's exit requires it again after a Rework.
+    /// The full verification passed on the head commit.
     Verified,
     /// Verification passed after each ticket, not only after the last one.
     TicketsVerified,
@@ -120,9 +120,13 @@ fn position(mode: Mode, stage: Stage) -> Result<usize, String> {
 fn exit_gates(mode: Mode, stage: Stage) -> &'static [Gate] {
     match (mode, stage) {
         (_, Stage::Define) => &[],
-        (Mode::Fast | Mode::Balanced, Stage::Build) => &[Gate::TicketsDone, Gate::Verified],
-        (Mode::Full, Stage::Build) => &[Gate::TicketsDone, Gate::TicketsVerified, Gate::Verified],
-        (_, Stage::Check) => &[Gate::ChecksRecorded, Gate::NoActionableFindings],
+        (Mode::Fast, Stage::Build) => &[Gate::TicketsDone, Gate::Verified],
+        (Mode::Balanced | Mode::Full, Stage::Build) => &[Gate::TicketsDone],
+        (_, Stage::Check) => &[
+            Gate::ChecksRecorded,
+            Gate::NoActionableFindings,
+            Gate::Verified,
+        ],
         (_, Stage::Finish) => &[Gate::CiPassed],
     }
 }
@@ -174,8 +178,8 @@ mod tests {
     fn build_gates_differ_by_mode() {
         let gates = |mode| next(mode, Stage::Build, RUNNING).unwrap().gates;
         assert_eq!(gates(Mode::Fast), [Gate::TicketsDone, Gate::Verified]);
-        assert_eq!(gates(Mode::Balanced), [Gate::TicketsDone, Gate::Verified]);
-        assert!(gates(Mode::Full).contains(&Gate::TicketsVerified));
+        assert_eq!(gates(Mode::Balanced), [Gate::TicketsDone]);
+        assert_eq!(gates(Mode::Full), [Gate::TicketsDone]);
     }
 
     #[test]
@@ -185,7 +189,11 @@ mod tests {
             assert_eq!(check.to, Destination::Stage(Stage::Finish));
             assert_eq!(
                 check.gates,
-                [Gate::ChecksRecorded, Gate::NoActionableFindings]
+                [
+                    Gate::ChecksRecorded,
+                    Gate::NoActionableFindings,
+                    Gate::Verified
+                ]
             );
         }
         for mode in [Mode::Fast, Mode::Balanced, Mode::Full] {

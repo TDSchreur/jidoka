@@ -308,6 +308,38 @@ mod tests {
     #[test]
     fn gate_results_and_advance_survive_server_restart() {
         let dir = TestDir::new();
+        let repo = dir.0.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        for args in [
+            vec!["init"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial",
+            ],
+        ] {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", dir.0.path().join("no-config"))
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .args(&args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         let path = dir.0.path().join("runs.json");
         let server = TestServer::start(&path);
         let id = start_run(
@@ -326,10 +358,15 @@ mod tests {
             &id,
             "check",
             "running",
-            &["--mode", "jidoka-balanced"],
+            &[
+                "--mode",
+                "jidoka-balanced",
+                "--worktree",
+                repo.to_str().unwrap(),
+            ],
         )
         .unwrap();
-        for gate in ["checks-recorded", "no-actionable-findings"] {
+        for gate in ["checks-recorded", "no-actionable-findings", "verified"] {
             let body = serde_json::json!({"gate": gate, "passed":true, "evidence":"reviewed"});
             api_post(
                 &server.address,
@@ -350,7 +387,7 @@ mod tests {
         let restarted = TestServer::start(&path);
         let run = fetch_run(&restarted.address, &id).unwrap();
         assert_eq!(run.stage, crate::run::Stage::Finish);
-        assert_eq!(run.gates.len(), 2);
+        assert_eq!(run.gates.len(), 3);
         assert_eq!(run.gates[0].evidence.as_deref(), Some("reviewed"));
     }
 

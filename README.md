@@ -60,7 +60,7 @@ Windows Defender sometimes flags the unsigned Windows build; see [what to do](do
 
    | Mode | Use it for |
    | --- | --- |
-   | `/jidoka-full` | Risky or unclear work: an interview, a spec and tickets, test-first, code and security review. |
+   | `/jidoka-full` | Risky or unclear work: an interview, a spec and tickets, project-directed tests and code review. |
    | `/jidoka-balanced` | Everyday features and fixes: a short plan, tests after the code, one code review. |
    | `/jidoka-fast` | Small, clear changes: no review stage, but still verified and green in CI. |
 
