@@ -1,3 +1,4 @@
+mod checks;
 mod client;
 mod codex_requests;
 mod copilot_requests;
