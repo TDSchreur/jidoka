@@ -7,14 +7,6 @@ use std::collections::BTreeSet;
 
 const UNKNOWN: &str = "unknown (not recorded)";
 
-fn mode_name(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Full => "jidoka-full",
-        Mode::Balanced => "jidoka-balanced",
-        Mode::Fast => "jidoka-fast",
-    }
-}
-
 fn status_name(status: RunStatus) -> &'static str {
     match status {
         RunStatus::Running => "running",
@@ -226,7 +218,7 @@ pub(crate) fn render(run: &Run) -> String {
     if let Some(activity) = &run.activity {
         out.push_str(&field("Activity", Some(activity)));
     }
-    out.push_str(&field("Mode", run.mode.map(mode_name)));
+    out.push_str(&field("Mode", run.mode.map(Mode::name)));
     out.push_str(&field("Repository", run.repository.as_deref()));
     out.push_str(&field("Started in", Some(&run.project)));
     out.push_str(&field("Worktree", run.worktree.as_deref()));

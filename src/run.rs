@@ -181,6 +181,16 @@ pub(crate) enum Mode {
     Fast,
 }
 
+impl Mode {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Full => "jidoka-full",
+            Self::Balanced => "jidoka-balanced",
+            Self::Fast => "jidoka-fast",
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum TicketStatus {

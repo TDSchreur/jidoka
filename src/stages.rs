@@ -10,13 +10,15 @@
 )]
 
 use crate::run::{Mode, RunStatus, Stage};
+use serde::{Deserialize, Serialize};
 
 /// A condition that must hold before a run may leave a Stage.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum Gate {
     /// Every ticket is `done`.
     TicketsDone,
-    /// The full verification passed on the head commit.
+    /// The full verification passed on the head commit. Build's exit requires it again after a Rework.
     Verified,
     /// Verification passed after each ticket, not only after the last one.
     TicketsVerified,
@@ -26,19 +28,6 @@ pub(crate) enum Gate {
     NoActionableFindings,
     /// CI passed on the pull request's head commit, or the project has no CI.
     CiPassed,
-}
-
-impl Gate {
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::TicketsDone => "tickets-done",
-            Self::Verified => "verified",
-            Self::TicketsVerified => "tickets-verified",
-            Self::ChecksRecorded => "checks-recorded",
-            Self::NoActionableFindings => "no-actionable-findings",
-            Self::CiPassed => "ci-passed",
-        }
-    }
 }
 
 /// Where a run goes when it leaves a Stage.
@@ -125,15 +114,7 @@ fn position(mode: Mode, stage: Stage) -> Result<usize, String> {
     stages(mode)
         .iter()
         .position(|candidate| *candidate == stage)
-        .ok_or_else(|| format!("{} has no {} stage", mode_name(mode), stage.name()))
-}
-
-fn mode_name(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Fast => "jidoka-fast",
-        Mode::Balanced => "jidoka-balanced",
-        Mode::Full => "jidoka-full",
-    }
+        .ok_or_else(|| format!("{} has no {} stage", mode.name(), stage.name()))
 }
 
 fn exit_gates(mode: Mode, stage: Stage) -> &'static [Gate] {
