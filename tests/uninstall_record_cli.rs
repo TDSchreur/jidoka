@@ -66,7 +66,8 @@ fn a_corrupt_record_does_not_block_uninstall_with_an_agent() {
         &["uninstall", "--agent", "claude", "--keep-data"],
     );
     assert!(output.status.success(), "{output:?}");
-    assert!(!record.exists());
+    assert!(record.exists());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Cannot read the install record"));
 }
 
 fn install(home: &Path, agents: &str, dir: &Path) {
