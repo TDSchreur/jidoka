@@ -1,0 +1,1 @@
+Define: keep the user interview with the coordinator. For Fast or a small, clear request planned in the conversation without a spec or tickets, keep Define on the coordinator; otherwise route spec writing, ticket writing and fact-finding.

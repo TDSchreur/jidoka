@@ -784,7 +784,7 @@ mod tests {
     fn bundled_skills_carry_the_skill_check() {
         for (path, wording) in [
             (
-                "jidoka-procedures/chunks/committing-for-check.md",
+                "jidoka-procedures/chunks/skill-change.md",
                 &["Skill check:", "wording only"][..],
             ),
             (

@@ -4,7 +4,7 @@ use crate::{
     checks,
     inspect::shown,
     pr_sync::Git,
-    routing::ModelChoice,
+    routing::{ModelChoice, RoutingAgent},
     run::{Mode, Run, RunStatus, Stage, Ticket, TicketStatus},
     stages::{self, Destination, Gate},
 };
@@ -189,7 +189,7 @@ pub(crate) fn stage_gates(run: &Run) -> Vec<StageGates> {
 
 include!(concat!(env!("OUT_DIR"), "/stage_chunks.rs"));
 
-fn instructions(mode: Mode, stage: Stage, routed: bool) -> String {
+fn instructions(mode: Mode, stage: Stage, routing: Option<RoutingAgent>) -> String {
     let mode_dir = match mode {
         Mode::Fast => "fast",
         Mode::Balanced => "balanced",
@@ -203,15 +203,28 @@ fn instructions(mode: Mode, stage: Stage, routed: bool) -> String {
         .unwrap_or("No instructions for this stage in this mode.");
     let mut output = stage_text.to_owned();
     let shared: &[&str] = match stage {
-        Stage::Define => &["run-reporting", "define-rules", "tracker-setup"],
-        Stage::Build => &["run-reporting", "committing-for-check"],
-        Stage::Check => &["run-reporting", "committing-for-check"],
-        Stage::Finish => &["run-reporting", "finish"],
+        Stage::Define => &["stage-reporting", "define-rules", "tracker-setup"],
+        Stage::Build => &["stage-reporting", "verification", "skill-change"],
+        Stage::Check => &["stage-reporting", "verification", "committing-for-check"],
+        Stage::Finish => &["stage-reporting", "finish"],
     };
+    let routed = routing.map(|agent| match agent {
+        RoutingAgent::Claude => "routing-claude",
+        RoutingAgent::Codex => "routing-codex",
+        RoutingAgent::Copilot => "routing-copilot",
+    });
+    let stage_routing = routing.map(|_| match stage {
+        Stage::Define => "routing-define",
+        Stage::Build => "routing-build",
+        Stage::Check => "routing-check",
+        Stage::Finish => "routing-finish",
+    });
     for name in shared
         .iter()
         .copied()
-        .chain(routed.then_some("model-routing"))
+        .chain(routing.map(|_| "stage-routing"))
+        .chain(routed)
+        .chain(stage_routing)
     {
         let path = format!("jidoka-procedures/chunks/{name}.md");
         let chunk = crate::install::bundled_skill_text(&path).expect("shared procedure is bundled");
@@ -304,8 +317,8 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
             run.stage,
             run.model_routing
                 .as_ref()
-                .and_then(|routing| routing.choice_for(run.stage))
-                .is_some(),
+                .filter(|routing| routing.choice_for(run.stage).is_some())
+                .map(|routing| routing.agent),
         ),
         gates,
         gate_results: run

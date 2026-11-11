@@ -121,7 +121,8 @@ fn exit_gates(mode: Mode, stage: Stage) -> &'static [Gate] {
     match (mode, stage) {
         (_, Stage::Define) => &[],
         (Mode::Fast, Stage::Build) => &[Gate::TicketsDone, Gate::Verified],
-        (Mode::Balanced | Mode::Full, Stage::Build) => &[Gate::TicketsDone],
+        (Mode::Balanced, Stage::Build) => &[Gate::TicketsDone],
+        (Mode::Full, Stage::Build) => &[Gate::TicketsDone, Gate::TicketsVerified],
         (_, Stage::Check) => &[
             Gate::ChecksRecorded,
             Gate::NoActionableFindings,
@@ -179,7 +180,10 @@ mod tests {
         let gates = |mode| next(mode, Stage::Build, RUNNING).unwrap().gates;
         assert_eq!(gates(Mode::Fast), [Gate::TicketsDone, Gate::Verified]);
         assert_eq!(gates(Mode::Balanced), [Gate::TicketsDone]);
-        assert_eq!(gates(Mode::Full), [Gate::TicketsDone]);
+        assert_eq!(
+            gates(Mode::Full),
+            [Gate::TicketsDone, Gate::TicketsVerified]
+        );
     }
 
     #[test]
