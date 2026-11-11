@@ -224,16 +224,16 @@ fn each_command_lands_in_the_category_the_rules_give_it() {
         ("jidoka run check 123 --json", Category::ContinuationCheck),
         ("git worktree list --porcelain", Category::ContinuationCheck),
         (
-            "jidoka run update 1 build running --activity x",
+            "jidoka run update 1 running --activity x",
             Category::StandaloneReporting,
         ),
         (
-            "cd /repo && jidoka run update 1 build running",
+            "cd /repo && jidoka run update 1 running",
             Category::StandaloneReporting,
         ),
         ("ls -la", Category::ReadingEditingAnalysis),
         (
-            "jidoka run update 1 build running && ls",
+            "jidoka run update 1 running && ls",
             Category::ReadingEditingAnalysis,
         ),
     ] {

@@ -559,7 +559,7 @@ pub(crate) fn wait(
 ) -> Result<Waited, ToolProblem> {
     let pull_request = pull_request.ok_or_else(|| {
         ToolProblem(
-            "The run has no pull request recorded. Open it, record it with `jidoka run update <id> finish running --pr <url>`, and try again."
+            "The run has no pull request recorded. Open it, record it with `jidoka run update <id> running --pr <url>`, and try again."
                 .into(),
         )
     })?;

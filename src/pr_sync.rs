@@ -446,7 +446,7 @@ pub(crate) fn sync(
 fn record(run: &PrRun, api: &dyn RunApi, activity: &str) {
     if run.running() {
         // The outcome stands even if the dashboard cannot be reached.
-        let _ = api.update(&run.id, &run.stage, &run.status, &["--activity", activity]);
+        let _ = api.update(&run.id, &run.status, &["--activity", activity]);
     }
 }
 

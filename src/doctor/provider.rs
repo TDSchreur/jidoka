@@ -29,7 +29,7 @@ pub(super) fn checks(project: &Path, machine: &Machine) -> Vec<Check> {
                     "the pull request host is not supported as configured: {}",
                     problem.0
                 ),
-                "Fix origin or Jidoka.prProvider git config, or open pull requests with the host's own tooling and record them with `jidoka run update <id> <stage> <status> --pr <url>`.",
+                "Fix origin or Jidoka.prProvider git config, or open pull requests with the host's own tooling and record them with `jidoka run update <id> <status> --pr <url>`.",
             )];
         }
     };
@@ -52,7 +52,7 @@ pub(super) fn checks(project: &Path, machine: &Machine) -> Vec<Check> {
             return vec![Check::warning(
                 "host",
                 "origin is not on a host Jidoka opens pull requests on (GitHub or Azure Repos)",
-                "Open pull requests and watch CI with the host's own tooling, and record the pull request with `jidoka run update <id> <stage> <status> --pr <url>`. For GitHub Enterprise, run `git config jidoka.prProvider github`.",
+                "Open pull requests and watch CI with the host's own tooling, and record the pull request with `jidoka run update <id> <status> --pr <url>`. For GitHub Enterprise, run `git config jidoka.prProvider github`.",
             )];
         }
     };

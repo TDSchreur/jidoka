@@ -510,7 +510,7 @@ fn update_run(
     update: Json<UpdateRun>,
     store: &State<RunStore>,
     collector: &State<Collector>,
-) -> Result<Json<serde_json::Value>, (HttpStatus, String)> {
+) -> Result<Json<Run>, (HttpStatus, String)> {
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err((HttpStatus::BadRequest, "Invalid run id".into()));
     }
@@ -528,17 +528,8 @@ fn update_run(
             }
         })?
         .ok_or((HttpStatus::NotFound, "Not found".into()))?;
-    collector.after_update(store, &updated.run.id);
-    // The run's own fields stay as they were; `warnings` is added beside them (empty when none).
-    let mut body = serde_json::to_value(&updated.run).map_err(|error| {
-        eprintln!("Run serialization error: {error}");
-        (
-            HttpStatus::InternalServerError,
-            "Internal server error".into(),
-        )
-    })?;
-    body["warnings"] = updated.warnings.into();
-    Ok(Json(body))
+    collector.after_update(store, &updated.id);
+    Ok(Json(updated))
 }
 
 #[rocket::post("/api/runs/<id>/gate", data = "<record>")]
@@ -556,16 +547,24 @@ fn record_gate(
     Ok("Gate recorded")
 }
 
-#[rocket::post("/api/runs/<id>/advance")]
+#[rocket::post("/api/runs/<id>/advance", data = "<request>")]
 fn advance_run(
     _access: PostAccess,
     id: &str,
+    request: Json<crate::run_gate::AdvanceRequest>,
     store: &State<RunStore>,
     collector: &State<Collector>,
 ) -> Result<&'static str, (HttpStatus, String)> {
+    let request = request.into_inner();
+    let forced = request
+        .forced_reason()
+        .map_err(|error| (HttpStatus::BadRequest, error))?;
     store
-        .change_gate(id, |run| {
-            crate::run_gate::advance(run, &crate::pr_sync::RealGit, &crate::pr_wait::RealGh)
+        .change_gate(id, |run| match forced {
+            Some(reason) => crate::run_gate::advance_forced(run, reason),
+            None => {
+                crate::run_gate::advance(run, &crate::pr_sync::RealGit, &crate::pr_wait::RealGh)
+            }
         })
         .map_err(|error| (HttpStatus::BadRequest, error))?;
     collector.after_update(store, id);

@@ -8,35 +8,72 @@ fn finish_done_needs_a_finish_summary() {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     let run = new_run(&store, "task");
-    let before = store.get(&run.id).unwrap().unwrap();
     let error = store
-        .update(&run.id, parse_update("finish", "done", &[]).unwrap())
+        .update(&run.id, parse_update("done", &[]).unwrap())
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("only after Finish"));
+
+    store.set_stage(&run.id, Stage::Finish);
+    let error = store
+        .update(&run.id, parse_update("done", &[]).unwrap())
+        .unwrap_err();
     assert!(error.to_string().contains("--summary finish="));
     let after = store.get(&run.id).unwrap().unwrap();
-    assert_eq!(after.stage, before.stage);
-    assert_eq!(after.status, before.status);
     assert!(after.finished_at.is_none() && after.summaries.is_empty());
 
-    // Other stages are not affected; a summary in the same update is enough.
-    store
-        .update(&run.id, parse_update("check", "done", &[]).unwrap())
-        .unwrap();
     let done = store
-        .update(
-            &run.id,
-            parse_update("finish", "done", &FINISH_SUMMARY).unwrap(),
-        )
+        .update(&run.id, parse_update("done", &FINISH_SUMMARY).unwrap())
         .unwrap()
-        .unwrap()
-        .run;
+        .unwrap();
     assert!(matches!(done.status, RunStatus::Done));
     // A summary recorded earlier counts.
     let again = store
-        .update(&run.id, parse_update("finish", "done", &[]).unwrap())
+        .update(&run.id, parse_update("done", &[]).unwrap())
         .unwrap();
     assert!(again.is_some());
+}
+
+#[test]
+fn update_never_changes_the_stage_and_rejects_a_stage_field() {
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    let run = new_run(&store, "task");
+    let updated = store
+        .update(
+            &run.id,
+            parse_update("running", &["--activity", "x"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.stage, Stage::Define);
+    let rejected: Result<UpdateRun, _> =
+        serde_json::from_str(r#"{"stage":"build","status":"running"}"#);
+    assert!(rejected.is_err());
+}
+
+#[test]
+fn rework_moves_check_to_build_and_is_refused_elsewhere() {
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    let run = new_run(&store, "task");
+    let rework = || parse_update("running", &["--rework", "1"]).unwrap();
+    store.set_stage(&run.id, Stage::Check);
+    let error = store.update(&run.id, rework()).unwrap_err();
+    assert!(error.to_string().contains("mode"));
+
+    store
+        .update(
+            &run.id,
+            parse_update("running", &["--mode", "jidoka-balanced"]).unwrap(),
+        )
+        .unwrap();
+    let moved = store.update(&run.id, rework()).unwrap().unwrap();
+    assert_eq!((moved.stage, moved.rework), (Stage::Build, Some(1)));
+
+    // Outside Check the count is only recorded.
+    let again = store.update(&run.id, rework()).unwrap().unwrap();
+    assert_eq!(again.stage, Stage::Build);
 }
 
 #[test]
@@ -54,34 +91,33 @@ fn failed_updates_leave_the_store_unchanged() {
         })
         .unwrap();
     let apply = |stage, status, args: &[&str]| {
+        store.set_stage(&run.id, stage);
         store
-            .update(&run.id, parse_update(stage, status, args).unwrap())
+            .update(&run.id, parse_update(status, args).unwrap())
             .unwrap()
             .unwrap()
     };
     let session = ["--session", "11111111-aaaa"];
-    apply("define", "running", &["--activity", "working"]);
-    apply("build", "running", &[]);
-    apply("build", "running", &session);
-    apply("build", "running", &session);
-    apply("build", "done", &[]);
-    apply("build", "done", &[]);
-    apply("finish", "done", &FINISH_SUMMARY);
-    apply("finish", "done", &FINISH_SUMMARY);
+    apply(Stage::Define, "running", &["--activity", "working"]);
+    apply(Stage::Build, "running", &[]);
+    apply(Stage::Build, "running", &session);
+    apply(Stage::Build, "running", &session);
+    apply(Stage::Finish, "done", &FINISH_SUMMARY);
+    apply(Stage::Finish, "done", &FINISH_SUMMARY);
     assert!(
         store
-            .update("999999", UpdateRun::new(Stage::Build, RunStatus::Running))
+            .update("999999", UpdateRun::new(RunStatus::Running))
             .unwrap()
             .is_none()
     );
     let before = std::fs::read(&path).unwrap();
-    let mut invalid = UpdateRun::new(Stage::Check, RunStatus::Running);
+    let mut invalid = UpdateRun::new(RunStatus::Running);
     invalid.branch = FieldUpdate::Set("invalid branch".into());
     assert!(store.update(&run.id, invalid).is_err());
     std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
     assert!(
         store
-            .update(&run.id, UpdateRun::new(Stage::Check, RunStatus::Running))
+            .update(&run.id, UpdateRun::new(RunStatus::Running))
             .is_err()
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
@@ -122,13 +158,12 @@ fn concurrent_creates_keep_all_records_and_unique_ids() {
 
 #[test]
 fn cli_update_options_preserve_set_clear_and_reject_conflicts() {
-    let update = parse_update("build", "running", &[]).unwrap();
+    let update = parse_update("running", &[]).unwrap();
     assert_eq!(
         serde_json::to_value(update).unwrap(),
-        serde_json::json!({"stage":"build","status":"running"})
+        serde_json::json!({"status":"running"})
     );
     let update = parse_update(
-        "build",
         "blocked",
         &[
             "--activity",
@@ -145,7 +180,6 @@ fn cli_update_options_preserve_set_clear_and_reject_conflicts() {
     assert_eq!(value["current_ticket"], "https://example.com/42");
     assert_eq!(value["blocking_reason"], "Need input");
     let update = parse_update(
-        "finish",
         "done",
         &[
             "--clear-activity",
@@ -168,19 +202,18 @@ fn cli_update_options_preserve_set_clear_and_reject_conflicts() {
         vec!["--blocking-reason", ""],
     ] {
         assert!(
-            parse_update("build", "running", &options).is_err(),
+            parse_update("running", &options).is_err(),
             "options: {options:?}"
         );
     }
-    assert!(parse_update("unknown", "running", &[]).is_err());
-    assert!(parse_update("build", "unknown", &[]).is_err());
+    assert!(parse_update("unknown", &[]).is_err());
 }
 
 #[test]
 fn cli_rework_option_sets_clears_and_rejects_invalid_counts() {
-    let update = parse_update("build", "running", &["--rework", "2"]).unwrap();
+    let update = parse_update("running", &["--rework", "2"]).unwrap();
     assert_eq!(serde_json::to_value(update).unwrap()["rework"], 2);
-    let update = parse_update("check", "running", &["--clear-rework"]).unwrap();
+    let update = parse_update("running", &["--clear-rework"]).unwrap();
     assert_eq!(
         serde_json::to_value(update).unwrap().get("rework"),
         Some(&serde_json::Value::Null)
@@ -196,13 +229,13 @@ fn cli_rework_option_sets_clears_and_rejects_invalid_counts() {
         vec!["--rework", "1", "--rework", "2"],
     ] {
         assert!(
-            parse_update("build", "running", &options).is_err(),
+            parse_update("running", &options).is_err(),
             "options: {options:?}"
         );
     }
     let range = format!("1 to {MAX_REWORK}");
     for count in ["0", "100", "two"] {
-        let Err(error) = parse_update("build", "running", &["--rework", count]) else {
+        let Err(error) = parse_update("running", &["--rework", count]) else {
             panic!("--rework {count} should be rejected");
         };
         assert!(error.to_string().contains(&range), "{error}");
@@ -338,8 +371,7 @@ fn a_model_routing_selection_recorded_at_start_survives_updates_and_a_restart() 
     let run = store
         .update(&run.id, update(&["--activity", "later"]))
         .unwrap()
-        .unwrap()
-        .run;
+        .unwrap();
     assert_eq!(run.model_routing, Some(selection()));
     let reopened = RunStore::open(&path).unwrap();
     let run = reopened.get(&run.id).unwrap().unwrap();
@@ -347,58 +379,7 @@ fn a_model_routing_selection_recorded_at_start_survives_updates_and_a_restart() 
 }
 
 fn update(options: &[&str]) -> UpdateRun {
-    parse_update("build", "running", options).unwrap()
-}
-
-fn warnings_for(
-    store: &RunStore,
-    id: &str,
-    stage: &str,
-    status: &str,
-    options: &[&str],
-) -> Vec<String> {
-    store
-        .update(id, parse_update(stage, status, options).unwrap())
-        .unwrap()
-        .unwrap()
-        .warnings
-}
-
-#[test]
-fn done_on_a_never_entered_stage_warns_but_the_normal_flow_does_not() {
-    let dir = TestDir::new();
-    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-    let run = new_run(&store, "task");
-    assert!(warnings_for(&store, &run.id, "build", "running", &[]).is_empty());
-    assert!(warnings_for(&store, &run.id, "build", "done", &[]).is_empty());
-    let warnings = warnings_for(&store, &run.id, "finish", "done", &FINISH_SUMMARY);
-    assert_eq!(warnings.len(), 1);
-    assert!(warnings[0].contains("finish") && warnings[0].contains("never entered"));
-    assert_eq!(store.get(&run.id).unwrap().unwrap().stage, Stage::Finish);
-}
-
-#[test]
-fn a_full_run_without_a_spec_warns_when_build_is_done_or_check_starts() {
-    let dir = TestDir::new();
-    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-    let run = new_run(&store, "task");
-    let id = &run.id;
-    warnings_for(&store, id, "build", "running", &["--mode", "jidoka-full"]);
-    let done = warnings_for(&store, id, "build", "done", &[]);
-    assert_eq!(done.len(), 1);
-    assert!(done[0].contains("no spec"));
-    assert!(!done[0].contains("before Build"), "{}", done[0]);
-    let check = warnings_for(&store, id, "check", "running", &[]);
-    assert_eq!(check.len(), 1);
-    assert!(warnings_for(&store, id, "check", "running", &[]).is_empty());
-    warnings_for(
-        &store,
-        id,
-        "build",
-        "running",
-        &["--spec", "https://example.com/1"],
-    );
-    assert!(warnings_for(&store, id, "build", "done", &[]).is_empty());
+    parse_update("running", options).unwrap()
 }
 
 #[test]
@@ -430,8 +411,7 @@ fn context_is_set_kept_and_cleared_one_field_at_a_time() {
             ]),
         )
         .unwrap()
-        .unwrap()
-        .run;
+        .unwrap();
     assert_eq!(run.mode, Some(Mode::Fast));
     assert_eq!(run.branch.as_deref(), Some("feature/x"));
     assert_eq!(
@@ -445,8 +425,7 @@ fn context_is_set_kept_and_cleared_one_field_at_a_time() {
     let kept = store
         .update(&run.id, update(&["--activity", "Working"]))
         .unwrap()
-        .unwrap()
-        .run;
+        .unwrap();
     assert_eq!(kept.worktree, run.worktree);
     assert_eq!(kept.spec, run.spec);
     assert_eq!(kept.pr, run.pr);
@@ -459,8 +438,7 @@ fn context_is_set_kept_and_cleared_one_field_at_a_time() {
             update(&["--clear-pr", "--clear-mode", "--clear-summary", "define"]),
         )
         .unwrap()
-        .unwrap()
-        .run;
+        .unwrap();
     assert!(cleared.pr.is_none() && cleared.mode.is_none() && cleared.summaries.is_empty());
     assert_eq!(cleared.branch.as_deref(), Some("feature/x"));
     assert_eq!(cleared.spec, run.spec);
@@ -477,23 +455,16 @@ fn stage_summaries_survive_later_stages() {
     store
         .update(
             &run.id,
-            parse_update(
-                "check",
-                "running",
-                &["--summary", "build=Built three tickets"],
-            )
-            .unwrap(),
+            parse_update("running", &["--summary", "build=Built three tickets"]).unwrap(),
         )
         .unwrap();
     let run = store
         .update(
             &run.id,
-            parse_update("finish", "running", &["--summary", "define=Planned again"]).unwrap(),
+            parse_update("running", &["--summary", "define=Planned again"]).unwrap(),
         )
         .unwrap()
-        .unwrap()
-        .run;
-    assert!(matches!(run.stage, Stage::Finish));
+        .unwrap();
     assert_eq!(run.summaries[&Stage::Define], "Planned again");
     assert_eq!(run.summaries[&Stage::Build], "Built three tickets");
 }
@@ -516,8 +487,7 @@ fn the_ticket_list_is_ordered_and_keeps_progress_when_relisted() {
             ]),
         )
         .unwrap()
-        .unwrap()
-        .run;
+        .unwrap();
     let view = |run: &Run| {
         run.tickets
             .iter()
@@ -545,8 +515,7 @@ fn the_ticket_list_is_ordered_and_keeps_progress_when_relisted() {
             ]),
         )
         .unwrap()
-        .unwrap()
-        .run;
+        .unwrap();
     assert_eq!(
         view(&run),
         [
@@ -566,15 +535,13 @@ fn the_ticket_list_is_ordered_and_keeps_progress_when_relisted() {
             ]),
         )
         .unwrap()
-        .unwrap()
-        .run;
+        .unwrap();
     assert_eq!(run.tickets[0].status, TicketStatus::InProgress);
     assert_eq!(run.tickets[1].status, TicketStatus::Done);
     let run = store
         .update(&run.id, update(&["--clear-tickets"]))
         .unwrap()
-        .unwrap()
-        .run;
+        .unwrap();
     assert!(run.tickets.is_empty());
 }
 
@@ -623,28 +590,28 @@ fn a_mark_records_the_activity_of_the_update_that_created_it() {
     let path = dir.0.path().join("runs.json");
     let store = RunStore::open(&path).unwrap();
     let run = new_run(&store, "task");
-    let after = |options: &[&str], stage: &str| {
+    let after = |options: &[&str], stage: Stage| {
+        store.set_stage(&run.id, stage);
         store
-            .update(&run.id, parse_update(stage, "running", options).unwrap())
+            .update(&run.id, parse_update("running", options).unwrap())
             .unwrap()
             .unwrap()
-            .run
     };
     assert_eq!(run.timeline[0].activity, None);
-    let building = after(&["--activity", "Writing the code"], "build");
+    let building = after(&["--activity", "Writing the code"], Stage::Build);
     assert_eq!(
         building.timeline[1].activity.as_deref(),
         Some("Writing the code")
     );
     // An update that adds no mark leaves the pass's activity alone.
-    let same = after(&["--activity", "Still going"], "build");
+    let same = after(&["--activity", "Still going"], Stage::Build);
     assert_eq!(same.timeline.len(), 2);
     assert_eq!(
         same.timeline[1].activity.as_deref(),
         Some("Writing the code")
     );
     // A mark made by an update without an activity does not borrow the previous one.
-    let checking = after(&[], "check");
+    let checking = after(&[], Stage::Check);
     assert_eq!(checking.timeline[2].activity, None);
 
     // The activity survives a reload from disk, and shows in the serialised run.
@@ -667,38 +634,28 @@ fn finishing_a_run_closes_its_window_and_reopening_clears_it() {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     let run = new_run(&store, "task");
+    store.set_stage(&run.id, Stage::Finish);
     let done = store
-        .update(
-            &run.id,
-            parse_update("finish", "done", &FINISH_SUMMARY).unwrap(),
-        )
+        .update(&run.id, parse_update("done", &FINISH_SUMMARY).unwrap())
         .unwrap()
-        .unwrap()
-        .run;
+        .unwrap();
     let end = done.finished_at.expect("closed when done");
     let again = store
         .update(
             &run.id,
-            parse_update(
-                "finish",
-                "done",
-                &["--summary", "finish=Shipped", "--activity", "x"],
-            )
-            .unwrap(),
+            parse_update("done", &["--summary", "finish=Shipped", "--activity", "x"]).unwrap(),
         )
         .unwrap()
-        .unwrap()
-        .run;
+        .unwrap();
     assert_eq!(
         again.finished_at,
         Some(end),
         "a second done update keeps the first end"
     );
     let reopened = store
-        .update(&run.id, parse_update("build", "running", &[]).unwrap())
+        .update(&run.id, parse_update("running", &[]).unwrap())
         .unwrap()
-        .unwrap()
-        .run;
+        .unwrap();
     assert_eq!(reopened.finished_at, None);
 }
 
@@ -713,14 +670,10 @@ fn ticket_reports_reject_bad_values_and_unknown_tickets_without_saving() {
         vec!["--ticket-report", "t1", "skill", ""],
         vec!["--ticket-report", "t1", "activity", "bad\ntext"],
     ] {
-        assert!(parse_update("build", "running", &args).is_err(), "{args:?}");
+        assert!(parse_update("running", &args).is_err(), "{args:?}");
     }
-    let update = parse_update(
-        "build",
-        "running",
-        &["--ticket-report", "t1", "skill", "jidoka-tdd"],
-    )
-    .unwrap();
+    let update =
+        parse_update("running", &["--ticket-report", "t1", "skill", "jidoka-tdd"]).unwrap();
     assert!(store.update(&created.id, update).is_err());
     assert!(
         store
@@ -750,7 +703,6 @@ fn sessions_are_recorded_once_validated_and_kept_across_updates() {
         .update(
             &created.id,
             parse_update(
-                "build",
                 "running",
                 &[
                     "--session",
@@ -764,14 +716,12 @@ fn sessions_are_recorded_once_validated_and_kept_across_updates() {
             .unwrap(),
         )
         .unwrap()
-        .unwrap()
-        .run;
+        .unwrap();
     assert_eq!(run.sessions, ["11111111-aaaa", "22222222-bbbb"]);
     let kept = store
         .update(&created.id, update(&["--activity", "x"]))
         .unwrap()
-        .unwrap()
-        .run;
+        .unwrap();
     assert_eq!(kept.sessions, run.sessions);
     for bad in [
         "short",
@@ -781,7 +731,7 @@ fn sessions_are_recorded_once_validated_and_kept_across_updates() {
         "",
     ] {
         assert!(
-            parse_update("build", "running", &["--session", bad]).is_err(),
+            parse_update("running", &["--session", bad]).is_err(),
             "{bad}"
         );
     }
@@ -848,15 +798,15 @@ fn event_store() -> (TestDir, RunStore, String) {
 fn blocking_and_resuming_record_events_without_touching_the_timeline() {
     let (_dir, store, id) = event_store();
     let apply = |stage, status, args: &[&str]| {
+        store.set_stage(&id, stage);
         store
-            .update(&id, parse_update(stage, status, args).unwrap())
+            .update(&id, parse_update(status, args).unwrap())
             .unwrap()
             .unwrap()
-            .run
     };
-    let running = apply("build", "running", &[]);
+    let running = apply(Stage::Build, "running", &[]);
     assert!(running.events.is_empty());
-    let blocked = apply("build", "blocked", &["--blocking-reason", "Need keys"]);
+    let blocked = apply(Stage::Build, "blocked", &["--blocking-reason", "Need keys"]);
     assert_eq!(blocked.events.len(), 1);
     assert_eq!(blocked.events[0].kind, RunEventKind::Blocked);
     assert_eq!(blocked.events[0].stage, Stage::Build);
@@ -864,12 +814,12 @@ fn blocking_and_resuming_record_events_without_touching_the_timeline() {
     assert_eq!(blocked.events[0].at, blocked.updated_at.unwrap());
     // Blocked again, even with a new reason, adds nothing.
     let again = apply(
-        "build",
+        Stage::Build,
         "blocked",
         &["--blocking-reason", "Still need keys"],
     );
     assert_eq!(again.events.len(), 1);
-    let resumed = apply("check", "running", &["--clear-blocking-reason"]);
+    let resumed = apply(Stage::Check, "running", &["--clear-blocking-reason"]);
     assert_eq!(resumed.events.len(), 2);
     assert_eq!(resumed.events[1].kind, RunEventKind::Resumed);
     assert_eq!(resumed.events[1].stage, Stage::Check);
@@ -890,10 +840,7 @@ fn gate_change_preserves_concurrent_pr_refresh_and_rejects_run_updates() {
     let run = new_run(&store, "task");
     let url = "https://github.com/owner/repo/pull/1";
     store
-        .update(
-            &run.id,
-            parse_update("define", "running", &["--pr", url]).unwrap(),
-        )
+        .update(&run.id, parse_update("running", &["--pr", url]).unwrap())
         .unwrap();
     store
         .change_gate(&run.id, |next| {
@@ -920,7 +867,7 @@ fn gate_change_preserves_concurrent_pr_refresh_and_rejects_run_updates() {
             store
                 .update(
                     &run.id,
-                    parse_update("build", "blocked", &["--blocking-reason", "waiting"]).unwrap(),
+                    parse_update("blocked", &["--blocking-reason", "waiting"]).unwrap(),
                 )
                 .unwrap();
             next.stage = Stage::Check;
@@ -942,7 +889,6 @@ fn current_ticket_accepts_local_references() {
         .update(
             &run.id,
             parse_update(
-                "build",
                 "running",
                 &[
                     "--ticket",
@@ -955,8 +901,5 @@ fn current_ticket_accepts_local_references() {
         )
         .unwrap()
         .unwrap();
-    assert_eq!(
-        updated.run.current_ticket.as_deref(),
-        Some("/tmp/ticket.md")
-    );
+    assert_eq!(updated.current_ticket.as_deref(), Some("/tmp/ticket.md"));
 }

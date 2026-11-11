@@ -38,7 +38,7 @@ use run::UPDATE_HELP;
 use server::{ADDRESS, DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...   (asks which agents when none are given on a terminal; else JIDOKA_AGENT, JIDOKA_CLAUDE_CONFIG_DIRS)\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run next <id> [--json]   (current stage, instructions, open gates, allowed moves, summaries, tickets and routed model)\n  jidoka run gate <id> <gate> <pass|fail> [--evidence <text>]\n  jidoka run advance <id>\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  jidoka --help | --version\n\nSetup:\n  `jidoka install` writes an install record (agents and Claude config dirs) next to the model routing policy. A command run before Setup prints a hint to run `jidoka install`; after an upgrade, the first command refreshes the installed skills automatically.";
+const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...   (asks which agents when none are given on a terminal; else JIDOKA_AGENT, JIDOKA_CLAUDE_CONFIG_DIRS)\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run next <id> [--json]   (current stage, instructions, open gates, allowed moves, summaries, tickets and routed model)\n  jidoka run gate <id> <gate> <pass|fail> [--evidence <text>]\n  jidoka run advance <id> [--force --reason <text>]   (--force skips the gates, still follows the stage graph and records the reason)\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <running|blocked|done> [options]   (never changes the stage; --rework <n> from Check returns to Build)\n  jidoka --help | --version\n\nSetup:\n  `jidoka install` writes an install record (agents and Claude config dirs) next to the model routing policy. A command run before Setup prints a hint to run `jidoka install`; after an upgrade, the first command refreshes the installed skills automatically.";
 
 /// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
 const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
@@ -188,15 +188,28 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             )?;
             println!("Gate recorded for run {id}");
         }
-        ["run", "advance", id] if !id.starts_with('-') => {
+        ["run", "advance", id, options @ ..] if !id.starts_with('-') => {
             if !id.bytes().all(|b| b.is_ascii_digit()) {
                 return Err("Invalid run id".into());
             }
+            let request = match options {
+                [] => run_gate::AdvanceRequest::default(),
+                ["--force", "--reason", text] => run_gate::AdvanceRequest {
+                    force: true,
+                    reason: Some((*text).to_string()),
+                },
+                _ => {
+                    return Err(
+                        format!("Use --force --reason <text>, or no options.\n{HELP}").into(),
+                    );
+                }
+            };
+            request.forced_reason()?;
             client::api_post(
                 &cli_address(),
                 &cli_token_file()?,
                 &format!("/api/runs/{id}/advance"),
-                b"{}",
+                &serde_json::to_vec(&request)?,
             )?;
             println!("Advanced run {id}");
         }
@@ -263,21 +276,14 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 print!("{}", requests::render_run(&result));
             }
         }
-        ["run", "update", id, stage, status, options @ ..] => {
+        ["run", "update", id, status, options @ ..] => {
             // The agent's own session is recorded with every update, so its token usage can be attributed.
             let sessions = current_sessions();
             let mut options = options.to_vec();
             for session in &sessions {
                 options.extend(["--session", session]);
             }
-            report_run(
-                &cli_address(),
-                &cli_token_file()?,
-                id,
-                stage,
-                status,
-                &options,
-            )?;
+            report_run(&cli_address(), &cli_token_file()?, id, status, &options)?;
             println!("Updated run {id}");
         }
         ["pr", "wait", id, options @ ..] if !id.starts_with('-') => {
@@ -295,8 +301,8 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
 }
 
 impl pr_open::RunApi for ServerApi {
-    fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
-        report_to_dashboard(id, stage, status, options)
+    fn update(&self, id: &str, status: &str, options: &[&str]) -> Result<(), String> {
+        report_to_dashboard(id, status, options)
     }
 }
 
@@ -360,7 +366,7 @@ fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Erro
     }
     let run = fetch_run(ADDRESS, id)?;
     let Some(url) = run.pr.as_deref() else {
-        return Err("The run has no pull request recorded. Record it with `jidoka run update <id> finish running --pr <url>`.".into());
+        return Err("The run has no pull request recorded. Record it with `jidoka run update <id> running --pr <url>`.".into());
     };
     let state =
         pr_state::read(&pr_wait::RealGh, url).map_err(|problem| inspect::shown(&problem.0))?;
@@ -414,16 +420,14 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
         .map_err(|problem| inspect::shown(&problem.0))?;
     print!("{}", run_cleanup::render(&recorded, cleaned));
     if cleaned.needs_update() {
-        let text = |value: serde_json::Value, fallback: &str| {
-            value.as_str().unwrap_or(fallback).to_string()
-        };
-        let stage = text(serde_json::to_value(run.stage)?, "finish");
-        let status = text(serde_json::to_value(run.status)?, "running");
+        let status = serde_json::to_value(run.status)?
+            .as_str()
+            .unwrap_or("running")
+            .to_string();
         report_run(
             ADDRESS,
             &cli_token_file()?,
             id,
-            &stage,
             &status,
             &[
                 "--clear-worktree",
@@ -476,16 +480,12 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     if !run.pr.as_deref().is_some_and(pr_wait::is_azure_pr_url) {
         pr_wait::check_gh(&gh).map_err(|problem| problem.0)?;
     }
-    // The run's activity follows the wait, keeping its stage and status. Only a running run is updated.
-    let stage = serde_json::to_value(run.stage)?
-        .as_str()
-        .unwrap_or("finish")
-        .to_string();
+    // The run's activity follows the wait, keeping its status. Only a running run is updated.
     let running = matches!(run.status, run::RunStatus::Running);
     let mut reported_failure = false;
     let mut activity = |text: &str| {
         if running
-            && let Err(error) = report_to_dashboard(id, &stage, "running", &["--activity", text])
+            && let Err(error) = report_to_dashboard(id, "running", &["--activity", text])
             && !reported_failure
         {
             reported_failure = true;
@@ -568,8 +568,8 @@ impl run_begin::RunApi for ServerApi {
         })
     }
 
-    fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
-        report_to_dashboard(id, stage, status, options)
+    fn update(&self, id: &str, status: &str, options: &[&str]) -> Result<(), String> {
+        report_to_dashboard(id, status, options)
     }
 
     fn runs_with_session(&self, session: &str) -> Result<Vec<(String, String)>, String> {
@@ -752,14 +752,9 @@ fn dashboard(port: u16, usage: bool) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Reports a run update to the default dashboard, with the CLI token it wrote.
-fn report_to_dashboard(
-    id: &str,
-    stage: &str,
-    status: &str,
-    options: &[&str],
-) -> Result<(), String> {
+fn report_to_dashboard(id: &str, status: &str, options: &[&str]) -> Result<(), String> {
     let token_file = cli_token_file().map_err(|e| e.to_string())?;
-    report_run(ADDRESS, &token_file, id, stage, status, options).map_err(|e| e.to_string())
+    report_run(ADDRESS, &token_file, id, status, options).map_err(|e| e.to_string())
 }
 
 /// The server `run update` talks to. Debug builds honor `JIDOKA_TEST_ADDRESS`, so CLI tests can use a

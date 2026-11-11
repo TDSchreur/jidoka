@@ -31,24 +31,18 @@ pub(crate) fn start_run(
     Ok(run.id)
 }
 
-/// Sends a CLI run update (stage, status and metadata options) to the Jidoka server at `server`.
+/// Sends a CLI run update (status and metadata options) to the Jidoka server at `server`.
 pub(crate) fn report_run(
     server: &str,
     token_file: &Path,
     id: &str,
-    stage: &str,
     status: &str,
     options: &[&str],
 ) -> Result<(), Box<dyn std::error::Error>> {
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
         return Err("Invalid run id".into());
     }
-    send_update(
-        server,
-        token_file,
-        id,
-        &parse_update(stage, status, options)?,
-    )
+    send_update(server, token_file, id, &parse_update(status, options)?)
 }
 
 /// Sends an already built update for run `id` to the Jidoka server at `server`.
@@ -58,24 +52,13 @@ pub(crate) fn send_update(
     id: &str,
     update: &UpdateRun,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let response = api_post(
+    api_post(
         server,
         token_file,
         &format!("/api/runs/{id}"),
         &serde_json::to_vec(update)?,
     )?;
-    for warning in update_warnings(&response) {
-        eprintln!("Warning: {warning}");
-    }
     Ok(())
-}
-
-/// The warnings in an update response; none when it has no list (an older server).
-fn update_warnings(response: &[u8]) -> Vec<String> {
-    serde_json::from_slice::<serde_json::Value>(response)
-        .ok()
-        .and_then(|body| serde_json::from_value(body.get("warnings")?.clone()).ok())
-        .unwrap_or_default()
 }
 
 /// What answers on a dashboard port.
@@ -356,7 +339,6 @@ mod tests {
             &server.address,
             &server.token_file,
             &id,
-            "check",
             "running",
             &[
                 "--mode",
@@ -386,7 +368,7 @@ mod tests {
         drop(server);
         let restarted = TestServer::start(&path);
         let run = fetch_run(&restarted.address, &id).unwrap();
-        assert_eq!(run.stage, crate::run::Stage::Finish);
+        assert_eq!(run.stage, crate::run::Stage::Build);
         assert_eq!(run.gates.len(), 3);
         assert_eq!(run.gates[0].evidence.as_deref(), Some("reviewed"));
     }
@@ -412,25 +394,15 @@ mod tests {
         )
         .unwrap();
         let ticket = "https://github.com/example/repo/issues/7";
-        let steps: [(&str, &str, &[&str]); 4] = [
+        let steps: [(&str, &[&str]); 4] = [
             (
-                "build",
                 "running",
                 &["--activity", "Implementing", "--current-ticket", ticket],
             ),
+            ("blocked", &["--blocking-reason", "Need credentials"]),
+            ("running", &["--clear-blocking-reason", "--rework", "1"]),
             (
-                "build",
-                "blocked",
-                &["--blocking-reason", "Need credentials"],
-            ),
-            (
-                "build",
                 "running",
-                &["--clear-blocking-reason", "--rework", "1"],
-            ),
-            (
-                "finish",
-                "done",
                 &[
                     "--summary",
                     "finish=Shipped",
@@ -441,16 +413,8 @@ mod tests {
             ),
         ];
         let mut snapshots = Vec::new();
-        for (stage, status, options) in steps {
-            report_run(
-                &server.address,
-                &server.token_file,
-                &id,
-                stage,
-                status,
-                options,
-            )
-            .unwrap();
+        for (status, options) in steps {
+            report_run(&server.address, &server.token_file, &id, status, options).unwrap();
             snapshots.push(server.runs()[1].clone());
         }
         assert_eq!(snapshots[0]["activity"], "Implementing");
@@ -463,8 +427,8 @@ mod tests {
         assert_eq!(snapshots[2]["current_ticket"], ticket);
         assert_eq!(snapshots[2]["rework"], 1);
         let finished = &snapshots[3];
-        assert_eq!(finished["stage"], "finish");
-        assert_eq!(finished["status"], "done");
+        assert_eq!(finished["stage"], "define");
+        assert_eq!(finished["status"], "running");
         assert_eq!(finished["activity"], "Opened PR");
         assert_eq!(finished["rework"], 1, "rework count is kept when omitted");
         assert!(finished["current_ticket"].is_null());
@@ -477,7 +441,6 @@ mod tests {
             &server.address,
             &server.token_file,
             "42",
-            "check",
             "blocked",
             &["--blocking-reason", "Legacy run"],
         )
@@ -490,7 +453,7 @@ mod tests {
         assert_eq!(&runs[1], finished, "finished run survives restart");
         assert_eq!(runs[0]["id"], "42");
         assert_eq!(runs[0]["title"], "old");
-        assert_eq!(runs[0]["stage"], "check");
+        assert_eq!(runs[0]["stage"], "define");
         assert_eq!(runs[0]["blocking_reason"], "Legacy run");
         assert!(runs[0]["updated_at"].is_u64());
     }
@@ -499,25 +462,11 @@ mod tests {
     fn cli_reports_rejections_and_unreachable_server() {
         let dir = TestDir::new();
         let server = TestServer::start(&dir.0.path().join("runs.json"));
-        let missing = report_run(
-            &server.address,
-            &server.token_file,
-            "123",
-            "build",
-            "running",
-            &[],
-        )
-        .unwrap_err();
+        let missing =
+            report_run(&server.address, &server.token_file, "123", "running", &[]).unwrap_err();
         assert!(missing.to_string().contains("Not found"), "{missing}");
-        let invalid = report_run(
-            &server.address,
-            &server.token_file,
-            "12a",
-            "build",
-            "running",
-            &[],
-        )
-        .unwrap_err();
+        let invalid =
+            report_run(&server.address, &server.token_file, "12a", "running", &[]).unwrap_err();
         assert_eq!(invalid.to_string(), "Invalid run id");
         // Nothing listens on port 1. A port that was just freed could be taken by another test's server.
         let address = NOTHING_LISTENS.to_string();
@@ -566,16 +515,8 @@ mod tests {
         drop(first);
         let second = TestServer::start(&path);
         assert_ne!(token_of(&second), old, "a restart issues a new token");
-        report_run(
-            &second.address,
-            &second.token_file,
-            &id,
-            "build",
-            "running",
-            &[],
-        )
-        .unwrap();
-        assert_eq!(second.runs()[0]["stage"], "build");
+        report_run(&second.address, &second.token_file, &id, "running", &[]).unwrap();
+        assert_eq!(second.runs()[0]["stage"], "define");
     }
 
     #[test]
@@ -599,16 +540,9 @@ mod tests {
         assert!(!missing.contains(&token), "{missing}");
         // A directory in place of the file is unreadable.
         fs::create_dir(&server.token_file).unwrap();
-        let unreadable = report_run(
-            &server.address,
-            &server.token_file,
-            "1",
-            "build",
-            "running",
-            &[],
-        )
-        .unwrap_err()
-        .to_string();
+        let unreadable = report_run(&server.address, &server.token_file, "1", "running", &[])
+            .unwrap_err()
+            .to_string();
         assert!(unreadable.contains("jidoka dashboard"), "{unreadable}");
         assert!(server.runs().as_array().unwrap().is_empty());
     }
@@ -628,7 +562,7 @@ mod tests {
             !error.contains("stale-token-value") && !error.contains(&real),
             "{error}"
         );
-        let error = report_run(&server.address, &stale, "1", "build", "running", &[])
+        let error = report_run(&server.address, &stale, "1", "running", &[])
             .unwrap_err()
             .to_string();
         assert!(error.contains("restart 'jidoka dashboard'"), "{error}");
@@ -684,7 +618,6 @@ mod tests {
             &server.address,
             &server.token_file,
             &id,
-            "build",
             "running",
             &["--activity", "go"],
         )
@@ -701,7 +634,6 @@ mod tests {
             &server.address,
             &server.token_file,
             &id,
-            "check",
             "running",
             &["--model-routing", "check=opus:low"],
         )
@@ -771,7 +703,6 @@ mod tests {
             &server.address,
             &server.token_file,
             &id,
-            "build",
             "blocked",
             &[
                 "--mode",
@@ -802,7 +733,7 @@ mod tests {
         let run = fetch_run(&server.address, &id).unwrap();
         let text = crate::inspect::render(&run);
         for expected in [
-            "Stage         build (blocked)",
+            "Stage         define (blocked)",
             "Status reason Need a decision",
             "Mode          jidoka-balanced",
             "Repository    /work/repo",
@@ -829,7 +760,6 @@ mod tests {
             &server.address,
             &server.token_file,
             &id,
-            "build",
             "running",
             &["--ticket-status", "ghost=done"],
         )

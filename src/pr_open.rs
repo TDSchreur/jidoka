@@ -76,7 +76,7 @@ impl Gh for RealGh {
 
 /// The Jidoka server, as far as this command needs it.
 pub(crate) trait RunApi {
-    fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String>;
+    fn update(&self, id: &str, status: &str, options: &[&str]) -> Result<(), String>;
 }
 
 /// What the command needs to know about the run.
@@ -914,7 +914,6 @@ fn finish(
     if run.running() {
         api.update(
             &run.id,
-            &run.stage,
             "running",
             &["--pr", &pull_request, "--activity", "Opened pull request"],
         )
