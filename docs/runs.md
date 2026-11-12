@@ -13,7 +13,7 @@ One dashboard serves every Project. Running `jidoka dashboard` while one is alre
 `jidoka run begin "<title>"` creates a run and its workspace in one command. The workspace is a git worktree on a new branch, made from the pull request base branch. It replaces `jidoka run start`, the `git worktree add` and the `jidoka run update` that records them; `jidoka run start` still works as before.
 
 ```text
-jidoka run begin "<title>" [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>]
+jidoka run begin "<title>" [--agent <codex|claude|copilot>] [--mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast>]
                   [--base <branch>] [--branch <name>] [--json]
 jidoka run begin --run <run-id> [--base <branch>] [--branch <name>] [--mode ...] [--agent ...] [--json]
 ```
@@ -39,7 +39,7 @@ Besides its stage and status, a run records the context a new session needs to c
 | --- | --- |
 | `jidoka run start` | The canonical `repository` (the main checkout, the same from every linked worktree) next to the folder the run started in. |
 | `--worktree <absolute-path>`, `--branch <name>`, `--base-commit <sha>` | Where the run's work lives and the commit it started from. |
-| `--mode <jidoka-full\|jidoka-balanced\|jidoka-fast>` | The workflow mode. |
+| `--mode <full\|balanced\|fast\|jidoka-full\|jidoka-balanced\|jidoka-fast>` | The workflow mode. |
 | `--spec <http(s)-url\|path>`, `--pr <http(s)-url>` | The spec (a URL or a local path) and the pull request. URLs with credentials are refused. |
 | `--ticket "<reference> <title>"` (repeat), `--ticket-status <reference>=<pending\|in-progress\|done>` | The ordered ticket list, listed whole each time (statuses of kept tickets are preserved), and its progress. At most one ticket is in progress. |
 | `--run-report <skill\|activity> "<text>"` (repeat) | Append a short report to the run, with the current stage and server time. |
