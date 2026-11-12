@@ -818,6 +818,16 @@ fn only_subagent_usage_on_another_model_warns_when_a_routed_stage_is_done() {
         "{}",
         reports[0].text
     );
+    let mut row =
+        serde_json::json!({"stage": "define", "model": "sonnet", "input": 10, "output": 5});
+    row["subagents"] = serde_json::json!({"input": 4, "output": 2});
+    let on_model: Usage = serde_json::from_value(
+        serde_json::json!({"status": "tracked", "collected_at": 2, "rows": [row]}),
+    )
+    .unwrap();
+    store.set_usage(&id, on_model).unwrap();
+    let after = store.get(&id).unwrap().unwrap().run_reports;
+    assert_eq!(after.len(), 1, "{after:?}");
 }
 
 fn event_store() -> (TestDir, RunStore, String) {
