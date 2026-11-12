@@ -477,6 +477,7 @@ fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
             value["checks"] = serde_json::to_value(crate::run_next::checks_for(
                 run.mode.expect("a mode is required for check selection"),
                 &paths,
+                run.model_routing.as_ref(),
             ))?;
         }
         Err(reason) => value["checks_unavailable"] = serde_json::Value::String(reason),

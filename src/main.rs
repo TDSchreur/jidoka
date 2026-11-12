@@ -151,7 +151,11 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             let json =
                 run_next::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
             let run = fetch_run(&cli_address(), id)?;
-            let paths = run_next::changed_paths(&run, &run_check::ReadOnlyGit);
+            let paths = if run.stage == run::Stage::Check && run.mode != Some(run::Mode::Fast) {
+                run_next::changed_paths(&run, &run_check::ReadOnlyGit)?
+            } else {
+                Vec::new()
+            };
             let next = run_next::build(&run, &paths)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&next)?);

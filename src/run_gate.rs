@@ -114,7 +114,16 @@ fn advance_with_clock(
     let mode = run.mode.ok_or("Record the run's mode first")?;
     let transition = stages::next(mode, run.stage, run.status)?;
     let mut failures = Vec::new();
-    for gate in transition.gates {
+    let mut gates = transition.gates.to_vec();
+    if run.stage == Stage::Check {
+        let paths = crate::run_next::changed_paths(run, git)?;
+        for check in crate::checks::select(mode, &paths).applicable {
+            if !gates.contains(&check.check.gate) {
+                gates.push(check.check.gate);
+            }
+        }
+    }
+    for gate in &gates {
         let (result, remedy) = match gate {
             Gate::TicketsDone => (
                 require(
@@ -347,6 +356,7 @@ mod tests {
         let mut run: Run = serde_json::from_value(serde_json::json!({"gates":[],"id":"1","title":"t","project":"/p","stage":stage,"status":"running"})).unwrap();
         run.mode = Some(Mode::Fast);
         run.worktree = Some("/work".into());
+        run.base_commit = Some("abc1234".into());
         run.pr = Some("https://github.com/o/r/pull/7".into());
         run
     }

@@ -4,7 +4,10 @@
 //! A Check applies when the Workflow mode's floor includes it or when a changed path matches one of
 //! its triggers. Adding a Check means adding one entry to [`CATALOG`].
 
-use crate::run::Mode;
+use crate::{
+    run::{Mode, Stage},
+    stages::Gate,
+};
 
 /// One Check in the catalog.
 #[derive(Debug)]
@@ -13,6 +16,12 @@ pub(crate) struct Check {
     /// Path globs that make the Check apply when a changed path matches. A pattern without `/`
     /// matches the file name at any depth; `*` stays within a path segment and `**` crosses them.
     pub(crate) triggers: &'static [&'static str],
+    /// Embedded instruction chunk delivered when this Check applies.
+    pub(crate) instructions: &'static str,
+    /// Stage gate that records completion of this Check.
+    pub(crate) gate: Gate,
+    /// Policy stage whose model is used for this Check, if routed.
+    pub(crate) model_route: Option<Stage>,
     /// Modes that always run the Check, whatever the diff touches.
     pub(crate) floor: &'static [Mode],
 }
@@ -20,6 +29,9 @@ pub(crate) struct Check {
 pub(crate) const CATALOG: &[Check] = &[Check {
     name: "code-review",
     triggers: &[],
+    instructions: include_str!("../stages/checks/code-review.md"),
+    gate: Gate::ChecksRecorded,
+    model_route: Some(Stage::Check),
     floor: &[Mode::Balanced, Mode::Full],
 }];
 
@@ -138,12 +150,18 @@ mod tests {
     const SECURITY: Check = Check {
         name: "security",
         triggers: &["Cargo.toml", "*.tf", ".github/workflows/**"],
+        instructions: "Security review instructions",
+        gate: Gate::ChecksRecorded,
+        model_route: None,
         floor: &[Mode::Full],
     };
     static EXTENDED: [Check; 2] = [CATALOG_CODE_REVIEW, SECURITY];
     const CATALOG_CODE_REVIEW: Check = Check {
         name: "code-review",
         triggers: &[],
+        instructions: "Code review instructions",
+        gate: Gate::ChecksRecorded,
+        model_route: Some(Stage::Check),
         floor: &[Mode::Balanced, Mode::Full],
     };
 

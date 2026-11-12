@@ -220,3 +220,44 @@ fn build_instructions_are_focused_and_full_explains_each_ticket_gate() {
         assert!(check.instructions.contains("no-actionable-findings pass"));
     }
 }
+
+#[test]
+fn applicable_check_supplies_instructions_gate_and_routed_model() {
+    let next = build(&run(Mode::Balanced, Stage::Check, Some(routing())), &[]).unwrap();
+    assert!(next.instructions.contains("## Code review"));
+    assert!(next.instructions.contains("Use `jidoka-code-review`"));
+    let json = serde_json::to_value(&next).unwrap();
+    assert_eq!(json["checks"]["applicable"][0]["gate"], "checks-recorded");
+    assert_eq!(json["checks"]["applicable"][0]["model"]["model"], "opus");
+    assert!(render(&next).contains("gate: checks-recorded"));
+    let build_stage = build(&run(Mode::Balanced, Stage::Build, Some(routing())), &[]).unwrap();
+    assert!(!build_stage.instructions.contains("## Code review"));
+}
+
+struct FailingDiff;
+
+impl Git for FailingDiff {
+    fn git(&self, _dir: &Path, _args: &[&str]) -> Result<String, String> {
+        Err("git diff failed".into())
+    }
+}
+
+#[test]
+fn check_selection_reports_missing_context_and_diff_failure() {
+    let mut run = run(Mode::Balanced, Stage::Check, None);
+    assert!(
+        changed_paths(&run, &FailingDiff)
+            .unwrap_err()
+            .contains("worktree")
+    );
+    run.worktree = Some("/work/repo".into());
+    assert!(
+        changed_paths(&run, &FailingDiff)
+            .unwrap_err()
+            .contains("base commit")
+    );
+    run.base_commit = Some("abc".into());
+    let error = changed_paths(&run, &FailingDiff).unwrap_err();
+    assert!(error.contains("/work/repo"));
+    assert!(error.contains("git diff failed"));
+}

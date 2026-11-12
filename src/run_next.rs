@@ -4,7 +4,7 @@ use crate::{
     checks,
     inspect::shown,
     pr_sync::Git,
-    routing::{ModelChoice, RoutingAgent},
+    routing::{ModelChoice, ModelRouting, RoutingAgent},
     run::{Mode, Run, RunStatus, Stage, Ticket, TicketStatus},
     stages::{self, Destination, Gate},
 };
@@ -31,6 +31,10 @@ pub(crate) struct Move {
 pub(crate) struct CheckEntry {
     name: &'static str,
     reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gate: Option<Gate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<ModelChoice>,
 }
 
 /// The Checks of the Check stage: those that apply to the diff and those skipped.
@@ -239,7 +243,11 @@ fn instructions(mode: Mode, stage: Stage, routing: Option<RoutingAgent>) -> Stri
     output
 }
 
-pub(crate) fn checks_for(mode: Mode, changed_paths: &[String]) -> Checks {
+pub(crate) fn checks_for(
+    mode: Mode,
+    changed_paths: &[String],
+    routing: Option<&ModelRouting>,
+) -> Checks {
     let selection = checks::select(mode, changed_paths);
     Checks {
         applicable: selection
@@ -247,6 +255,12 @@ pub(crate) fn checks_for(mode: Mode, changed_paths: &[String]) -> Checks {
             .into_iter()
             .map(|a| CheckEntry {
                 name: a.check.name,
+                gate: Some(a.check.gate),
+                model: a
+                    .check
+                    .model_route
+                    .and_then(|stage| routing.and_then(|r| r.choice_for(stage)))
+                    .cloned(),
                 reason: match a.reason {
                     checks::Reason::Floor => format!("{} always runs it", mode.name()),
                     checks::Reason::Triggered { path } => format!("{} changed", shown(&path)),
@@ -258,21 +272,32 @@ pub(crate) fn checks_for(mode: Mode, changed_paths: &[String]) -> Checks {
             .into_iter()
             .map(|s| CheckEntry {
                 name: s.check.name,
+                gate: None,
+                model: None,
                 reason: s.reason,
             })
             .collect(),
     }
 }
 
-/// The paths changed between the run's base commit and its head, when the run records both.
-pub(crate) fn changed_paths(run: &Run, git: &dyn Git) -> Vec<String> {
-    let (Some(worktree), Some(base)) = (&run.worktree, &run.base_commit) else {
-        return Vec::new();
-    };
+/// The paths changed between the run's base commit and its head.
+///
+/// # Errors
+///
+/// Returns a message when the worktree, base commit or diff is unavailable.
+pub(crate) fn changed_paths(run: &Run, git: &dyn Git) -> Result<Vec<String>, String> {
+    let worktree = run
+        .worktree
+        .as_ref()
+        .ok_or("Record the worktree to select checks")?;
+    let base = run
+        .base_commit
+        .as_ref()
+        .ok_or("Record the base commit to select checks")?;
     let range = format!("{base}..HEAD");
     git.git(Path::new(worktree), &["diff", "--name-only", &range])
         .map(|out| out.lines().map(str::to_string).collect())
-        .unwrap_or_default()
+        .map_err(|error| format!("Could not inspect the changed paths in {worktree}: {error}"))
 }
 
 /// # Errors
@@ -288,7 +313,15 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
     let mut note = None;
     match stages::next(mode, run.stage, run.status) {
         Ok(transition) => {
-            gates = open(run, transition.gates);
+            let mut stage_gates = transition.gates.to_vec();
+            if run.stage == Stage::Check {
+                for entry in checks::select(mode, changed_paths).applicable {
+                    if !stage_gates.contains(&entry.check.gate) {
+                        stage_gates.push(entry.check.gate);
+                    }
+                }
+            }
+            gates = open(run, &stage_gates);
             let (kind, to) = match transition.to {
                 Destination::Stage(stage) => ("stage", Some(stage)),
                 Destination::Done => ("done", None),
@@ -296,7 +329,7 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
             moves.push(Move {
                 kind,
                 to,
-                gates: open(run, transition.gates),
+                gates: open(run, &stage_gates),
             });
             if let Ok(rework) = stages::rework(mode, run.stage, run.status)
                 && let Destination::Stage(stage) = rework.to
@@ -310,6 +343,20 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
         }
         Err(reason) => note = Some(reason),
     }
+    let mut stage_instructions = instructions(
+        mode,
+        run.stage,
+        run.model_routing
+            .as_ref()
+            .filter(|routing| routing.choice_for(run.stage).is_some())
+            .map(|routing| routing.agent),
+    );
+    if run.stage == Stage::Check {
+        for applicable in checks::select(mode, changed_paths).applicable {
+            stage_instructions.push_str("\n\n");
+            stage_instructions.push_str(applicable.check.instructions);
+        }
+    }
     Ok(Next {
         run: run.id.clone(),
         title: run.title.clone(),
@@ -317,14 +364,7 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
         stage: run.stage,
         status: run.status,
         rework: run.rework,
-        instructions: instructions(
-            mode,
-            run.stage,
-            run.model_routing
-                .as_ref()
-                .filter(|routing| routing.choice_for(run.stage).is_some())
-                .map(|routing| routing.agent),
-        ),
+        instructions: stage_instructions,
         gates,
         gate_results: run
             .gates
@@ -334,7 +374,7 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
             .collect(),
         moves,
         checks: (run.stage == Stage::Check && mode != Mode::Fast)
-            .then(|| checks_for(mode, changed_paths)),
+            .then(|| checks_for(mode, changed_paths, run.model_routing.as_ref())),
         summaries: run.summaries.clone(),
         tickets: run.tickets.clone(),
         model: run
@@ -380,6 +420,19 @@ pub(crate) fn render(next: &Next) -> String {
                 entry.name,
                 shown(&entry.reason)
             ));
+            if let Some(gate) = entry.gate {
+                out.push_str(&format!("        gate: {}\n", shown_name(gate)));
+            }
+            if let Some(model) = &entry.model {
+                out.push_str(&format!(
+                    "        model: {}{}\n",
+                    shown(&model.model),
+                    model
+                        .effort
+                        .as_deref()
+                        .map_or(String::new(), |e| format!(", effort {}", shown(e)))
+                ));
+            }
         }
         for entry in &checks.skipped {
             out.push_str(&format!(
