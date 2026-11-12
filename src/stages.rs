@@ -3,12 +3,6 @@
 //! The graph only says what may happen next and which Gates must hold first; recording and checking
 //! Gate results is done elsewhere.
 
-// The commands that use this module arrive in later tickets of the stage machine.
-#![allow(
-    dead_code,
-    reason = "used by `run next` and `run advance`, which are added later"
-)]
-
 use crate::run::{Mode, RunStatus, Stage};
 use serde::{Deserialize, Serialize};
 
@@ -36,16 +30,6 @@ pub(crate) enum Destination {
     Stage(Stage),
     /// The run is finished; its status becomes `done`.
     Done,
-}
-
-impl Destination {
-    /// The run status this destination sets, if it sets one.
-    pub(crate) fn status(self) -> Option<RunStatus> {
-        match self {
-            Self::Stage(_) => None,
-            Self::Done => Some(RunStatus::Done),
-        }
-    }
 }
 
 /// A legal move out of a Stage and the Gates that must pass before it.
@@ -164,7 +148,6 @@ mod tests {
             let last = *stages(mode).last().unwrap();
             let end = next(mode, last, RUNNING).unwrap();
             assert_eq!(end.to, Destination::Done);
-            assert_eq!(end.to.status(), Some(RunStatus::Done));
         }
     }
 

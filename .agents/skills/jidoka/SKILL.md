@@ -12,7 +12,7 @@ Assess the request before starting a workflow. Identify the intended outcome and
 Apply these rules in order:
 
 1. If the request is analysis-only or prohibits implementation, respect that scope and provide an assessment without starting a run.
-2. If it continues a run, inspect it with `jidoka run inspect` and follow [jidoka-procedures](../jidoka-procedures/SKILL.md). Preserve its recorded mode and context. Legacy `jidoka` means Full; if the mode was not recorded, report it as unknown, resolve the missing context through the continuation procedure, and stop until it is resolved. Do not guess or create a replacement run.
+2. If it continues a run, inspect it with `jidoka run inspect` and follow [jidoka-procedures](../jidoka-procedures/SKILL.md). Preserve its recorded mode and context. If the mode was not recorded, report it as unknown, resolve the missing context through the continuation procedure, and stop until it is resolved. Do not guess or create a replacement run.
 3. Honor an explicit choice of execution workflow, subject to project instructions and permissions.
 4. Choose Fast for renames, deletions (of code, files, commands, or documentation), and documentation-only changes when they are mechanical and easy to verify, or Balanced when references or behavior need tests and review. Never choose Full for them unless the user names it.
 5. Choose Full for substantial uncertainty, interacting changes, sensitive consequences, or a concrete need for detailed planning and rigorous testing. Authentication, authorization, secrets, destructive operations (those that destroy user data or production state, not removing code or files), and migrations deserve particular attention.

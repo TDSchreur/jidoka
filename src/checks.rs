@@ -4,13 +4,7 @@
 //! A Check applies when the Workflow mode's floor includes it or when a changed path matches one of
 //! its triggers. Adding a Check means adding one entry to [`CATALOG`].
 
-#![allow(
-    dead_code,
-    reason = "the chunk, gate and model route are used by `run advance` and the stage chunks, added later"
-)]
-
 use crate::run::Mode;
-use crate::stages::Gate;
 
 /// One Check in the catalog.
 #[derive(Debug)]
@@ -21,21 +15,12 @@ pub(crate) struct Check {
     pub(crate) triggers: &'static [&'static str],
     /// Modes that always run the Check, whatever the diff touches.
     pub(crate) floor: &'static [Mode],
-    /// The instruction chunk served for the Check.
-    pub(crate) chunk: &'static str,
-    /// The Gate that holds until the Check's result is recorded.
-    pub(crate) gate: Gate,
-    /// The model-routing stage key for the Check; none means it uses the Check stage's route.
-    pub(crate) model_route: Option<&'static str>,
 }
 
 pub(crate) const CATALOG: &[Check] = &[Check {
     name: "code-review",
     triggers: &[],
     floor: &[Mode::Balanced, Mode::Full],
-    chunk: "code-review",
-    gate: Gate::NoActionableFindings,
-    model_route: None,
 }];
 
 /// Why a Check applies.
@@ -154,18 +139,12 @@ mod tests {
         name: "security",
         triggers: &["Cargo.toml", "*.tf", ".github/workflows/**"],
         floor: &[Mode::Full],
-        chunk: "security",
-        gate: Gate::NoActionableFindings,
-        model_route: None,
     };
     static EXTENDED: [Check; 2] = [CATALOG_CODE_REVIEW, SECURITY];
     const CATALOG_CODE_REVIEW: Check = Check {
         name: "code-review",
         triggers: &[],
         floor: &[Mode::Balanced, Mode::Full],
-        chunk: "code-review",
-        gate: Gate::NoActionableFindings,
-        model_route: None,
     };
 
     fn names(applicable: &[Applicable]) -> Vec<&'static str> {
