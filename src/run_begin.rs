@@ -108,7 +108,7 @@ fn parse_common(title: &str, options: &[&str], needs_title: bool) -> Result<Opti
                 serde_json::from_value::<crate::run::Mode>(serde_json::Value::from(mode)).map_err(
                     |_| {
                         format!(
-                            "Invalid value for --mode: {mode}; use jidoka-full, jidoka-balanced or jidoka-fast"
+                            "Invalid value for --mode: {mode}; use full, balanced or fast (also accepted: jidoka-full, jidoka-balanced, jidoka-fast)"
                         )
                     },
                 )?;

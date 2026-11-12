@@ -19,9 +19,9 @@ use std::{
 const CI_TIMEOUT: Duration = Duration::from_secs(95);
 
 /// Bound the gate history, which is normally only a handful of entries per stage.
-const MAX_GATE_RESULTS: usize = 1000;
+pub(crate) const MAX_GATE_RESULTS: usize = 1000;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct GateResult {
     pub(crate) gate: Gate,
     pub(crate) stage: Stage,

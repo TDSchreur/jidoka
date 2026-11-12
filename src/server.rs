@@ -540,9 +540,7 @@ fn record_gate(
     store: &State<RunStore>,
 ) -> Result<&'static str, (HttpStatus, String)> {
     store
-        .change_gate(id, |run| {
-            crate::run_gate::record(run, record.into_inner(), &crate::pr_sync::RealGit)
-        })
+        .record_gate(id, record.into_inner(), &crate::pr_sync::RealGit)
         .map_err(|error| (HttpStatus::BadRequest, error))?;
     Ok("Gate recorded")
 }

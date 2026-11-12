@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const UPDATE_HELP: &str = "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework (on a running run in Check, --rework <n> also moves it back to Build for a Rework; elsewhere it only sets the count)\n  --mode <jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `done` is only accepted in Finish and needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
+pub(crate) const UPDATE_HELP: &str = "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework (on a running run in Check, --rework <n> also moves it back to Build for a Rework; elsewhere it only sets the count)\n  --mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `done` is only accepted in Finish and needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
 /// Tickets one update may list; a spec split into more pieces than this is too big to track on one board.
@@ -175,11 +175,11 @@ pub(crate) enum RunStatus {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Mode {
-    #[serde(rename = "jidoka-full")]
+    #[serde(rename = "jidoka-full", alias = "full")]
     Full,
-    #[serde(rename = "jidoka-balanced")]
+    #[serde(rename = "jidoka-balanced", alias = "balanced")]
     Balanced,
-    #[serde(rename = "jidoka-fast")]
+    #[serde(rename = "jidoka-fast", alias = "fast")]
     Fast,
 }
 
@@ -712,7 +712,7 @@ pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, 
                 } else {
                     let mode = next_value()?;
                     FieldUpdate::Set(serde_json::from_value(serde_json::Value::from(*mode)).map_err(|_| {
-                        format!("Invalid value for --mode: {mode}; use jidoka-full, jidoka-balanced or jidoka-fast")
+                        format!("Invalid value for --mode: {mode}; use full, balanced or fast (also accepted: jidoka-full, jidoka-balanced, jidoka-fast)")
                     })?)
                 };
                 continue;
@@ -1176,6 +1176,60 @@ impl RunStore {
             .expect("test run exists")
             .stage = stage;
         save_runs(&self.shared.path, &runs).unwrap();
+    }
+
+    /// Record a gate against a snapshot, merging independent concurrent gate results.
+    pub(crate) fn record_gate(
+        &self,
+        id: &str,
+        record: crate::run_gate::Record,
+        git: &dyn crate::pr_sync::Git,
+    ) -> Result<(), String> {
+        let original = self
+            .get(id)
+            .map_err(|e| format!("Could not read the run: {e}"))?
+            .ok_or_else(|| format!("Run {id} not found"))?;
+        let mut checked = original.clone();
+        crate::run_gate::record(&mut checked, record, git)?;
+        let result = checked.gates.pop().ok_or("Gate result was not recorded")?;
+        let mut runs = self.shared.runs.lock().map_err(|e| e.to_string())?;
+        let index = runs
+            .iter()
+            .position(|run| run.id == id)
+            .ok_or_else(|| format!("Run {id} not found"))?;
+        let current = &runs[index];
+        let mut comparison = current.clone();
+        comparison.pr_status = original.pr_status.clone();
+        comparison.updated_at = original.updated_at;
+        comparison.agent_updated_at = original.agent_updated_at;
+        comparison.gates = original.gates.clone();
+        if serde_json::to_vec(&comparison).map_err(|e| e.to_string())?
+            != serde_json::to_vec(&original).map_err(|e| e.to_string())?
+            || !current.gates.starts_with(&original.gates)
+            || current.gates[original.gates.len()..]
+                .iter()
+                .any(|gate| gate.gate == result.gate && gate.ticket == result.ticket)
+        {
+            return Err("The run changed while checking gates; try again".into());
+        }
+        if current.gates.len() >= crate::run_gate::MAX_GATE_RESULTS {
+            return Err(format!(
+                "A run can hold at most {} gate results",
+                crate::run_gate::MAX_GATE_RESULTS
+            ));
+        }
+        let now = updated_now().map_err(|e| format!("Could not read the time: {e}"))?;
+        let mut next = current.clone();
+        next.gates.push(result);
+        next.updated_at = Some(now);
+        next.agent_updated_at = Some(now);
+        mark(&mut next, now, None);
+        let old = std::mem::replace(&mut runs[index], next);
+        if let Err(error) = save_runs(&self.shared.path, &runs) {
+            runs[index] = old;
+            return Err(format!("Could not save the run: {error}"));
+        }
+        Ok(())
     }
 
     /// Atomically change a run and persist it, restoring the old value on save failure.

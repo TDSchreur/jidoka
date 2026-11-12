@@ -903,3 +903,113 @@ fn current_ticket_accepts_local_references() {
         .unwrap();
     assert_eq!(updated.current_ticket.as_deref(), Some("/tmp/ticket.md"));
 }
+
+#[test]
+fn mode_aliases_store_canonical_names() {
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    let run = new_run(&store, "task");
+    for (alias, canonical) in [
+        ("fast", "jidoka-fast"),
+        ("balanced", "jidoka-balanced"),
+        ("full", "jidoka-full"),
+    ] {
+        assert!(crate::run_begin::parse_options("task", &["--mode", alias]).is_ok());
+        let updated = store
+            .update(
+                &run.id,
+                parse_update("running", &["--mode", alias]).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(serde_json::to_value(updated).unwrap()["mode"], canonical);
+    }
+}
+
+#[test]
+fn independent_gate_records_merge_but_run_changes_reject_stale_validation() {
+    use crate::run_gate::Record;
+    use crate::stages::Gate;
+    struct Interleaved<'a> {
+        store: &'a RunStore,
+        id: &'a str,
+        change_run: bool,
+    }
+    impl crate::pr_sync::Git for Interleaved<'_> {
+        fn git(&self, _: &std::path::Path, _: &[&str]) -> Result<String, String> {
+            if self.change_run {
+                self.store
+                    .update(
+                        self.id,
+                        parse_update("blocked", &["--blocking-reason", "waiting"]).unwrap(),
+                    )
+                    .unwrap();
+            } else {
+                self.store
+                    .record_gate(
+                        self.id,
+                        Record {
+                            gate: Gate::ChecksRecorded,
+                            passed: true,
+                            evidence: None,
+                        },
+                        &crate::pr_sync::RealGit,
+                    )
+                    .unwrap();
+            }
+            Ok("abc123".into())
+        }
+    }
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    let run = new_run(&store, "task");
+    store
+        .update(
+            &run.id,
+            parse_update("running", &["--worktree", "/work/repo"]).unwrap(),
+        )
+        .unwrap();
+    let verified = || Record {
+        gate: Gate::Verified,
+        passed: true,
+        evidence: None,
+    };
+    store
+        .record_gate(
+            &run.id,
+            verified(),
+            &Interleaved {
+                store: &store,
+                id: &run.id,
+                change_run: false,
+            },
+        )
+        .unwrap();
+    let current = store.get(&run.id).unwrap().unwrap();
+    assert_eq!(current.gates.len(), 2);
+    assert!(
+        current
+            .gates
+            .iter()
+            .any(|gate| gate.gate == Gate::Verified && gate.commit.as_deref() == Some("abc123"))
+    );
+    assert!(
+        current
+            .gates
+            .iter()
+            .any(|gate| gate.gate == Gate::ChecksRecorded)
+    );
+    let error = store
+        .record_gate(
+            &run.id,
+            verified(),
+            &Interleaved {
+                store: &store,
+                id: &run.id,
+                change_run: true,
+            },
+        )
+        .unwrap_err();
+    assert!(error.contains("changed while checking"));
+    assert_eq!(store.get(&run.id).unwrap().unwrap().gates.len(), 2);
+}
