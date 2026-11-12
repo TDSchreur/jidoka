@@ -348,7 +348,7 @@ mod tests {
             ],
         )
         .unwrap();
-        for gate in ["checks-recorded", "no-actionable-findings", "verified"] {
+        for gate in ["no-actionable-findings", "verified", "verified"] {
             let body = serde_json::json!({"gate": gate, "passed":true, "evidence":"reviewed"});
             api_post(
                 &server.address,

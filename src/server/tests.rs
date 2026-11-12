@@ -1175,3 +1175,23 @@ async fn check_selection_explains_missing_diff_and_is_not_computed_on_list() {
             .contains("Could not inspect the changed paths")
     );
 }
+
+#[rocket::async_test]
+async fn run_details_preserve_recorded_skips_after_check() {
+    let dir = TestDir::new();
+    fs::write(dir.0.path().join("runs.json"), r#"[{"id":"42","title":"t","project":"/work","mode":"jidoka-balanced","stage":"finish","status":"running","gates":[{"gate":"checks-recorded","stage":"check","rework":1,"passed":true,"evidence":null,"commit":"abc","ticket":null,"check":"code-review","skipped_checks":[{"name":"security","reason":"no matching path"}]}]}]"#).unwrap();
+    let api = client(&dir).await;
+    let response = api
+        .get("/api/runs/42")
+        .header(Header::new("Host", "127.0.0.1:4311"))
+        .dispatch()
+        .await;
+    let body: serde_json::Value =
+        serde_json::from_str(&response.into_string().await.unwrap()).unwrap();
+    assert_eq!(body["recorded_skipped_checks"][0]["name"], "security");
+    assert_eq!(
+        body["recorded_skipped_checks"][0]["reason"],
+        "no matching path"
+    );
+    assert_eq!(body["recorded_skipped_rework"], 1);
+}
