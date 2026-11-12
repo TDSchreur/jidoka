@@ -540,6 +540,39 @@ mod tests {
             head: "abc1234",
         }
     }
+
+    #[test]
+    fn change_gate_keeps_usage_collected_meanwhile_but_refuses_other_changes() {
+        use crate::run::RunStore;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("runs.json");
+        std::fs::write(&path, serde_json::to_vec(&vec![run(Stage::Build)]).unwrap()).unwrap();
+        let store = RunStore::open(&path).unwrap();
+        let usage: crate::usage::Usage =
+            serde_json::from_value(serde_json::json!({"status":"tracked","collected_at":7}))
+                .unwrap();
+        store
+            .change_gate("1", |run| {
+                store.set_usage("1", usage.clone()).unwrap();
+                advance_forced(run, "Tickets done by hand")
+            })
+            .unwrap();
+        let saved = store.get("1").unwrap().unwrap();
+        assert_eq!(saved.stage, Stage::Finish);
+        assert_eq!(saved.usage, Some(usage));
+        assert!(!saved.run_reports.is_empty());
+
+        let refused = store.change_gate("1", |run| {
+            store.set_stage("1", Stage::Build);
+            advance_forced(run, "Again")
+        });
+        assert_eq!(
+            refused.unwrap_err(),
+            "The run changed while checking gates; try again"
+        );
+        assert_eq!(store.get("1").unwrap().unwrap().stage, Stage::Build);
+    }
+
     #[test]
     fn forced_advance_skips_gates_records_the_reason_and_needs_one() {
         let mut run = run(Stage::Build);

@@ -887,6 +887,21 @@ struct Shared {
     collection: Collection,
 }
 
+/// Serializes the parts of a run that gates read.
+///
+/// Fields gates never read and background collectors write meanwhile (PR status, usage, run reports,
+/// timestamps) are blanked, so they cannot make a slow gate check fail spuriously. `change_gate` keeps the
+/// stored values of these fields when it saves.
+fn gate_view(run: &Run) -> Result<Vec<u8>, String> {
+    let mut view = run.clone();
+    view.pr_status = None;
+    view.usage = None;
+    view.run_reports.clear();
+    view.updated_at = None;
+    view.agent_updated_at = None;
+    serde_json::to_vec(&view).map_err(|e| e.to_string())
+}
+
 impl RunStore {
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
         Ok(Self {
@@ -1209,13 +1224,9 @@ impl RunStore {
             .ok_or_else(|| format!("Run {id} not found"))?;
         let current = &runs[index];
         let mut comparison = current.clone();
-        comparison.pr_status = original.pr_status.clone();
-        comparison.updated_at = original.updated_at;
-        comparison.agent_updated_at = original.agent_updated_at;
         comparison.gates = original.gates.clone();
         if current.gate_generation != original.gate_generation
-            || serde_json::to_vec(&comparison).map_err(|e| e.to_string())?
-                != serde_json::to_vec(&original).map_err(|e| e.to_string())?
+            || gate_view(&comparison)? != gate_view(&original)?
             || !current.gates.starts_with(&original.gates)
             || current.gates[original.gates.len()..].iter().any(|gate| {
                 gate.gate == result.gate
@@ -1255,10 +1266,9 @@ impl RunStore {
             .get(id)
             .map_err(|e| format!("Could not read the run: {e}"))?
             .ok_or_else(|| format!("Run {id} not found"))?;
-        let mut comparison = original.clone();
-        comparison.pr_status = None;
-        let snapshot = serde_json::to_vec(&comparison).map_err(|e| e.to_string())?;
+        let snapshot = gate_view(&original)?;
         let generation = original.gate_generation;
+        let original_report_count = original.run_reports.len();
         let mut next = original;
         change(&mut next)?;
         let now = updated_now().map_err(|e| format!("Could not read the time: {e}"))?;
@@ -1273,14 +1283,21 @@ impl RunStore {
             .iter()
             .position(|run| run.id == id)
             .ok_or_else(|| format!("Run {id} not found"))?;
-        let mut current = runs[index].clone();
-        current.pr_status = None;
-        if current.gate_generation != generation
-            || serde_json::to_vec(&current).map_err(|e| e.to_string())? != snapshot
-        {
+        let current = &runs[index];
+        if current.gate_generation != generation || gate_view(current)? != snapshot {
             return Err("The run changed while checking gates; try again".into());
         }
-        next.pr_status = runs[index].pr_status.clone();
+        // Keep what the collectors stored meanwhile (the fields `gate_view` blanks); the change only appends reports.
+        let mut reports = current.run_reports.clone();
+        reports.extend(next.run_reports.iter().skip(original_report_count).cloned());
+        if reports.len() > MAX_REPORTS_PER_RUN {
+            return Err(format!(
+                "A run can hold at most {MAX_REPORTS_PER_RUN} run reports"
+            ));
+        }
+        next.run_reports = reports;
+        next.pr_status = current.pr_status.clone();
+        next.usage = current.usage.clone();
         next.gate_generation = generation.wrapping_add(1);
         let old = std::mem::replace(&mut runs[index], next);
         if let Err(error) = save_runs(&self.shared.path, &runs) {
@@ -1410,7 +1427,6 @@ impl RunStore {
             }
         }
         run.usage = Some(usage);
-        run.gate_generation = run.gate_generation.wrapping_add(1);
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             if let Some(run) = runs.iter_mut().find(|run| run.id == id) {
                 *run = old;
