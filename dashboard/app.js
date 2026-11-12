@@ -972,13 +972,14 @@ function Detail({ run, now, onClose, onDelete, onSynced }) {
         ${blocked && run.blocking_reason ? html`<p class="status-reason">${run.blocking_reason}</p>` : null}
       </div>
       ${Array.isArray(gateData?.stage_gates) && gateData.stage_gates.some((stage) => stage.gates.length) ? html`
-        <section aria-labelledby="gate-heading">
+        <section class="stage-gates" aria-labelledby="gate-heading">
           <h3 id="gate-heading">Stage gates</h3>
           ${gateData.stage_gates.filter((stage) => stage.gates.length).map((stage) => html`
-            <div><h4>${STATION_NAME[stage.stage] ?? stage.stage}</h4>
-              <ul>${stage.gates.map((gate) => html`<li>
-                ${gate.name}: ${gate.status === 'recorded-pass' ? 'Recorded pass' : gate.status === 'unknown' ? 'Unknown' : gate.status}
-                — ${gate.description}${gate.rework ? html`<span> (Rework ${gate.rework})</span>` : null}${gate.evidence ? html`<span> Evidence: ${gate.evidence}</span>` : null}
+            <div class="gate-stage"><h4>${STATION_NAME[stage.stage] ?? stage.stage}</h4>
+              <ul>${stage.gates.map((gate) => html`<li class="gate">
+                <div class="gate-title"><span class="gate-name">${gate.name}:</span> <span class="gate-status">${gate.status === 'recorded-pass' ? 'Recorded pass' : gate.status === 'unknown' ? 'Unknown' : gate.status}</span></div>
+                <p class="gate-description">${gate.description}${gate.rework ? html`<span> · Rework ${gate.rework}</span>` : null}</p>
+                ${gate.evidence ? html`<p class="gate-evidence">Evidence: ${gate.evidence}</p>` : null}
               </li>`)}</ul>
             </div>`)}
         </section>` : null}
