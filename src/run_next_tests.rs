@@ -214,4 +214,9 @@ fn build_instructions_are_focused_and_full_explains_each_ticket_gate() {
     );
     let check = build(&run(Mode::Balanced, Stage::Check, None), &[]).unwrap();
     assert!(check.instructions.contains("## Committing for Check"));
+    for mode in [Mode::Balanced, Mode::Full] {
+        let check = build(&run(mode, Stage::Check, None), &[]).unwrap();
+        assert!(check.instructions.contains("## Check reviews"));
+        assert!(check.instructions.contains("no-actionable-findings pass"));
+    }
 }
