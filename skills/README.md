@@ -12,7 +12,7 @@ The local workflow skills, one per workflow mode, live in the project skill disc
 Local adaptations of upstream skills:
 
 - `jidoka-implement` (from mattpocock/skills): the upstream skill runs implementer and merger subagents in separate worktrees, opens a draft PR and runs a code review. The adaptation builds the tickets sequentially in the run's existing worktree and branch, one at a time using `jidoka-tdd` where project instructions allow, runs checks at the project's cadence, and leaves committing, the pull request and review to the calling workflow. Its MIT license is still installed with it.
-- `jidoka-pr` (from mattpocock/skills): the adaptation says in its description what the skill produces, adds optional template parts for linked tickets or the spec and for remaining review findings, gives a rule for the title, and aims the Summary guidance at a reviewer instead of a chat question. Its MIT license is still installed with it.
+- `jidoka-pr` (from mattpocock/skills): the adaptation says in its description what the skill produces, adds optional template parts for linked tickets or the spec and for a Review section (reviews run, skipped reviews and remaining findings), gives a rule for the title, and aims the Summary guidance at a reviewer instead of a chat question. Its MIT license is still installed with it.
 - `jidoka-setup` (adapted from upstream `setup-matt-pocock-skills`): the adaptation adds an Azure Boards issue tracker option for any repository host, with an `issue-tracker-azure-boards.md` template whose work item types and states setup discovers from the project. Its MIT license is still installed with it.
 
 Upstream sources:
