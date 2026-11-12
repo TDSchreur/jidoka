@@ -779,6 +779,57 @@ fn usage_is_replaced_atomically_and_a_failed_save_keeps_the_old_usage() {
     store.set_usage("nope", Usage::not_tracked("x", 1)).unwrap();
 }
 
+#[test]
+fn only_subagent_usage_on_another_model_warns_when_a_routed_stage_is_done() {
+    use crate::usage::Usage;
+    let dir = TestDir::new();
+    let path = dir.0.path().join("runs.json");
+    let store = RunStore::open(&path).unwrap();
+    let run = new_run(&store, "task");
+    let id = run.id.clone();
+    let mut runs = store.list().unwrap();
+    let mut stored = runs.remove(0);
+    stored.status = RunStatus::Done;
+    stored.model_routing = serde_json::from_value(
+        serde_json::json!({"agent": "claude", "stages": {"define": {"model": "sonnet"}}}),
+    )
+    .unwrap();
+    fs::write(&path, serde_json::to_string(&[stored]).unwrap()).unwrap();
+    let store = RunStore::open(&path).unwrap();
+    let usage = |subagents: bool| -> Usage {
+        let mut row = serde_json::json!({"stage": "define", "model": "claude-opus-5-5", "input": 10, "output": 5});
+        if subagents {
+            row["subagents"] = serde_json::json!({"input": 4, "output": 2});
+        }
+        serde_json::from_value(
+            serde_json::json!({"status": "tracked", "collected_at": 1, "rows": [row]}),
+        )
+        .unwrap()
+    };
+    store.set_usage(&id, usage(false)).unwrap();
+    assert!(store.get(&id).unwrap().unwrap().run_reports.is_empty());
+    store.set_usage(&id, usage(true)).unwrap();
+    let reports = store.get(&id).unwrap().unwrap().run_reports;
+    assert_eq!(reports.len(), 1);
+    assert!(
+        reports[0].text.ends_with(
+            "define subagent usage recorded model claude-opus-5-5 while sonnet was assigned"
+        ),
+        "{}",
+        reports[0].text
+    );
+    let mut row =
+        serde_json::json!({"stage": "define", "model": "sonnet", "input": 10, "output": 5});
+    row["subagents"] = serde_json::json!({"input": 4, "output": 2});
+    let on_model: Usage = serde_json::from_value(
+        serde_json::json!({"status": "tracked", "collected_at": 2, "rows": [row]}),
+    )
+    .unwrap();
+    store.set_usage(&id, on_model).unwrap();
+    let after = store.get(&id).unwrap().unwrap().run_reports;
+    assert_eq!(after.len(), 1, "{after:?}");
+}
+
 fn event_store() -> (TestDir, RunStore, String) {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();

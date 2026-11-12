@@ -1396,15 +1396,17 @@ impl RunStore {
                         .timeline
                         .windows(2)
                         .any(|marks| marks[0].stage == row.stage && marks[1].stage != row.stage);
+                // The coordinator keeps its own model; only subagent usage is judged against the routing.
                 if let Some(choice) = routing.choice_for(row.stage)
                     && completed
+                    && !row.subagents.is_empty()
                     && !crate::routing::model_matches(&choice.model, &row.model)
                 {
                     // Log model names are untrusted and can exceed a run report's size limit.
                     let model: String = row.model.chars().take(50).collect();
                     let model = crate::inspect::shown(&model);
                     let text = format!(
-                        "{}{} usage recorded model {} while {} was assigned; the coordinator may use a different model",
+                        "{}{} subagent usage recorded model {} while {} was assigned",
                         crate::routing::WARNING_PREFIX,
                         row.stage.name(),
                         model,
