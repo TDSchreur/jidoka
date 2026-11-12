@@ -239,6 +239,7 @@ fn advance_with_clock(
     } else {
         None
     };
+    let mut ci_evidence = None;
     for gate in transition.gates {
         let (result, remedy) = match gate {
             Gate::TicketsDone => (
@@ -286,7 +287,7 @@ fn advance_with_clock(
                 "record `jidoka run gate <id> no-actionable-findings pass` or start Rework",
             ),
             Gate::CiPassed => (
-                ci_passed(run, git, tool, clock),
+                ci_passed(run, git, tool, clock).map(|evidence| ci_evidence = Some(evidence)),
                 "open the pull request and pass CI; run `jidoka pr wait <id>`",
             ),
         };
@@ -311,6 +312,24 @@ fn advance_with_clock(
     }
     if let Some(selection) = selection {
         record_snapshot(run, &selection)?;
+    }
+    if let Some((evidence, commit)) = ci_evidence {
+        if run.gates.len() >= MAX_GATE_RESULTS {
+            return Err(format!(
+                "A run can hold at most {MAX_GATE_RESULTS} gate results"
+            ));
+        }
+        run.gates.push(GateResult {
+            gate: Gate::CiPassed,
+            stage: run.stage,
+            rework: run.rework,
+            passed: true,
+            evidence: Some(evidence),
+            commit: Some(commit),
+            ticket: None,
+            check: None,
+            skipped_checks: vec![],
+        });
     }
     apply(run, transition.to);
     Ok(())
@@ -416,7 +435,7 @@ fn ci_passed(
     git: &dyn Git,
     tool: &dyn pr_wait::Gh,
     clock: &dyn pr_wait::Clock,
-) -> Result<(), String> {
+) -> Result<(String, String), String> {
     let url = run.pr.as_deref().ok_or("No pull request is recorded")?;
     let state = pr_state::read(tool, url)
         .map_err(|error| format!("Could not read pull request state: {}", error.0))?;
@@ -452,7 +471,14 @@ fn ci_passed(
             pr_wait::Outcome::Passed | pr_wait::Outcome::NoCi
         ),
         &format!("CI outcome is {:?}", result.outcome),
-    )
+    )?;
+    let short: String = commit.chars().take(7).collect();
+    let evidence = if result.outcome == pr_wait::Outcome::Passed {
+        format!("CI passed on {short}")
+    } else {
+        format!("No CI on {short}")
+    };
+    Ok((evidence, commit))
 }
 
 #[cfg(test)]
@@ -779,6 +805,17 @@ mod tests {
             }
             host().run(args)
         }
+    }
+
+    #[test]
+    fn advancing_out_of_finish_stores_the_ci_result() {
+        let git = FakeGit(RefCell::new("abc1234".into()));
+        let mut run = run(Stage::Finish);
+        advance(&mut run, &git, &host()).unwrap();
+        let stored = run.gates.iter().find(|r| r.gate == Gate::CiPassed).unwrap();
+        assert!(stored.passed);
+        assert_eq!(stored.stage, Stage::Finish);
+        assert_eq!(stored.evidence.as_deref(), Some("CI passed on abc1234"));
     }
 
     #[test]
