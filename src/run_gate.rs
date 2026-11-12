@@ -30,6 +30,22 @@ pub(crate) struct GateResult {
     pub(crate) evidence: Option<String>,
     pub(crate) commit: Option<String>,
     pub(crate) ticket: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) check: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) skipped_checks: Vec<SkippedCheck>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SkippedCheck {
+    pub(crate) name: String,
+    pub(crate) reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CheckSnapshot {
+    pub(crate) rework: Option<u32>,
+    pub(crate) skipped: Vec<SkippedCheck>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -37,6 +53,28 @@ pub(crate) struct Record {
     pub(crate) gate: Gate,
     pub(crate) passed: bool,
     pub(crate) evidence: Option<String>,
+    #[serde(default)]
+    pub(crate) check: Option<String>,
+}
+
+pub(crate) fn parse_options(options: &[&str]) -> Result<(Option<String>, Option<String>), String> {
+    let mut evidence = None;
+    let mut check = None;
+    let mut remaining = options;
+    while !remaining.is_empty() {
+        match remaining {
+            ["--evidence", text, rest @ ..] if evidence.is_none() => {
+                evidence = Some((*text).to_string());
+                remaining = rest;
+            }
+            ["--check", name, rest @ ..] if check.is_none() => {
+                check = Some((*name).to_string());
+                remaining = rest;
+            }
+            _ => return Err("Use --check <name> and/or --evidence <text>".into()),
+        }
+    }
+    Ok((check, evidence))
 }
 
 pub(crate) fn head(run: &Run, git: &dyn Git) -> Result<String, String> {
@@ -68,11 +106,48 @@ pub(crate) fn record(run: &mut Run, record: Record, git: &dyn Git) -> Result<(),
             "A run can hold at most {MAX_GATE_RESULTS} gate results"
         ));
     }
-    let commit = if record.gate == Gate::Verified && record.passed {
+    let check_head_before = if record.gate == Gate::ChecksRecorded {
         Some(head(run, git)?)
     } else {
         None
     };
+    let skipped_checks = if record.gate == Gate::ChecksRecorded {
+        if run.stage != Stage::Check {
+            return Err("Record check results in the Check stage".into());
+        }
+        let mode = run.mode.ok_or("Record the run's mode first")?;
+        let paths = crate::run_next::changed_paths(run, git)?;
+        let selection = crate::checks::select(mode, &paths);
+        let name = record
+            .check
+            .as_deref()
+            .ok_or("Use --check <name> to identify the completed check")?;
+        if !selection
+            .applicable
+            .iter()
+            .any(|entry| entry.check.name == name && entry.check.gate.gate() == record.gate)
+        {
+            return Err(format!(
+                "Check {name:?} is not applicable to this gate and diff"
+            ));
+        }
+        skipped_snapshot(&selection)
+    } else {
+        if record.check.is_some() {
+            return Err("--check is only valid for checks-recorded".into());
+        }
+        Vec::new()
+    };
+    let commit = if matches!(record.gate, Gate::Verified | Gate::ChecksRecorded) && record.passed {
+        Some(head(run, git)?)
+    } else {
+        None
+    };
+    if let Some(before) = check_head_before
+        && head(run, git)? != before
+    {
+        return Err("The worktree HEAD changed while selecting checks; try again".into());
+    }
     let ticket = if record.gate == Gate::TicketsVerified {
         Some(
             run.current_ticket
@@ -90,8 +165,21 @@ pub(crate) fn record(run: &mut Run, record: Record, git: &dyn Git) -> Result<(),
         evidence: record.evidence,
         commit,
         ticket,
+        check: record.check,
+        skipped_checks,
     });
     Ok(())
+}
+
+fn skipped_snapshot(selection: &crate::checks::Selection) -> Vec<SkippedCheck> {
+    selection
+        .skipped
+        .iter()
+        .map(|entry| SkippedCheck {
+            name: entry.check.name.to_owned(),
+            reason: entry.reason.clone(),
+        })
+        .collect()
 }
 
 pub(crate) fn latest(run: &Run, gate: Gate) -> Option<&GateResult> {
@@ -99,6 +187,32 @@ pub(crate) fn latest(run: &Run, gate: Gate) -> Option<&GateResult> {
         .iter()
         .rev()
         .find(|r| r.gate == gate && r.stage == run.stage && r.rework == run.rework)
+}
+
+pub(crate) fn latest_check<'a>(run: &'a Run, gate: Gate, check: &str) -> Option<&'a GateResult> {
+    run.gates.iter().rev().find(|r| {
+        r.gate == gate
+            && r.stage == run.stage
+            && r.rework == run.rework
+            && r.check.as_deref() == Some(check)
+    })
+}
+
+pub(crate) fn checks_passed(
+    run: &Run,
+    selection: &crate::checks::Selection,
+    gate: Gate,
+    head: Option<&str>,
+) -> bool {
+    let Some(head) = head else { return false };
+    selection
+        .applicable
+        .iter()
+        .filter(|entry| entry.check.gate.gate() == gate)
+        .all(|entry| {
+            latest_check(run, gate, entry.check.name)
+                .is_some_and(|r| r.passed && r.commit.as_deref() == Some(head))
+        })
 }
 
 pub(crate) fn advance(run: &mut Run, git: &dyn Git, tool: &dyn pr_wait::Gh) -> Result<(), String> {
@@ -114,16 +228,18 @@ fn advance_with_clock(
     let mode = run.mode.ok_or("Record the run's mode first")?;
     let transition = stages::next(mode, run.stage, run.status)?;
     let mut failures = Vec::new();
-    let mut gates = transition.gates.to_vec();
-    if run.stage == Stage::Check {
+    let selection = if run.stage == Stage::Check {
         let paths = crate::run_next::changed_paths(run, git)?;
-        for check in crate::checks::select(mode, &paths).applicable {
-            if !gates.contains(&check.check.gate) {
-                gates.push(check.check.gate);
-            }
-        }
-    }
-    for gate in &gates {
+        Some(crate::checks::select(mode, &paths))
+    } else {
+        None
+    };
+    let check_head = if selection.is_some() {
+        Some(head(run, git)?)
+    } else {
+        None
+    };
+    for gate in transition.gates {
         let (result, remedy) = match gate {
             Gate::TicketsDone => (
                 require(
@@ -155,10 +271,12 @@ fn advance_with_clock(
             ),
             Gate::ChecksRecorded => (
                 require(
-                    latest(run, *gate).is_some_and(|r| r.passed),
-                    "No passing result was recorded",
+                    selection.as_ref().is_some_and(|selection| {
+                        checks_passed(run, selection, *gate, check_head.as_deref())
+                    }),
+                    "An applicable check has no passing result",
                 ),
-                "record `jidoka run gate <id> checks-recorded pass`",
+                "record each result with `jidoka run gate <id> checks-recorded pass --check <name>`",
             ),
             Gate::NoActionableFindings => (
                 require(
@@ -186,7 +304,23 @@ fn advance_with_clock(
     if !failures.is_empty() {
         return Err(format!("Cannot advance:\n{}", failures.join("\n")));
     }
+    if let Some(selection) = selection {
+        record_snapshot(run, &selection)?;
+    }
     apply(run, transition.to);
+    Ok(())
+}
+
+fn record_snapshot(run: &mut Run, selection: &crate::checks::Selection) -> Result<(), String> {
+    if run.check_history.len() >= MAX_GATE_RESULTS {
+        return Err(format!(
+            "A run can hold at most {MAX_GATE_RESULTS} check snapshots"
+        ));
+    }
+    run.check_history.push(CheckSnapshot {
+        rework: run.rework,
+        skipped: skipped_snapshot(selection),
+    });
     Ok(())
 }
 
@@ -365,6 +499,7 @@ mod tests {
             gate,
             passed,
             evidence: None,
+            check: (gate == Gate::ChecksRecorded).then(|| "code-review".to_owned()),
         }
     }
     fn host() -> FakeGh {
@@ -598,6 +733,12 @@ mod tests {
                     .contains("verified")
             );
             record(&mut run, result(Gate::Verified, true), &git).unwrap();
+            assert!(
+                advance(&mut run, &git, &host())
+                    .unwrap_err()
+                    .contains("checks-recorded")
+            );
+            record(&mut run, result(Gate::ChecksRecorded, true), &git).unwrap();
             advance(&mut run, &git, &host()).unwrap();
             assert_eq!(run.stage, Stage::Finish);
         }
@@ -741,5 +882,147 @@ mod tests {
         record(&mut run, result(Gate::Verified, true), &git).unwrap();
         advance(&mut run, &git, &host()).unwrap();
         assert_eq!(run.stage, Stage::Finish);
+    }
+    #[test]
+    fn check_results_are_independent_and_bound_to_the_reviewed_head() {
+        static A: crate::checks::Check = crate::checks::Check {
+            name: "a",
+            triggers: &[],
+            instructions: "a",
+            gate: crate::checks::CheckGate::Recorded,
+            model_route: None,
+            floor: &[],
+        };
+        static B: crate::checks::Check = crate::checks::Check {
+            name: "b",
+            triggers: &[],
+            instructions: "b",
+            gate: crate::checks::CheckGate::Recorded,
+            model_route: None,
+            floor: &[],
+        };
+        let selection = crate::checks::Selection {
+            applicable: vec![
+                crate::checks::Applicable {
+                    check: &A,
+                    reason: crate::checks::Reason::Floor,
+                },
+                crate::checks::Applicable {
+                    check: &B,
+                    reason: crate::checks::Reason::Floor,
+                },
+            ],
+            skipped: vec![],
+        };
+        let mut run = run(Stage::Check);
+        let result = |name: &str, passed| GateResult {
+            gate: Gate::ChecksRecorded,
+            stage: Stage::Check,
+            rework: None,
+            passed,
+            evidence: None,
+            commit: Some("head-1".into()),
+            ticket: None,
+            check: Some(name.into()),
+            skipped_checks: vec![],
+        };
+        run.gates.push(result("a", true));
+        assert!(!checks_passed(
+            &run,
+            &selection,
+            Gate::ChecksRecorded,
+            Some("head-1")
+        ));
+        run.gates.push(result("b", true));
+        assert!(checks_passed(
+            &run,
+            &selection,
+            Gate::ChecksRecorded,
+            Some("head-1")
+        ));
+        assert!(!checks_passed(
+            &run,
+            &selection,
+            Gate::ChecksRecorded,
+            Some("head-2")
+        ));
+        run.gates.push(result("b", false));
+        assert!(!checks_passed(
+            &run,
+            &selection,
+            Gate::ChecksRecorded,
+            Some("head-1")
+        ));
+        run.rework = Some(1);
+        assert!(!checks_passed(
+            &run,
+            &selection,
+            Gate::ChecksRecorded,
+            Some("head-1")
+        ));
+    }
+
+    #[test]
+    fn skipped_snapshot_survives_serialization_and_rework() {
+        static EXTRA: crate::checks::Check = crate::checks::Check {
+            name: "extra",
+            triggers: &["*.tf"],
+            instructions: "extra",
+            gate: crate::checks::CheckGate::Recorded,
+            model_route: None,
+            floor: &[],
+        };
+        let selection = crate::checks::Selection {
+            applicable: vec![],
+            skipped: vec![crate::checks::Skipped {
+                check: &EXTRA,
+                reason: "no matching path".into(),
+            }],
+        };
+        let mut run = run(Stage::Check);
+        record_snapshot(&mut run, &selection).unwrap();
+        let mut restored: Run =
+            serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
+        restored.rework = Some(1);
+        assert_eq!(restored.check_history[0].skipped[0].name, "extra");
+        assert_eq!(
+            restored.check_history[0].skipped[0].reason,
+            "no matching path"
+        );
+    }
+
+    #[test]
+    fn gate_options_accept_either_order_and_reject_duplicates() {
+        let expected = (Some("code-review".into()), Some("reviewed".into()));
+        assert_eq!(
+            parse_options(&["--check", "code-review", "--evidence", "reviewed"]).unwrap(),
+            expected
+        );
+        assert_eq!(
+            parse_options(&["--evidence", "reviewed", "--check", "code-review"]).unwrap(),
+            expected
+        );
+        assert!(parse_options(&["--check", "a", "--check", "b"]).is_err());
+    }
+
+    #[test]
+    fn recording_requires_an_applicable_named_check() {
+        let git = FakeGit(RefCell::new("abc1234".into()));
+        let mut run = run(Stage::Check);
+        run.mode = Some(Mode::Balanced);
+        let mut gate = result(Gate::ChecksRecorded, true);
+        gate.check = None;
+        assert!(
+            record(&mut run, gate, &git)
+                .unwrap_err()
+                .contains("--check")
+        );
+        let mut gate = result(Gate::ChecksRecorded, true);
+        gate.check = Some("nonexistent".into());
+        assert!(
+            record(&mut run, gate, &git)
+                .unwrap_err()
+                .contains("not applicable")
+        );
     }
 }

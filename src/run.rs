@@ -50,6 +50,8 @@ pub(crate) struct Run {
     #[serde(skip)]
     gate_generation: u64,
     pub(crate) gates: Vec<crate::run_gate::GateResult>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) check_history: Vec<crate::run_gate::CheckSnapshot>,
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) project: String,
@@ -929,6 +931,7 @@ impl RunStore {
         let run = Run {
             gate_generation: 0,
             gates: Vec::new(),
+            check_history: Vec::new(),
             id: id.to_string(),
             title: new.title,
             project: new.project,
@@ -1214,9 +1217,11 @@ impl RunStore {
             || serde_json::to_vec(&comparison).map_err(|e| e.to_string())?
                 != serde_json::to_vec(&original).map_err(|e| e.to_string())?
             || !current.gates.starts_with(&original.gates)
-            || current.gates[original.gates.len()..]
-                .iter()
-                .any(|gate| gate.gate == result.gate && gate.ticket == result.ticket)
+            || current.gates[original.gates.len()..].iter().any(|gate| {
+                gate.gate == result.gate
+                    && gate.ticket == result.ticket
+                    && gate.check == result.check
+            })
         {
             return Err("The run changed while checking gates; try again".into());
         }

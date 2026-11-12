@@ -453,24 +453,17 @@ fn run_with_cost(run: &Run) -> serde_json::Result<serde_json::Value> {
 fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
     let mut value = run_with_cost(run)?;
     value["stage_gates"] = serde_json::to_value(crate::run_next::stage_gates(run))?;
-    let paths = match (run.mode, &run.worktree, &run.base_commit) {
-        (None, _, _) => Err("Record the workflow mode to select checks".to_string()),
-        (Some(crate::run::Mode::Fast), _, _) => Ok(Vec::new()),
-        (_, None, _) => Err("Record the worktree to select checks".to_string()),
-        (_, _, None) => Err("Record the base commit to select checks".to_string()),
-        (_, Some(worktree), Some(base)) => {
-            use crate::pr_sync::Git;
-            let range = format!("{base}..HEAD");
-            crate::run_check::ReadOnlyGit
-                .git(
-                    std::path::Path::new(worktree),
-                    &["diff", "--name-only", &range],
-                )
-                .map(|out| out.lines().map(str::to_owned).collect())
-                .map_err(|error| {
-                    format!("Could not inspect the changed paths in {worktree}: {error}")
-                })
-        }
+    if let Some(snapshot) = run.check_history.last() {
+        value["recorded_skipped_checks"] = serde_json::to_value(&snapshot.skipped)?;
+        value["recorded_skipped_rework"] = serde_json::to_value(snapshot.rework)?;
+    } else if let Some(result) = run.gates.iter().rev().find(|result| result.check.is_some()) {
+        value["recorded_skipped_checks"] = serde_json::to_value(&result.skipped_checks)?;
+        value["recorded_skipped_rework"] = serde_json::to_value(result.rework)?;
+    }
+    let paths = match run.mode {
+        None => Err("Record the workflow mode to select checks".to_string()),
+        Some(crate::run::Mode::Fast) => Ok(Vec::new()),
+        Some(_) => crate::run_next::changed_paths(run, &crate::run_check::ReadOnlyGit),
     };
     match paths {
         Ok(paths) => {

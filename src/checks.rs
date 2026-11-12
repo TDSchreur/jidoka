@@ -9,6 +9,20 @@ use crate::{
     stages::Gate,
 };
 
+/// The completion gate for one selected Check.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CheckGate {
+    Recorded,
+}
+
+impl CheckGate {
+    pub(crate) fn gate(self) -> Gate {
+        match self {
+            Self::Recorded => Gate::ChecksRecorded,
+        }
+    }
+}
+
 /// One Check in the catalog.
 #[derive(Debug)]
 pub(crate) struct Check {
@@ -19,7 +33,7 @@ pub(crate) struct Check {
     /// Embedded instruction chunk delivered when this Check applies.
     pub(crate) instructions: &'static str,
     /// Stage gate that records completion of this Check.
-    pub(crate) gate: Gate,
+    pub(crate) gate: CheckGate,
     /// Policy stage whose model is used for this Check, if routed.
     pub(crate) model_route: Option<Stage>,
     /// Modes that always run the Check, whatever the diff touches.
@@ -30,7 +44,7 @@ pub(crate) const CATALOG: &[Check] = &[Check {
     name: "code-review",
     triggers: &[],
     instructions: include_str!("../stages/checks/code-review.md"),
-    gate: Gate::ChecksRecorded,
+    gate: CheckGate::Recorded,
     model_route: Some(Stage::Check),
     floor: &[Mode::Balanced, Mode::Full],
 }];
@@ -151,7 +165,7 @@ mod tests {
         name: "security",
         triggers: &["Cargo.toml", "*.tf", ".github/workflows/**"],
         instructions: "Security review instructions",
-        gate: Gate::ChecksRecorded,
+        gate: CheckGate::Recorded,
         model_route: None,
         floor: &[Mode::Full],
     };
@@ -160,7 +174,7 @@ mod tests {
         name: "code-review",
         triggers: &[],
         instructions: "Code review instructions",
-        gate: Gate::ChecksRecorded,
+        gate: CheckGate::Recorded,
         model_route: Some(Stage::Check),
         floor: &[Mode::Balanced, Mode::Full],
     };

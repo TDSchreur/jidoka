@@ -955,9 +955,10 @@ fn independent_gate_records_merge_but_run_changes_reject_stale_validation() {
                     .record_gate(
                         self.id,
                         Record {
-                            gate: Gate::ChecksRecorded,
+                            gate: Gate::NoActionableFindings,
                             passed: true,
                             evidence: None,
+                            check: None,
                         },
                         &crate::pr_sync::RealGit,
                     )
@@ -979,6 +980,7 @@ fn independent_gate_records_merge_but_run_changes_reject_stale_validation() {
         gate: Gate::Verified,
         passed: true,
         evidence: None,
+        check: None,
     };
     store
         .record_gate(
@@ -1004,7 +1006,7 @@ fn independent_gate_records_merge_but_run_changes_reject_stale_validation() {
         current
             .gates
             .iter()
-            .any(|gate| gate.gate == Gate::ChecksRecorded),
+            .any(|gate| gate.gate == Gate::NoActionableFindings),
         "independent gate should be preserved"
     );
     let error = store
@@ -1063,6 +1065,7 @@ fn gate_record_rejects_run_change_reverted_during_validation() {
                 gate: Gate::Verified,
                 passed: true,
                 evidence: None,
+                check: None,
             },
             &Revert {
                 store: &store,

@@ -214,7 +214,12 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .output()
         .map_err(|error| format!("git could not be started: {error}"))?;
     if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Ok(if args.contains(&"-z") {
+            stdout.into_owned()
+        } else {
+            stdout.trim().to_string()
+        });
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);

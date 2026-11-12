@@ -82,12 +82,17 @@ fn describe(gate: Gate) -> &'static str {
     }
 }
 
-fn open(run: &Run, gates: &[Gate]) -> Vec<OpenGate> {
+fn open(run: &Run, gates: &[Gate], paths: Option<&[String]>) -> Vec<OpenGate> {
     gates
         .iter()
         .filter(|&&gate| match gate {
             Gate::TicketsDone => !run.tickets.iter().all(|t| t.status == TicketStatus::Done),
-            Gate::ChecksRecorded | Gate::NoActionableFindings => {
+            Gate::ChecksRecorded => !paths.zip(run.mode).is_some_and(|(paths, mode)| {
+                let selection = checks::select(mode, paths);
+                let head = crate::run_gate::head(run, &crate::run_check::ReadOnlyGit).ok();
+                crate::run_gate::checks_passed(run, &selection, gate, head.as_deref())
+            }),
+            Gate::NoActionableFindings => {
                 !crate::run_gate::latest(run, gate).is_some_and(|r| r.passed)
             }
             Gate::Verified => !crate::run_gate::latest(run, gate).is_some_and(|r| {
@@ -138,6 +143,7 @@ pub(crate) fn stage_gates(run: &Run) -> Vec<StageGates> {
     let Some(mode) = run.mode else {
         return Vec::new();
     };
+    let changed_paths = changed_paths(run, &crate::run_check::ReadOnlyGit).ok();
     stages::stages(mode)
         .iter()
         .map(|&stage| {
@@ -145,7 +151,7 @@ pub(crate) fn stage_gates(run: &Run) -> Vec<StageGates> {
                 stages::next(mode, stage, RunStatus::Running).expect("stage belongs to mode");
             let current = stage == run.stage && run.status != RunStatus::Done;
             let open_gates = if current {
-                open(run, transition.gates)
+                open(run, transition.gates, changed_paths.as_deref())
             } else {
                 Vec::new()
             };
@@ -255,7 +261,7 @@ pub(crate) fn checks_for(
             .into_iter()
             .map(|a| CheckEntry {
                 name: a.check.name,
-                gate: Some(a.check.gate),
+                gate: Some(a.check.gate.gate()),
                 model: a
                     .check
                     .model_route
@@ -295,8 +301,8 @@ pub(crate) fn changed_paths(run: &Run, git: &dyn Git) -> Result<Vec<String>, Str
         .as_ref()
         .ok_or("Record the base commit to select checks")?;
     let range = format!("{base}..HEAD");
-    git.git(Path::new(worktree), &["diff", "--name-only", &range])
-        .map(|out| out.lines().map(str::to_string).collect())
+    git.git(Path::new(worktree), &["diff", "--name-only", "-z", &range])
+        .map(|out| out.split_terminator('\0').map(str::to_string).collect())
         .map_err(|error| format!("Could not inspect the changed paths in {worktree}: {error}"))
 }
 
@@ -313,15 +319,7 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
     let mut note = None;
     match stages::next(mode, run.stage, run.status) {
         Ok(transition) => {
-            let mut stage_gates = transition.gates.to_vec();
-            if run.stage == Stage::Check {
-                for entry in checks::select(mode, changed_paths).applicable {
-                    if !stage_gates.contains(&entry.check.gate) {
-                        stage_gates.push(entry.check.gate);
-                    }
-                }
-            }
-            gates = open(run, &stage_gates);
+            gates = open(run, transition.gates, Some(changed_paths));
             let (kind, to) = match transition.to {
                 Destination::Stage(stage) => ("stage", Some(stage)),
                 Destination::Done => ("done", None),
@@ -329,7 +327,7 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
             moves.push(Move {
                 kind,
                 to,
-                gates: open(run, &stage_gates),
+                gates: open(run, transition.gates, Some(changed_paths)),
             });
             if let Ok(rework) = stages::rework(mode, run.stage, run.status)
                 && let Destination::Stage(stage) = rework.to
@@ -337,7 +335,7 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
                 moves.push(Move {
                     kind: "rework",
                     to: Some(stage),
-                    gates: open(run, rework.gates),
+                    gates: open(run, rework.gates, Some(changed_paths)),
                 });
             }
         }
@@ -446,9 +444,13 @@ pub(crate) fn render(next: &Next) -> String {
         out.push_str("\nRecorded gate results\n");
         for result in &next.gate_results {
             out.push_str(&format!(
-                "  {}  {}{}{}\n",
+                "  {}  {}{}{}{}\n",
                 if result.passed { "pass" } else { "fail" },
                 shown_name(result.gate),
+                result
+                    .check
+                    .as_ref()
+                    .map_or(String::new(), |s| format!(" (check {})", shown(s))),
                 result
                     .ticket
                     .as_ref()

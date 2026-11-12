@@ -151,13 +151,19 @@ fn next_shows_recorded_results_and_only_open_review_gates() {
         evidence: Some("reviewed".into()),
         commit: None,
         ticket: None,
+        check: Some("code-review".into()),
+        skipped_checks: Vec::new(),
     });
     let next = build(&run, &[]).unwrap();
     assert_eq!(
         names(&next.gates),
-        [Gate::NoActionableFindings, Gate::Verified]
+        [
+            Gate::ChecksRecorded,
+            Gate::NoActionableFindings,
+            Gate::Verified
+        ]
     );
-    assert!(render(&next).contains("pass  checks-recorded: reviewed"));
+    assert!(render(&next).contains("pass  checks-recorded (check code-review): reviewed"));
     assert_eq!(
         serde_json::to_value(&next).unwrap()["gate_results"][0]["passed"],
         true
@@ -260,4 +266,74 @@ fn check_selection_reports_missing_context_and_diff_failure() {
     let error = changed_paths(&run, &FailingDiff).unwrap_err();
     assert!(error.contains("/work/repo"));
     assert!(error.contains("git diff failed"));
+}
+
+struct NullDiff;
+
+impl Git for NullDiff {
+    fn git(&self, _dir: &Path, args: &[&str]) -> Result<String, String> {
+        assert_eq!(args, ["diff", "--name-only", "-z", "abc..HEAD"]);
+        Ok(" leading.txt\0line\nbreak.tf\0ümlaut.tf\0".into())
+    }
+}
+
+#[test]
+fn changed_paths_preserves_unusual_names() {
+    let mut run = run(Mode::Balanced, Stage::Check, None);
+    run.worktree = Some("/work/repo".into());
+    run.base_commit = Some("abc".into());
+    assert_eq!(
+        changed_paths(&run, &NullDiff).unwrap(),
+        [" leading.txt", "line\nbreak.tf", "ümlaut.tf"]
+    );
+}
+
+#[test]
+fn git_diff_preserves_leading_whitespace_and_unicode_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .current_dir(dir.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", dir.path().join("no-config"))
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    git(&["init", "-q"]);
+    let commit = |message| {
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            message,
+        ])
+    };
+    commit("base");
+    let base = git(&["rev-parse", "HEAD"]);
+    std::fs::write(dir.path().join(" leading.txt"), "one").unwrap();
+    std::fs::write(dir.path().join("ümlaut.tf"), "two").unwrap();
+    git(&["add", "--all"]);
+    commit("change");
+    let mut run = run(Mode::Balanced, Stage::Check, None);
+    run.worktree = Some(dir.path().to_string_lossy().into_owned());
+    run.base_commit = Some(base);
+    let paths = changed_paths(&run, &crate::run_check::ReadOnlyGit).unwrap();
+    assert!(paths.contains(&" leading.txt".to_string()));
+    assert!(paths.contains(&"ümlaut.tf".to_string()));
 }
