@@ -205,7 +205,12 @@ fn instructions(mode: Mode, stage: Stage, routing: Option<RoutingAgent>) -> Stri
     let shared: &[&str] = match stage {
         Stage::Define => &["stage-reporting", "define-rules", "tracker-setup"],
         Stage::Build => &["stage-reporting", "verification", "skill-change"],
-        Stage::Check => &["stage-reporting", "verification", "committing-for-check"],
+        Stage::Check => &[
+            "stage-reporting",
+            "verification",
+            "committing-for-check",
+            "check-review",
+        ],
         Stage::Finish => &["stage-reporting", "finish"],
     };
     let routed = routing.map(|agent| match agent {
