@@ -5,7 +5,7 @@ Before Check, after the appropriate iteration checks, commit everything that bel
 
 ## Reworks
 
-A Rework is the one stage change that does not use `jidoka run advance`: run `jidoka run update <id> running --rework <n> --activity "Rework <n>: <findings being fixed>"` while the run is in Check, and it returns to Build. Report it as a Rework: `jidoka run update <id> running --rework <n> --activity "Rework <n>: <findings being fixed>"`, numbering Reworks from 1 within the run and leaving the count set when Check runs again. A run gets at most three Reworks.
+A Rework is the one stage change that does not use `jidoka run advance`: while the run is in Check, run `jidoka run update <id> running --rework <n> --activity "Rework <n>: <findings being fixed>"`, and the run returns to Build. Number Reworks from 1 within the run and leave the count set when Check runs again. A run gets at most three Reworks.
 
 Fix actionable findings yourself within the Rework allowance; findings alone never block a run. Reworks 1 and 2 fix the actionable findings.
 

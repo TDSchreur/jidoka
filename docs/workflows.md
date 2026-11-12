@@ -41,7 +41,7 @@ Each workflow skill is a short bootstrap: the agent runs `jidoka run next <id>`,
 | `/jidoka-balanced` | Define, Build, Check, Finish, with a Rework loop | Build: all tickets done. Check: `checks-recorded`, `no-actionable-findings` (otherwise Rework to Build) and `verified` on the reviewed HEAD. Finish: as above. |
 | `/jidoka-full` | Same as balanced | As balanced, plus a passing `tickets-verified` for each ticket before leaving Build. |
 
-In Check, `jidoka run next` lists the applicable checks and the skipped ones with a reason. A check is chosen from the changed paths since the run's base commit; the mode sets the floor (Full both reviews, Balanced one code review, Fast none).
+In Check, `jidoka run next` lists the applicable checks and the skipped ones with a reason. A check applies when the mode always runs it or when a path changed since the run's base commit matches its triggers. Balanced and Full always run the code review; Fast has no Check stage. `run next` does not list the security review: in both modes the agent runs it when the change meaningfully affects a security boundary or sensitive data flow, and says why when it skips it.
 
 The diagram shows the skills each mode runs, through Finish and the CI watch. Arrows between stages are labeled with the mode that takes them; `/jidoka-balanced` and `/jidoka-fast` run each Define skill only in the cases the table lists. Dotted lines show skills that another skill loads or applies, and the Rework loop from Check back to Build.
 
