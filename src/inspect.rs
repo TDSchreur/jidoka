@@ -149,13 +149,23 @@ fn observed_line(requested: &ModelChoice, stage: Stage, usage: Option<&Usage>) -
     )
 }
 
-/// Whether the request is met by what was observed.
+/// Whether the request is met by what was observed. Only subagents are routed, so their models are judged;
+/// a stage with only coordinator usage is neutral.
 fn verdict(requested: &ModelChoice, seen: &[Seen], partial: bool) -> String {
+    let model = shown(&requested.model);
+    let subagent_stage = seen.iter().any(|s| s.subagents);
     let matching: Vec<&Seen> = seen
         .iter()
-        .filter(|s| model_matches(&requested.model, s.model))
+        .filter(|s| s.subagents == subagent_stage && model_matches(&requested.model, s.model))
         .collect();
-    let model = shown(&requested.model);
+    if !subagent_stage {
+        let partial_note = if partial { "; usage is partial" } else { "" };
+        return match (matching.is_empty(), partial) {
+            (true, false) => "kept on the coordinator".to_string(),
+            (true, true) => "kept on the coordinator (usage is partial)".to_string(),
+            (false, _) => format!("matches the request (kept on the coordinator{partial_note})"),
+        };
+    }
     if matching.is_empty() {
         return if partial {
             format!("{model} not observed (usage is partial, so it may be missing)")
@@ -481,7 +491,7 @@ mod tests {
         // No effort was requested for build, so the observed one is only shown.
         assert_eq!(
             observed(&text, "build"),
-            "observed: claude-sonnet-5-5 (effort medium); matches the request"
+            "observed: claude-sonnet-5-5 (effort medium); matches the request (kept on the coordinator)"
         );
     }
 
@@ -513,7 +523,7 @@ mod tests {
         ));
         assert_eq!(
             observed(&text, "build"),
-            "observed: claude-sonnet-5-5; matches the request"
+            "observed: claude-sonnet-5-5; matches the request (kept on the coordinator)"
         );
         // The coordinator ran on Sonnet, the review agents on Opus: the request is met.
         assert_eq!(
@@ -526,7 +536,22 @@ mod tests {
     }
 
     #[test]
-    fn a_request_that_was_never_observed_is_flagged_as_a_mismatch() {
+    fn subagents_on_another_model_are_a_mismatch_even_when_the_coordinator_matches() {
+        let text = render(&with_usage(
+            "tracked",
+            &[
+                ("check", "claude-opus-5-5", false),
+                ("check", "claude-sonnet-5-5", true),
+            ],
+        ));
+        assert_eq!(
+            observed(&text, "check"),
+            "observed: claude-opus-5-5, claude-sonnet-5-5 (+subagents); MISMATCH: opus was requested and never observed"
+        );
+    }
+
+    #[test]
+    fn a_coordinator_only_stage_is_neutral() {
         let text = render(&with_usage(
             "tracked",
             &[
@@ -536,10 +561,15 @@ mod tests {
         ));
         assert_eq!(
             observed(&text, "check"),
-            "observed: claude-sonnet-5-5; MISMATCH: opus was requested and never observed"
+            "observed: claude-sonnet-5-5; kept on the coordinator"
         );
+        assert!(!text.contains("MISMATCH"), "{text}");
+        let mut high = with_usage("tracked", &[("check", "claude-opus-5-5", false)]);
+        set_efforts(&mut high, Stage::Check, "claude-opus-5-5", &["low"]);
+        let text = render(&high);
+        assert!(!text.contains("MISMATCH"), "{text}");
         assert!(
-            observed(&text, "build").ends_with("matches the request"),
+            text.contains("matches the request (kept on the coordinator)"),
             "{text}"
         );
     }
@@ -552,7 +582,7 @@ mod tests {
         ))
         .unwrap();
         run.usage.as_mut().unwrap().rows.push(row);
-        assert!(observed(&render(&run), "build").ends_with("matches the request"));
+        assert!(observed(&render(&run), "build").contains("matches the request"));
     }
 
     #[test]

@@ -973,7 +973,7 @@ fn codex_models_without_an_official_price_stay_unknown_and_make_totals_partial()
 }
 
 #[test]
-fn completed_routed_stage_persists_model_warning_without_duplicates() {
+fn completed_routed_stage_with_only_coordinator_usage_adds_no_model_warning() {
     let world = World::new();
     let path = world.dir.path().join("runs.json");
     fs::write(&path, json!([{ "id": RUN_A, "title": "task", "gates": [], "project": "/p", "stage": "build", "status": "running",
@@ -1028,7 +1028,5 @@ fn completed_routed_stage_persists_model_warning_without_duplicates() {
         .get(RUN_A)
         .unwrap()
         .unwrap();
-    assert_eq!(reopened.run_reports.len(), 1);
-    assert!(reopened.run_reports[0].text.contains("claude-opus-5"));
-    assert!(crate::inspect::render(&reopened).contains("Model routing warning"));
+    assert!(reopened.run_reports.is_empty());
 }

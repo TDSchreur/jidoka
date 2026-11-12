@@ -675,7 +675,7 @@ function ModelRouting() {
         </li>
         <li>
           <${Code}>jidoka run inspect ${'<id>'}<//> shows, per Stage, the requested model and effort next to the models and
-          efforts the Run’s logs show. When usage is fully tracked, a model that was never observed reads <${Code}>MISMATCH<//>, and so does an effort that differs from the one requested. With partial usage it reads "not observed", because the data may be missing, and a log that records no effort reads "effort not recorded".
+          efforts the Run’s logs show. Only subagents are routed, so it judges the models and efforts subagents used. When usage is fully tracked and subagents ran, a model that was never observed reads <${Code}>MISMATCH<//>, and so does an effort that differs from the one requested. A Stage with only coordinator usage reads "kept on the coordinator" and is never a mismatch. With partial usage it reads "not observed", because the data may be missing, and a log that records no effort reads "effort not recorded".
         </li>
         <li>
           To give one Stage another model for one Run, use${' '}
