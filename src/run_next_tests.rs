@@ -386,3 +386,48 @@ fn past_check_gate_uses_completed_snapshot_not_one_individual_result() {
     run.rework = Some(1);
     assert_eq!(status(&run)["status"], "unknown");
 }
+
+#[test]
+fn finished_run_shows_merged_ci_and_done_tickets_as_recorded() {
+    let mut run = run(Mode::Fast, Stage::Finish, None);
+    run.tickets.clear();
+    run.status = RunStatus::Done;
+    run.pr_status = Some(crate::pr_state::PrStatus {
+        url: "https://example.test/pr/1".into(),
+        state: crate::pr_state::PrState::Merged,
+        reason: None,
+        checked_at: 0,
+    });
+    let stages = serde_json::to_value(stage_gates(&run)).unwrap();
+    let gate = |stage: &str, name: &str| {
+        stages
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["stage"] == stage)
+            .unwrap()["gates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    let ci = gate("finish", "ci-passed");
+    assert_eq!(ci["status"], "recorded-pass");
+    assert_eq!(ci["evidence"], "Pull request merged");
+    assert_eq!(gate("build", "tickets-done")["status"], "recorded-pass");
+
+    // A stage the run has not reached yet stays unknown, even with every ticket done.
+    run.status = RunStatus::Running;
+    run.stage = Stage::Define;
+    let stages = serde_json::to_value(stage_gates(&run)).unwrap();
+    let build = stages
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["stage"] == "build")
+        .unwrap();
+    assert_eq!(build["gates"][0]["name"], "tickets-done");
+    assert_eq!(build["gates"][0]["status"], "unknown");
+}
