@@ -472,12 +472,15 @@ return {
         fixture = {**ACTIVE, "stage_gates": [{"stage": "build", "gates": [
             {"name": "verified", "status": "failed", "description": "verification passed", "evidence": "Tests failed", "rework": 2},
         ]}, {"stage": "finish", "gates": [{"name": "ci-passed", "status": "unknown", "description": "CI passed"}]}],
-            "checks": {"skipped": [{"name": "code-review", "reason": "fast has no check stage"}]}}
+            "checks": {"skipped": [{"name": "code-review", "reason": "fast has no check stage"}]},
+            "recorded_skipped_checks": [{"name": "security", "reason": "no matching path"}],
+            "recorded_skipped_rework": 2}
         result = drive("""
 const dialog = await openRun('run-active');
 await wait(() => dialog.querySelector('[aria-labelledby="gate-heading"]'), 'gate status');
 return {gates: text(dialog.querySelector('[aria-labelledby="gate-heading"]')),
         skipped: text(dialog.querySelector('[aria-labelledby="skipped-heading"]')),
+        recorded: text(dialog.querySelector('[aria-labelledby="recorded-skipped-heading"]')),
         headings: [...dialog.querySelectorAll('h3, h4')].map(text)};
 """, runs=[fixture])
         self.assertIn("verified: failed", result["gates"])
@@ -485,6 +488,8 @@ return {gates: text(dialog.querySelector('[aria-labelledby="gate-heading"]')),
         self.assertIn("Rework 2", result["gates"])
         self.assertIn("ci-passed: Unknown", result["gates"])
         self.assertIn("code-review: fast has no check stage", result["skipped"])
+        self.assertIn("Checks skipped when recorded · Rework 2", result["recorded"])
+        self.assertIn("security: no matching path", result["recorded"])
         self.assertIn("Stage gates", result["headings"])
 
     def test_slow_detail_response_survives_list_refresh(self):

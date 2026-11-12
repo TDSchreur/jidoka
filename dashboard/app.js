@@ -988,6 +988,10 @@ function Detail({ run, now, onClose, onDelete, onSynced }) {
         <h3 id="skipped-heading">Checks currently skipped</h3>
         <ul>${gateData.checks.skipped.map((check) => html`<li>${check.name}: ${check.reason}</li>`)}</ul>
       </section>` : null}
+      ${gateData?.recorded_skipped_checks?.length ? html`<section aria-labelledby="recorded-skipped-heading">
+        <h3 id="recorded-skipped-heading">Checks skipped when recorded${gateData.recorded_skipped_rework ? ` · Rework ${gateData.recorded_skipped_rework}` : ''}</h3>
+        <ul>${gateData.recorded_skipped_checks.map((check) => html`<li>${check.name}: ${check.reason}</li>`)}</ul>
+      </section>` : null}
       <ol class="route" aria-label="Route">
         ${placed
           ? passes.map((pass, index) => html`<${Pass} key=${index} run=${run} pass=${pass} placed=${placed.placed[index]} now=${now} />`)

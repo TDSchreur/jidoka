@@ -135,7 +135,11 @@ impl Git for ReadOnlyGit {
         let output = Self::output(dir, args)?;
         let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_string();
         if output.status.success() {
-            Ok(text(&output.stdout))
+            if args.contains(&"-z") {
+                Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+            } else {
+                Ok(text(&output.stdout))
+            }
         } else if output.stderr.is_empty() {
             Err(text(&output.stdout))
         } else {

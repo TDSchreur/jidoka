@@ -6,7 +6,7 @@ When there are actionable findings, start a Rework: return to Build, fix the fin
 
 When no actionable findings remain, record Check's gates; `jidoka run advance` refuses to leave Check until all three pass:
 
-1. Record completed checks with `jidoka run gate <id> checks-recorded pass`.
+1. Record each completed check with `jidoka run gate <id> checks-recorded pass --check <name>`; use the names listed by `run next`.
 2. Record `jidoka run gate <id> no-actionable-findings pass`.
 3. Run the project's full verification on the clean, final reviewed commit and record it with `jidoka run gate <id> verified pass`. Finish can reuse this result while the checked code and relevant inputs remain unchanged.
 
