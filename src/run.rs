@@ -887,9 +887,11 @@ struct Shared {
     collection: Collection,
 }
 
-/// The run as gates read it, serialized for comparing a snapshot with the stored run. Fields gates never
-/// read and background collectors write meanwhile (PR status, usage, run reports, timestamps) are blanked,
-/// so they cannot make a slow gate check fail spuriously.
+/// Serializes the parts of a run that gates read.
+///
+/// Fields gates never read and background collectors write meanwhile (PR status, usage, run reports,
+/// timestamps) are blanked, so they cannot make a slow gate check fail spuriously. `change_gate` keeps the
+/// stored values of these fields when it saves.
 fn gate_view(run: &Run) -> Result<Vec<u8>, String> {
     let mut view = run.clone();
     view.pr_status = None;
@@ -1266,7 +1268,7 @@ impl RunStore {
             .ok_or_else(|| format!("Run {id} not found"))?;
         let snapshot = gate_view(&original)?;
         let generation = original.gate_generation;
-        let original_reports = original.run_reports.len();
+        let original_report_count = original.run_reports.len();
         let mut next = original;
         change(&mut next)?;
         let now = updated_now().map_err(|e| format!("Could not read the time: {e}"))?;
@@ -1285,10 +1287,14 @@ impl RunStore {
         if current.gate_generation != generation || gate_view(current)? != snapshot {
             return Err("The run changed while checking gates; try again".into());
         }
-        // Keep what the collectors stored meanwhile; the change itself only appends reports.
+        // Keep what the collectors stored meanwhile (the fields `gate_view` blanks); the change only appends reports.
         let mut reports = current.run_reports.clone();
-        reports.extend(next.run_reports.iter().skip(original_reports).cloned());
-        reports.truncate(MAX_REPORTS_PER_RUN);
+        reports.extend(next.run_reports.iter().skip(original_report_count).cloned());
+        if reports.len() > MAX_REPORTS_PER_RUN {
+            return Err(format!(
+                "A run can hold at most {MAX_REPORTS_PER_RUN} run reports"
+            ));
+        }
         next.run_reports = reports;
         next.pr_status = current.pr_status.clone();
         next.usage = current.usage.clone();
