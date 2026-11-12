@@ -1,6 +1,6 @@
 ---
 name: jidoka-setup
-description: "Configure this repo for the engineering skills: set up its issue tracker, triage label vocabulary, and domain doc layout. Run once before first use of the other engineering skills."
+description: "Configure this repo for the engineering skills: set up its issue tracker, triage label vocabulary, domain doc layout, and verification commands. Run once before first use of the other engineering skills."
 disable-model-invocation: true
 ---
 
@@ -11,6 +11,7 @@ Scaffold the per-repo configuration that the engineering skills assume:
 - **Issue tracker**: where issues live (GitHub by default; Azure Boards and local markdown are the other two)
 - **Triage labels**: the strings used for the five canonical triage roles
 - **Domain docs**: where `GLOSSARY.md` and ADRs live, and the consumer rules for reading them
+- **Verification**: the project checks to run before merging
 
 This is a prompt-driven skill, not a deterministic script. Explore, present what you found, confirm with the user, then write.
 
@@ -27,6 +28,7 @@ Look at the current repo to understand its starting state. Read whatever exists;
 - `docs/agents/`: does this skill's prior output already exist?
 - `.scratch/`: a sign that a local-markdown issue tracker convention is already in use
 - Is the `jidoka-triage` skill installed? (a `jidoka-triage` skill folder alongside this one, or `jidoka-triage` in your available skills.) This decides whether Section B runs at all.
+- Verification instructions in agent instructions, contributing docs, build files and CI: which commands check formatting, linting, tests and other required checks? Distinguish quick checks from the full pre-merge verification.
 - Monorepo signals: a `pnpm-workspace.yaml`, a `workspaces` field in `package.json`, or a populated `packages/*` with its own `src/`. These are present only in a genuinely large multi-package repo; their absence means single-context, which is almost every repo.
 
 ### 2. Present findings and ask
@@ -73,10 +75,15 @@ The defaults are the five canonical roles, each label string equal to its name: 
 
 Offer **multi-context** (a root `GLOSSARY-MAP.md` pointing to per-context `GLOSSARY.md` files) only when exploration found monorepo signals. Then confirm which layout they want.
 
+**Section D: Verification commands.**
+
+Present the checks found during exploration and recommend the complete set required before merging, including any relevant platform-specific checks. Ask the user to confirm or correct them. If none can be inferred, ask the user which commands to run; do not invent commands. If the user has no verification commands, explain that Doctor will report them missing and continue without creating an empty section.
+
 ### 3. Confirm and edit
 
 Show the user a draft of:
 
+- The agreed `## Commands` section or changes to it, if any
 - The `## Agent skills` block to add to whichever of `CLAUDE.md` / `AGENTS.md` is being edited (see step 4 for selection rules)
 - The contents of `docs/agents/issue-tracker.md`, `docs/agents/domain.md`, and `docs/agents/triage-labels.md` (the last only when `jidoka-triage` is installed)
 
@@ -93,6 +100,8 @@ Let them edit before writing.
 Never create `AGENTS.md` when `CLAUDE.md` already exists (or vice versa); always edit the one that's already there.
 
 If an `## Agent skills` block already exists in the chosen file, update its contents in-place rather than appending a duplicate. Don't overwrite user edits to the surrounding sections.
+
+Record the agreed verification commands under `## Commands` in `AGENTS.md` if it exists, otherwise in the chosen instruction file. Doctor reads `AGENTS.md` first when both files exist. Put one command per bullet in inline code (for example, `- Test: ` followed by the command in backticks). Distinguish quick checks from full pre-merge verification when applicable. Preserve existing instructions and unrelated commands; update an existing section in place instead of adding a duplicate. Doctor reads command snippets in bullets under this heading, so keep explanatory inline code out of those bullets. If the user provided no commands, leave the section unchanged.
 
 The block:
 
@@ -126,4 +135,4 @@ Then write the docs files using the seed templates in this skill folder as a sta
 
 ### 5. Done
 
-Tell the user the setup is complete and which engineering skills will now read from these files. Mention they can edit `docs/agents/*.md` directly later; re-running this skill is only necessary if they want to switch issue trackers or restart from scratch.
+Tell the user the setup is complete, where the verification commands were recorded, and which engineering skills will now read from these files. If no commands were provided, mention that verification remains unconfigured. Mention they can edit `docs/agents/*.md` directly later; re-running this skill is only necessary if they want to switch issue trackers or restart from scratch.

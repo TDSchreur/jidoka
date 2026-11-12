@@ -60,7 +60,7 @@ Windows Defender sometimes flags the unsigned Windows build; see [what to do](do
 
    | Mode | Use it for |
    | --- | --- |
-   | `/jidoka-full` | Risky or unclear work: an interview, a spec and tickets, test-first, code and security review. |
+   | `/jidoka-full` | Risky or unclear work: an interview, a spec and tickets, project-directed tests and code review. |
    | `/jidoka-balanced` | Everyday features and fixes: a short plan, tests after the code, one code review. |
    | `/jidoka-fast` | Small, clear changes: no review stage, but still verified and green in CI. |
 
@@ -100,7 +100,7 @@ Free code signing provided by [SignPath.io](https://about.signpath.io), certific
 
 This program will not transfer any information to other networked systems unless specifically requested by the user.
 
-- `jidoka check` contacts GitHub Releases; the release installers download from GitHub Releases too.
+- The release installers download from GitHub Releases too.
 - `jidoka run begin` fetches the chosen base from the repository's configured Git remote. `jidoka pr open` and `jidoka pr sync` fetch or push to that remote as needed.
 - `jidoka pr open`, `jidoka pr sync`, `jidoka pr wait`, `jidoka run sync`, `jidoka run cleanup`, and the dashboard use `gh` or `az` to access the user's pull requests and CI on GitHub or Azure DevOps. The dashboard may refresh recorded pull request status while running. `jidoka doctor` checks the selected provider's CLI and authentication status.
 

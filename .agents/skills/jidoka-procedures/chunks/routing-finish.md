@@ -1,0 +1,1 @@
+Finish: for Fast or a small, clear request planned in the conversation without a spec or tickets, keep Finish on the coordinator. Otherwise route PR text and CI fixes. The coordinator opens the PR and watches and syncs CI.

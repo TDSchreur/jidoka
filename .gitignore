@@ -2,3 +2,4 @@
 /.jidoka/
 __pycache__/
 /.scratch/
+.idea/

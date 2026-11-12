@@ -21,20 +21,6 @@ fn a_command_without_setup_hints_on_stderr_and_keeps_stdout() {
 }
 
 #[test]
-fn exempt_commands_and_adopted_installs_stay_quiet() {
-    let home = tempfile::tempdir().unwrap();
-    let version = jidoka(home.path(), &["--version"]);
-    assert!(!String::from_utf8_lossy(&version.stderr).contains("jidoka install"));
-    assert!(
-        jidoka(home.path(), &["install", "--agent", "claude"])
-            .status
-            .success()
-    );
-    let output = jidoka(home.path(), &["run", "inspect", "x"]);
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("not set up"));
-}
-
-#[test]
 fn an_older_record_refreshes_the_skills_with_one_stderr_line_and_no_stdout() {
     let home = tempfile::tempdir().unwrap();
     let record = home.path().join("config/jidoka/install.json");

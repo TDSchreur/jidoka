@@ -9,7 +9,8 @@
 
 use crate::{
     request_logs::{
-        Category, Request, RequestRead, SessionRequests, classify, result_bytes, truncate,
+        Category, Request, RequestRead, SessionRequests, Variables, classify, result_bytes,
+        run_claims, truncate,
     },
     usage::Tokens,
     usage_logs::{
@@ -41,6 +42,35 @@ struct Usage {
 
 /// A session's id, the runs it claims and its requests with their keys.
 type ParsedSession = (String, HashSet<String>, Vec<(String, Request)>);
+
+/// The run ids in `ids` that a Copilot log names: those written right after a run command, and those a
+/// bash command reaches through a shell variable set to a literal (`id=<id> && jidoka run update $id`),
+/// with variables carried across the commands in order.
+pub(crate) fn copilot_claims(text: &str, ids: &HashSet<&str>) -> HashSet<String> {
+    let mut claims = mentioned_runs(text, ids);
+    let mut variables = Variables::new();
+    for line in text
+        .lines()
+        .filter(|line| line.contains("\"assistant.message\""))
+    {
+        let Ok(data) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        for request in data["data"]["toolRequests"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            if let (true, Some(command)) = (
+                request["name"] == "bash",
+                request["arguments"]["command"].as_str(),
+            ) {
+                claims.extend(run_claims(truncate(command), ids, &mut variables));
+            }
+        }
+    }
+    claims
+}
 
 /// The requests of one log, keyed by `apiCallId` (or by line when a record has none).
 fn parse_events(text: &str, session: &str) -> (BTreeMap<String, Request>, usize) {
@@ -215,7 +245,7 @@ pub(crate) fn read_copilot_requests(
             }
         };
         bytes += text.len() as u64;
-        let claims = mentioned_runs(&text, ids);
+        let claims = copilot_claims(&text, ids);
         if claims.is_empty() && !is_recorded {
             continue;
         }

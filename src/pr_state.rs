@@ -203,8 +203,10 @@ pub(crate) const CLOSED_REASON: &str = "PR closed without merge";
 /// Anything else, including an unreachable host, leaves the run as it is.
 pub(crate) fn follow_up(run: &Run, state: PrState) -> Option<UpdateRun> {
     let mut update = match (state, run.status) {
-        (PrState::Merged, RunStatus::Running | RunStatus::Blocked) => {
-            let mut update = UpdateRun::new(Stage::Finish, RunStatus::Done);
+        (PrState::Merged, RunStatus::Running | RunStatus::Blocked)
+            if run.stage == Stage::Finish =>
+        {
+            let mut update = UpdateRun::new(RunStatus::Done);
             update.blocking_reason = FieldUpdate::Clear;
             // Finish cannot be done without a summary; keep the agent's when it wrote one.
             if !run.summaries.contains_key(&Stage::Finish) {
@@ -215,7 +217,7 @@ pub(crate) fn follow_up(run: &Run, state: PrState) -> Option<UpdateRun> {
             update
         }
         (PrState::Closed, RunStatus::Running) => {
-            let mut update = UpdateRun::new(Stage::Finish, RunStatus::Blocked);
+            let mut update = UpdateRun::new(RunStatus::Blocked);
             update.blocking_reason = FieldUpdate::Set(CLOSED_REASON.into());
             update
         }

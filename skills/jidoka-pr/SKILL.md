@@ -36,9 +36,9 @@ Use this template for writing the PR body:
 
 <optional: potential ramifications of merge>
 
-## Remaining review findings
+## Review
 
-<optional: one bullet per unresolved finding, with file and line>
+<optional: the reviews that ran and their outcome, skipped reviews with the reason, and remaining findings>
 ```
 
 ## Title
@@ -99,6 +99,10 @@ Describe whether it's a one-way or two-way door. You can walk back through two-w
 
 The blast radius is the potential impact or scope of the changes introduced by this PR. Consider all possibilities. Examples are layout shift, breakages for consumers, mobile responsiveness, etc.
 
-### Remaining review findings
+### Review
 
-Include this section only when the work finished with review findings still unresolved, for example because the user chose to finish with them listed. Give one bullet per finding with its file and line, and keep the finding's wording. Leave the section out otherwise.
+This section is the pull request's record of the review done before it was opened, so a reader can see what was checked without the agent session. Include it when you were given review results, or when the work deliberately ran without a review. Leave it out when you know nothing about a review.
+
+- One bullet per review that ran: its name, the commit or range it covered, and its outcome (no actionable findings, or how many findings were fixed and in how many rounds).
+- One bullet per review that was skipped, with the reason.
+- When the work finished with review findings still unresolved, for example because the user chose to finish with them listed, add a **Remaining findings:** list with one bullet per finding, its file and line, keeping the finding's wording.

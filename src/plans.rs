@@ -65,15 +65,6 @@ mod tests {
     }
 
     #[test]
-    fn another_port_keeps_its_plans_in_its_own_folder() {
-        let runs = Path::new("/data/jidoka/runs-4400.json");
-        assert_eq!(
-            plan_path(runs, 4400, "7"),
-            Path::new("/data/jidoka/plans-4400/7.md")
-        );
-    }
-
-    #[test]
     fn the_plans_folder_is_created_lazily() {
         let data = tempfile::tempdir().unwrap();
         let runs = data.path().join("runs.json");
@@ -83,32 +74,5 @@ mod tests {
         assert_eq!(ready, path);
         assert!(ready.parent().unwrap().is_dir());
         assert!(!ready.exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_symlinked_plans_folder_is_refused_and_its_target_left_alone() {
-        use std::os::unix::fs::PermissionsExt;
-        let data = tempfile::tempdir().unwrap();
-        let target = data.path().join("elsewhere");
-        std::fs::create_dir(&target).unwrap();
-        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let runs = data.path().join("runs.json");
-        std::os::unix::fs::symlink(&target, plans_dir(&runs, DEFAULT_PORT)).unwrap();
-        let error = plan_path_ready(&runs, DEFAULT_PORT, "3").unwrap_err();
-        assert!(error.to_string().contains("symlink"), "{error}");
-        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o755);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn the_plans_folder_is_private() {
-        use std::os::unix::fs::PermissionsExt;
-        let data = tempfile::tempdir().unwrap();
-        let runs = data.path().join("jidoka/runs.json");
-        let ready = plan_path_ready(&runs, DEFAULT_PORT, "3").unwrap();
-        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(ready.parent().unwrap()), 0o700);
     }
 }

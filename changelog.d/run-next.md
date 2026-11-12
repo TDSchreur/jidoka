@@ -1,0 +1,1 @@
+Add `jidoka run next <id> [--json]`, which prints a run's current stage, instructions (a placeholder until the stage chunks land), open gates, allowed moves, summaries, tickets and routed model and effort.

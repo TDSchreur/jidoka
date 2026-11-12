@@ -885,10 +885,11 @@ fn collect_locked(
     };
     let latest = usage.pauses.last().cloned();
     let authoritative = usage.log_complete;
-    if !target
-        .usage
-        .as_ref()
-        .is_some_and(|old| same_counts(old, &usage))
+    if target.model_routing.is_some()
+        || !target
+            .usage
+            .as_ref()
+            .is_some_and(|old| same_counts(old, &usage))
     {
         store.set_usage(id, usage)?;
     }

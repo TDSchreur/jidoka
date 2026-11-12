@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 mod policy;
 pub(crate) use policy::{
-    Coverage, Host, Policy, Resolution, Starter, install_starter, load, parse_start_options,
+    Coverage, Host, Policy, Resolution, create_starter, created_message, load, parse_start_options,
     policy_path_in, read,
 };
 
@@ -46,6 +46,8 @@ pub(crate) struct ModelRouting {
 
 /// Whether an observed model id is the model that was requested. A requested alias is a whole part of the
 /// id (`sonnet` in `claude-sonnet-5-5`); a version is not cut (`gpt-6` is not in `gpt-6.1-sol`).
+pub(crate) const WARNING_PREFIX: &str = "Model routing warning: ";
+
 pub(crate) fn model_matches(requested: &str, observed: &str) -> bool {
     let (requested, observed) = (
         requested.to_ascii_lowercase(),

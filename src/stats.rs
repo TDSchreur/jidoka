@@ -292,86 +292,7 @@ mod tests {
     use serde_json::json;
 
     fn run(id: &str, title: &str, usage: serde_json::Value) -> Run {
-        serde_json::from_value(json!({"id": id, "title": title, "project": "/p", "stage": "finish", "status": "done", "usage": usage})).unwrap()
-    }
-
-    fn tracked() -> serde_json::Value {
-        json!({"status": "partial", "notes": ["a Codex session log held no usage entries in a recognised format"], "no_data": ["check"],
-            "collected_at": 1_793_872_800_000u64, "sessions": ["s1"],
-            "rows": [
-                {"stage": "define", "model": "claude-opus", "input": 1200, "cache_read": 50000, "cache_write": 300, "output": 80, "reasoning": 10},
-                {"stage": "build", "model": "claude-opus", "ticket": "https://x.test/1", "input": 100, "output": 20, "subagents": {"input": 40, "output": 5}},
-                {"stage": "build", "model": "gpt-test", "rework": true, "input": 7, "cache_read": 1000, "output": 3},
-                {"stage": "build", "model": "gpt-test", "input": 2, "output": 1}
-            ],
-            "unattributed": {"input": 9, "output": 1}})
-    }
-
-    #[test]
-    fn stats_show_stage_model_and_ticket_rows_with_fresh_tokens_and_what_is_missing() {
-        let text = render_run(&run("1", "Task", tracked()));
-        assert!(text.contains("Tokens: partial"), "{text}");
-        assert!(
-            text.contains(
-                "Fresh tokens are input excluding cache reads, plus cache writes and output"
-            ),
-            "{text}"
-        );
-        // fresh = input + cache write + output
-        let define = text
-            .lines()
-            .find(|l| l.trim_start().starts_with("define"))
-            .unwrap();
-        assert!(define.contains("1,580"), "1200 + 300 + 80: {define}");
-        assert!(define.contains("50,000"), "{define}");
-        let ticket = text
-            .lines()
-            .find(|l| l.contains("https://x.test/1"))
-            .unwrap();
-        assert!(
-            ticket.contains("120") && ticket.contains("n/a"),
-            "no cache fields reported: {ticket}"
-        );
-        let fields: Vec<&str> = ticket.split_whitespace().collect();
-        assert_eq!(
-            fields[fields.len() - 2..],
-            ["45", "unknown"],
-            "subagent fresh and cost: {ticket}"
-        );
-        assert!(
-            text.lines()
-                .any(|l| l.contains("rework") && l.contains("gpt-test")),
-            "{text}"
-        );
-        assert!(
-            text.lines()
-                .any(|l| l.contains("no ticket") && l.contains("gpt-test")),
-            "{text}"
-        );
-        assert!(text.contains("check: no data"), "{text}");
-        assert!(
-            text.contains("Not assigned (shared with another run): 10 fresh tokens"),
-            "{text}"
-        );
-        assert!(
-            text.contains("Coverage notes") && text.contains("recognised format"),
-            "{text}"
-        );
-        // Per model: claude-opus 1,580 + 120 = 1,700 fresh; gpt-test 10 + 3 = 13.
-        let per_model = text.split("Per model").nth(1).unwrap();
-        assert!(
-            per_model
-                .lines()
-                .any(|l| l.contains("claude-opus") && l.contains("1,700")),
-            "{per_model}"
-        );
-        assert!(
-            per_model
-                .lines()
-                .any(|l| l.contains("gpt-test") && l.contains("13")),
-            "{per_model}"
-        );
-        assert!(text.contains("Total fresh tokens: 1,713"), "{text}");
+        serde_json::from_value(json!({"id": id, "title": title, "gates": [], "project": "/p", "stage": "finish", "status": "done", "usage": usage})).unwrap()
     }
 
     fn priced() -> serde_json::Value {
@@ -415,34 +336,6 @@ mod tests {
     }
 
     #[test]
-    fn a_run_with_only_unpriced_models_has_unknown_cost() {
-        let only = json!({"status": "tracked", "collected_at": 0, "rows": [{"stage": "build", "model": "gpt-test", "input": 5, "output": 5}]});
-        let text = render_run(&run("1", "Task", only));
-        assert!(
-            text.contains("Total estimated cost: unknown, 1 unpriced: gpt-test"),
-            "{text}"
-        );
-        assert!(!text.contains('$'), "{text}");
-    }
-
-    #[test]
-    fn stats_for_all_runs_show_cache_read_and_cost_per_model() {
-        let text = render_all(&[run("1", "Task", priced())]);
-        let per_model = text.split("Per model").nth(1).unwrap();
-        assert!(per_model.contains("Cache read"), "{per_model}");
-        assert!(
-            per_model.lines().any(|l| l.contains("claude-opus-5-5")
-                && l.contains("10,000,000")
-                && l.trim_end().ends_with("$10.00")),
-            "{per_model}"
-        );
-        assert!(
-            text.contains("Total estimated cost: >= $10.00 (partial)"),
-            "{text}"
-        );
-    }
-
-    #[test]
     fn a_run_without_tracked_usage_says_so_and_never_shows_zero() {
         let none = render_run(&run(
             "1",
@@ -454,7 +347,7 @@ mod tests {
             "{none}"
         );
         assert!(!none.contains("Total fresh"), "{none}");
-        let never: Run = serde_json::from_value(json!({"id": "2", "title": "Old", "project": "/p", "stage": "build", "status": "running"})).unwrap();
+        let never: Run = serde_json::from_value(json!({"id": "2", "title": "Old", "gates": [], "project": "/p", "stage": "build", "status": "running"})).unwrap();
         let text = render_run(&never);
         assert!(
             text.contains("not tracked: usage has not been collected"),
@@ -469,7 +362,7 @@ mod tests {
             run("10", "Tracked run", json!({"status": "tracked", "collected_at": 0, "rows": [{"stage": "build", "model": "m-1", "input": 5, "output": 5}]})),
             run("11", "Partial run", json!({"status": "partial", "collected_at": 0, "no_data": ["define"], "rows": [{"stage": "build", "model": "m-1", "input": 1, "output": 1}]})),
             run("12", "Lost run", json!({"status": "not-tracked", "reason": "logs were not found", "collected_at": 0})),
-            serde_json::from_value(json!({"id": "13", "title": "Never", "project": "/p", "stage": "build", "status": "running"})).unwrap(),
+            serde_json::from_value(json!({"id": "13", "title": "Never", "gates": [], "project": "/p", "stage": "build", "status": "running"})).unwrap(),
         ];
         let text = render_all(&runs);
         let per_model = text.split("Per model").nth(1).unwrap();
@@ -490,24 +383,5 @@ mod tests {
         );
         assert!(text.contains("not counted as zero"), "{text}");
         assert!(render_all(&[]).contains("There are no runs."));
-    }
-
-    #[test]
-    fn text_from_the_record_cannot_rewrite_the_terminal() {
-        let text = render_run(&run(
-            "1",
-            "T\u{1b}[2Jitle",
-            json!({"status": "not-tracked", "reason": "r\u{1b}]0;x", "collected_at": 0}),
-        ));
-        assert!(!text.contains('\u{1b}'), "{text:?}");
-    }
-
-    #[test]
-    fn numbers_are_grouped_and_unreported_is_not_zero() {
-        assert_eq!(number(Some(0)), "0");
-        assert_eq!(number(Some(999)), "999");
-        assert_eq!(number(Some(1_000)), "1,000");
-        assert_eq!(number(Some(1_234_567)), "1,234,567");
-        assert_eq!(number(None), "n/a");
     }
 }

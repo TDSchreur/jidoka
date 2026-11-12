@@ -1,0 +1,3 @@
+## Verification
+
+Find the project’s test and verification instructions in its agent instructions, contributing docs or build files. Follow its test scope and cadence; during iteration use targeted or quick checks appropriate to the change, unless the project or user requires more. Run all verification required before merging on the final candidate before the pull request. Reuse a passing result only while the checked code and relevant inputs are unchanged. A missing required tool or failing required check blocks the run: fix it or mark the run blocked, and never skip it. If no verification can be found, ask the user once, or say so in the pull request when running unattended.

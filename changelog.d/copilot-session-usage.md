@@ -1,0 +1,1 @@
+Count token usage for runs started under Copilot CLI: `run begin` and `run update` now record `COPILOT_AGENT_SESSION_ID`, and a Copilot log claims a run whose id a command reaches through a shell variable, such as `id=<id> && jidoka run update $id`.

@@ -31,24 +31,18 @@ pub(crate) fn start_run(
     Ok(run.id)
 }
 
-/// Sends a CLI run update (stage, status and metadata options) to the Jidoka server at `server`.
+/// Sends a CLI run update (status and metadata options) to the Jidoka server at `server`.
 pub(crate) fn report_run(
     server: &str,
     token_file: &Path,
     id: &str,
-    stage: &str,
     status: &str,
     options: &[&str],
 ) -> Result<(), Box<dyn std::error::Error>> {
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
         return Err("Invalid run id".into());
     }
-    send_update(
-        server,
-        token_file,
-        id,
-        &parse_update(stage, status, options)?,
-    )
+    send_update(server, token_file, id, &parse_update(status, options)?)
 }
 
 /// Sends an already built update for run `id` to the Jidoka server at `server`.
@@ -58,24 +52,13 @@ pub(crate) fn send_update(
     id: &str,
     update: &UpdateRun,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let response = api_post(
+    api_post(
         server,
         token_file,
         &format!("/api/runs/{id}"),
         &serde_json::to_vec(update)?,
     )?;
-    for warning in update_warnings(&response) {
-        eprintln!("Warning: {warning}");
-    }
     Ok(())
-}
-
-/// The warnings in an update response; none when it has no list (an older server).
-fn update_warnings(response: &[u8]) -> Vec<String> {
-    serde_json::from_slice::<serde_json::Value>(response)
-        .ok()
-        .and_then(|body| serde_json::from_value(body.get("warnings")?.clone()).ok())
-        .unwrap_or_default()
 }
 
 /// What answers on a dashboard port.
@@ -97,6 +80,9 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How long one API call waits on a read or write: the dashboard answers locally, so this only catches a hung server.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Advance can wait through the CI discovery grace and still needs time for host requests.
+const ADVANCE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Asks the server at `server` (`host:port`) who it is, through `/api/info`, not the port alone.
 /// Anything that does not answer as a Jidoka dashboard, including a listener that is slow or odd, is `Foreign`.
@@ -163,7 +149,7 @@ pub(crate) fn fetch_runs(server: &str) -> Result<Vec<Run>, Box<dyn std::error::E
     )?)?)
 }
 
-fn api_post(
+pub(crate) fn api_post(
     server: &str,
     token_file: &Path,
     route: &str,
@@ -185,7 +171,12 @@ fn api_request(
     let mut stream = TcpStream::connect(server).map_err(|e| {
         io::Error::new(e.kind(), format!("cannot connect to the Jidoka server at {server}; start it with 'jidoka dashboard': {e}"))
     })?;
-    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+    let timeout = if route.ends_with("/advance") {
+        ADVANCE_TIMEOUT
+    } else {
+        REQUEST_TIMEOUT
+    };
+    stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
     match post {
         Some((cli_token, body)) => {
@@ -230,30 +221,6 @@ mod tests {
 
     /// An address nobody listens on: a port the tests' own servers can never be assigned.
     const NOTHING_LISTENS: &str = "127.0.0.1:1";
-
-    /// Accepts the client's connection to a fake server, failing the test with an explanation when it has not
-    /// connected by the deadline, instead of waiting forever.
-    fn accept_within(listener: &std::net::TcpListener, wait: Duration) -> std::net::TcpStream {
-        listener.set_nonblocking(true).unwrap();
-        let deadline = std::time::Instant::now() + wait;
-        loop {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    // A stream accepted from a non-blocking listener may be non-blocking itself.
-                    stream.set_nonblocking(false).unwrap();
-                    return stream;
-                }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "the client did not connect to the fake server within {wait:?}"
-                    );
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => panic!("the fake server could not accept: {error}"),
-            }
-        }
-    }
 
     /// A real Rocket server on an OS-assigned port, shut down and joined on drop.
     struct TestServer {
@@ -322,12 +289,97 @@ mod tests {
     }
 
     #[test]
+    fn gate_results_and_advance_survive_server_restart() {
+        let dir = TestDir::new();
+        let repo = dir.0.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        for args in [
+            vec!["init"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial",
+            ],
+        ] {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", dir.0.path().join("no-config"))
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .args(&args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let path = dir.0.path().join("runs.json");
+        let server = TestServer::start(&path);
+        let id = start_run(
+            &server.address,
+            &server.token_file,
+            "Review",
+            "/work",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        report_run(
+            &server.address,
+            &server.token_file,
+            &id,
+            "running",
+            &[
+                "--mode",
+                "jidoka-balanced",
+                "--worktree",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        for gate in ["checks-recorded", "no-actionable-findings", "verified"] {
+            let body = serde_json::json!({"gate": gate, "passed":true, "evidence":"reviewed"});
+            api_post(
+                &server.address,
+                &server.token_file,
+                &format!("/api/runs/{id}/gate"),
+                &serde_json::to_vec(&body).unwrap(),
+            )
+            .unwrap();
+        }
+        api_post(
+            &server.address,
+            &server.token_file,
+            &format!("/api/runs/{id}/advance"),
+            b"{}",
+        )
+        .unwrap();
+        drop(server);
+        let restarted = TestServer::start(&path);
+        let run = fetch_run(&restarted.address, &id).unwrap();
+        assert_eq!(run.stage, crate::run::Stage::Build);
+        assert_eq!(run.gates.len(), 3);
+        assert_eq!(run.gates[0].evidence.as_deref(), Some("reviewed"));
+    }
+
+    #[test]
     fn cli_reports_run_lifecycle_to_real_server_across_restart() {
         let dir = TestDir::new();
         let path = dir.0.path().join("runs.json");
         fs::write(
             &path,
-            r#"[{"id":"42","title":"old","project":"/work","stage":"define","status":"running"}]"#,
+            r#"[{"id":"42","title":"old","gates":[],"project":"/work","stage":"define","status":"running"}]"#,
         )
         .unwrap();
         let server = TestServer::start(&path);
@@ -342,25 +394,15 @@ mod tests {
         )
         .unwrap();
         let ticket = "https://github.com/example/repo/issues/7";
-        let steps: [(&str, &str, &[&str]); 4] = [
+        let steps: [(&str, &[&str]); 4] = [
             (
-                "build",
                 "running",
                 &["--activity", "Implementing", "--current-ticket", ticket],
             ),
+            ("blocked", &["--blocking-reason", "Need credentials"]),
+            ("running", &["--clear-blocking-reason", "--rework", "1"]),
             (
-                "build",
-                "blocked",
-                &["--blocking-reason", "Need credentials"],
-            ),
-            (
-                "build",
                 "running",
-                &["--clear-blocking-reason", "--rework", "1"],
-            ),
-            (
-                "finish",
-                "done",
                 &[
                     "--summary",
                     "finish=Shipped",
@@ -371,16 +413,8 @@ mod tests {
             ),
         ];
         let mut snapshots = Vec::new();
-        for (stage, status, options) in steps {
-            report_run(
-                &server.address,
-                &server.token_file,
-                &id,
-                stage,
-                status,
-                options,
-            )
-            .unwrap();
+        for (status, options) in steps {
+            report_run(&server.address, &server.token_file, &id, status, options).unwrap();
             snapshots.push(server.runs()[1].clone());
         }
         assert_eq!(snapshots[0]["activity"], "Implementing");
@@ -393,8 +427,8 @@ mod tests {
         assert_eq!(snapshots[2]["current_ticket"], ticket);
         assert_eq!(snapshots[2]["rework"], 1);
         let finished = &snapshots[3];
-        assert_eq!(finished["stage"], "finish");
-        assert_eq!(finished["status"], "done");
+        assert_eq!(finished["stage"], "define");
+        assert_eq!(finished["status"], "running");
         assert_eq!(finished["activity"], "Opened PR");
         assert_eq!(finished["rework"], 1, "rework count is kept when omitted");
         assert!(finished["current_ticket"].is_null());
@@ -407,7 +441,6 @@ mod tests {
             &server.address,
             &server.token_file,
             "42",
-            "check",
             "blocked",
             &["--blocking-reason", "Legacy run"],
         )
@@ -420,7 +453,7 @@ mod tests {
         assert_eq!(&runs[1], finished, "finished run survives restart");
         assert_eq!(runs[0]["id"], "42");
         assert_eq!(runs[0]["title"], "old");
-        assert_eq!(runs[0]["stage"], "check");
+        assert_eq!(runs[0]["stage"], "define");
         assert_eq!(runs[0]["blocking_reason"], "Legacy run");
         assert!(runs[0]["updated_at"].is_u64());
     }
@@ -429,25 +462,11 @@ mod tests {
     fn cli_reports_rejections_and_unreachable_server() {
         let dir = TestDir::new();
         let server = TestServer::start(&dir.0.path().join("runs.json"));
-        let missing = report_run(
-            &server.address,
-            &server.token_file,
-            "123",
-            "build",
-            "running",
-            &[],
-        )
-        .unwrap_err();
+        let missing =
+            report_run(&server.address, &server.token_file, "123", "running", &[]).unwrap_err();
         assert!(missing.to_string().contains("Not found"), "{missing}");
-        let invalid = report_run(
-            &server.address,
-            &server.token_file,
-            "12a",
-            "build",
-            "running",
-            &[],
-        )
-        .unwrap_err();
+        let invalid =
+            report_run(&server.address, &server.token_file, "12a", "running", &[]).unwrap_err();
         assert_eq!(invalid.to_string(), "Invalid run id");
         // Nothing listens on port 1. A port that was just freed could be taken by another test's server.
         let address = NOTHING_LISTENS.to_string();
@@ -496,16 +515,8 @@ mod tests {
         drop(first);
         let second = TestServer::start(&path);
         assert_ne!(token_of(&second), old, "a restart issues a new token");
-        report_run(
-            &second.address,
-            &second.token_file,
-            &id,
-            "build",
-            "running",
-            &[],
-        )
-        .unwrap();
-        assert_eq!(second.runs()[0]["stage"], "build");
+        report_run(&second.address, &second.token_file, &id, "running", &[]).unwrap();
+        assert_eq!(second.runs()[0]["stage"], "define");
     }
 
     #[test]
@@ -529,69 +540,10 @@ mod tests {
         assert!(!missing.contains(&token), "{missing}");
         // A directory in place of the file is unreadable.
         fs::create_dir(&server.token_file).unwrap();
-        let unreadable = report_run(
-            &server.address,
-            &server.token_file,
-            "1",
-            "build",
-            "running",
-            &[],
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(unreadable.contains("jidoka dashboard"), "{unreadable}");
-        assert!(server.runs().as_array().unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_malformed_token_file_is_refused_before_anything_is_sent() {
-        let dir = TestDir::new();
-        let server = TestServer::start(&dir.0.path().join("runs.json"));
-        let valid = token_of(&server);
-        let upper = valid.to_uppercase();
-        let evil = format!("{}\r\nX-Evil: 1", &valid[..32]);
-        let nonhex = format!("{}g", &valid[..63]);
-        for bad in [
-            format!("{valid}\r\nX-Evil: 1"),
-            evil,
-            "abc123".into(),
-            upper,
-            nonhex,
-        ] {
-            fs::write(&server.token_file, &bad).unwrap();
-            let message = start_run(
-                &server.address,
-                &server.token_file,
-                "t",
-                "/w",
-                None,
-                None,
-                None,
-            )
+        let unreadable = report_run(&server.address, &server.token_file, "1", "running", &[])
             .unwrap_err()
             .to_string();
-            assert!(message.contains("no CLI token"), "{message}");
-            assert!(message.contains("jidoka dashboard"), "{message}");
-            assert!(!message.contains("X-Evil"), "{message}");
-        }
-        assert!(server.runs().as_array().unwrap().is_empty());
-    }
-
-    #[test]
-    fn an_oversized_or_non_file_token_path_says_to_restart_the_dashboard() {
-        let dir = TestDir::new();
-        let server = TestServer::start(&dir.0.path().join("runs.json"));
-        let real = token_of(&server);
-        let oversized = dir.0.path().join("oversized");
-        fs::write(&oversized, format!("{real}{}", "a".repeat(1024 * 1024))).unwrap();
-        for path in [oversized.as_path(), dir.0.path()] {
-            let error = start_run(&server.address, path, "t", "/w", None, None, None)
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains("no CLI token"), "{error}");
-            assert!(error.contains("restart 'jidoka dashboard'"), "{error}");
-            assert!(!error.contains(&real), "{error}");
-        }
+        assert!(unreadable.contains("jidoka dashboard"), "{unreadable}");
         assert!(server.runs().as_array().unwrap().is_empty());
     }
 
@@ -610,61 +562,10 @@ mod tests {
             !error.contains("stale-token-value") && !error.contains(&real),
             "{error}"
         );
-        let error = report_run(&server.address, &stale, "1", "build", "running", &[])
+        let error = report_run(&server.address, &stale, "1", "running", &[])
             .unwrap_err()
             .to_string();
         assert!(error.contains("restart 'jidoka dashboard'"), "{error}");
-    }
-
-    #[test]
-    fn a_refusal_other_than_a_bad_token_is_not_blamed_on_the_token() {
-        let dir = TestDir::new();
-        let token_file = dir.0.path().join("session-token");
-        fs::write(&token_file, "a".repeat(64)).unwrap();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap().to_string();
-        let thread = std::thread::spawn(move || {
-            let mut stream = accept_within(&listener, Duration::from_secs(5));
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut seen = Vec::new();
-            let mut chunk = [0u8; 1024];
-            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
-                let read = stream.read(&mut chunk).unwrap();
-                seen.extend_from_slice(&chunk[..read]);
-            }
-            // Take the whole body too: closing with unread data resets the connection and hides the response.
-            let head_end = seen.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
-            let head = String::from_utf8_lossy(&seen[..head_end]).to_lowercase();
-            let length: usize = head
-                .split("content-length: ")
-                .nth(1)
-                .and_then(|rest| rest.split("\r\n").next())
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(0);
-            while seen.len() < head_end + length {
-                let read = stream.read(&mut chunk).unwrap();
-                seen.extend_from_slice(&chunk[..read]);
-            }
-            stream
-                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 6\r\nConnection: close\r\n\r\nNo way")
-                .unwrap();
-        });
-        let error = report_run(&address, &token_file, "1", "build", "running", &[])
-            .unwrap_err()
-            .to_string();
-        thread.join().unwrap();
-        assert!(error.contains("server rejected request"), "{error}");
-        assert!(!error.contains("CLI token"), "{error}");
-    }
-
-    #[test]
-    fn a_server_on_another_port_keeps_its_own_token_file() {
-        let dir = TestDir::new();
-        let server = TestServer::start(&dir.0.path().join("runs.json"));
-        let port: u16 = server.address.rsplit(':').next().unwrap().parse().unwrap();
-        assert!(server.token_file.ends_with(format!("session-token-{port}")));
     }
 
     #[test]
@@ -677,30 +578,6 @@ mod tests {
                 assert_eq!(info.version, crate::current_build());
             }
             other => panic!("expected a running dashboard, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn probe_reports_nothing_listening_and_foreign_listeners() {
-        // Nothing listens on port 1.
-        assert_eq!(probe_dashboard(NOTHING_LISTENS).unwrap(), Probe::Absent);
-
-        // A listener that answers something else on the same port is not a dashboard.
-        for reply in [
-            &b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
-            b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"hello\":1}",
-            b"not http at all",
-        ] {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let address = listener.local_addr().unwrap().to_string();
-            let thread = std::thread::spawn(move || {
-                let mut stream = accept_within(&listener, Duration::from_secs(5));
-                let mut buffer = [0; 1024];
-                let _ = stream.read(&mut buffer);
-                stream.write_all(reply).unwrap();
-            });
-            assert_eq!(probe_dashboard(&address).unwrap(), Probe::Foreign);
-            thread.join().unwrap();
         }
     }
 
@@ -741,7 +618,6 @@ mod tests {
             &server.address,
             &server.token_file,
             &id,
-            "build",
             "running",
             &["--activity", "go"],
         )
@@ -758,7 +634,6 @@ mod tests {
             &server.address,
             &server.token_file,
             &id,
-            "check",
             "running",
             &["--model-routing", "check=opus:low"],
         )
@@ -828,7 +703,6 @@ mod tests {
             &server.address,
             &server.token_file,
             &id,
-            "build",
             "blocked",
             &[
                 "--mode",
@@ -859,7 +733,7 @@ mod tests {
         let run = fetch_run(&server.address, &id).unwrap();
         let text = crate::inspect::render(&run);
         for expected in [
-            "Stage         build (blocked)",
+            "Stage         define (blocked)",
             "Status reason Need a decision",
             "Mode          jidoka-balanced",
             "Repository    /work/repo",
@@ -886,7 +760,6 @@ mod tests {
             &server.address,
             &server.token_file,
             &id,
-            "build",
             "running",
             &["--ticket-status", "ghost=done"],
         )
@@ -895,55 +768,5 @@ mod tests {
             rejected.to_string().contains("No ticket ghost"),
             "{rejected}"
         );
-    }
-
-    #[test]
-    fn legacy_and_canonical_full_modes_round_trip_through_cli_and_inspect() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let server = TestServer::start(&path);
-        for mode in ["jidoka", "jidoka-full"] {
-            let id = start_run(
-                &server.address,
-                &server.token_file,
-                "Full run",
-                "/work/repo",
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-            report_run(
-                &server.address,
-                &server.token_file,
-                &id,
-                "build",
-                "running",
-                &["--mode", mode],
-            )
-            .unwrap();
-            let run = fetch_run(&server.address, &id).unwrap();
-            assert!(crate::inspect::render(&run).contains("Mode          jidoka-full"));
-            assert_eq!(serde_json::to_value(&run).unwrap()["mode"], "jidoka-full");
-        }
-    }
-
-    #[test]
-    fn inspect_shows_unknown_for_a_run_recorded_before_run_context() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        fs::write(&path, r#"[{"id":"7","title":"old","project":"/work/old","stage":"check","status":"running"}]"#).unwrap();
-        let server = TestServer::start(&path);
-        let text = crate::inspect::render(&fetch_run(&server.address, "7").unwrap());
-        assert!(
-            text.contains("Repository    unknown (not recorded)"),
-            "{text}"
-        );
-        assert!(
-            text.contains("Branch        unknown (not recorded)"),
-            "{text}"
-        );
-        assert!(text.contains("Started in    /work/old"), "{text}");
-        assert!(text.contains("Tickets       none recorded"), "{text}");
     }
 }

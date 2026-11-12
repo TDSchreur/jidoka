@@ -1,3 +1,4 @@
+mod checks;
 mod client;
 mod codex_requests;
 mod copilot_requests;
@@ -13,7 +14,6 @@ mod pr_open;
 mod pr_state;
 mod pr_sync;
 mod pr_wait;
-mod release;
 mod repository;
 mod request_logs;
 mod requests;
@@ -23,11 +23,13 @@ mod run;
 mod run_begin;
 mod run_check;
 mod run_cleanup;
+mod run_gate;
+mod run_next;
 mod server;
 mod setup;
+mod stages;
 mod stats;
 mod token;
-mod uninstall;
 mod usage;
 mod usage_logs;
 
@@ -36,7 +38,7 @@ use run::UPDATE_HELP;
 use server::{ADDRESS, DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...   (asks which agents when none are given on a terminal; else JIDOKA_AGENT, JIDOKA_CLAUDE_CONFIG_DIRS)\n  jidoka uninstall [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]... [--keep-data]   (uses the install record when no agent is given; removing only some recorded agents keeps the record and the binary)\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka check\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <define|build|check|finish> <running|blocked|done> [options]\n  jidoka --help | --version\n\nSetup:\n  `jidoka install` writes an install record (agents and Claude config dirs) next to the model routing policy. A command run before Setup prints a hint to run `jidoka install`; after an upgrade, the first command refreshes the installed skills automatically.";
+const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...   (asks which agents when none are given on a terminal; else JIDOKA_AGENT, JIDOKA_CLAUDE_CONFIG_DIRS)\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run next <id> [--json]   (current stage, instructions, open gates, allowed moves, summaries, tickets and routed model)\n  jidoka run gate <id> <gate> <pass|fail> [--evidence <text>]\n  jidoka run advance <id> [--force --reason <text>]   (--force skips the gates, still follows the stage graph and records the reason)\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <running|blocked|done> [options]   (never changes the stage; --rework <n> from Check returns to Build)\n  jidoka --help | --version\n\nSetup:\n  `jidoka install` writes an install record (agents and Claude config dirs) next to the model routing policy. A command run before Setup prints a hint to run `jidoka install`; after an upgrade, the first command refreshes the installed skills automatically.";
 
 /// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
 const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
@@ -93,13 +95,6 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
         [] | ["--help" | "-h"] => println!("{HELP}\n\n{UPDATE_HELP}"),
         ["--version" | "-V"] => println!("jidoka {}", current_build()),
         ["install", options @ ..] => install::run(options)?,
-        ["uninstall", options @ ..] => {
-            uninstall::run(options)?;
-        }
-        ["check"] => release::check(
-            env!("CARGO_PKG_VERSION"),
-            env!("JIDOKA_BUILD_RELEASE") == "true",
-        )?,
         ["doctor", options @ ..] => {
             let args = doctor::parse_args(options).map_err(|error| format!("{error}\n{HELP}"))?;
             return doctor::run(args).map(|ok| u8::from(!ok));
@@ -151,6 +146,72 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
             };
             return run_sync_command(id, json);
+        }
+        ["run", "next", id, options @ ..] if !id.starts_with('-') => {
+            let json =
+                run_next::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
+            let run = fetch_run(&cli_address(), id)?;
+            let paths = run_next::changed_paths(&run, &run_check::ReadOnlyGit);
+            let next = run_next::build(&run, &paths)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&next)?);
+            } else {
+                print!("{}", run_next::render(&next));
+            }
+        }
+        ["run", "gate", id, gate, result, options @ ..] if !id.starts_with('-') => {
+            if !id.bytes().all(|b| b.is_ascii_digit()) {
+                return Err("Invalid run id".into());
+            }
+            let gate = serde_json::from_value(serde_json::Value::String((*gate).to_string()))
+                .map_err(|_| "Unknown gate")?;
+            let passed = match *result {
+                "pass" => true,
+                "fail" => false,
+                _ => return Err("Use pass or fail".into()),
+            };
+            let evidence = match options {
+                [] => None,
+                ["--evidence", text] => Some((*text).to_string()),
+                _ => return Err("Use --evidence <text>".into()),
+            };
+            let record = run_gate::Record {
+                gate,
+                passed,
+                evidence,
+            };
+            client::api_post(
+                &cli_address(),
+                &cli_token_file()?,
+                &format!("/api/runs/{id}/gate"),
+                &serde_json::to_vec(&record)?,
+            )?;
+            println!("Gate recorded for run {id}");
+        }
+        ["run", "advance", id, options @ ..] if !id.starts_with('-') => {
+            if !id.bytes().all(|b| b.is_ascii_digit()) {
+                return Err("Invalid run id".into());
+            }
+            let request = match options {
+                [] => run_gate::AdvanceRequest::default(),
+                ["--force", "--reason", text] => run_gate::AdvanceRequest {
+                    force: true,
+                    reason: Some((*text).to_string()),
+                },
+                _ => {
+                    return Err(
+                        format!("Use --force --reason <text>, or no options.\n{HELP}").into(),
+                    );
+                }
+            };
+            request.forced_reason()?;
+            client::api_post(
+                &cli_address(),
+                &cli_token_file()?,
+                &format!("/api/runs/{id}/advance"),
+                &serde_json::to_vec(&request)?,
+            )?;
+            println!("Advanced run {id}");
         }
         ["run", "inspect", id, options @ ..] => {
             let json = match options {
@@ -215,21 +276,14 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 print!("{}", requests::render_run(&result));
             }
         }
-        ["run", "update", id, stage, status, options @ ..] => {
+        ["run", "update", id, status, options @ ..] => {
             // The agent's own session is recorded with every update, so its token usage can be attributed.
             let sessions = current_sessions();
             let mut options = options.to_vec();
             for session in &sessions {
                 options.extend(["--session", session]);
             }
-            report_run(
-                &cli_address(),
-                &cli_token_file()?,
-                id,
-                stage,
-                status,
-                &options,
-            )?;
+            report_run(&cli_address(), &cli_token_file()?, id, status, &options)?;
             println!("Updated run {id}");
         }
         ["pr", "wait", id, options @ ..] if !id.starts_with('-') => {
@@ -247,8 +301,8 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
 }
 
 impl pr_open::RunApi for ServerApi {
-    fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
-        report_to_dashboard(id, stage, status, options)
+    fn update(&self, id: &str, status: &str, options: &[&str]) -> Result<(), String> {
+        report_to_dashboard(id, status, options)
     }
 }
 
@@ -312,7 +366,7 @@ fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Erro
     }
     let run = fetch_run(ADDRESS, id)?;
     let Some(url) = run.pr.as_deref() else {
-        return Err("The run has no pull request recorded. Record it with `jidoka run update <id> finish running --pr <url>`.".into());
+        return Err("The run has no pull request recorded. Record it with `jidoka run update <id> running --pr <url>`.".into());
     };
     let state =
         pr_state::read(&pr_wait::RealGh, url).map_err(|problem| inspect::shown(&problem.0))?;
@@ -366,16 +420,14 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
         .map_err(|problem| inspect::shown(&problem.0))?;
     print!("{}", run_cleanup::render(&recorded, cleaned));
     if cleaned.needs_update() {
-        let text = |value: serde_json::Value, fallback: &str| {
-            value.as_str().unwrap_or(fallback).to_string()
-        };
-        let stage = text(serde_json::to_value(run.stage)?, "finish");
-        let status = text(serde_json::to_value(run.status)?, "running");
+        let status = serde_json::to_value(run.status)?
+            .as_str()
+            .unwrap_or("running")
+            .to_string();
         report_run(
             ADDRESS,
             &cli_token_file()?,
             id,
-            &stage,
             &status,
             &[
                 "--clear-worktree",
@@ -428,16 +480,12 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     if !run.pr.as_deref().is_some_and(pr_wait::is_azure_pr_url) {
         pr_wait::check_gh(&gh).map_err(|problem| problem.0)?;
     }
-    // The run's activity follows the wait, keeping its stage and status. Only a running run is updated.
-    let stage = serde_json::to_value(run.stage)?
-        .as_str()
-        .unwrap_or("finish")
-        .to_string();
+    // The run's activity follows the wait, keeping its status. Only a running run is updated.
     let running = matches!(run.status, run::RunStatus::Running);
     let mut reported_failure = false;
     let mut activity = |text: &str| {
         if running
-            && let Err(error) = report_to_dashboard(id, &stage, "running", &["--activity", text])
+            && let Err(error) = report_to_dashboard(id, "running", &["--activity", text])
             && !reported_failure
         {
             reported_failure = true;
@@ -520,8 +568,8 @@ impl run_begin::RunApi for ServerApi {
         })
     }
 
-    fn update(&self, id: &str, stage: &str, status: &str, options: &[&str]) -> Result<(), String> {
-        report_to_dashboard(id, stage, status, options)
+    fn update(&self, id: &str, status: &str, options: &[&str]) -> Result<(), String> {
+        report_to_dashboard(id, status, options)
     }
 
     fn runs_with_session(&self, session: &str) -> Result<Vec<(String, String)>, String> {
@@ -587,7 +635,7 @@ fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::erro
 }
 
 /// The ids of the agent sessions this command runs in, when the agent exposes them: Claude Code sets
-/// `CLAUDE_CODE_SESSION_ID`; Codex sets `CODEX_SESSION_ID` (the root session) and `CODEX_THREAD_ID`.
+/// `CLAUDE_CODE_SESSION_ID`; Codex sets `CODEX_SESSION_ID` (the root session) and `CODEX_THREAD_ID`; Copilot CLI sets `COPILOT_AGENT_SESSION_ID`.
 fn current_sessions() -> Vec<String> {
     sessions_from(&|name| env::var_os(name))
 }
@@ -598,6 +646,7 @@ fn sessions_from(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<String
         "CLAUDE_CODE_SESSION_ID",
         "CODEX_SESSION_ID",
         "CODEX_THREAD_ID",
+        "COPILOT_AGENT_SESSION_ID",
     ] {
         let Some(id) = var(name).and_then(|value| value.into_string().ok()) else {
             continue;
@@ -704,14 +753,9 @@ fn dashboard(port: u16, usage: bool) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Reports a run update to the default dashboard, with the CLI token it wrote.
-fn report_to_dashboard(
-    id: &str,
-    stage: &str,
-    status: &str,
-    options: &[&str],
-) -> Result<(), String> {
+fn report_to_dashboard(id: &str, status: &str, options: &[&str]) -> Result<(), String> {
     let token_file = cli_token_file().map_err(|e| e.to_string())?;
-    report_run(ADDRESS, &token_file, id, stage, status, options).map_err(|e| e.to_string())
+    report_run(ADDRESS, &token_file, id, status, options).map_err(|e| e.to_string())
 }
 
 /// The server `run update` talks to. Debug builds honor `JIDOKA_TEST_ADDRESS`, so CLI tests can use a
@@ -771,15 +815,6 @@ mod test_support {
             Self(tempfile::tempdir().unwrap())
         }
     }
-
-    /// Makes `path` unreadable. Returns false when it can still be read anyway (running as root), so the
-    /// caller skips its check instead of failing.
-    #[cfg(unix)]
-    pub(crate) fn make_unreadable(path: &std::path::Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        std::fs::read(path).is_err()
-    }
 }
 
 #[cfg(test)]
@@ -827,28 +862,10 @@ mod tests {
         let claude = [("CLAUDE_CODE_SESSION_ID", id)];
         assert_eq!(sessions_from(&lookup(&claude)), [id]);
         let invalid = [("CODEX_SESSION_ID", "bad id!"), ("CODEX_THREAD_ID", "x")];
+        let copilot = [("COPILOT_AGENT_SESSION_ID", id)];
+        assert_eq!(sessions_from(&lookup(&copilot)), [id]);
         assert!(sessions_from(&lookup(&invalid)).is_empty());
         assert!(sessions_from(&lookup(&[])).is_empty());
-    }
-
-    #[test]
-    fn build_label_shows_the_version_for_releases_and_the_commit_otherwise() {
-        assert_eq!(build_label("0.3.1", true, "1a2b3c4"), "0.3.1");
-        assert_eq!(build_label("0.3.1", true, ""), "0.3.1");
-        assert_eq!(build_label("0.3.1", false, "1a2b3c4"), "dev 1a2b3c4");
-        assert_eq!(build_label("0.3.1", false, ""), "dev (unknown commit)");
-    }
-
-    #[test]
-    fn the_dashboard_url_carries_the_percent_encoded_project() {
-        assert_eq!(
-            dashboard_url(4311, "/home/me/my repo"),
-            "http://127.0.0.1:4311/?project=%2Fhome%2Fme%2Fmy%20repo"
-        );
-        assert_eq!(
-            dashboard_url(4400, "C:\\work\\a&b"),
-            "http://127.0.0.1:4400/?project=C%3A%5Cwork%5Ca%26b"
-        );
     }
 
     #[test]
@@ -857,16 +874,6 @@ mod tests {
         for bad in ["0", "65536", "-1", "abc", ""] {
             assert!(parse_port(bad).is_err(), "{bad}");
         }
-    }
-
-    #[test]
-    fn a_separate_port_keeps_its_own_data_file() {
-        assert!(
-            data_path(DEFAULT_PORT)
-                .unwrap()
-                .ends_with("jidoka/runs.json")
-        );
-        assert!(data_path(4400).unwrap().ends_with("jidoka/runs-4400.json"));
     }
 
     #[test]

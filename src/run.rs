@@ -1,5 +1,6 @@
 use crate::pr_state::PrStatus;
 use crate::routing::{ModelChoice, ModelRouting};
+use crate::stages::{self, Destination};
 use crate::usage::{Collection, Mark, Pause, PauseKind, Usage};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -10,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const UPDATE_HELP: &str = "Run update options:\n  --activity <text> | --clear-activity\n  --current-ticket <http(s)-url> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework\n  --mode <jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `finish done` needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
+pub(crate) const UPDATE_HELP: &str = "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework (on a running run in Check, --rework <n> also moves it back to Build for a Rework; elsewhere it only sets the count)\n  --mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `done` is only accepted in Finish and needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
 /// Tickets one update may list; a spec split into more pieces than this is too big to track on one board.
@@ -25,7 +26,7 @@ pub(crate) const MAX_MARKS: usize = 1000;
 pub(crate) const MAX_EVENTS: usize = 1000;
 /// Longest title, ticket title, ticket report or run report, in bytes: enough for a sentence or two that still fits
 /// a dashboard card.
-const MAX_TEXT_BYTES: usize = 500;
+pub(crate) const MAX_TEXT_BYTES: usize = 500;
 /// Longest path, URL or reference, in bytes; the common 4096-byte `PATH_MAX`, which no real path exceeds.
 const MAX_PATH_BYTES: usize = 4096;
 /// Longest activity, blocking reason or stage summary, in bytes: a short paragraph.
@@ -41,10 +42,14 @@ const BASE_COMMIT_LENGTH: std::ops::RangeInclusive<usize> = 7..=64;
 /// Ticket reports or run reports one update may submit; matches `MAX_TICKETS`, one report per ticket.
 const MAX_REPORTS_PER_UPDATE: usize = 100;
 /// Ticket reports or run reports a run may hold in total, so a long run cannot grow its record without bound.
-const MAX_REPORTS_PER_RUN: usize = 1000;
+pub(crate) const MAX_REPORTS_PER_RUN: usize = 1000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Run {
+    /// In-memory generation of changes that invalidate gate validation.
+    #[serde(skip)]
+    gate_generation: u64,
+    pub(crate) gates: Vec<crate::run_gate::GateResult>,
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) project: String,
@@ -173,12 +178,22 @@ pub(crate) enum RunStatus {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Mode {
-    #[serde(rename = "jidoka-full", alias = "jidoka")]
+    #[serde(rename = "jidoka-full", alias = "full")]
     Full,
-    #[serde(rename = "jidoka-balanced")]
+    #[serde(rename = "jidoka-balanced", alias = "balanced")]
     Balanced,
-    #[serde(rename = "jidoka-fast")]
+    #[serde(rename = "jidoka-fast", alias = "fast")]
     Fast,
+}
+
+impl Mode {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Full => "jidoka-full",
+            Self::Balanced => "jidoka-balanced",
+            Self::Fast => "jidoka-fast",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -313,7 +328,6 @@ impl NewRun {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct UpdateRun {
-    pub(crate) stage: Stage,
     pub(crate) status: RunStatus,
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub(crate) activity: FieldUpdate,
@@ -402,11 +416,6 @@ impl FieldUpdate {
 
 fn has_control(value: &str) -> bool {
     value.chars().any(char::is_control)
-}
-
-/// An absolute `http(s)` URL with a host and no credentials, so a reference never carries a secret.
-fn check_http_url(name: &str, value: &str) -> Result<(), String> {
-    check_http_url_with(name, value, true)
 }
 
 /// A URL that is stored and shown as a reference also may not carry a query string or fragment,
@@ -525,9 +534,8 @@ fn io_invalid(message: impl Into<String>) -> io::Error {
 }
 
 impl UpdateRun {
-    pub(crate) fn new(stage: Stage, status: RunStatus) -> Self {
+    pub(crate) fn new(status: RunStatus) -> Self {
         Self {
-            stage,
             status,
             activity: FieldUpdate::Keep,
             current_ticket: FieldUpdate::Keep,
@@ -559,7 +567,10 @@ impl UpdateRun {
             return Err("Rework must be a whole number from 1 to 99".into());
         }
         if let FieldUpdate::Set(value) = &self.current_ticket {
-            check_http_url("Current ticket", value)?;
+            check_reference("Current ticket", value, MAX_PATH_BYTES)?;
+            if value.chars().any(char::is_whitespace) {
+                return Err("Current ticket reference must not contain spaces".into());
+            }
         }
         if let FieldUpdate::Set(value) = &self.worktree {
             check_text("Worktree", value, MAX_PATH_BYTES)?;
@@ -667,15 +678,9 @@ fn split_pair<'a>(flag: &str, value: &'a str) -> Result<(&'a str, &'a str), Stri
         .ok_or_else(|| format!("{flag} needs the form <name>=<value>, got {value:?}"))
 }
 
-pub(crate) fn parse_update(
-    stage: &str,
-    status: &str,
-    options: &[&str],
-) -> Result<UpdateRun, String> {
-    let mut update = UpdateRun::new(
-        serde_json::from_value(stage.into()).map_err(|e| e.to_string())?,
-        serde_json::from_value(status.into()).map_err(|e| e.to_string())?,
-    );
+pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, String> {
+    let mut update =
+        UpdateRun::new(serde_json::from_value(status.into()).map_err(|e| e.to_string())?);
     let mut tickets: Vec<NewTicket> = Vec::new();
     let mut overrides: BTreeMap<Stage, ModelChoice> = BTreeMap::new();
     let mut args = options.iter();
@@ -710,7 +715,7 @@ pub(crate) fn parse_update(
                 } else {
                     let mode = next_value()?;
                     FieldUpdate::Set(serde_json::from_value(serde_json::Value::from(*mode)).map_err(|_| {
-                        format!("Invalid value for --mode: {mode}; use jidoka-full, jidoka-balanced or jidoka-fast")
+                        format!("Invalid value for --mode: {mode}; use full, balanced or fast (also accepted: jidoka-full, jidoka-balanced, jidoka-fast)")
                     })?)
                 };
                 continue;
@@ -880,33 +885,6 @@ struct Shared {
     collection: Collection,
 }
 
-#[derive(Debug)]
-pub(crate) struct UpdateOutcome {
-    pub(crate) run: Run,
-    /// Notes on an update that was accepted but looks wrong; each is one line telling the agent what to do.
-    pub(crate) warnings: Vec<String>,
-}
-
-/// Warns, without refusing, when an update skips a stage or finishes Build without a spec.
-fn update_warnings(previous: Stage, next: &Run) -> Vec<String> {
-    let mut warnings = Vec::new();
-    if next.status == RunStatus::Done && previous != next.stage {
-        warnings.push(format!(
-            "Stage {} was set to done but never entered (the run was in {}); set each stage to running first.",
-            next.stage.name(),
-            previous.name()
-        ));
-    }
-    let leaves_build = (next.stage == Stage::Build && next.status == RunStatus::Done)
-        || (next.stage == Stage::Check && previous != Stage::Check);
-    if leaves_build && next.mode == Some(Mode::Full) && next.spec.is_none() {
-        warnings.push(
-            "This Full run has no spec recorded; record it with --spec <url|path>.".to_string(),
-        );
-    }
-    warnings
-}
-
 impl RunStore {
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
         Ok(Self {
@@ -949,6 +927,8 @@ impl RunStore {
         }
         let created = updated_now()?;
         let run = Run {
+            gate_generation: 0,
+            gates: Vec::new(),
             id: id.to_string(),
             title: new.title,
             project: new.project,
@@ -992,7 +972,7 @@ impl RunStore {
 
     /// Applies an update to a copy first, so an inconsistent update changes nothing, and
     /// restores the stored record when saving fails.
-    pub(crate) fn update(&self, id: &str, update: UpdateRun) -> io::Result<Option<UpdateOutcome>> {
+    pub(crate) fn update(&self, id: &str, update: UpdateRun) -> io::Result<Option<Run>> {
         update.validate().map_err(io_invalid)?;
         let mut runs = self.shared.runs.lock().map_err(lock_error)?;
         let Some(index) = runs.iter().position(|run| run.id == id) else {
@@ -1001,9 +981,7 @@ impl RunStore {
         let updated_at = updated_now()?;
         let mut next = runs[index].clone();
         let was_blocked = matches!(next.status, RunStatus::Blocked);
-        let was_finished = next.stage == Stage::Finish && next.status == RunStatus::Done;
-        let previous_stage = next.stage;
-        next.stage = update.stage;
+        let was_running = matches!(next.status, RunStatus::Running);
         next.status = update.status;
         let started_with = match &update.activity {
             FieldUpdate::Set(text) => Some(text.clone()),
@@ -1012,6 +990,7 @@ impl RunStore {
         update.activity.apply(&mut next.activity);
         update.current_ticket.apply(&mut next.current_ticket);
         update.blocking_reason.apply(&mut next.blocking_reason);
+        let rework_set = matches!(update.rework, FieldUpdate::Set(_));
         update.rework.apply(&mut next.rework);
         update.mode.apply(&mut next.mode);
         update.worktree.apply(&mut next.worktree);
@@ -1019,7 +998,27 @@ impl RunStore {
         update.base_commit.map_hex().apply(&mut next.base_commit);
         update.spec.apply(&mut next.spec);
         update.pr.apply(&mut next.pr);
-        let warnings = update_warnings(previous_stage, &next);
+        if (was_running || was_blocked)
+            && update.status == RunStatus::Running
+            && next.stage == Stage::Check
+            && rework_set
+        {
+            let mode = next
+                .mode
+                .ok_or_else(|| io_invalid("Record the run's mode before starting a Rework"))?;
+            if let Destination::Stage(stage) = stages::rework(mode, next.stage, next.status)
+                .map_err(io_invalid)?
+                .to
+            {
+                next.stage = stage;
+            }
+        }
+        if update.status == RunStatus::Done && next.stage != Stage::Finish {
+            return Err(io_invalid(format!(
+                "A run is done only after Finish; it is in {}. Use `jidoka run advance <id>`",
+                next.stage.name()
+            )));
+        }
         match update.tickets {
             FieldUpdate::Keep => {}
             FieldUpdate::Clear => next.tickets.clear(),
@@ -1079,7 +1078,7 @@ impl RunStore {
                 ticket: report.ticket,
                 kind: report.kind,
                 text: report.text,
-                stage: update.stage,
+                stage: next.stage,
                 at: updated_at,
             });
         }
@@ -1092,7 +1091,7 @@ impl RunStore {
             next.run_reports.push(RunReport {
                 kind: report.kind,
                 text: report.text,
-                stage: update.stage,
+                stage: next.stage,
                 at: updated_at,
             });
         }
@@ -1121,10 +1120,7 @@ impl RunStore {
                 }
             }
         }
-        // Only moving into finish done needs the summary; a run already stored as finished (before this rule) keeps updating.
-        if !was_finished
-            && update.stage == Stage::Finish
-            && update.status == RunStatus::Done
+        if update.status == RunStatus::Done
             && next
                 .summaries
                 .get(&Stage::Finish)
@@ -1168,15 +1164,125 @@ impl RunStore {
             (RunStatus::Done, kept) => kept,
             _ => None,
         };
+        next.gate_generation = next.gate_generation.wrapping_add(1);
         let old = std::mem::replace(&mut runs[index], next);
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs[index] = old;
             return Err(error);
         }
-        Ok(Some(UpdateOutcome {
-            run: runs[index].clone(),
-            warnings,
-        }))
+        Ok(Some(runs[index].clone()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_stage(&self, id: &str, stage: Stage) {
+        let mut runs = self.shared.runs.lock().unwrap();
+        let run = runs
+            .iter_mut()
+            .find(|run| run.id == id)
+            .expect("test run exists");
+        run.stage = stage;
+        run.gate_generation = run.gate_generation.wrapping_add(1);
+        save_runs(&self.shared.path, &runs).unwrap();
+    }
+
+    /// Record a gate against a snapshot, merging independent concurrent gate results.
+    pub(crate) fn record_gate(
+        &self,
+        id: &str,
+        record: crate::run_gate::Record,
+        git: &dyn crate::pr_sync::Git,
+    ) -> Result<(), String> {
+        let original = self
+            .get(id)
+            .map_err(|e| format!("Could not read the run: {e}"))?
+            .ok_or_else(|| format!("Run {id} not found"))?;
+        let mut checked = original.clone();
+        crate::run_gate::record(&mut checked, record, git)?;
+        let result = checked.gates.pop().ok_or("Gate result was not recorded")?;
+        let mut runs = self.shared.runs.lock().map_err(|e| e.to_string())?;
+        let index = runs
+            .iter()
+            .position(|run| run.id == id)
+            .ok_or_else(|| format!("Run {id} not found"))?;
+        let current = &runs[index];
+        let mut comparison = current.clone();
+        comparison.pr_status = original.pr_status.clone();
+        comparison.updated_at = original.updated_at;
+        comparison.agent_updated_at = original.agent_updated_at;
+        comparison.gates = original.gates.clone();
+        if current.gate_generation != original.gate_generation
+            || serde_json::to_vec(&comparison).map_err(|e| e.to_string())?
+                != serde_json::to_vec(&original).map_err(|e| e.to_string())?
+            || !current.gates.starts_with(&original.gates)
+            || current.gates[original.gates.len()..]
+                .iter()
+                .any(|gate| gate.gate == result.gate && gate.ticket == result.ticket)
+        {
+            return Err("The run changed while checking gates; try again".into());
+        }
+        if current.gates.len() >= crate::run_gate::MAX_GATE_RESULTS {
+            return Err(format!(
+                "A run can hold at most {} gate results",
+                crate::run_gate::MAX_GATE_RESULTS
+            ));
+        }
+        let now = updated_now().map_err(|e| format!("Could not read the time: {e}"))?;
+        let mut next = current.clone();
+        next.gates.push(result);
+        next.updated_at = Some(now);
+        next.agent_updated_at = Some(now);
+        mark(&mut next, now, None);
+        let old = std::mem::replace(&mut runs[index], next);
+        if let Err(error) = save_runs(&self.shared.path, &runs) {
+            runs[index] = old;
+            return Err(format!("Could not save the run: {error}"));
+        }
+        Ok(())
+    }
+
+    /// Atomically change a run and persist it, restoring the old value on save failure.
+    pub(crate) fn change_gate(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut Run) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let original = self
+            .get(id)
+            .map_err(|e| format!("Could not read the run: {e}"))?
+            .ok_or_else(|| format!("Run {id} not found"))?;
+        let mut comparison = original.clone();
+        comparison.pr_status = None;
+        let snapshot = serde_json::to_vec(&comparison).map_err(|e| e.to_string())?;
+        let generation = original.gate_generation;
+        let mut next = original;
+        change(&mut next)?;
+        let now = updated_now().map_err(|e| format!("Could not read the time: {e}"))?;
+        next.updated_at = Some(now);
+        next.agent_updated_at = Some(now);
+        mark(&mut next, now, None);
+        if next.status == RunStatus::Done {
+            next.finished_at = Some(now);
+        }
+        let mut runs = self.shared.runs.lock().map_err(|e| e.to_string())?;
+        let index = runs
+            .iter()
+            .position(|run| run.id == id)
+            .ok_or_else(|| format!("Run {id} not found"))?;
+        let mut current = runs[index].clone();
+        current.pr_status = None;
+        if current.gate_generation != generation
+            || serde_json::to_vec(&current).map_err(|e| e.to_string())? != snapshot
+        {
+            return Err("The run changed while checking gates; try again".into());
+        }
+        next.pr_status = runs[index].pr_status.clone();
+        next.gate_generation = generation.wrapping_add(1);
+        let old = std::mem::replace(&mut runs[index], next);
+        if let Err(error) = save_runs(&self.shared.path, &runs) {
+            runs[index] = old;
+            return Err(format!("Could not save the run: {error}"));
+        }
+        Ok(())
     }
 
     /// Brings the run in line with the latest pause its log shows (`None` when it shows none). A running
@@ -1245,6 +1351,7 @@ impl RunStore {
         }
         next.agent_updated_at = agent_at;
         next.updated_at = Some(now);
+        next.gate_generation = next.gate_generation.wrapping_add(1);
         let old = std::mem::replace(&mut runs[index], next);
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs[index] = old;
@@ -1259,10 +1366,49 @@ impl RunStore {
         let Some(run) = runs.iter_mut().find(|run| run.id == id) else {
             return Ok(());
         };
-        let old = run.usage.replace(usage);
+        let old = run.clone();
+        if let Some(routing) = &run.model_routing {
+            for row in &usage.rows {
+                let completed = run.status == RunStatus::Done
+                    || run
+                        .timeline
+                        .windows(2)
+                        .any(|marks| marks[0].stage == row.stage && marks[1].stage != row.stage);
+                if let Some(choice) = routing.choice_for(row.stage)
+                    && completed
+                    && !crate::routing::model_matches(&choice.model, &row.model)
+                {
+                    // Log model names are untrusted and can exceed a run report's size limit.
+                    let model: String = row.model.chars().take(50).collect();
+                    let model = crate::inspect::shown(&model);
+                    let text = format!(
+                        "{}{} usage recorded model {} while {} was assigned; the coordinator may use a different model",
+                        crate::routing::WARNING_PREFIX,
+                        row.stage.name(),
+                        model,
+                        choice.model
+                    );
+                    if run.run_reports.len() < MAX_REPORTS_PER_RUN
+                        && !run
+                            .run_reports
+                            .iter()
+                            .any(|report| report.stage == row.stage && report.text == text)
+                    {
+                        run.run_reports.push(RunReport {
+                            kind: ReportKind::Activity,
+                            text,
+                            stage: row.stage,
+                            at: usage.collected_at,
+                        });
+                    }
+                }
+            }
+        }
+        run.usage = Some(usage);
+        run.gate_generation = run.gate_generation.wrapping_add(1);
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             if let Some(run) = runs.iter_mut().find(|run| run.id == id) {
-                run.usage = old;
+                *run = old;
             }
             return Err(error);
         }
@@ -1377,1809 +1523,4 @@ pub(crate) fn save_runs(path: &Path, runs: &[Run]) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_support::TestDir;
-
-    const FINISH_SUMMARY: [&str; 2] = ["--summary", "finish=Shipped"];
-
-    #[test]
-    fn a_legacy_finished_run_without_a_summary_accepts_further_finish_done_updates() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let store = RunStore::open(&path).unwrap();
-        let run = new_run(&store, "task");
-        let mut stored = serde_json::to_value(store.list().unwrap()).unwrap();
-        stored[0]["stage"] = "finish".into();
-        stored[0]["status"] = "done".into();
-        stored[0]["finished_at"] = 1.into();
-        stored[0]["summaries"] = serde_json::json!({});
-        std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
-        let store = RunStore::open(&path).unwrap();
-        let before = store.get(&run.id).unwrap().unwrap();
-        assert!(before.summaries.is_empty());
-
-        let updated = store
-            .update(
-                &run.id,
-                parse_update("finish", "done", &["--activity", "Synced the pull request"]).unwrap(),
-            )
-            .unwrap()
-            .unwrap()
-            .run;
-        assert_eq!(updated.status, RunStatus::Done);
-        assert_eq!(updated.activity.as_deref(), Some("Synced the pull request"));
-    }
-
-    #[test]
-    fn finish_done_needs_a_finish_summary() {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let run = new_run(&store, "task");
-        let before = store.get(&run.id).unwrap().unwrap();
-        let error = store
-            .update(&run.id, parse_update("finish", "done", &[]).unwrap())
-            .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert!(error.to_string().contains("--summary finish="));
-        let after = store.get(&run.id).unwrap().unwrap();
-        assert_eq!(after.stage, before.stage);
-        assert_eq!(after.status, before.status);
-        assert!(after.finished_at.is_none() && after.summaries.is_empty());
-
-        // Other stages are not affected; a summary in the same update is enough.
-        store
-            .update(&run.id, parse_update("check", "done", &[]).unwrap())
-            .unwrap();
-        let done = store
-            .update(
-                &run.id,
-                parse_update("finish", "done", &FINISH_SUMMARY).unwrap(),
-            )
-            .unwrap()
-            .unwrap()
-            .run;
-        assert!(matches!(done.status, RunStatus::Done));
-        // A summary recorded earlier counts.
-        let again = store
-            .update(&run.id, parse_update("finish", "done", &[]).unwrap())
-            .unwrap();
-        assert!(again.is_some());
-    }
-
-    #[test]
-    fn failed_updates_leave_the_store_unchanged() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let store = RunStore::open(&path).unwrap();
-        let run = store
-            .create(NewRun {
-                title: "task".into(),
-                project: "/work".into(),
-                repository: None,
-                session: None,
-                model_routing: None,
-            })
-            .unwrap();
-        let apply = |stage, status, args: &[&str]| {
-            store
-                .update(&run.id, parse_update(stage, status, args).unwrap())
-                .unwrap()
-                .unwrap()
-        };
-        let session = ["--session", "11111111-aaaa"];
-        apply("define", "running", &["--activity", "working"]);
-        apply("build", "running", &[]);
-        apply("build", "running", &session);
-        apply("build", "running", &session);
-        apply("build", "done", &[]);
-        apply("build", "done", &[]);
-        apply("finish", "done", &FINISH_SUMMARY);
-        apply("finish", "done", &FINISH_SUMMARY);
-        assert!(
-            store
-                .update("999999", UpdateRun::new(Stage::Build, RunStatus::Running))
-                .unwrap()
-                .is_none()
-        );
-        let before = std::fs::read(&path).unwrap();
-        let mut invalid = UpdateRun::new(Stage::Check, RunStatus::Running);
-        invalid.branch = FieldUpdate::Set("invalid branch".into());
-        assert!(store.update(&run.id, invalid).is_err());
-        std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
-        assert!(
-            store
-                .update(&run.id, UpdateRun::new(Stage::Check, RunStatus::Running))
-                .is_err()
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), before);
-        assert_eq!(serde_json::to_vec(&store.list().unwrap()).unwrap(), before);
-    }
-
-    #[test]
-    fn invalid_mutations_leave_memory_and_disk_unchanged() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let store = RunStore::open(&path).unwrap();
-        let make_new = |title: &str| NewRun {
-            title: title.into(),
-            project: "/work".into(),
-            repository: None,
-            session: None,
-            model_routing: None,
-        };
-        let run = store.create(make_new("valid")).unwrap();
-        let before = std::fs::read(&path).unwrap();
-        assert_eq!(
-            store.create(make_new(" ")).unwrap_err().kind(),
-            io::ErrorKind::InvalidInput
-        );
-        let mut update = UpdateRun::new(Stage::Build, RunStatus::Running);
-        update.branch = FieldUpdate::Set("invalid branch".into());
-        assert_eq!(
-            store.update(&run.id, update).unwrap_err().kind(),
-            io::ErrorKind::InvalidInput
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), before);
-        assert_eq!(serde_json::to_vec(&store.list().unwrap()).unwrap(), before);
-    }
-
-    #[test]
-    fn concurrent_creates_keep_all_records_and_unique_ids() {
-        let dir = TestDir::new();
-        let store = std::sync::Arc::new(RunStore::open(&dir.0.path().join("runs.json")).unwrap());
-        let threads: Vec<_> = (0..16)
-            .map(|n| {
-                let store = store.clone();
-                std::thread::spawn(move || {
-                    store
-                        .create(NewRun {
-                            title: format!("run {n}"),
-                            project: "/work".into(),
-                            repository: None,
-                            session: None,
-                            model_routing: None,
-                        })
-                        .unwrap()
-                })
-            })
-            .collect();
-        let created: Vec<_> = threads
-            .into_iter()
-            .map(|thread| thread.join().unwrap())
-            .collect();
-        let ids: std::collections::HashSet<_> = created.iter().map(|run| run.id.clone()).collect();
-        assert_eq!(ids.len(), 16);
-        assert_eq!(
-            load_runs(&dir.0.path().join("runs.json")).unwrap().len(),
-            16
-        );
-    }
-
-    #[test]
-    fn concurrent_updates_to_different_runs_are_both_persisted() {
-        let dir = TestDir::new();
-        let store = std::sync::Arc::new(RunStore::open(&dir.0.path().join("runs.json")).unwrap());
-        let first = store
-            .create(NewRun {
-                title: "first".into(),
-                project: "/work".into(),
-                repository: None,
-                session: None,
-                model_routing: None,
-            })
-            .unwrap();
-        let second = store
-            .create(NewRun {
-                title: "second".into(),
-                project: "/work".into(),
-                repository: None,
-                session: None,
-                model_routing: None,
-            })
-            .unwrap();
-        let updates = [(first.id, Stage::Build), (second.id, Stage::Check)];
-        let threads: Vec<_> = updates
-            .into_iter()
-            .map(|(id, stage)| {
-                let store = store.clone();
-                std::thread::spawn(move || {
-                    store
-                        .update(&id, UpdateRun::new(stage, RunStatus::Done))
-                        .unwrap()
-                        .unwrap()
-                        .run
-                })
-            })
-            .collect();
-        for thread in threads {
-            thread.join().unwrap();
-        }
-        let persisted = load_runs(&dir.0.path().join("runs.json")).unwrap();
-        assert_eq!(persisted.len(), 2);
-        assert!(
-            persisted
-                .iter()
-                .all(|run| matches!(run.status, RunStatus::Done))
-        );
-        assert!(matches!(
-            persisted
-                .iter()
-                .find(|run| run.title == "first")
-                .unwrap()
-                .stage,
-            Stage::Build
-        ));
-        assert!(matches!(
-            persisted
-                .iter()
-                .find(|run| run.title == "second")
-                .unwrap()
-                .stage,
-            Stage::Check
-        ));
-    }
-
-    #[test]
-    fn cli_update_options_preserve_set_clear_and_reject_conflicts() {
-        let update = parse_update("build", "running", &[]).unwrap();
-        assert_eq!(
-            serde_json::to_value(update).unwrap(),
-            serde_json::json!({"stage":"build","status":"running"})
-        );
-        let update = parse_update(
-            "build",
-            "blocked",
-            &[
-                "--activity",
-                "Implementing ticket",
-                "--current-ticket",
-                "https://example.com/42",
-                "--blocking-reason",
-                "Need input",
-            ],
-        )
-        .unwrap();
-        let value = serde_json::to_value(update).unwrap();
-        assert_eq!(value["activity"], "Implementing ticket");
-        assert_eq!(value["current_ticket"], "https://example.com/42");
-        assert_eq!(value["blocking_reason"], "Need input");
-        let update = parse_update(
-            "finish",
-            "done",
-            &[
-                "--clear-activity",
-                "--clear-current-ticket",
-                "--clear-blocking-reason",
-            ],
-        )
-        .unwrap();
-        let value = serde_json::to_value(update).unwrap();
-        for field in ["activity", "current_ticket", "blocking_reason"] {
-            assert_eq!(value.get(field), Some(&serde_json::Value::Null));
-        }
-        for options in [
-            vec!["--activity"],
-            vec!["--activity", "--clear-activity"],
-            vec!["--clear-activity", "--activity", "x"],
-            vec!["--clear-current-ticket", "--clear-current-ticket"],
-            vec!["--unknown"],
-            vec!["--current-ticket", "file:///tmp/ticket"],
-            vec!["--blocking-reason", ""],
-        ] {
-            assert!(
-                parse_update("build", "running", &options).is_err(),
-                "options: {options:?}"
-            );
-        }
-        assert!(parse_update("unknown", "running", &[]).is_err());
-        assert!(parse_update("build", "unknown", &[]).is_err());
-    }
-
-    #[test]
-    fn cli_rework_option_sets_clears_and_rejects_invalid_counts() {
-        let update = parse_update("build", "running", &["--rework", "2"]).unwrap();
-        assert_eq!(serde_json::to_value(update).unwrap()["rework"], 2);
-        let update = parse_update("check", "running", &["--clear-rework"]).unwrap();
-        assert_eq!(
-            serde_json::to_value(update).unwrap().get("rework"),
-            Some(&serde_json::Value::Null)
-        );
-        for options in [
-            vec!["--rework"],
-            vec!["--rework", "0"],
-            vec!["--rework", "-1"],
-            vec!["--rework", "two"],
-            vec!["--rework", "1.5"],
-            vec!["--rework", "100"],
-            vec!["--rework", "1", "--clear-rework"],
-            vec!["--rework", "1", "--rework", "2"],
-        ] {
-            assert!(
-                parse_update("build", "running", &options).is_err(),
-                "options: {options:?}"
-            );
-        }
-        let range = format!("1 to {MAX_REWORK}");
-        for count in ["0", "100", "two"] {
-            let Err(error) = parse_update("build", "running", &["--rework", count]) else {
-                panic!("--rework {count} should be rejected");
-            };
-            assert!(error.to_string().contains(&range), "{error}");
-        }
-        assert!(UPDATE_HELP.contains(&format!("--rework <1-{MAX_REWORK}>")));
-    }
-
-    #[test]
-    fn failed_save_rolls_back_metadata_and_timestamp() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let store = RunStore::open(&path).unwrap();
-        let run = store
-            .create(NewRun {
-                title: "task".into(),
-                project: "/work".into(),
-                repository: None,
-                session: None,
-                model_routing: None,
-            })
-            .unwrap();
-        let original = fs::read(&path).unwrap();
-        fs::create_dir(path.with_extension("json.tmp")).unwrap();
-        let update = parse_update(
-            "build",
-            "blocked",
-            &["--activity", "Working", "--blocking-reason", "Need input"],
-        )
-        .unwrap();
-        assert!(store.update(&run.id, update).is_err());
-        assert_eq!(
-            serde_json::to_vec(&store.list().unwrap()).unwrap(),
-            original
-        );
-        assert_eq!(fs::read(&path).unwrap(), original);
-    }
-
-    fn new_run(store: &RunStore, title: &str) -> Run {
-        store
-            .create(NewRun {
-                title: title.into(),
-                project: "/work/repo.worktrees/feature".into(),
-                repository: Some("/work/repo".into()),
-                session: None,
-                model_routing: None,
-            })
-            .unwrap()
-    }
-
-    fn selection() -> crate::routing::ModelRouting {
-        serde_json::from_value(serde_json::json!({
-            "agent": "claude",
-            "stages": {
-                "build": {"model": "sonnet", "effort": "medium"},
-                "check": {"model": "opus", "effort": "high"}
-            }
-        }))
-        .unwrap()
-    }
-
-    fn routed_store(dir: &TestDir) -> (RunStore, Run) {
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let run = store
-            .create(NewRun {
-                title: "routed".into(),
-                project: "/work/repo".into(),
-                repository: None,
-                session: None,
-                model_routing: Some(selection()),
-            })
-            .unwrap();
-        (store, run)
-    }
-
-    fn choice(routing: &ModelRouting, stage: Stage) -> (String, Option<String>) {
-        let choice = routing.choice_for(stage).expect("a routed stage");
-        (choice.model.clone(), choice.effort.clone())
-    }
-
-    fn pair(model: &str, effort: Option<&str>) -> (String, Option<String>) {
-        (model.to_string(), effort.map(str::to_string))
-    }
-
-    #[test]
-    fn a_stage_override_beats_the_policy_replaces_earlier_ones_clears_and_survives_a_restart() {
-        let dir = TestDir::new();
-        let (store, run) = routed_store(&dir);
-        let routing =
-            |store: &RunStore| store.get(&run.id).unwrap().unwrap().model_routing.unwrap();
-        assert_eq!(
-            choice(&routing(&store), Stage::Check),
-            pair("opus", Some("high"))
-        );
-
-        // An override with an effort, and one without that drops the policy's effort.
-        store
-            .update(
-                &run.id,
-                update(&[
-                    "--model-routing",
-                    "check=sonnet:low",
-                    "--model-routing",
-                    "define=haiku",
-                ]),
-            )
-            .unwrap();
-        assert_eq!(
-            choice(&routing(&store), Stage::Check),
-            pair("sonnet", Some("low"))
-        );
-        assert_eq!(choice(&routing(&store), Stage::Define), pair("haiku", None));
-        assert_eq!(
-            choice(&routing(&store), Stage::Build),
-            pair("sonnet", Some("medium"))
-        );
-        // The policy's own stages are untouched.
-        assert_eq!(routing(&store).stages[&Stage::Check].model, "opus");
-
-        // A new set of overrides replaces the old one, and an unrelated update keeps it.
-        store
-            .update(&run.id, update(&["--model-routing", "build=opus"]))
-            .unwrap();
-        assert_eq!(
-            choice(&routing(&store), Stage::Check),
-            pair("opus", Some("high"))
-        );
-        assert_eq!(choice(&routing(&store), Stage::Build), pair("opus", None));
-        store
-            .update(&run.id, update(&["--activity", "later"]))
-            .unwrap();
-        assert_eq!(choice(&routing(&store), Stage::Build), pair("opus", None));
-
-        let reopened = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        assert_eq!(
-            choice(&routing(&reopened), Stage::Build),
-            pair("opus", None)
-        );
-
-        store
-            .update(&run.id, update(&["--clear-model-routing"]))
-            .unwrap();
-        assert_eq!(
-            choice(&routing(&store), Stage::Build),
-            pair("sonnet", Some("medium"))
-        );
-        assert!(routing(&store).overrides.is_empty());
-    }
-
-    #[test]
-    fn bad_stage_overrides_are_refused_and_change_nothing() {
-        let dir = TestDir::new();
-        let (store, run) = routed_store(&dir);
-        let long = "m".repeat(65);
-        let long_model = format!("check={long}");
-        let long_effort = format!("check=sonnet:{long}");
-        for options in [
-            &["--model-routing", "deploy=sonnet"][..],
-            &["--model-routing", "check"],
-            &["--model-routing", "check="],
-            &["--model-routing", "check=son net"],
-            &["--model-routing", "check=sonnet:"],
-            &["--model-routing", "check=sonnet:hi gh"],
-            &["--model-routing", long_model.as_str()],
-            &["--model-routing", long_effort.as_str()],
-            &[
-                "--model-routing",
-                "check=sonnet",
-                "--model-routing",
-                "check=opus",
-            ],
-            &["--model-routing", "check=sonnet", "--clear-model-routing"],
-        ] {
-            assert!(
-                parse_update("build", "running", options).is_err(),
-                "{options:?}"
-            );
-        }
-        // An unknown stage names the valid ones.
-        let error = parse_update("build", "running", &["--model-routing", "deploy=sonnet"])
-            .unwrap_err()
-            .to_string();
-        for stage in ["define", "build", "check", "finish"] {
-            assert!(error.contains(stage), "{error}");
-        }
-        assert!(
-            store
-                .get(&run.id)
-                .unwrap()
-                .unwrap()
-                .model_routing
-                .unwrap()
-                .overrides
-                .is_empty()
-        );
-        // A run that has no selection has nothing to override.
-        let plain = new_run(&store, "plain");
-        let error = store
-            .update(&plain.id, update(&["--model-routing", "check=sonnet"]))
-            .unwrap_err();
-        assert!(error.to_string().contains("model routing"), "{error}");
-        // Clearing where there is nothing to clear is harmless.
-        store
-            .update(&plain.id, update(&["--clear-model-routing"]))
-            .unwrap();
-    }
-
-    #[test]
-    fn a_stored_run_with_the_old_roles_and_tasks_shape_reads_as_not_routed_and_is_not_rewritten() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let store = RunStore::open(&path).unwrap();
-        let run = store
-            .create(NewRun {
-                title: "old".into(),
-                project: "/work/repo".into(),
-                repository: None,
-                session: None,
-                model_routing: Some(selection()),
-            })
-            .unwrap();
-        drop(store);
-        let text = fs::read_to_string(&path).unwrap();
-        let current = serde_json::to_string(&selection()).unwrap();
-        let old =
-            r#"{"agent":"claude","roles":{"strong":{"model":"opus"}},"tasks":{"check":"strong"}}"#;
-        let replaced = text.replacen(&current, old, 1);
-        assert_ne!(text, replaced, "the fixture must carry the old shape");
-        fs::write(&path, &replaced).unwrap();
-
-        let reopened = RunStore::open(&path).unwrap();
-        let read = reopened.get(&run.id).unwrap().unwrap();
-        assert!(read.model_routing.is_none());
-        // Reading rewrote nothing, and the run can still be updated.
-        assert_eq!(fs::read_to_string(&path).unwrap(), replaced);
-        reopened
-            .update(&run.id, update(&["--activity", "later"]))
-            .unwrap();
-    }
-
-    #[test]
-    fn a_stored_selection_that_is_neither_current_nor_the_old_shape_is_an_error() {
-        for bad in [
-            r#"{"agent":"claude","stages":{"define":{"model":5}}}"#,
-            r#"{"agent":"claude","stages":{},"extra":1}"#,
-            r#"{"agent":"nobody","stages":{}}"#,
-            r#"5"#,
-            r#""roles""#,
-        ] {
-            let dir = TestDir::new();
-            let path = dir.0.path().join("runs.json");
-            let store = RunStore::open(&path).unwrap();
-            store
-                .create(NewRun {
-                    title: "bad".into(),
-                    project: "/work/repo".into(),
-                    repository: None,
-                    session: None,
-                    model_routing: Some(selection()),
-                })
-                .unwrap();
-            drop(store);
-            let text = fs::read_to_string(&path).unwrap();
-            let current = serde_json::to_string(&selection()).unwrap();
-            let replaced = text.replacen(&current, bad, 1);
-            assert_ne!(text, replaced, "the fixture must carry the bad value");
-            fs::write(&path, &replaced).unwrap();
-            assert!(load_runs(&path).is_err(), "{bad} was accepted");
-        }
-    }
-
-    #[test]
-    fn a_model_routing_selection_recorded_at_start_survives_updates_and_a_restart() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let store = RunStore::open(&path).unwrap();
-        let run = store
-            .create(NewRun {
-                title: "routed".into(),
-                project: "/work/repo".into(),
-                repository: None,
-                session: None,
-                model_routing: Some(selection()),
-            })
-            .unwrap();
-        assert_eq!(run.model_routing, Some(selection()));
-        let run = store
-            .update(&run.id, update(&["--activity", "later"]))
-            .unwrap()
-            .unwrap()
-            .run;
-        assert_eq!(run.model_routing, Some(selection()));
-        let reopened = RunStore::open(&path).unwrap();
-        let run = reopened.get(&run.id).unwrap().unwrap();
-        assert_eq!(run.model_routing, Some(selection()));
-    }
-
-    fn update(options: &[&str]) -> UpdateRun {
-        parse_update("build", "running", options).unwrap()
-    }
-
-    fn warnings_for(
-        store: &RunStore,
-        id: &str,
-        stage: &str,
-        status: &str,
-        options: &[&str],
-    ) -> Vec<String> {
-        store
-            .update(id, parse_update(stage, status, options).unwrap())
-            .unwrap()
-            .unwrap()
-            .warnings
-    }
-
-    #[test]
-    fn done_on_a_never_entered_stage_warns_but_the_normal_flow_does_not() {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let run = new_run(&store, "task");
-        assert!(warnings_for(&store, &run.id, "build", "running", &[]).is_empty());
-        assert!(warnings_for(&store, &run.id, "build", "done", &[]).is_empty());
-        let warnings = warnings_for(&store, &run.id, "finish", "done", &FINISH_SUMMARY);
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("finish") && warnings[0].contains("never entered"));
-        assert_eq!(store.get(&run.id).unwrap().unwrap().stage, Stage::Finish);
-    }
-
-    #[test]
-    fn a_full_run_without_a_spec_warns_when_build_is_done_or_check_starts() {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let run = new_run(&store, "task");
-        let id = &run.id;
-        warnings_for(&store, id, "build", "running", &["--mode", "jidoka-full"]);
-        let done = warnings_for(&store, id, "build", "done", &[]);
-        assert_eq!(done.len(), 1);
-        assert!(done[0].contains("no spec"));
-        assert!(!done[0].contains("before Build"), "{}", done[0]);
-        let check = warnings_for(&store, id, "check", "running", &[]);
-        assert_eq!(check.len(), 1);
-        assert!(warnings_for(&store, id, "check", "running", &[]).is_empty());
-        warnings_for(
-            &store,
-            id,
-            "build",
-            "running",
-            &["--spec", "https://example.com/1"],
-        );
-        assert!(warnings_for(&store, id, "build", "done", &[]).is_empty());
-    }
-
-    #[test]
-    fn balanced_and_fast_runs_do_not_warn_about_a_missing_spec() {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        for mode in ["jidoka-balanced", "jidoka-fast"] {
-            let run = new_run(&store, "task");
-            warnings_for(&store, &run.id, "build", "running", &["--mode", mode]);
-            assert!(warnings_for(&store, &run.id, "build", "done", &[]).is_empty());
-            assert!(warnings_for(&store, &run.id, "check", "running", &[]).is_empty());
-        }
-    }
-
-    #[test]
-    fn context_is_set_kept_and_cleared_one_field_at_a_time() {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let run = new_run(&store, "task");
-        assert_eq!(run.repository.as_deref(), Some("/work/repo"));
-        assert!(run.worktree.is_none() && run.tickets.is_empty() && run.summaries.is_empty());
-
-        let run = store
-            .update(
-                &run.id,
-                update(&[
-                    "--mode",
-                    "jidoka-fast",
-                    "--worktree",
-                    "/work/repo.worktrees/feature",
-                    "--branch",
-                    "feature/x",
-                    "--base-commit",
-                    "ABCDEF1234",
-                    "--spec",
-                    "https://github.com/o/r/issues/1",
-                    "--pr",
-                    "https://github.com/o/r/pull/2",
-                    "--summary",
-                    "define=Spec written",
-                ]),
-            )
-            .unwrap()
-            .unwrap()
-            .run;
-        assert_eq!(run.mode, Some(Mode::Fast));
-        assert_eq!(run.branch.as_deref(), Some("feature/x"));
-        assert_eq!(
-            run.base_commit.as_deref(),
-            Some("abcdef1234"),
-            "stored in lowercase"
-        );
-        assert_eq!(run.summaries[&Stage::Define], "Spec written");
-
-        // An update that mentions none of the context keeps all of it.
-        let kept = store
-            .update(&run.id, update(&["--activity", "Working"]))
-            .unwrap()
-            .unwrap()
-            .run;
-        assert_eq!(kept.worktree, run.worktree);
-        assert_eq!(kept.spec, run.spec);
-        assert_eq!(kept.pr, run.pr);
-        assert_eq!(kept.summaries, run.summaries);
-
-        // Each clear flag removes only its own field.
-        let cleared = store
-            .update(
-                &run.id,
-                update(&["--clear-pr", "--clear-mode", "--clear-summary", "define"]),
-            )
-            .unwrap()
-            .unwrap()
-            .run;
-        assert!(cleared.pr.is_none() && cleared.mode.is_none() && cleared.summaries.is_empty());
-        assert_eq!(cleared.branch.as_deref(), Some("feature/x"));
-        assert_eq!(cleared.spec, run.spec);
-    }
-
-    #[test]
-    fn stage_summaries_survive_later_stages() {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let run = new_run(&store, "task");
-        store
-            .update(&run.id, update(&["--summary", "define=Planned"]))
-            .unwrap();
-        store
-            .update(
-                &run.id,
-                parse_update(
-                    "check",
-                    "running",
-                    &["--summary", "build=Built three tickets"],
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        let run = store
-            .update(
-                &run.id,
-                parse_update("finish", "running", &["--summary", "define=Planned again"]).unwrap(),
-            )
-            .unwrap()
-            .unwrap()
-            .run;
-        assert!(matches!(run.stage, Stage::Finish));
-        assert_eq!(run.summaries[&Stage::Define], "Planned again");
-        assert_eq!(run.summaries[&Stage::Build], "Built three tickets");
-    }
-
-    #[test]
-    fn the_ticket_list_is_ordered_and_keeps_progress_when_relisted() {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let run = new_run(&store, "task");
-        let run = store
-            .update(
-                &run.id,
-                update(&[
-                    "--ticket",
-                    "https://x.test/1 First one",
-                    "--ticket",
-                    "docs/t2.md Second",
-                    "--ticket-status",
-                    "https://x.test/1=in-progress",
-                ]),
-            )
-            .unwrap()
-            .unwrap()
-            .run;
-        let view = |run: &Run| {
-            run.tickets
-                .iter()
-                .map(|t| (t.reference.clone(), t.status))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            view(&run),
-            [
-                ("https://x.test/1".into(), TicketStatus::InProgress),
-                ("docs/t2.md".into(), TicketStatus::Pending)
-            ]
-        );
-        // Listing again in a new order with a new ticket keeps the status of the kept ones.
-        let run = store
-            .update(
-                &run.id,
-                update(&[
-                    "--ticket",
-                    "docs/t2.md Second",
-                    "--ticket",
-                    "https://x.test/1 First one",
-                    "--ticket",
-                    "docs/t3.md Third",
-                ]),
-            )
-            .unwrap()
-            .unwrap()
-            .run;
-        assert_eq!(
-            view(&run),
-            [
-                ("docs/t2.md".into(), TicketStatus::Pending),
-                ("https://x.test/1".into(), TicketStatus::InProgress),
-                ("docs/t3.md".into(), TicketStatus::Pending),
-            ]
-        );
-        let run = store
-            .update(
-                &run.id,
-                update(&[
-                    "--ticket-status",
-                    "https://x.test/1=done",
-                    "--ticket-status",
-                    "docs/t2.md=in-progress",
-                ]),
-            )
-            .unwrap()
-            .unwrap()
-            .run;
-        assert_eq!(run.tickets[0].status, TicketStatus::InProgress);
-        assert_eq!(run.tickets[1].status, TicketStatus::Done);
-        let run = store
-            .update(&run.id, update(&["--clear-tickets"]))
-            .unwrap()
-            .unwrap()
-            .run;
-        assert!(run.tickets.is_empty());
-    }
-
-    #[test]
-    fn inconsistent_updates_are_rejected_with_a_reason_and_change_nothing() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let store = RunStore::open(&path).unwrap();
-        let run = new_run(&store, "task");
-        store
-            .update(&run.id, update(&["--ticket", "a A", "--ticket", "b B"]))
-            .unwrap();
-        let before = fs::read(&path).unwrap();
-
-        for (options, reason) in [
-            (
-                vec!["--ticket-status", "missing=done"],
-                "No ticket missing is listed",
-            ),
-            (
-                vec![
-                    "--ticket-status",
-                    "a=in-progress",
-                    "--ticket-status",
-                    "b=in-progress",
-                ],
-                "Only one ticket",
-            ),
-            // Even with a valid change beside it, nothing is applied.
-            (
-                vec!["--branch", "other", "--ticket-status", "zzz=done"],
-                "No ticket zzz",
-            ),
-        ] {
-            let error = store.update(&run.id, update(&options)).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-            assert!(error.to_string().contains(reason), "{error}");
-        }
-        assert_eq!(fs::read(&path).unwrap(), before);
-        assert!(store.get(&run.id).unwrap().unwrap().branch.is_none());
-    }
-
-    #[test]
-    fn invalid_context_values_are_refused_with_a_message() {
-        for (options, reason) in [
-            (vec!["--mode", "turbo"], "jidoka-fast"),
-            (vec!["--worktree", "relative/path"], "absolute path"),
-            (vec!["--branch", "two words"], "branch name"),
-            (vec!["--branch", "-x"], "branch name"),
-            (vec!["--base-commit", "xyz"], "hexadecimal"),
-            (
-                vec!["--spec", "javascript:alert(1)"],
-                "HTTP(S) URL or a local path",
-            ),
-            (
-                vec!["--spec", "https://user:secret@example.com/spec"],
-                "credentials",
-            ),
-            (vec!["--pr", "/local/path"], "HTTP(S) URL"),
-            (
-                vec!["--pr", "https://tok:x@example.com/pr/1"],
-                "credentials",
-            ),
-            (vec!["--ticket", "only-a-reference"], "<reference> <title>"),
-            (
-                vec!["--ticket", "a A", "--ticket", "a Again"],
-                "listed twice",
-            ),
-            (vec!["--ticket", "a A", "--clear-tickets"], "conflicting"),
-            (vec!["--clear-tickets", "--ticket", "a A"], "conflicting"),
-            (
-                vec!["--ticket-status", "a=finished"],
-                "pending, in-progress or done",
-            ),
-            (vec!["--ticket-status", "a"], "<reference>=<status>"),
-            (
-                vec!["--ticket-status", "a=done", "--ticket-status", "a=pending"],
-                "twice",
-            ),
-            (
-                vec!["--summary", "plan=x"],
-                "define, build, check or finish",
-            ),
-            (vec!["--summary", "define"], "<name>=<value>"),
-            (
-                vec!["--summary", "define=a", "--clear-summary", "define"],
-                "twice",
-            ),
-            (vec!["--mode", "jidoka", "--clear-mode"], "conflicting"),
-            (
-                vec!["--summary", "define=bad\u{1b}[2J"],
-                "control characters",
-            ),
-        ] {
-            let Err(error) = parse_update("build", "running", &options) else {
-                panic!("{options:?} should be rejected");
-            };
-            assert!(error.to_string().contains(reason), "{options:?}: {error}");
-        }
-        // Windows and Unix absolute paths and local references are fine.
-        for options in [
-            vec!["--worktree", "C:\\work\\repo"],
-            vec!["--worktree", "/work/repo"],
-            vec!["--spec", "docs/specs/thing.md"],
-            vec!["--spec", "C:\\specs\\thing.md"],
-            vec!["--spec", "#12"],
-        ] {
-            assert!(
-                parse_update("build", "running", &options).is_ok(),
-                "{options:?}"
-            );
-        }
-        let too_many: Vec<String> = (0..=MAX_TICKETS).map(|n| format!("t{n} Title")).collect();
-        let options: Vec<&str> = too_many
-            .iter()
-            .flat_map(|t| ["--ticket", t.as_str()])
-            .collect();
-        assert!(
-            parse_update("build", "running", &options)
-                .unwrap_err()
-                .to_string()
-                .contains("At most 100")
-        );
-    }
-
-    #[test]
-    fn context_survives_a_restart_and_a_failed_save_changes_nothing() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let store = RunStore::open(&path).unwrap();
-        let run = new_run(&store, "task");
-        store
-            .update(
-                &run.id,
-                update(&[
-                    "--branch",
-                    "feature/x",
-                    "--ticket",
-                    "a A",
-                    "--summary",
-                    "define=Planned",
-                    "--pr",
-                    "https://x.test/pr/1",
-                ]),
-            )
-            .unwrap();
-        let restarted = RunStore::open(&path).unwrap();
-        let loaded = restarted.get(&run.id).unwrap().unwrap();
-        assert_eq!(loaded.repository.as_deref(), Some("/work/repo"));
-        assert_eq!(loaded.branch.as_deref(), Some("feature/x"));
-        assert_eq!(loaded.tickets.len(), 1);
-        assert_eq!(loaded.summaries[&Stage::Define], "Planned");
-
-        let before = fs::read(&path).unwrap();
-        fs::create_dir(path.with_extension("json.tmp")).unwrap();
-        let result = restarted.update(
-            &run.id,
-            update(&[
-                "--branch",
-                "other",
-                "--clear-tickets",
-                "--clear-summary",
-                "define",
-                "--clear-pr",
-            ]),
-        );
-        assert!(result.is_err());
-        let after = restarted.get(&run.id).unwrap().unwrap();
-        assert_eq!(after.branch.as_deref(), Some("feature/x"));
-        assert_eq!(after.tickets.len(), 1);
-        assert_eq!(after.summaries.len(), 1);
-        assert!(after.pr.is_some());
-        assert_eq!(fs::read(&path).unwrap(), before);
-    }
-
-    #[test]
-    fn legacy_full_mode_loads_without_rewriting_and_normalizes_on_update() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let legacy = r#"[{"id":"7","title":"old","project":"/work/old","stage":"build","status":"running","updated_at":5,"mode":"jidoka","branch":"feature/x","base_commit":"abc1234","spec":"docs/spec.md"}]"#;
-        fs::write(&path, legacy).unwrap();
-        let store = RunStore::open(&path).unwrap();
-        let run = store.get("7").unwrap().unwrap();
-        assert_eq!(run.mode, Some(Mode::Full));
-        assert_eq!(run.branch.as_deref(), Some("feature/x"));
-        assert_eq!(run.spec.as_deref(), Some("docs/spec.md"));
-        assert_eq!(fs::read_to_string(&path).unwrap(), legacy);
-        store
-            .update("7", update(&["--activity", "Continuing"]))
-            .unwrap();
-        let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(stored[0]["mode"], "jidoka-full");
-        assert_eq!(stored[0]["id"], "7");
-        assert_eq!(stored[0]["stage"], "build");
-        assert_eq!(stored[0]["branch"], "feature/x");
-    }
-
-    #[test]
-    fn records_from_before_run_context_load_with_everything_unknown() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let legacy = r#"[{"id":"7","title":"old","project":"/work/old","stage":"build","status":"blocked","blocking_reason":"Need input","updated_at":5}]"#;
-        fs::write(&path, legacy).unwrap();
-        let store = RunStore::open(&path).unwrap();
-        let run = store.get("7").unwrap().unwrap();
-        assert_eq!(run.blocking_reason.as_deref(), Some("Need input"));
-        assert!(run.repository.is_none() && run.worktree.is_none() && run.branch.is_none());
-        assert!(
-            run.base_commit.is_none()
-                && run.mode.is_none()
-                && run.spec.is_none()
-                && run.pr.is_none()
-        );
-        assert!(run.tickets.is_empty() && run.summaries.is_empty());
-        assert!(run.model_routing.is_none());
-        // Updating it adds context without inventing the rest, and keeps what it had.
-        let run = store
-            .update("7", update(&["--branch", "b"]))
-            .unwrap()
-            .unwrap()
-            .run;
-        assert_eq!(run.blocking_reason.as_deref(), Some("Need input"));
-        assert!(run.repository.is_none() && run.worktree.is_none());
-        let json = serde_json::to_value(&run).unwrap();
-        assert_eq!(json["repository"], serde_json::Value::Null);
-        assert_eq!(json["tickets"], serde_json::json!([]));
-        assert!(json.get("model_routing").is_none());
-    }
-
-    #[test]
-    fn concurrent_runs_keep_independent_context() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let store = std::sync::Arc::new(RunStore::open(&path).unwrap());
-        let runs: Vec<Run> = (0..8)
-            .map(|n| new_run(&store, &format!("run {n}")))
-            .collect();
-        let threads: Vec<_> = runs
-            .iter()
-            .enumerate()
-            .map(|(n, run)| {
-                let (store, id) = (store.clone(), run.id.clone());
-                std::thread::spawn(move || {
-                    let branch = format!("feature/{n}");
-                    let ticket = format!("t{n} Ticket {n}");
-                    let summary = format!("define=Summary {n}");
-                    store
-                        .update(
-                            &id,
-                            parse_update(
-                                "build",
-                                "running",
-                                &[
-                                    "--branch",
-                                    &branch,
-                                    "--ticket",
-                                    &ticket,
-                                    "--summary",
-                                    &summary,
-                                ],
-                            )
-                            .unwrap(),
-                        )
-                        .unwrap()
-                        .unwrap();
-                })
-            })
-            .collect();
-        for thread in threads {
-            thread.join().unwrap();
-        }
-        let persisted = load_runs(&path).unwrap();
-        assert_eq!(persisted.len(), 8);
-        for (n, run) in runs.iter().enumerate() {
-            let stored = persisted.iter().find(|r| r.id == run.id).unwrap();
-            assert_eq!(
-                stored.branch.as_deref(),
-                Some(format!("feature/{n}").as_str())
-            );
-            assert_eq!(stored.tickets.len(), 1);
-            assert_eq!(stored.tickets[0].reference, format!("t{n}"));
-            assert_eq!(stored.summaries[&Stage::Define], format!("Summary {n}"));
-        }
-    }
-
-    #[test]
-    fn urls_and_names_cannot_smuggle_credentials_or_tokens() {
-        for (options, reason) in [
-            (vec!["--spec", " https://tok:secret@evil.test/x"], "spaces"),
-            (vec!["--spec", "https://evil.test/x "], "spaces"),
-            (
-                vec!["--spec", "HTTPS://tok:secret@evil.test/x"],
-                "credentials",
-            ),
-            (
-                vec!["--spec", "https://example.com/spec?token=abc"],
-                "query string",
-            ),
-            (
-                vec!["--spec", "https://example.com/spec#frag"],
-                "query string",
-            ),
-            (
-                vec!["--pr", "https://example.com/pr/1?access_token=abc"],
-                "query string",
-            ),
-            (
-                vec!["--ticket", "https://example.com/t?key=1 Title"],
-                "query string",
-            ),
-            (vec!["--branch", "a:b"], "branch name"),
-            (vec!["--branch", "x~1"], "branch name"),
-            (vec!["--branch", "a@{b}"], "branch name"),
-            (vec!["--branch", "topic.lock"], "branch name"),
-            (vec!["--branch", "trailing/"], "branch name"),
-            (vec!["--branch", "back\\slash"], "branch name"),
-        ] {
-            let Err(error) = parse_update("build", "running", &options) else {
-                panic!("{options:?} should be rejected");
-            };
-            assert!(error.to_string().contains(reason), "{options:?}: {error}");
-        }
-        for options in [
-            vec!["--branch", "feature/run-context_2"],
-            vec!["--spec", "https://github.com/o/r/issues/1"],
-        ] {
-            assert!(
-                parse_update("build", "running", &options).is_ok(),
-                "{options:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn simultaneous_updates_to_one_run_both_land() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let store = std::sync::Arc::new(RunStore::open(&path).unwrap());
-        let run = new_run(&store, "task");
-        let threads: Vec<_> = [
-            vec!["--branch", "feature/a"],
-            vec!["--summary", "build=Built"],
-            vec!["--pr", "https://x.test/pr/1"],
-            vec!["--ticket", "t T"],
-        ]
-        .into_iter()
-        .map(|options| {
-            let (store, id) = (store.clone(), run.id.clone());
-            std::thread::spawn(move || {
-                let options: Vec<&str> = options.clone();
-                store
-                    .update(&id, parse_update("build", "running", &options).unwrap())
-                    .unwrap()
-                    .unwrap();
-            })
-        })
-        .collect();
-        for thread in threads {
-            thread.join().unwrap();
-        }
-        // Each update changed only its own fields, so none overwrote another.
-        let stored = load_runs(&path).unwrap().pop().unwrap();
-        assert_eq!(stored.branch.as_deref(), Some("feature/a"));
-        assert_eq!(stored.summaries.len(), 1);
-        assert_eq!(stored.pr.as_deref(), Some("https://x.test/pr/1"));
-        assert_eq!(stored.tickets.len(), 1);
-    }
-
-    #[test]
-    fn absolute_paths_are_recognised_the_same_way_on_every_system() {
-        for yes in [
-            "/work/repo",
-            "C:\\work\\repo",
-            "c:/work/repo",
-            "\\\\server\\share\\repo",
-        ] {
-            assert!(is_absolute_path(yes), "{yes}");
-        }
-        for no in [
-            "work/repo",
-            "./repo",
-            "..\\repo",
-            "C:repo",
-            "C:",
-            "",
-            "~/repo",
-        ] {
-            assert!(!is_absolute_path(no), "{no}");
-        }
-    }
-
-    #[test]
-    fn the_timeline_records_where_the_work_is_for_attributing_usage() {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let run = new_run(&store, "task");
-        assert_eq!(run.timeline.len(), 1, "a run starts in Define");
-        assert!(matches!(run.timeline[0].stage, Stage::Define) && run.finished_at.is_none());
-
-        let after = |options: &[&str], stage: &str| {
-            store
-                .update(&run.id, parse_update(stage, "running", options).unwrap())
-                .unwrap()
-                .unwrap()
-                .run
-        };
-        // An update that changes nothing about the stage, ticket or rework adds no mark.
-        assert_eq!(
-            after(&["--activity", "thinking"], "define").timeline.len(),
-            1
-        );
-        after(&["--ticket", "t1 One", "--ticket", "t2 Two"], "build");
-        let started = after(&["--ticket-status", "t1=in-progress"], "build");
-        assert_eq!(started.timeline.len(), 3);
-        assert_eq!(started.timeline[2].ticket.as_deref(), Some("t1"));
-        let second = after(
-            &[
-                "--ticket-status",
-                "t1=done",
-                "--ticket-status",
-                "t2=in-progress",
-            ],
-            "build",
-        );
-        assert_eq!(second.timeline[3].ticket.as_deref(), Some("t2"));
-        let checking = after(&[], "check");
-        assert_eq!(checking.timeline[4].ticket, None, "only Build has a ticket");
-        let rework = after(&["--rework", "1"], "build");
-        assert_eq!(rework.timeline.last().unwrap().rework, Some(1));
-        assert!(
-            rework
-                .timeline
-                .windows(2)
-                .all(|pair| pair[0].at <= pair[1].at)
-        );
-    }
-
-    #[test]
-    fn a_mark_records_the_activity_of_the_update_that_created_it() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let store = RunStore::open(&path).unwrap();
-        let run = new_run(&store, "task");
-        let after = |options: &[&str], stage: &str| {
-            store
-                .update(&run.id, parse_update(stage, "running", options).unwrap())
-                .unwrap()
-                .unwrap()
-                .run
-        };
-        assert_eq!(run.timeline[0].activity, None);
-        let building = after(&["--activity", "Writing the code"], "build");
-        assert_eq!(
-            building.timeline[1].activity.as_deref(),
-            Some("Writing the code")
-        );
-        // An update that adds no mark leaves the pass's activity alone.
-        let same = after(&["--activity", "Still going"], "build");
-        assert_eq!(same.timeline.len(), 2);
-        assert_eq!(
-            same.timeline[1].activity.as_deref(),
-            Some("Writing the code")
-        );
-        // A mark made by an update without an activity does not borrow the previous one.
-        let checking = after(&[], "check");
-        assert_eq!(checking.timeline[2].activity, None);
-
-        // The activity survives a reload from disk, and shows in the serialised run.
-        let reloaded = RunStore::open(&path)
-            .unwrap()
-            .get(&run.id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            reloaded.timeline[1].activity.as_deref(),
-            Some("Writing the code")
-        );
-        let json = serde_json::to_value(&reloaded).unwrap();
-        assert_eq!(json["timeline"][1]["activity"], "Writing the code");
-        assert!(json["timeline"][2].get("activity").is_none());
-    }
-
-    #[test]
-    fn marks_without_an_activity_load_from_old_json() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        fs::write(&path, r#"[{"id":"7","title":"old","project":"/p","stage":"build","status":"running","branch":"b","timeline":[{"at":5,"stage":"define"},{"at":9,"stage":"build","ticket":"t1"}]}]"#).unwrap();
-        let run = RunStore::open(&path).unwrap().get("7").unwrap().unwrap();
-        assert_eq!(run.timeline.len(), 2);
-        assert!(run.timeline.iter().all(|mark| mark.activity.is_none()));
-        assert_eq!(run.timeline[1].ticket.as_deref(), Some("t1"));
-    }
-
-    #[test]
-    fn finishing_a_run_closes_its_window_and_reopening_clears_it() {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let run = new_run(&store, "task");
-        let done = store
-            .update(
-                &run.id,
-                parse_update("finish", "done", &FINISH_SUMMARY).unwrap(),
-            )
-            .unwrap()
-            .unwrap()
-            .run;
-        let end = done.finished_at.expect("closed when done");
-        let again = store
-            .update(
-                &run.id,
-                parse_update(
-                    "finish",
-                    "done",
-                    &["--summary", "finish=Shipped", "--activity", "x"],
-                )
-                .unwrap(),
-            )
-            .unwrap()
-            .unwrap()
-            .run;
-        assert_eq!(
-            again.finished_at,
-            Some(end),
-            "a second done update keeps the first end"
-        );
-        let reopened = store
-            .update(&run.id, parse_update("build", "running", &[]).unwrap())
-            .unwrap()
-            .unwrap()
-            .run;
-        assert_eq!(reopened.finished_at, None);
-    }
-
-    #[test]
-    fn run_reports_survive_reopening_without_tickets() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let store = RunStore::open(&path).unwrap();
-        let run = new_run(&store, "task");
-        let update = parse_update(
-            "build",
-            "running",
-            &[
-                "--run-report",
-                "skill",
-                "jidoka-balanced",
-                "--run-report",
-                "activity",
-                "Checks passed",
-            ],
-        )
-        .unwrap();
-        store.update(&run.id, update).unwrap().unwrap();
-        let reopened = RunStore::open(&path).unwrap();
-        let saved = serde_json::to_value(reopened.get(&run.id).unwrap().unwrap()).unwrap();
-        assert_eq!(saved["tickets"], serde_json::json!([]));
-        assert_eq!(saved["run_reports"][0]["kind"], "skill");
-        assert_eq!(saved["run_reports"][0]["text"], "jidoka-balanced");
-        assert_eq!(saved["run_reports"][1]["text"], "Checks passed");
-        assert_eq!(saved["run_reports"][1]["stage"], "build");
-        assert!(saved["run_reports"][1]["at"].as_u64().is_some());
-        for args in [
-            vec!["--run-report", "wrong", "text"],
-            vec!["--run-report", "skill", ""],
-            vec!["--run-report", "activity", "bad\ntext"],
-        ] {
-            assert!(parse_update("build", "running", &args).is_err());
-        }
-    }
-
-    #[test]
-    fn ticket_reports_reject_bad_values_and_unknown_tickets_without_saving() {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let created = new_run(&store, "task");
-        for args in [
-            vec!["--ticket-report", "missing"],
-            vec!["--ticket-report", "t1", "bad", "x"],
-            vec!["--ticket-report", "t1", "skill", ""],
-            vec!["--ticket-report", "t1", "activity", "bad\ntext"],
-        ] {
-            assert!(parse_update("build", "running", &args).is_err(), "{args:?}");
-        }
-        let update = parse_update(
-            "build",
-            "running",
-            &["--ticket-report", "t1", "skill", "jidoka-tdd"],
-        )
-        .unwrap();
-        assert!(store.update(&created.id, update).is_err());
-        assert!(
-            store
-                .get(&created.id)
-                .unwrap()
-                .unwrap()
-                .ticket_reports
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn ticket_report_size_limits_are_enforced() {
-        let valid = "x".repeat(500);
-        let too_long = "x".repeat(501);
-        assert!(
-            parse_update(
-                "build",
-                "running",
-                &["--ticket-report", "t1", "activity", &valid]
-            )
-            .is_ok()
-        );
-        assert!(
-            parse_update(
-                "build",
-                "running",
-                &["--ticket-report", "t1", "activity", &too_long]
-            )
-            .is_err()
-        );
-        let mut args = Vec::new();
-        for _ in 0..100 {
-            args.extend(["--ticket-report", "t1", "skill", "jidoka-tdd"]);
-        }
-        assert!(parse_update("build", "running", &args).is_ok());
-        args.extend(["--ticket-report", "t1", "skill", "jidoka-tdd"]);
-        assert!(parse_update("build", "running", &args).is_err());
-    }
-
-    #[test]
-    fn run_rejects_reports_beyond_its_limit_without_losing_existing_reports() {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let run = new_run(&store, "task");
-        store
-            .update(
-                &run.id,
-                parse_update("build", "running", &["--ticket", "t1 One"]).unwrap(),
-            )
-            .unwrap();
-        let mut args = Vec::new();
-        for _ in 0..100 {
-            args.extend(["--ticket-report", "t1", "skill", "jidoka-tdd"]);
-        }
-        for _ in 0..10 {
-            store
-                .update(&run.id, parse_update("build", "running", &args).unwrap())
-                .unwrap();
-        }
-        let extra = parse_update(
-            "build",
-            "running",
-            &["--ticket-report", "t1", "skill", "jidoka-tdd"],
-        )
-        .unwrap();
-        assert!(store.update(&run.id, extra).is_err());
-        assert_eq!(
-            store.get(&run.id).unwrap().unwrap().ticket_reports.len(),
-            1000
-        );
-    }
-
-    #[test]
-    fn ticket_reports_accept_equals_in_reference_and_text() {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let run = new_run(&store, "task");
-        let reference = "https://tracker.example/item/id=42";
-        let update = parse_update(
-            "build",
-            "running",
-            &[
-                "--ticket",
-                "https://tracker.example/item/id=42 Example",
-                "--ticket-report",
-                reference,
-                "activity",
-                "value=skill:test",
-            ],
-        )
-        .unwrap();
-        let saved = store.update(&run.id, update).unwrap().unwrap().run;
-        assert_eq!(saved.ticket_reports[0].ticket, reference);
-        assert_eq!(saved.ticket_reports[0].text, "value=skill:test");
-    }
-
-    #[test]
-    fn ticket_reports_survive_updates_and_reopening_the_store() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let store = RunStore::open(&path).unwrap();
-        let created = new_run(&store, "task");
-        store
-            .update(
-                &created.id,
-                parse_update(
-                    "build",
-                    "running",
-                    &[
-                        "--ticket",
-                        "t1 First ticket",
-                        "--ticket-report",
-                        "t1",
-                        "skill",
-                        "jidoka-tdd",
-                    ],
-                )
-                .unwrap(),
-            )
-            .unwrap()
-            .unwrap();
-        store
-            .update(
-                &created.id,
-                parse_update(
-                    "build",
-                    "running",
-                    &["--ticket-report", "t1", "activity", "Tests passed"],
-                )
-                .unwrap(),
-            )
-            .unwrap()
-            .unwrap();
-        let reopened = RunStore::open(&path).unwrap();
-        let saved = reopened.get(&created.id).unwrap().unwrap();
-        let json = serde_json::to_value(saved).unwrap();
-        assert_eq!(json["ticket_reports"][0]["ticket"], "t1");
-        assert_eq!(json["ticket_reports"][0]["kind"], "skill");
-        assert_eq!(json["ticket_reports"][0]["text"], "jidoka-tdd");
-        assert_eq!(json["ticket_reports"][1]["text"], "Tests passed");
-        assert_eq!(json["ticket_reports"][1]["stage"], "build");
-        assert!(json["ticket_reports"][1]["at"].as_u64().is_some());
-    }
-
-    #[test]
-    fn sessions_are_recorded_once_validated_and_kept_across_updates() {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let created = store
-            .create(NewRun {
-                title: "t".into(),
-                project: "/p".into(),
-                repository: None,
-                session: Some("11111111-aaaa".into()),
-                model_routing: None,
-            })
-            .unwrap();
-        assert_eq!(created.sessions, ["11111111-aaaa"]);
-        let run = store
-            .update(
-                &created.id,
-                parse_update(
-                    "build",
-                    "running",
-                    &[
-                        "--session",
-                        "22222222-bbbb",
-                        "--session",
-                        "11111111-aaaa",
-                        "--session",
-                        "22222222-bbbb",
-                    ],
-                )
-                .unwrap(),
-            )
-            .unwrap()
-            .unwrap()
-            .run;
-        assert_eq!(run.sessions, ["11111111-aaaa", "22222222-bbbb"]);
-        let kept = store
-            .update(&created.id, update(&["--activity", "x"]))
-            .unwrap()
-            .unwrap()
-            .run;
-        assert_eq!(kept.sessions, run.sessions);
-        for bad in [
-            "short",
-            "has space in it",
-            "../../etc/passwd",
-            "semi;colon-id",
-            "",
-        ] {
-            assert!(
-                parse_update("build", "running", &["--session", bad]).is_err(),
-                "{bad}"
-            );
-        }
-    }
-
-    #[test]
-    fn usage_is_replaced_atomically_and_a_failed_save_keeps_the_old_usage() {
-        use crate::usage::{Usage, UsageStatus};
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        let store = RunStore::open(&path).unwrap();
-        let run = new_run(&store, "task");
-        assert!(run.usage.is_none());
-        store
-            .set_usage(&run.id, Usage::not_tracked("first", 1))
-            .unwrap();
-        fs::create_dir(path.with_extension("json.tmp")).unwrap();
-        assert!(
-            store
-                .set_usage(&run.id, Usage::not_tracked("second", 2))
-                .is_err()
-        );
-        assert_eq!(
-            store
-                .get(&run.id)
-                .unwrap()
-                .unwrap()
-                .usage
-                .unwrap()
-                .reason
-                .as_deref(),
-            Some("first")
-        );
-        fs::remove_dir(path.with_extension("json.tmp")).unwrap();
-        store
-            .set_usage(&run.id, Usage::not_tracked("third", 3))
-            .unwrap();
-        let restarted = RunStore::open(&path).unwrap();
-        let usage = restarted.get(&run.id).unwrap().unwrap().usage.unwrap();
-        assert_eq!(
-            (usage.status, usage.reason.as_deref()),
-            (UsageStatus::NotTracked, Some("third"))
-        );
-        // An unknown run is left alone.
-        store.set_usage("nope", Usage::not_tracked("x", 1)).unwrap();
-    }
-
-    #[test]
-    fn records_from_before_usage_tracking_load_without_a_timeline_or_usage() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        fs::write(&path, r#"[{"id":"7","title":"old","project":"/p","stage":"build","status":"running","branch":"b"}]"#).unwrap();
-        let store = RunStore::open(&path).unwrap();
-        let run = store.get("7").unwrap().unwrap();
-        assert!(
-            run.timeline.is_empty()
-                && run.sessions.is_empty()
-                && run.usage.is_none()
-                && run.finished_at.is_none()
-        );
-        // Updating it starts a timeline from now; nothing earlier is invented.
-        let run = store
-            .update("7", update(&["--activity", "x"]))
-            .unwrap()
-            .unwrap()
-            .run;
-        assert_eq!(run.timeline.len(), 1);
-        assert_eq!(run.timeline[0].at, run.updated_at.unwrap());
-    }
-
-    #[test]
-    fn records_without_events_load_and_serialize_without_them() {
-        let dir = TestDir::new();
-        let path = dir.0.path().join("runs.json");
-        fs::write(&path, r#"[{"id":"7","title":"old","project":"/p","stage":"build","status":"running","run_reports":[{"kind":"activity","text":"t","stage":"build","at":5}]}]"#).unwrap();
-        let store = RunStore::open(&path).unwrap();
-        let run = store.get("7").unwrap().unwrap();
-        assert!(run.events.is_empty());
-        assert!(serde_json::to_value(&run).unwrap().get("events").is_none());
-    }
-
-    fn event_store() -> (TestDir, RunStore, String) {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let run = store
-            .create(NewRun {
-                title: "task".into(),
-                project: "/work".into(),
-                repository: None,
-                session: None,
-                model_routing: None,
-            })
-            .unwrap();
-        (dir, store, run.id)
-    }
-
-    #[test]
-    fn blocking_and_resuming_record_events_without_touching_the_timeline() {
-        let (_dir, store, id) = event_store();
-        let apply = |stage, status, args: &[&str]| {
-            store
-                .update(&id, parse_update(stage, status, args).unwrap())
-                .unwrap()
-                .unwrap()
-                .run
-        };
-        let running = apply("build", "running", &[]);
-        assert!(running.events.is_empty());
-        let blocked = apply("build", "blocked", &["--blocking-reason", "Need keys"]);
-        assert_eq!(blocked.events.len(), 1);
-        assert_eq!(blocked.events[0].kind, RunEventKind::Blocked);
-        assert_eq!(blocked.events[0].stage, Stage::Build);
-        assert_eq!(blocked.events[0].reason.as_deref(), Some("Need keys"));
-        assert_eq!(blocked.events[0].at, blocked.updated_at.unwrap());
-        // Blocked again, even with a new reason, adds nothing.
-        let again = apply(
-            "build",
-            "blocked",
-            &["--blocking-reason", "Still need keys"],
-        );
-        assert_eq!(again.events.len(), 1);
-        let resumed = apply("check", "running", &["--clear-blocking-reason"]);
-        assert_eq!(resumed.events.len(), 2);
-        assert_eq!(resumed.events[1].kind, RunEventKind::Resumed);
-        assert_eq!(resumed.events[1].stage, Stage::Check);
-        assert!(resumed.events[1].reason.is_none());
-        assert!(resumed.events[0].at <= resumed.events[1].at);
-        // Events are not marks: only the stage changes make marks.
-        let stages: Vec<_> = resumed.timeline.iter().map(|m| m.stage).collect();
-        assert_eq!(stages, [Stage::Define, Stage::Build, Stage::Check]);
-        let json = serde_json::to_value(&resumed).unwrap();
-        assert_eq!(json["events"][0]["kind"], "blocked");
-        assert_eq!(json["events"][1]["kind"], "resumed");
-    }
-
-    #[test]
-    fn events_are_capped() {
-        let (dir, store, id) = event_store();
-        // Seed the stored events one short of the cap instead of saving a thousand times.
-        let path = dir.0.path().join("runs.json");
-        let mut stored = serde_json::to_value(store.list().unwrap()).unwrap();
-        stored[0]["events"] = (0..MAX_EVENTS - 1)
-            .map(|at| serde_json::json!({"at": at, "kind": "blocked", "stage": "build"}))
-            .collect();
-        std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
-        let store = RunStore::open(&path).unwrap();
-        for _ in 0..2 {
-            for (status, args) in [
-                ("blocked", &["--blocking-reason", "x"][..]),
-                ("running", &[][..]),
-            ] {
-                store
-                    .update(&id, parse_update("build", status, args).unwrap())
-                    .unwrap();
-            }
-        }
-        assert_eq!(store.get(&id).unwrap().unwrap().events.len(), MAX_EVENTS);
-    }
-}
+mod tests;

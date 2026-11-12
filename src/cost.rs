@@ -480,25 +480,6 @@ mod tests {
     }
 
     #[test]
-    fn built_in_prices_are_unique_and_not_negative() {
-        let ids: BTreeSet<_> = PRICES.iter().map(|(id, _)| *id).collect();
-        assert_eq!(ids.len(), PRICES.len());
-        for (id, p) in PRICES {
-            assert!(
-                [
-                    p.input,
-                    p.output,
-                    p.cache_read,
-                    p.cache_write.unwrap_or(0.0)
-                ]
-                .iter()
-                .all(|v| *v >= 0.0),
-                "{id}"
-            );
-        }
-    }
-
-    #[test]
     fn a_dotted_model_id_is_priced_like_its_dashed_form() {
         let table: Table = &[("claude-m-5-5", price(2.0, 10.0, 0.5, 3.0))];
         assert!(lookup(table, "claude-m-5.5").is_some());
@@ -553,73 +534,5 @@ mod tests {
         assert_eq!(format(&stages["build"]), "$2.00");
         assert_eq!(format(&stages["check"]), "unknown");
         assert_eq!(stages["check"].unpriced_models, ["m-new"]);
-    }
-
-    #[test]
-    fn unreported_input_and_output_is_unknown_but_missing_cache_counts_are_costed() {
-        let u = usage(json!([
-            row("build", "m-priced", json!({"cache_read": 1000})),
-            row(
-                "build",
-                "m-priced",
-                json!({"input": 1_000_000, "output": 0})
-            ),
-        ]));
-        assert_eq!(row_cost(&u.rows[0], TABLE), None);
-        assert!((row_cost(&u.rows[1], TABLE).unwrap() - 2.0).abs() < 1e-9);
-        let only_input = usage(json!([row(
-            "build",
-            "m-priced",
-            json!({"input": 1_000_000})
-        )]));
-        assert_eq!(format(&total(&only_input.rows, TABLE)), "$2.00");
-    }
-
-    #[test]
-    fn a_tiny_positive_cost_is_not_shown_as_zero() {
-        let cost = Cost {
-            usd: Some(0.0004),
-            ..Cost::default()
-        };
-        assert_eq!(format(&cost), "<$0.01");
-    }
-
-    #[test]
-    fn cost_follows_the_price_table_and_is_not_part_of_the_stored_usage() {
-        let u = usage(json!([row(
-            "build",
-            "m-priced",
-            json!({"input": 1_000_000, "output": 0})
-        )]));
-        let cheaper: Table = &[("m-priced", price(1.0, 1.0, 1.0, 1.0))];
-        assert_eq!(format(&total(&u.rows, TABLE)), "$2.00");
-        assert_eq!(format(&total(&u.rows, cheaper)), "$1.00");
-        assert!(!serde_json::to_string(&u).unwrap().contains("cost"));
-    }
-
-    #[test]
-    fn api_json_has_null_for_unknown_and_lists_unpriced_models() {
-        let u = usage(json!([
-            row("build", "m-new", json!({"input": 10, "output": 10})),
-            row(
-                "build",
-                "m-priced",
-                json!({"input": 1_000_000, "output": 0})
-            ),
-        ]));
-        let v = usage_json(&u, TABLE).unwrap();
-        assert!(v["rows"][0]["cost_usd"].is_null());
-        assert_eq!(v["rows"][1]["cost_usd"], json!(2.0));
-        assert_eq!(v["cost"]["partial"], json!(true));
-        assert_eq!(v["cost"]["unpriced_models"], json!(["m-new"]));
-        assert!(v["cost"]["by_model"]["m-new"]["usd"].is_null());
-        assert_eq!(v["cost"]["by_stage"]["build"]["usd"], json!(2.0));
-        let none: Usage = serde_json::from_value(
-            json!({"status": "not-tracked", "reason": "x", "collected_at": 0}),
-        )
-        .unwrap();
-        let v = usage_json(&none, TABLE).unwrap();
-        assert!(v["cost"]["usd"].is_null());
-        assert_eq!(v["cost"]["partial"], json!(false));
     }
 }

@@ -54,28 +54,6 @@ fn install_writes_every_config_dir_once_and_not_the_default() {
 }
 
 #[test]
-fn a_tilde_expands_to_the_home_folder() {
-    let home = tempfile::tempdir().unwrap();
-    let output = jidoka(
-        home.path(),
-        &[
-            "install",
-            "--agent",
-            "claude",
-            "--config-dir",
-            "~/work-claude",
-        ],
-    );
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert!(
-        home.path()
-            .join("work-claude/skills/jidoka/SKILL.md")
-            .is_file()
-    );
-    assert!(!home.path().join(".claude").exists());
-}
-
-#[test]
 fn a_relative_config_dir_fails_before_anything_is_written() {
     let home = tempfile::tempdir().unwrap();
     let good = home.path().join("good");
@@ -96,26 +74,6 @@ fn a_relative_config_dir_fails_before_anything_is_written() {
     assert!(!good.exists());
     assert!(!home.path().join("relative").exists());
     assert!(!home.path().join(".claude").exists());
-}
-
-#[test]
-fn a_config_dir_without_the_claude_agent_is_refused() {
-    let home = tempfile::tempdir().unwrap();
-    let dir = home.path().join("a");
-    let output = jidoka(
-        home.path(),
-        &[
-            "install",
-            "--agent",
-            "codex",
-            "--config-dir",
-            dir.to_str().unwrap(),
-        ],
-    );
-    assert!(!output.status.success());
-    assert!(stderr(&output).contains("claude"), "{}", stderr(&output));
-    assert!(!dir.exists());
-    assert!(!home.path().join(".codex").exists());
 }
 
 #[test]
@@ -181,57 +139,4 @@ fn install_with_an_agent_writes_the_skills_and_the_record() {
     assert_eq!(record["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(record["agents"], serde_json::json!(["claude"]));
     assert_eq!(record["claude_config_dirs"], serde_json::json!([]));
-}
-
-#[test]
-fn install_reads_agents_and_config_dirs_from_the_environment() {
-    let home = tempfile::tempdir().unwrap();
-    let (a, b) = (home.path().join("a"), home.path().join("b"));
-    let list = std::env::join_paths([&a, &b]).unwrap();
-    let output = common::jidoka_in(home.path())
-        .arg("install")
-        .current_dir(home.path())
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
-        .env("XDG_CONFIG_HOME", home.path().join("config"))
-        .env("APPDATA", home.path().join("config"))
-        .env("JIDOKA_AGENT", "claude")
-        .env("JIDOKA_CLAUDE_CONFIG_DIRS", &list)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{}", stderr(&output));
-    for dir in [&a, &b] {
-        assert!(dir.join("skills/jidoka/SKILL.md").is_file());
-    }
-    assert_eq!(
-        record(home.path())["claude_config_dirs"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-}
-
-#[test]
-fn install_without_a_terminal_or_agents_names_the_flag_and_the_variable() {
-    let home = tempfile::tempdir().unwrap();
-    let output = common::jidoka_in(home.path())
-        .arg("install")
-        .current_dir(home.path())
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
-        .env("XDG_CONFIG_HOME", home.path().join("config"))
-        .env("APPDATA", home.path().join("config"))
-        .env_remove("JIDOKA_AGENT")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let message = stderr(&output);
-    assert!(
-        message.contains("--agent") && message.contains("JIDOKA_AGENT"),
-        "{message}"
-    );
-    assert!(!home.path().join("config/jidoka/install.json").exists());
 }

@@ -88,8 +88,7 @@ fn inspect_with_fake_server(data: &std::path::Path, args: &[&str]) -> std::proce
             assert!(read > 0, "the client closed before sending a request");
             request.extend_from_slice(&chunk[..read]);
         }
-        let body =
-            r#"{"id":"7","title":"Plan run","project":"p","stage":"build","status":"running"}"#;
+        let body = r#"{"id":"7","title":"Plan run","gates":[],"project":"p","stage":"build","status":"running"}"#;
         write!(
             stream,
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",

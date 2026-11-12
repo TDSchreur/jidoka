@@ -599,7 +599,7 @@ function Commands() {
         items=${[
           [html`<${Code}>jidoka run start "title"<//>`, 'Creates a Run and prints its id. Run it from the Run’s worktree.'],
           [
-            html`<${Code}>jidoka run update ${'<id>'} ${'<stage>'} ${'<status>'}<//>`,
+            html`<${Code}>jidoka run update ${'<id>'} ${'<status>'}<//>`,
             html`Stages are define, build, check and finish. Statuses are running, blocked and done. Options leave a field alone when omitted, and most have a <${Code}>--clear-${'<name>'}<//> form (tickets clear with <${Code}>--clear-tickets<//>, and a summary with <${Code}>--clear-summary<//> and a Stage name): <${Code}>--activity<//>, <${Code}>--blocking-reason<//>, <${Code}>--rework<//>, <${Code}>--mode<//>, <${Code}>--worktree<//>, <${Code}>--branch<//>, <${Code}>--base-commit<//>, <${Code}>--spec<//>, <${Code}>--pr<//>, <${Code}>--ticket<//>, <${Code}>--summary<//> and more. <${Code}>jidoka --help<//> lists them.`,
           ],
         ]}
@@ -610,7 +610,6 @@ function Commands() {
         items=${[
           [html`<${Code}>jidoka install --agent codex|claude|copilot<//>`, 'Installs the skills for an agent, or for several, separated by commas. It replaces Jidoka’s own skill folders and leaves other skills alone.'],
           [html`<${Code}>jidoka doctor<//>`, html`Checks whether the repository and your machine are ready, and says how to fix each problem. <${Code}>--agent<//> checks one agent, <${Code}>--json<//> prints JSON, and <${Code}>--create-model-routing<//> writes a starter model routing policy.`],
-          [html`<${Code}>jidoka check<//>`, 'Looks up the latest release and says whether you are up to date.'],
           [html`<${Code}>jidoka --version<//>`, 'Prints the version and the build it came from.'],
         ]}
       />
@@ -680,7 +679,7 @@ function ModelRouting() {
         </li>
         <li>
           To give one Stage another model for one Run, use${' '}
-          <${Code}>jidoka run update ${'<id>'} ${'<stage>'} ${'<status>'} --model-routing check=sonnet:medium<//>
+          <${Code}>jidoka run update ${'<id>'} ${'<status>'} --model-routing check=sonnet:medium<//>
           (<${Code}>${'<stage>'}=${'<model>'}[:${'<effort>'}]<//>).
         </li>
       </ul>
