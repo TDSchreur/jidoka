@@ -874,7 +874,10 @@ fn gate_change_preserves_concurrent_pr_refresh_and_rejects_run_updates() {
             Ok(())
         })
         .unwrap_err();
-    assert!(error.contains("changed while checking"));
+    assert!(
+        error.contains("changed while checking"),
+        "unexpected error: {error}"
+    );
     let current = store.get(&run.id).unwrap().unwrap();
     assert_eq!(current.stage, Stage::Build);
     assert_eq!(current.status, RunStatus::Blocked);
@@ -914,7 +917,10 @@ fn mode_aliases_store_canonical_names() {
         ("balanced", "jidoka-balanced"),
         ("full", "jidoka-full"),
     ] {
-        assert!(crate::run_begin::parse_options("task", &["--mode", alias]).is_ok());
+        assert!(
+            crate::run_begin::parse_options("task", &["--mode", alias]).is_ok(),
+            "mode alias {alias} should be accepted"
+        );
         let updated = store
             .update(
                 &run.id,
@@ -991,13 +997,15 @@ fn independent_gate_records_merge_but_run_changes_reject_stale_validation() {
         current
             .gates
             .iter()
-            .any(|gate| gate.gate == Gate::Verified && gate.commit.as_deref() == Some("abc123"))
+            .any(|gate| gate.gate == Gate::Verified && gate.commit.as_deref() == Some("abc123")),
+        "verified gate should retain its checked commit"
     );
     assert!(
         current
             .gates
             .iter()
-            .any(|gate| gate.gate == Gate::ChecksRecorded)
+            .any(|gate| gate.gate == Gate::ChecksRecorded),
+        "independent gate should be preserved"
     );
     let error = store
         .record_gate(
@@ -1010,6 +1018,64 @@ fn independent_gate_records_merge_but_run_changes_reject_stale_validation() {
             },
         )
         .unwrap_err();
-    assert!(error.contains("changed while checking"));
+    assert!(
+        error.contains("changed while checking"),
+        "unexpected error: {error}"
+    );
     assert_eq!(store.get(&run.id).unwrap().unwrap().gates.len(), 2);
+}
+
+#[test]
+fn gate_record_rejects_run_change_reverted_during_validation() {
+    use crate::run_gate::Record;
+    use crate::stages::Gate;
+
+    struct Revert<'a> {
+        store: &'a RunStore,
+        id: &'a str,
+    }
+    impl crate::pr_sync::Git for Revert<'_> {
+        fn git(&self, _: &std::path::Path, _: &[&str]) -> Result<String, String> {
+            for activity in ["B", "A"] {
+                self.store
+                    .update(
+                        self.id,
+                        parse_update("running", &["--activity", activity]).unwrap(),
+                    )
+                    .unwrap();
+            }
+            Ok("abc123".into())
+        }
+    }
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    let run = new_run(&store, "task");
+    store
+        .update(
+            &run.id,
+            parse_update("running", &["--worktree", "/work/repo", "--activity", "A"]).unwrap(),
+        )
+        .unwrap();
+    let error = store
+        .record_gate(
+            &run.id,
+            Record {
+                gate: Gate::Verified,
+                passed: true,
+                evidence: None,
+            },
+            &Revert {
+                store: &store,
+                id: &run.id,
+            },
+        )
+        .unwrap_err();
+    assert!(
+        error.contains("changed while checking"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        store.get(&run.id).unwrap().unwrap().gates.is_empty(),
+        "stale gate must not be recorded"
+    );
 }

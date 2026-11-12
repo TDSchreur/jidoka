@@ -46,6 +46,9 @@ pub(crate) const MAX_REPORTS_PER_RUN: usize = 1000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Run {
+    /// In-memory generation of changes that invalidate gate validation.
+    #[serde(skip)]
+    gate_generation: u64,
     pub(crate) gates: Vec<crate::run_gate::GateResult>,
     pub(crate) id: String,
     pub(crate) title: String,
@@ -924,6 +927,7 @@ impl RunStore {
         }
         let created = updated_now()?;
         let run = Run {
+            gate_generation: 0,
             gates: Vec::new(),
             id: id.to_string(),
             title: new.title,
@@ -1160,6 +1164,7 @@ impl RunStore {
             (RunStatus::Done, kept) => kept,
             _ => None,
         };
+        next.gate_generation = next.gate_generation.wrapping_add(1);
         let old = std::mem::replace(&mut runs[index], next);
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs[index] = old;
@@ -1171,10 +1176,12 @@ impl RunStore {
     #[cfg(test)]
     pub(crate) fn set_stage(&self, id: &str, stage: Stage) {
         let mut runs = self.shared.runs.lock().unwrap();
-        runs.iter_mut()
+        let run = runs
+            .iter_mut()
             .find(|run| run.id == id)
-            .expect("test run exists")
-            .stage = stage;
+            .expect("test run exists");
+        run.stage = stage;
+        run.gate_generation = run.gate_generation.wrapping_add(1);
         save_runs(&self.shared.path, &runs).unwrap();
     }
 
@@ -1203,8 +1210,9 @@ impl RunStore {
         comparison.updated_at = original.updated_at;
         comparison.agent_updated_at = original.agent_updated_at;
         comparison.gates = original.gates.clone();
-        if serde_json::to_vec(&comparison).map_err(|e| e.to_string())?
-            != serde_json::to_vec(&original).map_err(|e| e.to_string())?
+        if current.gate_generation != original.gate_generation
+            || serde_json::to_vec(&comparison).map_err(|e| e.to_string())?
+                != serde_json::to_vec(&original).map_err(|e| e.to_string())?
             || !current.gates.starts_with(&original.gates)
             || current.gates[original.gates.len()..]
                 .iter()
@@ -1245,6 +1253,7 @@ impl RunStore {
         let mut comparison = original.clone();
         comparison.pr_status = None;
         let snapshot = serde_json::to_vec(&comparison).map_err(|e| e.to_string())?;
+        let generation = original.gate_generation;
         let mut next = original;
         change(&mut next)?;
         let now = updated_now().map_err(|e| format!("Could not read the time: {e}"))?;
@@ -1261,10 +1270,13 @@ impl RunStore {
             .ok_or_else(|| format!("Run {id} not found"))?;
         let mut current = runs[index].clone();
         current.pr_status = None;
-        if serde_json::to_vec(&current).map_err(|e| e.to_string())? != snapshot {
+        if current.gate_generation != generation
+            || serde_json::to_vec(&current).map_err(|e| e.to_string())? != snapshot
+        {
             return Err("The run changed while checking gates; try again".into());
         }
         next.pr_status = runs[index].pr_status.clone();
+        next.gate_generation = generation.wrapping_add(1);
         let old = std::mem::replace(&mut runs[index], next);
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs[index] = old;
@@ -1339,6 +1351,7 @@ impl RunStore {
         }
         next.agent_updated_at = agent_at;
         next.updated_at = Some(now);
+        next.gate_generation = next.gate_generation.wrapping_add(1);
         let old = std::mem::replace(&mut runs[index], next);
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs[index] = old;
@@ -1392,6 +1405,7 @@ impl RunStore {
             }
         }
         run.usage = Some(usage);
+        run.gate_generation = run.gate_generation.wrapping_add(1);
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             if let Some(run) = runs.iter_mut().find(|run| run.id == id) {
                 *run = old;
