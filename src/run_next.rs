@@ -174,6 +174,16 @@ pub(crate) fn stage_gates(run: &Run) -> Vec<StageGates> {
                         } else {
                             "passed"
                         }
+                    } else if gate == Gate::ChecksRecorded {
+                        if run
+                            .check_history
+                            .iter()
+                            .any(|snapshot| snapshot.rework == run.rework)
+                        {
+                            "recorded-pass"
+                        } else {
+                            "unknown"
+                        }
                     } else if let Some(result) = result {
                         if result.passed {
                             "recorded-pass"
@@ -187,7 +197,11 @@ pub(crate) fn stage_gates(run: &Run) -> Vec<StageGates> {
                         name: gate,
                         description: describe(gate),
                         status,
-                        evidence: result.and_then(|r| r.evidence.clone()),
+                        evidence: if gate == Gate::ChecksRecorded && !current {
+                            None
+                        } else {
+                            result.and_then(|r| r.evidence.clone())
+                        },
                         rework: result.and_then(|r| r.rework),
                     }
                 })
@@ -301,9 +315,12 @@ pub(crate) fn changed_paths(run: &Run, git: &dyn Git) -> Result<Vec<String>, Str
         .as_ref()
         .ok_or("Record the base commit to select checks")?;
     let range = format!("{base}..HEAD");
-    git.git(Path::new(worktree), &["diff", "--name-only", "-z", &range])
-        .map(|out| out.split_terminator('\0').map(str::to_string).collect())
-        .map_err(|error| format!("Could not inspect the changed paths in {worktree}: {error}"))
+    git.git(
+        Path::new(worktree),
+        &["diff", "--name-only", "--no-renames", "-z", &range],
+    )
+    .map(|out| out.split_terminator('\0').map(str::to_string).collect())
+    .map_err(|error| format!("Could not inspect the changed paths in {worktree}: {error}"))
 }
 
 /// # Errors

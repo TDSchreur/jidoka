@@ -272,7 +272,10 @@ struct NullDiff;
 
 impl Git for NullDiff {
     fn git(&self, _dir: &Path, args: &[&str]) -> Result<String, String> {
-        assert_eq!(args, ["diff", "--name-only", "-z", "abc..HEAD"]);
+        assert_eq!(
+            args,
+            ["diff", "--name-only", "--no-renames", "-z", "abc..HEAD"]
+        );
         Ok(" leading.txt\0line\nbreak.tf\0ümlaut.tf\0".into())
     }
 }
@@ -289,7 +292,7 @@ fn changed_paths_preserves_unusual_names() {
 }
 
 #[test]
-fn git_diff_preserves_leading_whitespace_and_unicode_paths() {
+fn git_diff_preserves_unusual_paths_and_both_sides_of_renames() {
     let dir = tempfile::tempdir().unwrap();
     let git = |args: &[&str]| {
         let output = std::process::Command::new("git")
@@ -324,8 +327,11 @@ fn git_diff_preserves_leading_whitespace_and_unicode_paths() {
             message,
         ])
     };
+    std::fs::write(dir.path().join("security.tf"), "resource").unwrap();
+    git(&["add", "--all"]);
     commit("base");
     let base = git(&["rev-parse", "HEAD"]);
+    git(&["mv", "security.tf", "renamed.txt"]);
     std::fs::write(dir.path().join(" leading.txt"), "one").unwrap();
     std::fs::write(dir.path().join("ümlaut.tf"), "two").unwrap();
     git(&["add", "--all"]);
@@ -336,4 +342,47 @@ fn git_diff_preserves_leading_whitespace_and_unicode_paths() {
     let paths = changed_paths(&run, &crate::run_check::ReadOnlyGit).unwrap();
     assert!(paths.contains(&" leading.txt".to_string()));
     assert!(paths.contains(&"ümlaut.tf".to_string()));
+    assert!(paths.contains(&"security.tf".to_string()));
+    assert!(paths.contains(&"renamed.txt".to_string()));
+}
+
+#[test]
+fn past_check_gate_uses_completed_snapshot_not_one_individual_result() {
+    let mut run = run(Mode::Balanced, Stage::Check, None);
+    run.gates.push(crate::run_gate::GateResult {
+        gate: Gate::ChecksRecorded,
+        stage: Stage::Check,
+        rework: None,
+        passed: true,
+        evidence: Some("only one check".into()),
+        commit: Some("abc".into()),
+        ticket: None,
+        check: Some("code-review".into()),
+        skipped_checks: vec![],
+    });
+    crate::run_gate::advance_forced(&mut run, "review incomplete").unwrap();
+    let status = |run: &Run| {
+        let stages = serde_json::to_value(stage_gates(run)).unwrap();
+        stages
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["stage"] == "check")
+            .unwrap()["gates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["name"] == "checks-recorded")
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(status(&run)["status"], "unknown");
+    assert!(status(&run)["evidence"].is_null());
+    run.check_history.push(crate::run_gate::CheckSnapshot {
+        rework: None,
+        skipped: vec![],
+    });
+    assert_eq!(status(&run)["status"], "recorded-pass");
+    run.rework = Some(1);
+    assert_eq!(status(&run)["status"], "unknown");
 }

@@ -228,14 +228,14 @@ fn advance_with_clock(
     let mode = run.mode.ok_or("Record the run's mode first")?;
     let transition = stages::next(mode, run.stage, run.status)?;
     let mut failures = Vec::new();
-    let selection = if run.stage == Stage::Check {
-        let paths = crate::run_next::changed_paths(run, git)?;
-        Some(crate::checks::select(mode, &paths))
+    let check_head = if run.stage == Stage::Check {
+        Some(head(run, git)?)
     } else {
         None
     };
-    let check_head = if selection.is_some() {
-        Some(head(run, git)?)
+    let selection = if run.stage == Stage::Check {
+        let paths = crate::run_next::changed_paths(run, git)?;
+        Some(crate::checks::select(mode, &paths))
     } else {
         None
     };
@@ -303,6 +303,11 @@ fn advance_with_clock(
     }
     if !failures.is_empty() {
         return Err(format!("Cannot advance:\n{}", failures.join("\n")));
+    }
+    if let Some(before) = check_head
+        && head(run, git)? != before
+    {
+        return Err("The worktree HEAD changed while checking gates; try again".into());
     }
     if let Some(selection) = selection {
         record_snapshot(run, &selection)?;
@@ -1024,5 +1029,30 @@ mod tests {
                 .unwrap_err()
                 .contains("not applicable")
         );
+    }
+    #[test]
+    fn advance_rejects_head_change_during_check_selection() {
+        struct MovingHead(std::cell::Cell<u32>);
+        impl Git for MovingHead {
+            fn git(&self, _: &Path, args: &[&str]) -> Result<String, String> {
+                if args.starts_with(&["rev-parse", "HEAD"]) {
+                    let count = self.0.get();
+                    self.0.set(count + 1);
+                    Ok(if count < 2 { "old" } else { "new" }.into())
+                } else {
+                    Ok(String::new())
+                }
+            }
+        }
+        let steady = FakeGit(RefCell::new("old".into()));
+        let mut run = run(Stage::Check);
+        run.mode = Some(Mode::Balanced);
+        record(&mut run, result(Gate::ChecksRecorded, true), &steady).unwrap();
+        record(&mut run, result(Gate::NoActionableFindings, true), &steady).unwrap();
+        record(&mut run, result(Gate::Verified, true), &steady).unwrap();
+        let error = advance(&mut run, &MovingHead(std::cell::Cell::new(0)), &host()).unwrap_err();
+        assert!(error.contains("HEAD changed"), "{error}");
+        assert_eq!(run.stage, Stage::Check);
+        assert!(run.check_history.is_empty());
     }
 }
