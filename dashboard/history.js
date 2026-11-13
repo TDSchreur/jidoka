@@ -174,7 +174,7 @@ function placeByTime(run, passes, unstartedTickets) {
   return { placed, other, otherEvents, unstarted };
 }
 
-const shortSha = (sha) => (typeof sha === 'string' ? sha.slice(0, 7) : '');
+export const shortSha = (sha) => (typeof sha === 'string' ? sha.slice(0, 7) : '');
 const noun = (n) => `${n} ${n === 1 ? 'finding' : 'findings'}`;
 
 /**

@@ -3,7 +3,7 @@ import { useContext, useEffect, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 import { ago, compactTokens, costText, durationWords, freshTokens, sheetTime, timestamp, tokenCount, usageTotal } from '/assets/format.js';
 import { Help } from '/assets/help.js';
-import { GROUPS, STATIONS, STATION_NAME, findingCount, runHistory, ticketProgress } from '/assets/history.js';
+import { GROUPS, STATIONS, STATION_NAME, findingCount, runHistory, shortSha, ticketProgress } from '/assets/history.js';
 
 const html = htm.bind(h);
 
@@ -515,8 +515,6 @@ function TicketList({ run, tickets, now }) {
   </ol>`;
 }
 
-const shortSha = (sha) => (typeof sha === 'string' ? sha.slice(0, 7) : '');
-
 /** The outcome of a finding in words; the hole beside it repeats the state, never alone. */
 function FindingOutcome({ finding }) {
   const reason = typeof finding.reason === 'string' && finding.reason ? finding.reason : null;
@@ -562,7 +560,7 @@ function StopFindings({ findings }) {
  * tokens and cost spent in it (a Station), then what the Run recorded there.
  */
 function Stop({ run, stop, now }) {
-  const label = stop.kind === 'pass' && stop.rework !== null ? `${stop.name} · Rework ${reworkLabel(stop.rework)}` : stop.name;
+  const label = stop.kind === 'pass' && stop.rework !== null ? `${stop.name} · Rework ${stop.rework <= REWORK_CAP ? stop.rework : `${stop.rework} (past the cap of ${REWORK_CAP})`}` : stop.name;
   const classes = ['stop', stop.state, stop.kind === 'pass' && stop.rework !== null ? 'rework-pass' : '', stop.sentBack ? 'sent-back' : ''].filter(Boolean).join(' ');
   const { progress, tokens, cost } = stop;
   return html`<li class=${classes}>
