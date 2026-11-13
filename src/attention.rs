@@ -27,8 +27,6 @@ struct Parser {
     background: HashSet<String>,
     codex_sync: HashSet<String>,
     copilot_final: bool,
-    /// Copilot tool calls that start a background shell, awaiting the result that names it.
-    copilot_async_shells: HashSet<String>,
 }
 
 impl Parser {
@@ -160,10 +158,8 @@ impl Parser {
     fn copilot(&mut self, record: &Value) -> Option<Signal> {
         let data = &record["data"];
         // A finished background agent is named by the task's tool call; its own `agentId` is on the record.
-        if matches!(
-            record["type"].as_str(),
-            Some("subagent.completed" | "subagent.failed")
-        ) && let Some(id) = data["toolCallId"].as_str()
+        if record["type"] == "subagent.completed"
+            && let Some(id) = data["toolCallId"].as_str()
         {
             self.background.remove(id);
             return None;
@@ -190,24 +186,13 @@ impl Parser {
                 }
                 None
             }
-            Some("tool.execution_start")
-                if data["toolName"] == "bash" && data["arguments"]["mode"] == "async" =>
+            // The result of a shell the user moved to the background names it by `shellId`.
+            Some("tool.execution_complete")
+                if data["result"]["content"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("moved to background")) =>
             {
-                if let Some(id) = data["toolCallId"].as_str() {
-                    self.copilot_async_shells.insert(id.to_owned());
-                }
-                None
-            }
-            Some("tool.execution_complete") => {
-                let started = data["toolCallId"]
-                    .as_str()
-                    .is_some_and(|id| self.copilot_async_shells.remove(id));
-                let moved = data["result"]["content"]
-                    .as_str()
-                    .is_some_and(|text| text.contains("moved to background"));
-                if (started || moved)
-                    && let Some(id) = data["result"]["structuredContent"]["shellId"].as_str()
-                {
+                if let Some(id) = data["result"]["structuredContent"]["shellId"].as_str() {
                     self.background.insert(format!("shell:{id}"));
                 }
                 None
@@ -468,25 +453,34 @@ mod tests {
         );
     }
 
-    #[test]
-    fn copilot_background_work_defers_finished_until_it_reports_back() {
-        let final_turn = [
+    fn final_turn() -> [Value; 2] {
+        [
             json!({"type":"assistant.message","data":{"content":"waiting","toolRequests":[]}}),
             json!({"type":"assistant.turn_end","data":{}}),
-        ];
+        ]
+    }
+
+    #[test]
+    fn copilot_background_task_defers_finished_until_it_completes() {
         let mut records = vec![
             json!({"type":"tool.execution_start","data":{"toolCallId":"t1","toolName":"task","arguments":{"mode":"background"}}}),
             json!({"type":"tool.execution_complete","data":{"toolCallId":"t1","success":true,"result":{"content":"Agent started in background with agent_id: a1."}}}),
+        ];
+        records.extend(final_turn());
+        records
+            .push(json!({"type":"subagent.completed","agentId":"a1","data":{"toolCallId":"t1"}}));
+        records.extend(final_turn());
+        assert_eq!(kinds(Agent::Copilot, &records), [Signal::Finished]);
+    }
+
+    #[test]
+    fn copilot_background_shell_defers_finished_until_it_completes() {
+        let mut records = vec![
             json!({"type":"tool.execution_complete","data":{"toolCallId":"s1","success":true,"result":{"content":"<command with shellId: 41 moved to background by the user.>","structuredContent":{"shellId":"41"}}}}),
         ];
-        records.extend(final_turn.clone());
-        records.extend([
-            json!({"type":"subagent.completed","agentId":"a1","data":{"toolCallId":"t1"}}),
-            json!({"type":"assistant.message","data":{"content":"still waiting","toolRequests":[]}}),
-            json!({"type":"assistant.turn_end","data":{}}),
-            json!({"type":"system.notification","data":{"kind":{"type":"shell_completed","shellId":"41","exitCode":0}}}),
-        ]);
-        records.extend(final_turn);
+        records.extend(final_turn());
+        records.push(json!({"type":"system.notification","data":{"kind":{"type":"shell_completed","shellId":"41","exitCode":0}}}));
+        records.extend(final_turn());
         assert_eq!(kinds(Agent::Copilot, &records), [Signal::Finished]);
     }
 
