@@ -316,6 +316,10 @@ fn result(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "does several steps in one function; deepening candidate"
+)]
 fn checks_for(
     pr: &AzurePr,
     gh: &dyn Gh,

@@ -997,6 +997,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "branches heavily in one function; deepening candidate"
+    )]
     fn installs_bundled_skills_and_replaces_existing_ones() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();

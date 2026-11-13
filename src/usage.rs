@@ -561,6 +561,10 @@ pub(crate) fn collect(
     collect_limited(target, runs, roots, now, deadline, ReadLimits::default())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "does several steps in one function; deepening candidate"
+)]
 fn collect_limited(
     target: &Run,
     runs: &[Run],
@@ -821,6 +825,10 @@ impl Collection {
     }
 
     #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "takes one parameter per input instead of a parameter struct; deepening candidate"
+    )]
     pub(crate) fn collect_paused(
         &self,
         store: &crate::run::RunStore,

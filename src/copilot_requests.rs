@@ -73,6 +73,10 @@ pub(crate) fn copilot_claims(text: &str, ids: &HashSet<&str>) -> HashSet<String>
 }
 
 /// The requests of one log, keyed by `apiCallId` (or by line when a record has none).
+#[expect(
+    clippy::too_many_lines,
+    reason = "does several steps in one function; deepening candidate"
+)]
 fn parse_events(text: &str, session: &str) -> (BTreeMap<String, Request>, usize) {
     let mut malformed = 0;
     let mut calls: HashMap<String, Calls> = HashMap::new();

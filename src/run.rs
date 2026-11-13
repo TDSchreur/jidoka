@@ -581,6 +581,10 @@ fn check_text(name: &str, value: &str, limit: usize) -> Result<(), String> {
 
 /// Records new findings and applies outcomes. `stage` is where the update started and `moved` whether it
 /// started a Rework.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "takes one parameter per input instead of a parameter struct; deepening candidate"
+)]
 fn apply_findings(
     run: &mut Run,
     stage: Stage,
@@ -737,6 +741,10 @@ impl UpdateRun {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "does several steps in one function; deepening candidate"
+    )]
     pub(crate) fn validate(&self) -> Result<(), String> {
         self.activity.validate(MAX_NOTE_BYTES)?;
         self.blocking_reason.validate(MAX_NOTE_BYTES)?;
@@ -895,6 +903,10 @@ fn split_pair<'a>(flag: &str, value: &'a str) -> Result<(&'a str, &'a str), Stri
         .ok_or_else(|| format!("{flag} needs the form <name>=<value>, got {value:?}"))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "does several steps in one function; deepening candidate"
+)]
 pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, String> {
     let mut update =
         UpdateRun::new(serde_json::from_value(status.into()).map_err(|e| e.to_string())?);
@@ -1245,6 +1257,10 @@ impl RunStore {
     }
 
     /// Like [`update`](Self::update), reading commits for findings through `git`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "does several steps in one function; deepening candidate"
+    )]
     pub(crate) fn update_with(
         &self,
         id: &str,

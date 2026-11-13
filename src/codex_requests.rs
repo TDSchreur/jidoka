@@ -538,6 +538,10 @@ struct Seen {
 
 /// Reads the Codex rollouts under `root`: every session that executed `jidoka run update` for a run in
 /// `ids`, or was recorded for one in `recorded`, together with the rollouts of its subagents.
+#[expect(
+    clippy::too_many_lines,
+    reason = "does several steps in one function; deepening candidate"
+)]
 pub(crate) fn read_codex_requests(
     root: &Path,
     ids: &HashSet<&str>,

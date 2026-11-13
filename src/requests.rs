@@ -108,6 +108,10 @@ fn claims(run: &Run, session: &SessionRequests) -> bool {
 /// The requests of `target` from the Claude Code logs. `runs` holds every run, so a request that two runs
 /// working at the same time could both claim is in neither. Never fails: whatever cannot be read becomes a
 /// note.
+#[expect(
+    clippy::too_many_lines,
+    reason = "does several steps in one function; deepening candidate"
+)]
 pub(crate) fn analyze(
     target: &Run,
     runs: &[Run],

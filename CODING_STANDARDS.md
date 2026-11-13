@@ -34,6 +34,12 @@ These Rust standards are binding for this application. The other entries in the 
 - Do not write tests that restate constants or mirror implementation branches.
 - Test properties and observable behavior.
 
+## Structure
+
+- Split a module when it has a second reason to change, not when it reaches a line count.
+- Name a module after its concept (as in GLOSSARY.md), not its kind (`utils`, `helpers`).
+- Clippy enforces the function-level limits: 100 lines, cognitive complexity 25 and 6 arguments. Existing exceptions carry `#[expect]` with a reason; remove the `expect` when the function is fixed.
+
 ## Naming (M-WEASEL-WORDS)
 
 - Avoid vague type names and suffixes such as `Manager`, `Service`, `Helper`, and `Factory`.

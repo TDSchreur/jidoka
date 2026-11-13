@@ -1,5 +1,7 @@
 //! Fixture-based tests: small log files written to a temporary folder, in the three agents' formats.
 //! Nothing here reads a real user's logs or needs an agent installed.
+#![expect(clippy::too_many_arguments, reason = "tests walk whole scenarios")]
+#![expect(clippy::too_many_lines, reason = "tests walk whole scenarios")]
 
 use super::*;
 use crate::run::{Run, Stage};
