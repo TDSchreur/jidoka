@@ -896,6 +896,24 @@ mod tests {
     }
 
     #[test]
+    fn each_session_variable_names_its_agent() {
+        let agents = |pairs: &[(&str, &str)]| -> Vec<Option<&'static str>> {
+            agent_sessions_from(&lookup(pairs))
+                .into_iter()
+                .map(|session| session.agent)
+                .collect()
+        };
+        let id = "019e1f00-aaaa-7bbb-8ccc-000000000001";
+        assert_eq!(agents(&[("CLAUDE_CODE_SESSION_ID", id)]), [Some("claude")]);
+        assert_eq!(agents(&[("CODEX_SESSION_ID", id)]), [Some("codex")]);
+        assert_eq!(agents(&[("CODEX_THREAD_ID", id)]), [Some("codex")]);
+        assert_eq!(
+            agents(&[("COPILOT_AGENT_SESSION_ID", id)]),
+            [Some("copilot")]
+        );
+    }
+
+    #[test]
     fn codex_sessions_are_recorded_from_the_environment() {
         let id = "019e1f00-aaaa-7bbb-8ccc-000000000001";
         let thread = "019e1f00-aaaa-7bbb-8ccc-000000000002";
