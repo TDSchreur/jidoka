@@ -36,6 +36,7 @@ pub(crate) fn start_run(
 }
 
 /// Sends a CLI run update (status and metadata options) to the Jidoka server at `server`.
+#[cfg(test)]
 pub(crate) fn report_run(
     server: &str,
     token_file: &Path,
@@ -43,10 +44,22 @@ pub(crate) fn report_run(
     status: &str,
     options: &[&str],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("Invalid run id".into());
-    }
-    send_update(server, token_file, id, &parse_update(status, options)?)
+    send_update(
+        server,
+        token_file,
+        id,
+        &prepare_update(id, status, options)?,
+    )
+}
+
+/// The update for run `id`, or why the id, status or options are refused. Needs no server.
+pub(crate) fn prepare_update(
+    id: &str,
+    status: &str,
+    options: &[&str],
+) -> Result<UpdateRun, Box<dyn std::error::Error>> {
+    check_run_id(id)?;
+    Ok(parse_update(status, options)?)
 }
 
 /// Sends an already built update for run `id` to the Jidoka server at `server`.
@@ -132,11 +145,17 @@ fn parse_info(response: &[u8]) -> Option<DashboardIdentity> {
     serde_json::from_slice(&response[end..]).ok()
 }
 
+/// Refuses an id that is not a run number, before anything looks for a server.
+pub(crate) fn check_run_id(id: &str) -> Result<(), &'static str> {
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Invalid run id");
+    }
+    Ok(())
+}
+
 /// Reads one run from the Jidoka server at `server`.
 pub(crate) fn fetch_run(server: &str, id: &str) -> Result<Run, Box<dyn std::error::Error>> {
-    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("Invalid run id".into());
-    }
+    check_run_id(id)?;
     Ok(serde_json::from_slice(&api_request(
         server,
         &format!("/api/runs/{id}"),
@@ -258,7 +277,7 @@ mod tests {
                 .expect("test server should report its port within 10 seconds");
             Self {
                 address: format!("127.0.0.1:{port}"),
-                token_file: crate::server::token_path(path, port),
+                token_file: crate::server::token_path(path),
                 shutdown,
                 thread: Some(thread),
             }

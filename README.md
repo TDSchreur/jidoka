@@ -46,7 +46,7 @@ Windows Defender sometimes flags the unsigned Windows build; see [what to do](do
    jidoka dashboard
    ```
 
-   Open <http://127.0.0.1:4311> to follow your runs.
+   The command prints the dashboard URL (<http://127.0.0.1:4311>, or another port when 4311 is taken); open it to follow your runs.
 
 2. **Prepare a repository** once: in your project, ask your agent to run `/jidoka-setup`. It records the issue tracker and conventions the workflows use.
 
@@ -89,8 +89,9 @@ Jidoka keeps its data in one folder per user:
 | `runs.json` | Every run: stage, status, gates, Findings, timeline, reports, summaries and token usage. |
 | `plans/<run-id>.md` | A run's saved plan, kept after its worktree is cleaned up. |
 | `session-token` | The token the CLI sends to the dashboard, replaced on each dashboard start and readable only by you. |
+| `dashboard.json` | The port, pid and build of the running dashboard, written when it starts and removed when it stops. The CLI reads it to find the dashboard. |
 
-A dashboard on another port than 4311 uses `runs-<port>.json` and `session-token-<port>`. The dashboard owns `runs.json` and rewrites it on every update, so read runs with `jidoka run inspect <id>` (`--json` for the raw record) and change them with `jidoka run update`, not by editing the file.
+There is one data folder and one dashboard per user. The dashboard owns `runs.json` and rewrites it on every update, so read runs with `jidoka run inspect <id>` (`--json` for the raw record) and change them with `jidoka run update`, not by editing the file.
 
 ## Documentation
 
