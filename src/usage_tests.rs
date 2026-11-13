@@ -801,6 +801,34 @@ fn codex_coordinator_response_needs_attention_until_the_next_turn() {
     );
 }
 
+#[test]
+fn codex_async_request_survives_progress_and_waits_for_user_message() {
+    let world = World::new();
+    let mut target = run(RUN_A, &[(0, "build", None, None)], None, &["s1"]);
+    target.agent_updated_at = Some(at(20));
+    let path = "codex/sessions/2026/11/05/rollout-fixture.jsonl";
+    let mut lines = vec![
+        codex_meta_line("s1", None),
+        json!({"type":"response_item", "timestamp":iso(10), "payload":{"type":"function_call", "name":"request_user_input_async", "call_id":"a"}}).to_string(),
+        json!({"type":"response_item", "timestamp":iso(11), "payload":{"type":"function_call_output", "call_id":"a"}}).to_string(),
+    ];
+    world.write(path, &lines);
+    assert!(
+        world
+            .collect(&target, std::slice::from_ref(&target))
+            .attention
+            .is_some()
+    );
+    lines.push(json!({"type":"response_item", "timestamp":iso(30), "payload":{"type":"message", "role":"user"}}).to_string());
+    world.write(path, &lines);
+    assert!(
+        world
+            .collect(&target, std::slice::from_ref(&target))
+            .attention
+            .is_none()
+    );
+}
+
 // --- blocking and resuming through the store --------------------------------------------------------
 
 mod auto_block {
@@ -916,6 +944,45 @@ mod auto_block {
             2_000,
         );
         assert_eq!(resumed.status, RunStatus::Running);
+    }
+
+    #[test]
+    fn explicit_request_survives_later_progress_until_session_response() {
+        let mut f = Fixture::new();
+        f.lines.push(
+            json!({"type":"assistant", "timestamp":iso_timestamp(f.began + 1_000),
+            "message":{"content":[{"type":"tool_use","name":"AskUserQuestion","id":"a"}]}})
+            .to_string(),
+        );
+        f.world.write("claude/projects/-w/S1.jsonl", &f.lines);
+        f.agent_update(RunStatus::Running, None);
+        collect_and_store(&f.store, &f.id, &f.settings).unwrap();
+        assert_eq!(f.run().status, RunStatus::Blocked);
+        collect_and_store(&f.store, &f.id, &f.settings).unwrap();
+        assert_eq!(f.run().status, RunStatus::Blocked);
+        let resumed = f.log(
+            |ts| {
+                json!({"type":"user", "timestamp":ts,
+            "message":{"content":[{"type":"tool_result","tool_use_id":"a"}]}})
+                .to_string()
+            },
+            2_000,
+        );
+        assert_eq!(resumed.status, RunStatus::Running);
+    }
+
+    #[test]
+    fn finished_response_before_progress_does_not_alert() {
+        let mut f = Fixture::new();
+        f.lines.push(
+            json!({"type":"assistant", "timestamp":iso_timestamp(f.began + 1_000),
+            "message":{"stop_reason":"end_turn"}})
+            .to_string(),
+        );
+        f.world.write("claude/projects/-w/S1.jsonl", &f.lines);
+        f.agent_update(RunStatus::Running, None);
+        collect_and_store(&f.store, &f.id, &f.settings).unwrap();
+        assert_eq!(f.run().status, RunStatus::Running);
     }
 
     #[test]

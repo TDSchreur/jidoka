@@ -216,6 +216,8 @@ pub(crate) struct Usage {
     /// Current coordinator attention state; derived from logs and never persisted.
     #[serde(skip)]
     pub(crate) attention: Option<Pause>,
+    #[serde(skip)]
+    pub(crate) attention_requested: bool,
 }
 
 impl Usage {
@@ -233,6 +235,7 @@ impl Usage {
             idle: Vec::new(),
             log_complete: false,
             attention: None,
+            attention_requested: false,
         }
     }
 
@@ -627,13 +630,15 @@ fn collect_limited(
             match latest.last() {
                 Some((
                     at,
-                    crate::attention::Signal::Requested | crate::attention::Signal::Finished,
+                    signal @ (crate::attention::Signal::Requested
+                    | crate::attention::Signal::Finished),
                 )) if *at >= first.at
                     && *at <= now
-                    && target
-                        .agent_updated_at
-                        .or(target.updated_at)
-                        .is_none_or(|updated| *at >= updated)
+                    && (*signal == crate::attention::Signal::Requested
+                        || target
+                            .agent_updated_at
+                            .or(target.updated_at)
+                            .is_none_or(|updated| *at >= updated))
                     && tracked
                         .iter()
                         .filter(|run| {
@@ -644,16 +649,23 @@ fn collect_limited(
                         .count()
                         == 1 =>
                 {
-                    Some(Pause {
-                        kind: PauseKind::AgentStopped,
-                        at: *at,
-                        resumed_at: None,
-                    })
+                    Some((
+                        Pause {
+                            kind: PauseKind::AgentStopped,
+                            at: *at,
+                            resumed_at: None,
+                        },
+                        *signal == crate::attention::Signal::Requested,
+                    ))
                 }
                 _ => None,
             }
         })
-        .max_by_key(|pause| pause.at);
+        .max_by_key(|(pause, requested)| (*requested, pause.at));
+    let (attention, attention_requested) = match attention {
+        Some((pause, requested)) => (Some(pause), requested),
+        None => (None, false),
+    };
     let log_complete = read.roots_found > 0 && !read.timed_out && !read.truncated;
     let mut notes: Vec<String> = Vec::new();
     for note in &read.notes {
@@ -708,6 +720,7 @@ fn collect_limited(
         usage.idle = idle;
         usage.log_complete = log_complete;
         usage.attention = attention;
+        usage.attention_requested = attention_requested;
         return usage;
     }
     let mut no_data: Vec<Stage> = Vec::new();
@@ -734,6 +747,7 @@ fn collect_limited(
         idle,
         log_complete,
         attention,
+        attention_requested,
     }
 }
 
@@ -794,11 +808,13 @@ fn same_counts(a: &Usage, b: &Usage) -> bool {
         collected_at: 0,
         log_complete: false,
         attention: None,
+        attention_requested: false,
         ..a.clone()
     } == Usage {
         collected_at: 0,
         log_complete: false,
         attention: None,
+        attention_requested: false,
         ..b.clone()
     }
 }
@@ -930,6 +946,7 @@ fn collect_locked(
         Instant::now() + settings.budget,
     );
     let authoritative = fresh.log_complete;
+    let attention_requested = fresh.attention_requested;
     let attention = fresh.attention.clone();
     let latest = attention.clone().or_else(|| fresh.pauses.last().cloned());
     let usage = if settings.enabled {
@@ -957,7 +974,7 @@ fn collect_locked(
     {
         return Ok(());
     }
-    store.apply_pause(id, latest.as_ref())
+    store.apply_pause(id, latest.as_ref(), attention_requested)
 }
 
 /// How long a run may go without an update before it is no longer watched for pauses.

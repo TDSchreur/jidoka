@@ -54,11 +54,12 @@ impl Parser {
             }
             Some("user") => {
                 if let Some(blocks) = message["content"].as_array() {
-                    let answered = blocks.iter().any(|block| {
-                        block["type"] == "tool_result"
+                    let answered = blocks.iter().fold(false, |answered, block| {
+                        let matched = block["type"] == "tool_result"
                             && block["tool_use_id"]
                                 .as_str()
-                                .is_some_and(|id| self.pending.remove(id))
+                                .is_some_and(|id| self.pending.remove(id));
+                        answered || matched
                     });
                     if blocks.iter().any(|block| block["type"] == "text") {
                         self.pending.clear();
@@ -230,6 +231,21 @@ mod tests {
                 Signal::Finished,
                 Signal::Resumed
             ]
+        );
+    }
+
+    #[test]
+    fn claude_consumes_all_results_in_one_message() {
+        assert_eq!(
+            kinds(
+                Agent::Claude,
+                &[
+                    json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"AskUserQuestion","id":"a"},{"type":"tool_use","name":"AskUserQuestion","id":"b"}]}}),
+                    json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a"},{"type":"tool_result","tool_use_id":"b"}]}}),
+                    json!({"type":"assistant","message":{"stop_reason":"end_turn"}}),
+                ]
+            ),
+            [Signal::Requested, Signal::Resumed, Signal::Finished]
         );
     }
 
