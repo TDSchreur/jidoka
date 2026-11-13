@@ -316,6 +316,10 @@ fn result(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "walks iterations, statuses and policy evaluations into check results in one go"
+)]
 fn checks_for(
     pr: &AzurePr,
     gh: &dyn Gh,

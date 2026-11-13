@@ -103,6 +103,7 @@ fn main() {
         "jidoka-grilling",
         "jidoka-domain-modeling",
         "jidoka-codebase-design",
+        "jidoka-improve-architecture",
         "jidoka-to-spec",
         "jidoka-to-tickets",
         "jidoka-implement",

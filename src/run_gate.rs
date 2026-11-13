@@ -240,6 +240,10 @@ pub(crate) fn advance(run: &mut Run, git: &dyn Git, tool: &dyn pr_wait::Gh) -> R
     advance_with_clock(run, git, tool, &pr_wait::RealClock(Instant::now()))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "collects gate failures for every stage kind before applying the transition"
+)]
 fn advance_with_clock(
     run: &mut Run,
     git: &dyn Git,

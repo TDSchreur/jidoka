@@ -124,6 +124,10 @@ fn lines(text: &str) -> Vec<String> {
 /// Brings the run's branch up to date with its base: a normal merge commit, pushed only when nothing of
 /// the change overlaps. It never rebases, amends, fast-forwards, force-pushes, resets or aborts, and never
 /// merges the pull request.
+#[expect(
+    clippy::too_many_lines,
+    reason = "validates the worktree, then fetches, rebases and pushes and reports each step"
+)]
 pub(crate) fn sync(
     run: &PrRun,
     options: &Options,

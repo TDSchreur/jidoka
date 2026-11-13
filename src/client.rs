@@ -11,6 +11,10 @@ use std::{
 };
 
 /// Creates a run on the Jidoka server at `server` and returns its id.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "seven inputs mirror the NewRun body fields; passing NewRun directly would collapse these"
+)]
 pub(crate) fn start_run(
     server: &str,
     token_file: &Path,

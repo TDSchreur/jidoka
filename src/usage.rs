@@ -561,6 +561,10 @@ pub(crate) fn collect(
     collect_limited(target, runs, roots, now, deadline, ReadLimits::default())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "finds overlapping runs, reads all agent logs and merges usage in one function"
+)]
 fn collect_limited(
     target: &Run,
     runs: &[Run],
@@ -821,6 +825,10 @@ impl Collection {
     }
 
     #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "passes each channel and setting separately; a hook struct would collapse these"
+    )]
     pub(crate) fn collect_paused(
         &self,
         store: &crate::run::RunStore,

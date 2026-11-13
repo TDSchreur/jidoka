@@ -997,6 +997,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "one scenario checks install, replacement, stale removal and user skills"
+    )]
     fn installs_bundled_skills_and_replaces_existing_ones() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();

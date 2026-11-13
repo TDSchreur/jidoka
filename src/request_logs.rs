@@ -131,6 +131,10 @@ struct Pending {
 
 /// Reads the Claude Code logs under `root`: every session that executed `jidoka run update` for a run in
 /// `ids`, or was recorded for one in `recorded`, together with the logs of its subagents.
+#[expect(
+    clippy::too_many_lines,
+    reason = "scans Claude logs, filters by run, and tallies usage in one pass; six inputs"
+)]
 pub(crate) fn read_requests(
     root: &Path,
     ids: &HashSet<&str>,

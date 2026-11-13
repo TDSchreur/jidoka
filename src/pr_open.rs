@@ -577,6 +577,10 @@ struct PreparedPr {
     commit: String,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "seven inputs; a struct for the Azure context would collapse these"
+)]
 fn open_azure(
     run: &PrRun,
     options: &Options,
@@ -685,6 +689,10 @@ fn open_azure(
 
 /// Pushes the run's branch and opens its pull request, or finds the open one, and records its URL on the run.
 /// Nothing is pushed unless the checks pass and `gh` can see the repository. It never forces a push.
+#[expect(
+    clippy::too_many_lines,
+    reason = "validates the worktree, pushes, finds or creates the PR for both providers"
+)]
 pub(crate) fn open(
     run: &PrRun,
     options: &Options,
@@ -902,6 +910,10 @@ pub(crate) fn open(
 }
 
 /// Records the pull request on a running run and returns the result.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "seven inputs describing the opened PR; an Opened-like struct would collapse these"
+)]
 fn finish(
     run: &PrRun,
     api: &dyn RunApi,
