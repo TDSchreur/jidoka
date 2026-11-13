@@ -1,7 +1,5 @@
 # Project instructions
 
-Keep Jidoka simple and fast to develop. Prefer straightforward solutions and add dependencies only when they solve a real need.
-
 The old project means [TDSchreur/tds-factory](https://github.com/TDSchreur/tds-factory).
 
 Day-to-day pull requests target `develop`. Release pull requests merge `develop` into `master`; see [the release guide](docs/releasing.md).
@@ -15,10 +13,17 @@ Day-to-day pull requests target `develop`. Release pull requests merge `develop`
 - Consult the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) when designing public APIs.
 - Follow existing conventions and keep changes proportional to the task. TDD is not required.
 
-## Move fast
+## Development principles
 
-Jidoka is not a big enterprise application. Move fast, try new ideas, and breaking things is fine, especially while the project is on 0.x.
+Jidoka is a small application. Keep it simple and fast to develop:
 
+- Prefer straightforward code that a junior developer can understand.
+- Follow existing conventions unless there is a good reason to change them.
+- Optimize for readers: make intent clear and avoid clever abstractions.
+- Keep related concerns together; split modules or services when there is a concrete need.
+- Avoid unnecessary work and complexity before reaching for performance optimizations.
+- Add dependencies only when they solve a real need.
+- Move fast and try new ideas. Breaking changes are acceptable while the project is on 0.x.
 - Do not use TDD. Write only the minimum tests needed to cover new or fixed behavior, and skip tests for exploratory work.
 - Do not add compatibility layers or migrations for breaking changes; mention them in the changelog fragment.
 
