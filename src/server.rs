@@ -22,27 +22,11 @@ use std::{
     sync::Mutex,
 };
 
-/// The one place the loopback host is spelled, as a macro so `concat!` can build `ADDRESS` from it.
-macro_rules! loopback_host {
-    () => {
-        "127.0.0.1"
-    };
-}
-/// The one place the default port is spelled, as a macro so `concat!` can build `ADDRESS` from it.
-macro_rules! default_port {
-    () => {
-        4311
-    };
-}
-
 /// The host the dashboard server binds to and the CLI talks to: loopback only, so nothing outside this machine
 /// can reach it.
-const LOOPBACK_HOST: &str = loopback_host!();
-/// The port the dashboard server listens on unless told otherwise; a fixed, uncommon port so the CLI and the
-/// dashboard find each other without configuration.
-pub(crate) const DEFAULT_PORT: u16 = default_port!();
-/// The dashboard server's default address, `LOOPBACK_HOST:DEFAULT_PORT`.
-pub(crate) const ADDRESS: &str = concat!(loopback_host!(), ":", default_port!());
+pub(crate) const LOOPBACK_HOST: &str = "127.0.0.1";
+/// The port the dashboard tries first; when it is taken, the dashboard takes a free port instead.
+pub(crate) const DEFAULT_PORT: u16 = 4311;
 const DASHBOARD: &str = include_str!("../dashboard/index.html");
 /// The files the dashboard page may load from `/assets/`; any other path is a 404.
 const ASSETS: &[(&str, ContentType, &[u8])] = &[
@@ -148,22 +132,22 @@ impl CliToken {
     }
 }
 
-/// Where the CLI token lives: next to the runs file, named per port like the runs file.
-pub(crate) fn token_path(runs: &Path, port: u16) -> PathBuf {
-    let name = if port == DEFAULT_PORT {
-        "session-token".to_string()
-    } else {
-        format!("session-token-{port}")
-    };
-    runs.with_file_name(name)
+/// Where the CLI token lives: next to the runs file.
+pub(crate) fn token_path(runs: &Path) -> PathBuf {
+    runs.with_file_name("session-token")
 }
 
-/// Writes `token` to `path` so no reader sees a partial file; on Unix only the user can read it and the
-/// directory is made private.
-fn write_token_file(path: &Path, token: &str) -> io::Result<()> {
+/// The data folder: the folder that holds `runs.json`, and with it the CLI token, `dashboard.json` and plans.
+pub(crate) fn data_dir(runs: &Path) -> &Path {
+    runs.parent().unwrap_or(Path::new("."))
+}
+
+/// Writes `contents` to `path` so no reader sees a partial file; on Unix only the user can read it and the
+/// directory is made private. Used for the CLI token and the discovery file.
+pub(crate) fn write_private_file(path: &Path, contents: &str) -> io::Result<()> {
     static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let first = COUNTER.fetch_add(TOKEN_TEMP_ATTEMPTS, std::sync::atomic::Ordering::Relaxed);
-    write_token_file_from(path, token, first)
+    write_private_file_from(path, contents, first)
 }
 
 /// How many temporary names a token write tries before it gives up.
@@ -177,9 +161,9 @@ fn token_temp_path(path: &Path, counter: u32) -> PathBuf {
     dir.join(format!(".{name}.{}.{counter}.tmp", std::process::id()))
 }
 
-/// `write_token_file`, trying the temporary names from `first_counter` on. A name left by a killed dashboard
+/// `write_private_file`, trying the temporary names from `first_counter` on. A name left by a killed dashboard
 /// (same pid, same counter) is skipped; after `TOKEN_TEMP_ATTEMPTS` taken names the error is returned.
-fn write_token_file_from(path: &Path, token: &str, first_counter: u32) -> io::Result<()> {
+fn write_private_file_from(path: &Path, contents: &str, first_counter: u32) -> io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     #[cfg(unix)]
     {
@@ -194,7 +178,7 @@ fn write_token_file_from(path: &Path, token: &str, first_counter: u32) -> io::Re
     let mut attempt = 0;
     loop {
         let temp = token_temp_path(path, first_counter.wrapping_add(attempt));
-        match write_new_file(&temp, token) {
+        match write_new_file(&temp, contents) {
             Err(error)
                 if error.kind() == io::ErrorKind::AlreadyExists
                     && attempt + 1 < TOKEN_TEMP_ATTEMPTS =>
@@ -649,7 +633,6 @@ async fn get_document(
     reference: &str,
     store: &State<RunStore>,
     runs_file: &State<TokenFile>,
-    config: &rocket::Config,
 ) -> Result<Json<serde_json::Value>, DocumentFailure> {
     if !request.local {
         return Err(refused(HttpStatus::BadRequest, "Bad request"));
@@ -665,7 +648,7 @@ async fn get_document(
         })?
         .ok_or_else(|| refused(HttpStatus::NotFound, "Not found"))?;
     let reference = reference.to_owned();
-    let plan = crate::plans::plan_path(&runs_file.0, config.port, &run.id);
+    let plan = crate::plans::plan_path(&runs_file.0, &run.id);
     let read = rocket::tokio::task::spawn_blocking(move || document::read(&run, &reference, &plan))
         .await
         .map_err(|error| {
@@ -889,8 +872,16 @@ fn build_rocket_with_tool(
 /// The runs file the CLI token is kept next to.
 struct TokenFile(PathBuf);
 
-/// Set at liftoff when the CLI token could not be written; the server shuts down and `serve` reports it.
-struct TokenWriteFailure(std::sync::Mutex<Option<String>>);
+/// Why the server shut itself down at liftoff, if it did; `serve` reports it.
+enum LiftoffStop {
+    /// Another Jidoka dashboard is already running.
+    AlreadyRunning,
+    /// The CLI token or the discovery file could not be written.
+    Failed(String),
+}
+
+/// Set at liftoff when the server stops itself.
+struct LiftoffStopSlot(std::sync::Mutex<Option<LiftoffStop>>);
 
 #[cfg(test)]
 pub(crate) fn build_rocket_with(
@@ -936,29 +927,27 @@ fn build_rocket_with_tokens(
         .manage(session_token)
         .manage(CliToken(cli_token))
         .manage(TokenFile(path.to_path_buf()))
-        .manage(TokenWriteFailure(std::sync::Mutex::new(None)))
+        .manage(LiftoffStopSlot(std::sync::Mutex::new(None)))
         .attach(rocket::fairing::AdHoc::on_liftoff(
-            "Write CLI token",
+            "Announce dashboard",
             |rocket| {
                 Box::pin(async move {
-                    // Only once the port is bound, so a dashboard that fails to bind leaves the token alone.
-                    if let (Some(token), Some(file), Some(failure)) = (
+                    // Only once the port is bound, so a dashboard that fails to bind leaves the files alone.
+                    let (Some(token), Some(file), Some(slot)) = (
                         rocket.state::<CliToken>(),
                         rocket.state::<TokenFile>(),
-                        rocket.state::<TokenWriteFailure>(),
-                    ) {
-                        let path = token_path(&file.0, rocket.config().port);
-                        if let Err(error) = write_token_file(&path, &token.0) {
-                            let message = format!(
-                                "could not write the CLI token to {}: {error}",
-                                path.display()
-                            );
+                        rocket.state::<LiftoffStopSlot>(),
+                    ) else {
+                        return;
+                    };
+                    if let Some(stop) = announce(&file.0, &token.0, rocket.config().port) {
+                        if let LiftoffStop::Failed(message) = &stop {
                             eprintln!("{message}");
-                            if let Ok(mut slot) = failure.0.lock() {
-                                *slot = Some(message);
-                            }
-                            rocket.shutdown().notify();
                         }
+                        if let Ok(mut slot) = slot.0.lock() {
+                            *slot = Some(stop);
+                        }
+                        rocket.shutdown().notify();
                     }
                 })
             },
@@ -996,6 +985,30 @@ fn build_rocket_with_tokens(
                 })
             },
         )))
+}
+
+/// Makes this dashboard findable once its port is bound: stops with `AlreadyRunning` when another live dashboard
+/// is in the data folder, otherwise writes the CLI token and then `dashboard.json`. Returns why it stopped, if it did.
+fn announce(runs: &Path, token: &str, port: u16) -> Option<LiftoffStop> {
+    let dir = data_dir(runs);
+    if crate::discovery::running(dir).is_some() {
+        return Some(LiftoffStop::AlreadyRunning);
+    }
+    let token_file = token_path(runs);
+    if let Err(error) = write_private_file(&token_file, token) {
+        return Some(LiftoffStop::Failed(format!(
+            "could not write the CLI token to {}: {error}",
+            token_file.display()
+        )));
+    }
+    let entry = crate::discovery::Dashboard {
+        port,
+        pid: std::process::id(),
+        build: current_build(),
+    };
+    crate::discovery::write(dir, &entry)
+        .err()
+        .map(|error| LiftoffStop::Failed(format!("could not write the discovery file: {error}")))
 }
 
 /// How often the dashboard server looks for pull requests whose state is due to be read again. Every 20 seconds
@@ -1060,17 +1073,23 @@ fn watch_pauses(
     })
 }
 
-pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> io::Result<()> {
+/// Serves the dashboard on `port` (0 lets the operating system pick one). `url` turns the bound port into the
+/// address printed to the user. Returns `Ok` without serving when another dashboard is already running.
+pub(crate) fn serve(
+    path: &Path,
+    port: u16,
+    url: impl FnOnce(u16) -> String + Send + Sync + 'static,
+    usage: UsageSettings,
+) -> io::Result<()> {
     let runtime = rocket::tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(io::Error::other)?;
-    println!("Dashboard: {url} (press Ctrl+C to stop)");
     runtime.block_on(async {
         let pause_settings = usage.clone();
         // Made before the run-storage step so a token failure keeps its own message.
         let tokens = new_tokens()?;
-        build_rocket_with_tokens(
+        let launched = build_rocket_with_tokens(
             path,
             port,
             Collector::new(Some(usage)),
@@ -1084,6 +1103,16 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
             "Pull request state",
             |rocket| {
                 Box::pin(async move {
+                    let stopped = rocket
+                        .state::<LiftoffStopSlot>()
+                        .is_none_or(|slot| slot.0.lock().is_ok_and(|stop| stop.is_some()));
+                    if stopped {
+                        return;
+                    }
+                    println!(
+                        "Dashboard: {} (press Ctrl+C to stop)",
+                        url(rocket.config().port)
+                    );
                     if let (Some(store), Some(tool)) =
                         (rocket.state::<RunStore>(), rocket.state::<PrTool>())
                     {
@@ -1095,16 +1124,26 @@ pub(crate) fn serve(path: &Path, port: u16, url: &str, usage: UsageSettings) -> 
         ))
         .launch()
         .await
-        .map_err(io::Error::other)
-        .and_then(|rocket| {
-            match rocket
-                .state::<TokenWriteFailure>()
-                .and_then(|failure| failure.0.lock().ok()?.take())
-            {
-                Some(message) => Err(io::Error::other(message)),
-                None => Ok(()),
-            }
-        })
+        .map_err(io::Error::other);
+        let stop = launched.as_ref().ok().and_then(|rocket| {
+            rocket
+                .state::<LiftoffStopSlot>()
+                .and_then(|slot| slot.0.lock().ok()?.take())
+        });
+        if matches!(stop, Some(LiftoffStop::AlreadyRunning)) {
+            println!("Dashboard already running; this one was shut down.");
+            return Ok(());
+        }
+        // A crash skips this; the stale file then fails the probe and the next start overwrites it.
+        crate::discovery::remove_if_ours(
+            path.parent().unwrap_or(Path::new(".")),
+            std::process::id(),
+        );
+        launched?;
+        match stop {
+            Some(LiftoffStop::Failed(message)) => Err(io::Error::other(message)),
+            _ => Ok(()),
+        }
     })
 }
 
