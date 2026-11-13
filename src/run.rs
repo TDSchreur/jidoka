@@ -12,6 +12,17 @@ use std::{
 };
 
 pub(crate) const UPDATE_HELP: &str = "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework (on a running run in Check, --rework <n> also moves it back to Build for a Rework and needs a new --finding in the same update; elsewhere it only sets the count)\n  --mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --finding <check> <location|-> <text> (repeat; only in Check; records an issue a check reported as an open Finding, F1, F2, ...)\n  --finding-status <id>=<open|fixed|dismissed|deferred>[:<reason>] (repeat; dismissed and deferred need a reason; fixed also in Build during a Rework)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `done` is only accepted in Finish and needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
+/// The security review runs in Check outside the check catalog, so its Findings name it separately.
+const SECURITY_FINDING_CHECK: &str = "security";
+
+/// The checks a Finding may name: the catalog's checks and the security review.
+fn finding_checks() -> impl Iterator<Item = &'static str> {
+    crate::checks::CATALOG
+        .iter()
+        .map(|check| check.name)
+        .chain(std::iter::once(SECURITY_FINDING_CHECK))
+}
+
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
 /// Tickets one update may list; a spec split into more pieces than this is too big to track on one board.
@@ -611,6 +622,16 @@ fn apply_findings(
             });
         }
     }
+    if moved {
+        // Open Findings recorded earlier in this Check pass sent the run back too.
+        for finding in run
+            .findings
+            .iter_mut()
+            .filter(|finding| finding.state == FindingState::Open && finding.rework.is_none())
+        {
+            finding.rework = run.rework;
+        }
+    }
     if statuses.is_empty() {
         return Ok(());
     }
@@ -815,11 +836,8 @@ impl UpdateRun {
             ));
         }
         for finding in &self.findings {
-            if !crate::checks::CATALOG
-                .iter()
-                .any(|check| check.name == finding.check)
-            {
-                let names: Vec<_> = crate::checks::CATALOG.iter().map(|c| c.name).collect();
+            if !finding_checks().any(|name| name == finding.check) {
+                let names: Vec<_> = finding_checks().collect();
                 return Err(format!(
                     "Unknown check {:?} for --finding; use one of: {}",
                     finding.check,

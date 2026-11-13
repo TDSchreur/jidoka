@@ -118,6 +118,7 @@ fn findings_are_recorded_resolved_and_gate_the_rework() {
     // A Rework needs a new Finding; bad checks and states are refused.
     assert!(update(&["--rework", "1"]).is_err());
     assert!(update(&["--finding", "nope", "-", "Bug"]).is_err());
+    assert!(update(&["--finding", "security", "-", "Leak"]).is_ok());
     assert!(update(&["--finding-status", "F9=fixed"]).is_err());
     assert!(update(&["--finding-status", "F1=dismissed"]).is_err());
     assert!(update(&["--finding-status", "F1=fixed:why"]).is_err());
@@ -145,9 +146,10 @@ fn findings_are_recorded_resolved_and_gate_the_rework() {
     assert_eq!(
         findings,
         [
-            ("F1", None, Some("src/a.rs:1")),
-            ("F2", None, None),
-            ("F3", Some(1), None)
+            ("F1", Some(1), None),
+            ("F2", Some(1), Some("src/a.rs:1")),
+            ("F3", Some(1), None),
+            ("F4", Some(1), None)
         ]
     );
     assert_eq!(moved.findings[0].reviewed_commit, "abc1234");
