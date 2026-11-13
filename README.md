@@ -77,6 +77,21 @@ Useful commands:
 
 Run `jidoka --help` for every command.
 
+### Where runs are stored
+
+Jidoka keeps its data in one folder per user:
+
+- Linux and macOS: `$XDG_DATA_HOME/jidoka/`, or `~/.local/share/jidoka/` when `XDG_DATA_HOME` is not set.
+- Windows: `%LOCALAPPDATA%\jidoka\`.
+
+| File | What it holds |
+| --- | --- |
+| `runs.json` | Every run: stage, status, gates, Findings, timeline, reports, summaries and token usage. |
+| `plans/<run-id>.md` | A run's saved plan, kept after its worktree is cleaned up. |
+| `session-token` | The token the CLI sends to the dashboard, replaced on each dashboard start and readable only by you. |
+
+A dashboard on another port than 4311 uses `runs-<port>.json` and `session-token-<port>`. The dashboard owns `runs.json` and rewrites it on every update, so read runs with `jidoka run inspect <id>` (`--json` for the raw record) and change them with `jidoka run update`, not by editing the file.
+
 ## Documentation
 
 | Guide | Covers |
