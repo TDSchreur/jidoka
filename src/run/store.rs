@@ -57,6 +57,16 @@ enum Gates {
     MayAppend(GateResult),
 }
 
+const CHANGED_WHILE_CHECKING: &str = "The run changed while checking gates; try again";
+
+/// Why [`RunStore::change_with`] failed, so callers can word each case their own way.
+enum ChangeError<E> {
+    Edit(E),
+    Lock(String),
+    Clock(io::Error),
+    Save(io::Error),
+}
+
 /// Whether the stored `current` run changed since `snapshot` in a way that invalidates a gate check.
 fn conflicts(current: &Run, snapshot: &Run, gates: &Gates) -> Result<bool, String> {
     if current.gate_generation != snapshot.gate_generation {
@@ -167,21 +177,42 @@ impl RunStore {
     }
 
     /// Locks the store, applies `edit` to a copy of the run, stamps it, saves, and restores the stored
-    /// run when saving fails. `edit` gets the copy and the time of the change; an error from it changes
-    /// nothing. `Ok(None)` means there is no run with this id.
+    /// run when saving fails. `edit` gets the copy and the time of the change (0 for a collector change,
+    /// which stamps nothing and does not read the clock); an error from it changes nothing. `Ok(None)`
+    /// means there is no run with this id.
     fn change(
         &self,
         id: &str,
         stamp: Stamp,
         edit: impl FnOnce(&mut Run, u64) -> io::Result<Edit>,
     ) -> io::Result<Option<Run>> {
-        let mut runs = self.shared.runs.lock().map_err(lock_error)?;
+        self.change_with(id, stamp, edit)
+            .map_err(|error| match error {
+                ChangeError::Edit(e) | ChangeError::Clock(e) | ChangeError::Save(e) => e,
+                ChangeError::Lock(_) => io::Error::other("run storage lock was poisoned"),
+            })
+    }
+
+    fn change_with<E>(
+        &self,
+        id: &str,
+        stamp: Stamp,
+        edit: impl FnOnce(&mut Run, u64) -> Result<Edit, E>,
+    ) -> Result<Option<Run>, ChangeError<E>> {
+        let mut runs = self
+            .shared
+            .runs
+            .lock()
+            .map_err(|e| ChangeError::Lock(e.to_string()))?;
         let Some(index) = runs.iter().position(|run| run.id == id) else {
             return Ok(None);
         };
-        let now = updated_now()?;
+        let now = match stamp {
+            Stamp::Collector => 0,
+            _ => updated_now().map_err(ChangeError::Clock)?,
+        };
         let mut next = runs[index].clone();
-        if matches!(edit(&mut next, now)?, Edit::Skip) {
+        if matches!(edit(&mut next, now).map_err(ChangeError::Edit)?, Edit::Skip) {
             return Ok(Some(runs[index].clone()));
         }
         match stamp {
@@ -203,7 +234,7 @@ impl RunStore {
         let old = std::mem::replace(&mut runs[index], next);
         if let Err(error) = save_runs(&self.shared.path, &runs) {
             runs[index] = old;
-            return Err(error);
+            return Err(ChangeError::Save(error));
         }
         Ok(Some(runs[index].clone()))
     }
@@ -225,20 +256,19 @@ impl RunStore {
             .map_err(|e| format!("Could not read the run: {e}"))?
             .ok_or_else(not_found)?;
         let (gates, value) = check(&snapshot)?;
-        let saved = self.change(id, stamp, |current, now| {
-            if conflicts(current, &snapshot, &gates).map_err(io_invalid)? {
-                return Err(io_invalid(
-                    "The run changed while checking gates; try again",
-                ));
+        let saved = self.change_with(id, stamp, |current, now| {
+            if conflicts(current, &snapshot, &gates)? {
+                return Err(CHANGED_WHILE_CHECKING.to_string());
             }
-            merge(current, value, &snapshot, now).map_err(io_invalid)?;
+            merge(current, value, &snapshot, now)?;
             Ok(Edit::Save)
         });
         match saved {
             Ok(Some(_)) => Ok(()),
             Ok(None) => Err(not_found()),
-            Err(e) if e.kind() == io::ErrorKind::InvalidInput => Err(e.to_string()),
-            Err(e) => Err(format!("Could not save the run: {e}")),
+            Err(ChangeError::Edit(message) | ChangeError::Lock(message)) => Err(message),
+            Err(ChangeError::Clock(e)) => Err(format!("Could not read the time: {e}")),
+            Err(ChangeError::Save(e)) => Err(format!("Could not save the run: {e}")),
         }
     }
 
@@ -630,6 +660,7 @@ mod tests {
         let dir = TestDir::new();
         let (store, id) = store_with_run(&dir);
         let before = store.get(&id).unwrap().unwrap();
+        // A directory at the temp file name `save_runs` writes to makes the save fail.
         std::fs::create_dir(dir.0.path().join("runs.json.tmp")).unwrap();
         let result = store.change(&id, Stamp::Agent, |run, _| {
             run.title = "changed".into();
@@ -645,7 +676,7 @@ mod tests {
     fn a_gate_check_conflicts_with_a_changed_generation_or_gate_view() {
         let dir = TestDir::new();
         let (store, id) = store_with_run(&dir);
-        let conflict = "The run changed while checking gates; try again";
+        let conflict = CHANGED_WHILE_CHECKING;
 
         let generation = store.change_from_snapshot(
             &id,
