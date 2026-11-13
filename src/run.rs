@@ -2,6 +2,9 @@ use crate::pr_state::PrStatus;
 use crate::routing::{ModelChoice, ModelRouting};
 use crate::stages::{self, Destination};
 use crate::usage::{Collection, Mark, Pause, PauseKind, Usage};
+mod findings;
+
+use findings::{FindingsContext, FindingsUpdate};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -11,18 +14,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const UPDATE_HELP: &str = "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework (on a running run in Check, --rework <n> also moves it back to Build for a Rework and needs a new --finding in the same update; elsewhere it only sets the count)\n  --mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n  --finding <check> <location|-> <text> (repeat; only in Check; records an issue a check reported as an open Finding, F1, F2, ...)\n  --finding-status <id>=<open|fixed|dismissed|deferred>[:<reason>] (repeat; dismissed and deferred need a reason; fixed also in Build during a Rework)\n  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `done` is only accepted in Finish and needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them.";
-/// The security review runs in Check outside the check catalog, so its Findings name it separately.
-const SECURITY_FINDING_CHECK: &str = "security";
-
-/// The checks a Finding may name: the catalog's checks and the security review.
-fn finding_checks() -> impl Iterator<Item = &'static str> {
-    crate::checks::CATALOG
-        .iter()
-        .map(|check| check.name)
-        .chain(std::iter::once(SECURITY_FINDING_CHECK))
-}
-
+pub(crate) const UPDATE_HELP: &str = concat!(
+    "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework (on a running run in Check, --rework <n> also moves it back to Build for a Rework and needs a new --finding in the same update; elsewhere it only sets the count)\n  --mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n",
+    findings::help!(),
+    "  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `done` is only accepted in Finish and needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them."
+);
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
 /// Tickets one update may list; a spec split into more pieces than this is too big to track on one board.
@@ -54,11 +50,6 @@ const BASE_COMMIT_LENGTH: std::ops::RangeInclusive<usize> = 7..=64;
 const MAX_REPORTS_PER_UPDATE: usize = 100;
 /// Ticket reports or run reports a run may hold in total, so a long run cannot grow its record without bound.
 pub(crate) const MAX_REPORTS_PER_RUN: usize = 1000;
-/// Findings one update may record; matches `MAX_REPORTS_PER_UPDATE`.
-const MAX_FINDINGS_PER_UPDATE: usize = 100;
-/// Findings a run may hold in total, so a long run cannot grow its record without bound, like its reports.
-const MAX_FINDINGS_PER_RUN: usize = 1000;
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Run {
     /// In-memory generation of changes that invalidate gate validation.
@@ -319,26 +310,6 @@ pub(crate) struct Finding {
     pub(crate) resolved_at: Option<u64>,
 }
 
-/// A finding as submitted by an update.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct NewFinding {
-    pub(crate) check: String,
-    #[serde(default)]
-    pub(crate) location: Option<String>,
-    pub(crate) text: String,
-}
-
-/// A new outcome for a recorded finding.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct FindingStatus {
-    pub(crate) id: String,
-    pub(crate) state: FindingState,
-    #[serde(default)]
-    pub(crate) reason: Option<String>,
-}
-
 /// A ticket as listed by an update; its status is carried over from the stored list or starts pending.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -431,12 +402,8 @@ pub(crate) struct UpdateRun {
     pub(crate) ticket_reports: Vec<NewTicketReport>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) run_reports: Vec<NewRunReport>,
-    /// Findings to record; only in Check.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) findings: Vec<NewFinding>,
-    /// Outcomes for recorded findings.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) finding_status: Vec<FindingStatus>,
+    #[serde(flatten)]
+    pub(crate) findings: FindingsUpdate,
     /// Stage summaries to set; null removes that stage's summary. Other stages keep theirs.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) summaries: BTreeMap<Stage, Option<String>>,
@@ -579,110 +546,6 @@ fn check_text(name: &str, value: &str, limit: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Records new findings and applies outcomes. `stage` is where the update started and `moved` whether it
-/// started a Rework.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "seven inputs for one findings update; an update struct would collapse these"
-)]
-fn apply_findings(
-    run: &mut Run,
-    stage: Stage,
-    moved: bool,
-    new: Vec<NewFinding>,
-    statuses: Vec<FindingStatus>,
-    at: u64,
-    git: &dyn crate::pr_sync::Git,
-) -> Result<(), String> {
-    let head = |run: &Run| crate::run_gate::head(run, git);
-    if !new.is_empty() {
-        if stage != Stage::Check {
-            return Err(format!(
-                "Findings are recorded in Check; the run is in {}",
-                stage.name()
-            ));
-        }
-        if run.findings.len() + new.len() > MAX_FINDINGS_PER_RUN {
-            return Err(format!(
-                "A run can hold at most {MAX_FINDINGS_PER_RUN} findings"
-            ));
-        }
-        let reviewed_commit = head(run)?;
-        let mut number = run
-            .findings
-            .iter()
-            .filter_map(|finding| finding.id.strip_prefix('F')?.parse::<u32>().ok())
-            .max()
-            .unwrap_or(0);
-        for finding in new {
-            number += 1;
-            run.findings.push(Finding {
-                id: format!("F{number}"),
-                check: finding.check,
-                location: finding.location,
-                text: finding.text,
-                reviewed_commit: reviewed_commit.clone(),
-                rework: if moved { run.rework } else { None },
-                state: FindingState::Open,
-                reason: None,
-                fix_commit: None,
-                at,
-                resolved_at: None,
-            });
-        }
-    }
-    if moved {
-        // Open Findings recorded earlier in this Check pass sent the run back too.
-        for finding in run
-            .findings
-            .iter_mut()
-            .filter(|finding| finding.state == FindingState::Open && finding.rework.is_none())
-        {
-            finding.rework = run.rework;
-        }
-    }
-    if statuses.is_empty() {
-        return Ok(());
-    }
-    let reworking = stage == Stage::Build && run.rework.is_some();
-    if stage != Stage::Check && !reworking {
-        return Err(format!(
-            "Finding outcomes are set in Check, or in Build during a Rework; the run is in {}",
-            stage.name()
-        ));
-    }
-    let fix_commit = if statuses
-        .iter()
-        .any(|status| status.state == FindingState::Fixed)
-    {
-        Some(head(run)?)
-    } else {
-        None
-    };
-    for status in statuses {
-        if stage == Stage::Build && status.state != FindingState::Fixed {
-            return Err(format!(
-                "In Build only fixed can be set; {} is for Check",
-                status.id
-            ));
-        }
-        let finding = run
-            .findings
-            .iter_mut()
-            .find(|finding| finding.id == status.id)
-            .ok_or_else(|| format!("No finding {} is recorded on this run", status.id))?;
-        finding.state = status.state;
-        finding.reason = status.reason;
-        finding.resolved_at = (status.state != FindingState::Open).then_some(at);
-        finding.fix_commit = if status.state == FindingState::Fixed {
-            fix_commit.clone()
-        } else {
-            None
-        };
-    }
-    Ok(())
-}
-
 /// Whether `value` is written as an absolute path: `/dir`, `\\server\share` or `C:\dir`. The same
 /// answer on every system, because a record may be written on one and read on another.
 pub(crate) fn is_absolute_path(value: &str) -> bool {
@@ -733,8 +596,7 @@ impl UpdateRun {
             ticket_status: BTreeMap::new(),
             ticket_reports: Vec::new(),
             run_reports: Vec::new(),
-            findings: Vec::new(),
-            finding_status: Vec::new(),
+            findings: FindingsUpdate::default(),
             summaries: BTreeMap::new(),
             sessions: Vec::new(),
             model_routing: FieldUpdate::Keep,
@@ -844,43 +706,7 @@ impl UpdateRun {
                 return Err("Run report must not contain control characters".into());
             }
         }
-        if self.findings.len() > MAX_FINDINGS_PER_UPDATE {
-            return Err(format!(
-                "At most {MAX_FINDINGS_PER_UPDATE} findings can be recorded at once"
-            ));
-        }
-        for finding in &self.findings {
-            if !finding_checks().any(|name| name == finding.check) {
-                let names: Vec<_> = finding_checks().collect();
-                return Err(format!(
-                    "Unknown check {:?} for --finding; use one of: {}",
-                    finding.check,
-                    names.join(", ")
-                ));
-            }
-            check_text("Finding text", &finding.text, MAX_TEXT_BYTES)?;
-            if let Some(location) = &finding.location {
-                check_text("Finding location", location, MAX_TEXT_BYTES)?;
-            }
-        }
-        for status in &self.finding_status {
-            match (status.state, status.reason.as_deref()) {
-                (FindingState::Dismissed | FindingState::Deferred, reason) => {
-                    check_text(
-                        &format!("The reason for {} ({:?})", status.id, status.state),
-                        reason.unwrap_or(""),
-                        MAX_TEXT_BYTES,
-                    )?;
-                }
-                (_, Some(_)) => {
-                    return Err(format!(
-                        "Finding {} cannot take a reason in state {:?}; only dismissed and deferred do",
-                        status.id, status.state
-                    ));
-                }
-                (_, None) => {}
-            }
-        }
+        self.findings.validate()?;
         for summary in self.summaries.values().flatten() {
             check_text("Stage summary", summary, MAX_NOTE_BYTES)?;
         }
@@ -1029,38 +855,8 @@ pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, 
                 });
                 continue;
             }
-            "--finding" => {
-                let check = *next_value()?;
-                let location = *next_value()?;
-                let text = *next_value()?;
-                update.findings.push(NewFinding {
-                    check: check.to_string(),
-                    location: (location != "-").then(|| location.to_string()),
-                    text: text.to_string(),
-                });
-                continue;
-            }
-            "--finding-status" => {
-                let value = *next_value()?;
-                let bad = || {
-                    format!(
-                        "--finding-status needs <id>=<open|fixed|dismissed|deferred>[:<reason>], got {value:?}"
-                    )
-                };
-                let (id, rest) = value.split_once('=').ok_or_else(bad)?;
-                let (state, reason) = match rest.split_once(':') {
-                    Some((state, reason)) => (state, Some(reason.to_string())),
-                    None => (rest, None),
-                };
-                let state = serde_json::from_value(state.into()).map_err(|_| bad())?;
-                if update.finding_status.iter().any(|known| known.id == id) {
-                    return Err(format!("Finding status for {id} given twice"));
-                }
-                update.finding_status.push(FindingStatus {
-                    id: id.to_string(),
-                    state,
-                    reason,
-                });
+            "--finding" | "--finding-status" => {
+                update.findings.parse_option(flag, &mut next_value)?;
                 continue;
             }
             "--ticket-status" => {
@@ -1298,11 +1094,7 @@ impl RunStore {
             && next.stage == Stage::Check
             && rework_set
         {
-            if update.findings.is_empty() {
-                return Err(io_invalid(
-                    "A Rework needs a reason: add at least one --finding <check> <location|-> \"<text>\" to this update",
-                ));
-            }
+            update.findings.check_rework(true).map_err(io_invalid)?;
             let mode = next
                 .mode
                 .ok_or_else(|| io_invalid("Record the run's mode before starting a Rework"))?;
@@ -1314,16 +1106,18 @@ impl RunStore {
             }
         }
         let moved = next.stage != stage_before;
-        apply_findings(
-            &mut next,
-            stage_before,
-            moved,
-            update.findings,
-            update.finding_status,
-            updated_at,
-            git,
-        )
-        .map_err(io_invalid)?;
+        update
+            .findings
+            .apply(
+                &mut next,
+                &FindingsContext {
+                    stage: stage_before,
+                    moved,
+                    at: updated_at,
+                    git,
+                },
+            )
+            .map_err(io_invalid)?;
         if update.status == RunStatus::Done && next.stage != Stage::Finish {
             return Err(io_invalid(format!(
                 "A run is done only after Finish; it is in {}. Use `jidoka run advance <id>`",
