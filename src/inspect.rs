@@ -269,6 +269,36 @@ pub(crate) fn render(run: &Run) -> String {
             out.push_str(&format!("  {}\n", shown(&report.text)));
         }
     }
+    if !run.findings.is_empty() {
+        out.push_str("Findings\n");
+        for finding in &run.findings {
+            let state = format!("{:?}", finding.state).to_lowercase();
+            let reason = finding
+                .reason
+                .as_deref()
+                .map_or_else(String::new, |reason| format!(" ({})", shown(reason)));
+            let fix = finding
+                .fix_commit
+                .as_deref()
+                .map_or_else(String::new, |commit| {
+                    format!(", fixed in {}", shown(commit))
+                });
+            let rework = finding
+                .rework
+                .map_or_else(String::new, |n| format!(", sent back to rework {n}"));
+            out.push_str(&format!(
+                "  {} {state}{reason}  {}: {}{}\n    reviewed {}{rework}{fix}\n",
+                finding.id,
+                shown(&finding.check),
+                shown(&finding.text),
+                finding
+                    .location
+                    .as_deref()
+                    .map_or_else(String::new, |l| format!(" [{}]", shown(l))),
+                shown(&finding.reviewed_commit),
+            ));
+        }
+    }
     if let Some(ticket) = &run.current_ticket {
         out.push_str(&field("Current ticket", Some(ticket)));
     }

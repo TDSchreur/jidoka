@@ -57,23 +57,114 @@ fn rework_moves_check_to_build_and_is_refused_elsewhere() {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     let run = new_run(&store, "task");
-    let rework = || parse_update("running", &["--rework", "1"]).unwrap();
+    let rework = || {
+        parse_update(
+            "running",
+            &["--rework", "1", "--finding", "code-review", "-", "Bug"],
+        )
+        .unwrap()
+    };
+    let git = FixedGit;
     store.set_stage(&run.id, Stage::Check);
-    let error = store.update(&run.id, rework()).unwrap_err();
+    let error = store.update_with(&run.id, rework(), &git).unwrap_err();
     assert!(error.to_string().contains("mode"));
 
     store
         .update(
             &run.id,
-            parse_update("running", &["--mode", "jidoka-balanced"]).unwrap(),
+            parse_update(
+                "running",
+                &["--mode", "jidoka-balanced", "--worktree", "/work/wt"],
+            )
+            .unwrap(),
         )
         .unwrap();
-    let moved = store.update(&run.id, rework()).unwrap().unwrap();
+    let moved = store.update_with(&run.id, rework(), &git).unwrap().unwrap();
     assert_eq!((moved.stage, moved.rework), (Stage::Build, Some(1)));
 
     // Outside Check the count is only recorded.
-    let again = store.update(&run.id, rework()).unwrap().unwrap();
+    let again = store.update(&run.id, rework_count()).unwrap().unwrap();
     assert_eq!(again.stage, Stage::Build);
+}
+
+struct FixedGit;
+impl crate::pr_sync::Git for FixedGit {
+    fn git(&self, _: &Path, _: &[&str]) -> Result<String, String> {
+        Ok("abc1234".into())
+    }
+}
+
+fn rework_count() -> UpdateRun {
+    parse_update("running", &["--rework", "1"]).unwrap()
+}
+
+#[test]
+fn findings_are_recorded_resolved_and_gate_the_rework() {
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    let run = new_run(&store, "task");
+    let id = run.id.as_str();
+    let update = |options: &[&str]| {
+        let parsed = parse_update("running", options).map_err(io_invalid)?;
+        store.update_with(id, parsed, &FixedGit)
+    };
+    update(&["--mode", "jidoka-balanced", "--worktree", "/work/wt"]).unwrap();
+    let finding = ["--finding", "code-review", "src/a.rs:1", "Bug"];
+
+    // Outside Check nothing is recorded or resolved.
+    assert!(update(&finding).is_err());
+    store.set_stage(id, Stage::Check);
+
+    // A Rework needs a new Finding; bad checks and states are refused.
+    assert!(update(&["--rework", "1"]).is_err());
+    assert!(update(&["--finding", "nope", "-", "Bug"]).is_err());
+    assert!(update(&["--finding", "security", "-", "Leak"]).is_ok());
+    assert!(update(&["--finding-status", "F9=fixed"]).is_err());
+    assert!(update(&["--finding-status", "F1=dismissed"]).is_err());
+    assert!(update(&["--finding-status", "F1=fixed:why"]).is_err());
+
+    update(&[
+        finding[0],
+        finding[1],
+        finding[2],
+        finding[3],
+        "--finding",
+        "code-review",
+        "-",
+        "Two",
+    ])
+    .unwrap();
+    let moved = update(&["--rework", "1", "--finding", "code-review", "-", "Three"])
+        .unwrap()
+        .unwrap();
+    assert_eq!(moved.stage, Stage::Build);
+    let findings: Vec<_> = moved
+        .findings
+        .iter()
+        .map(|f| (f.id.as_str(), f.rework, f.location.as_deref()))
+        .collect();
+    assert_eq!(
+        findings,
+        [
+            ("F1", Some(1), None),
+            ("F2", Some(1), Some("src/a.rs:1")),
+            ("F3", Some(1), None),
+            ("F4", Some(1), None)
+        ]
+    );
+    assert_eq!(moved.findings[0].reviewed_commit, "abc1234");
+
+    // In Build only fixed is allowed.
+    assert!(update(&["--finding-status", "F1=deferred:later"]).is_err());
+    let fixed = update(&["--finding-status", "F1=fixed"]).unwrap().unwrap();
+    assert_eq!(fixed.findings[0].fix_commit.as_deref(), Some("abc1234"));
+
+    store.set_stage(id, Stage::Check);
+    let done = update(&["--finding-status", "F2=deferred:not worth it"])
+        .unwrap()
+        .unwrap();
+    assert_eq!(done.findings[1].reason.as_deref(), Some("not worth it"));
+    assert!(done.findings[1].resolved_at.is_some());
 }
 
 #[test]
