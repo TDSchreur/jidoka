@@ -262,6 +262,8 @@ fn run_of(project: &Project) -> PrRun {
         branch: Some("feature".into()),
         stage: "finish".into(),
         status: "running".into(),
+        base_commit: None,
+        pr_state: None,
     }
 }
 

@@ -3,6 +3,7 @@
 use crate::{
     inspect::shown,
     pr_open::{PrRun, RunApi},
+    pr_state::PrState,
     pr_wait::ToolProblem,
     run_begin::{first_line, git, last_line, valid_branch_name},
 };
@@ -109,6 +110,15 @@ pub(crate) fn parse_options(options: &[&str]) -> Result<Options, String> {
     Ok(parsed)
 }
 
+/// What to do next after a refusal because the pull request is over.
+fn cleanup_hint(run: &PrRun, state: PrState) -> String {
+    if state == PrState::Merged {
+        format!(" Run `jidoka run cleanup {}`.", run.id)
+    } else {
+        String::new()
+    }
+}
+
 fn lines(text: &str) -> Vec<String> {
     let mut list: Vec<String> = text
         .lines()
@@ -146,6 +156,13 @@ pub(crate) fn sync(
         return Err(problem(format!(
             "The recorded worktree {} does not exist.",
             shown(worktree)
+        )));
+    }
+    if let Some(state @ (PrState::Merged | PrState::Closed)) = run.pr_state {
+        return Err(problem(format!(
+            "The pull request is {}, so nothing was merged or pushed.{}",
+            state.label(),
+            cleanup_hint(run, state)
         )));
     }
     let read = |args: &[&str], what: &str| {
@@ -225,6 +242,22 @@ pub(crate) fn sync(
             shown(first_line(&error))
         ))
     })?;
+    // A branch with commits of its own that the base already contains was merged (also by a merge commit
+    // the stored state does not know yet); merging the base again would only make an empty merge commit.
+    if let Some(start) = &run.base_commit
+        && git
+            .git(dir, &["rev-list", "--count", &format!("{start}..HEAD")])
+            .is_ok_and(|count| count != "0")
+        && git
+            .status(dir, &["merge-base", "--is-ancestor", "HEAD", &base_ref])
+            .map_err(problem)?
+            == 0
+    {
+        return Err(problem(format!(
+            "The branch is already in origin/{base}: the pull request was merged, so nothing was merged or pushed.{}",
+            cleanup_hint(run, PrState::Merged)
+        )));
+    }
     // What the remote branch is now. It is fetched too, so that its commits are known here.
     let remote = read(
         &["ls-remote", "origin", &format!("refs/heads/{branch}")],

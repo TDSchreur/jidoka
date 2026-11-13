@@ -33,6 +33,8 @@ jidoka pr sync <run-id> [--base <branch>] [--json]
 
 Exit status 1 is a problem with what to do.
 
+- **Finished pull request.** Before fetching, the command refuses when the pull request state stored on the run is `merged` or `closed` (it never asks the host, so squash merges are covered once the dashboard has stored the state). After fetching the base, it refuses when the branch has commits after the run's recorded base commit and `HEAD` is already an ancestor of `origin/<base>`. Nothing is merged or pushed; for a merged pull request the message points to `jidoka run cleanup <run-id>`.
+
 - **Checks.** The run has a worktree recorded and it exists; it is on the recorded branch, whose name is safe to push; the tree is clean; no merge is in progress; and the branch is not the base. The base is `--base`, otherwise the branch `refs/remotes/origin/HEAD` points to, and it is fetched first.
 - **Behind.** `git merge-base --is-ancestor origin/<base> HEAD`: exit 0 is current, 1 is behind, anything else is an error and never read as behind.
 - **Overlap.** The change's own files (`git diff --no-renames --name-only <merge base> HEAD`, taken before the merge) against the base's files since the merge base. Without rename detection a renamed file counts under both names.
