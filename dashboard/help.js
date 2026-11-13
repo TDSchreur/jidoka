@@ -220,6 +220,7 @@ function Stages({ reworkCap }) {
         <li>Check findings remain after the last Rework and the agent needs your decision.</li>
         <li>A tool, a permission or a check the agent cannot fix by itself, such as a failing CI check caused by infrastructure.</li>
         <li>An answer or a decision only you can give.</li>
+        <li>The agent finished a response while its Run is active; it may need you or may have been interrupted.</li>
       </ul>
       <p>
         The <em>Needs you</em> button in the header shows only these Runs, and <em>Notify me</em> can tell you when a

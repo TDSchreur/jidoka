@@ -90,6 +90,7 @@ pub(crate) struct RunSession {
     pub(crate) pauses: Vec<(PauseKind, u64)>,
     /// When the log shows the agent or the user working, sorted. Claude Code only.
     pub(crate) activity: Vec<u64>,
+    pub(crate) attention: Vec<(u64, crate::attention::Signal)>,
 }
 
 /// Something that limits what a session's usage covers.
@@ -277,6 +278,7 @@ struct LogUsage {
     unidentified: usize,
     pauses: Vec<(PauseKind, u64)>,
     activity: Vec<u64>,
+    attention: Vec<(u64, crate::attention::Signal)>,
 }
 
 impl LogUsage {
@@ -299,6 +301,7 @@ impl LogUsage {
         self.entries.extend(other.entries);
         self.pauses.extend(other.pauses);
         self.activity.extend(other.activity);
+        self.attention.extend(other.attention);
     }
 }
 
@@ -427,6 +430,7 @@ fn read_claude(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
             }
             let mut parsed = parse_claude(&text, &stem, false);
             claude_pauses(&text, &mut parsed);
+            parsed.attention = crate::attention::signals(crate::attention::Agent::Claude, &text);
             drop(text);
             // The subagents of a session are in its own folder; the same response is never counted twice.
             for sub in files_in(&slug.path().join(&stem).join("subagents")) {
@@ -648,7 +652,10 @@ fn read_codex(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
         let Some(text) = pass.load(&rollout.path, &rollout.root, out) else {
             continue;
         };
-        let parsed = parse_codex(&text, &rollout.root, rollout.subagent);
+        let mut parsed = parse_codex(&text, &rollout.root, rollout.subagent);
+        if !rollout.subagent {
+            parsed.attention = crate::attention::signals(crate::attention::Agent::Codex, &text);
+        }
         let (mentions, all) = by_root.entry(rollout.root.clone()).or_default();
         mentions.extend(rollout.mentions.iter().cloned());
         all.absorb(parsed);
@@ -753,7 +760,8 @@ fn read_copilot(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
         if mentions.is_empty() && !pass.recorded.contains(session.as_str()) {
             continue;
         }
-        let parsed = parse_copilot(&text, &session);
+        let mut parsed = parse_copilot(&text, &session);
+        parsed.attention = crate::attention::signals(crate::attention::Agent::Copilot, &text);
         pass.add(&session, mentions, parsed, "Copilot", out);
     }
 }
@@ -778,6 +786,7 @@ struct ReadPass<'a> {
     sessions: BTreeMap<String, HashSet<String>>,
     /// Per session: its pause markers and moments of activity.
     pauses: BTreeMap<String, Markers>,
+    attention: BTreeMap<String, Vec<(u64, crate::attention::Signal)>>,
 }
 
 impl ReadPass<'_> {
@@ -884,6 +893,10 @@ impl ReadPass<'_> {
         let (pauses, activity) = self.pauses.entry(id.to_string()).or_default();
         pauses.extend(parsed.pauses);
         activity.extend(parsed.activity);
+        self.attention
+            .entry(id.to_string())
+            .or_default()
+            .extend(parsed.attention);
         self.sessions
             .entry(id.to_string())
             .or_default()
@@ -912,6 +925,7 @@ pub(crate) fn read_sessions(
         entries: BTreeMap::new(),
         sessions: BTreeMap::new(),
         pauses: BTreeMap::new(),
+        attention: BTreeMap::new(),
     };
     let sources = roots
         .claude
@@ -954,12 +968,14 @@ pub(crate) fn read_sessions(
         pauses.sort_by_key(|(_, at)| *at);
         activity.sort_unstable();
         activity.dedup();
+        let attention = pass.attention.remove(&id).unwrap_or_default();
         out.sessions.push(RunSession {
             id,
             mentions,
             entries,
             pauses,
             activity,
+            attention,
         });
     }
     out
