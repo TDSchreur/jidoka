@@ -81,7 +81,7 @@ function Overview({ reworkCap }) {
         </li>
         <li>
           Start <${Code}>jidoka dashboard<//> and keep it running. It listens on${' '}
-          <${Code}>http://127.0.0.1:4311<//> by default.
+          <${Code}>http://127.0.0.1:4311<//>, or on a free port when 4311 is taken. It prints the URL.
         </li>
         <li>
           In your project, ask your agent to run <${Code}>/jidoka<//> to pick a workflow, or choose${' '}
@@ -178,7 +178,7 @@ function Stages({ reworkCap }) {
     <${Topic} title="Rework">
       <p>
         A <strong>Rework</strong> is a return from Check to Build to fix findings, followed by another Check that covers
-        only the fixes. A Run gets at most ${reworkCap} Reworks; its row shows the current one as${' '}
+        only the fixes. The agent records each issue as a finding before it sends the Run back; open a Run to see its findings on the Check and Rework entries. A Run gets at most ${reworkCap} Reworks; its row shows the current one as${' '}
         <em>Rework 1/${reworkCap}</em>. Findings alone never block a Run: the agent fixes them within the
         ${reworkCap} Reworks. After the second Rework, findings that only change wording or documentation are fixed
         without asking, and the Run shows <em>Needs you</em> only for findings that would change behaviour. When
@@ -220,6 +220,7 @@ function Stages({ reworkCap }) {
         <li>Check findings remain after the last Rework and the agent needs your decision.</li>
         <li>A tool, a permission or a check the agent cannot fix by itself, such as a failing CI check caused by infrastructure.</li>
         <li>An answer or a decision only you can give.</li>
+        <li>The agent finished a response while its Run is active; it may need you or may have been interrupted.</li>
       </ul>
       <p>
         The <em>Needs you</em> button in the header shows only these Runs, and <em>Notify me</em> can tell you when a
@@ -588,7 +589,7 @@ function Commands() {
     <${Topic} title="Look at Runs">
       <${Terms}
         items=${[
-          [html`<${Code}>jidoka dashboard<//>`, html`Starts this dashboard on <${Code}>127.0.0.1:4311<//>. Use <${Code}>--port<//> for a separate dashboard with its own data, and <${Code}>--no-usage<//> to leave token usage off.`],
+          [html`<${Code}>jidoka dashboard<//>`, html`Starts this dashboard on <${Code}>127.0.0.1:4311<//>, or a free port when that is taken. Use <${Code}>--port<//> to pick the port, and <${Code}>--no-usage<//> to leave token usage off.`],
           [html`<${Code}>jidoka run inspect ${'<id>'}<//>`, html`Prints what a Run has recorded, the same as the Run detail. Add <${Code}>--json<//> for the stored record.`],
           [html`<${Code}>jidoka run stats ${'<id>'}<//>`, html`Prints the token usage by Stage, model and ticket. <${Code}>--all<//> shows the totals for every Run.`],
         ]}
@@ -675,7 +676,7 @@ function ModelRouting() {
         </li>
         <li>
           <${Code}>jidoka run inspect ${'<id>'}<//> shows, per Stage, the requested model and effort next to the models and
-          efforts the Run’s logs show. When usage is fully tracked, a model that was never observed reads <${Code}>MISMATCH<//>, and so does an effort that differs from the one requested. With partial usage it reads "not observed", because the data may be missing, and a log that records no effort reads "effort not recorded".
+          efforts the Run’s logs show. Only subagents are routed, so it judges the models and efforts subagents used. When usage is fully tracked and subagents ran, a model that was never observed reads <${Code}>MISMATCH<//>, and so does an effort that differs from the one requested. A Stage with only coordinator usage reads "kept on the coordinator" and is never a mismatch. With partial usage it reads "not observed", because the data may be missing, and a log that records no effort reads "effort not recorded".
         </li>
         <li>
           To give one Stage another model for one Run, use${' '}

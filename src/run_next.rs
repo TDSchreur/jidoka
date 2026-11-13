@@ -122,8 +122,9 @@ fn open(run: &Run, gates: &[Gate], paths: Option<&[String]>) -> Vec<OpenGate> {
         .collect()
 }
 
-/// A snapshot of each stage's exit gates. Unrecorded automatic checks are unknown outside
-/// the current stage; advancing does not persist their outcomes.
+/// A snapshot of each stage's exit gates. Advancing stores the `ci-passed` outcome, and a
+/// merged pull request counts as passed CI. `tickets-done` is derived from the tickets.
+/// Other unrecorded automatic checks are unknown outside the current stage.
 #[derive(Serialize)]
 pub(crate) struct StageGates {
     stage: Stage,
@@ -144,12 +145,17 @@ pub(crate) fn stage_gates(run: &Run) -> Vec<StageGates> {
         return Vec::new();
     };
     let changed_paths = changed_paths(run, &crate::run_check::ReadOnlyGit).ok();
-    stages::stages(mode)
+    let order = stages::stages(mode);
+    let reached = order.iter().position(|&stage| stage == run.stage);
+    order
         .iter()
-        .map(|&stage| {
+        .enumerate()
+        .map(|(index, &stage)| {
             let transition =
                 stages::next(mode, stage, RunStatus::Running).expect("stage belongs to mode");
             let current = stage == run.stage && run.status != RunStatus::Done;
+            // A stage the run has left: before the current one, or any stage of a done run.
+            let left = run.status == RunStatus::Done || reached.is_some_and(|at| index < at);
             let open_gates = if current {
                 open(run, transition.gates, changed_paths.as_deref())
             } else {
@@ -162,9 +168,13 @@ pub(crate) fn stage_gates(run: &Run) -> Vec<StageGates> {
                     let result = run.gates.iter().rev().find(|r| {
                         r.stage == stage && r.gate == gate && (!current || r.rework == run.rework)
                     });
-                    let status = if gate == Gate::CiPassed {
-                        "unknown"
-                    } else if current {
+                    let merged = run.status == RunStatus::Done
+                        && run
+                            .pr_status
+                            .as_ref()
+                            .is_some_and(|status| status.state == crate::pr_state::PrState::Merged);
+                    let mut merged_evidence = None;
+                    let status = if current {
                         if open_gates.iter().any(|g| g.name == gate) {
                             if result.is_some_and(|r| !r.passed) {
                                 "failed"
@@ -190,6 +200,14 @@ pub(crate) fn stage_gates(run: &Run) -> Vec<StageGates> {
                         } else {
                             "failed"
                         }
+                    } else if gate == Gate::TicketsDone
+                        && left
+                        && run.tickets.iter().all(|t| t.status == TicketStatus::Done)
+                    {
+                        "recorded-pass"
+                    } else if gate == Gate::CiPassed && merged {
+                        merged_evidence = Some("Pull request merged".to_owned());
+                        "recorded-pass"
                     } else {
                         "unknown"
                     };
@@ -200,7 +218,7 @@ pub(crate) fn stage_gates(run: &Run) -> Vec<StageGates> {
                         evidence: if gate == Gate::ChecksRecorded && !current {
                             None
                         } else {
-                            result.and_then(|r| r.evidence.clone())
+                            result.and_then(|r| r.evidence.clone()).or(merged_evidence)
                         },
                         rework: result.and_then(|r| r.rework),
                     }
@@ -401,6 +419,10 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "formats every section of the next-step instructions as one long string builder"
+)]
 pub(crate) fn render(next: &Next) -> String {
     let mut out = format!("Run {}: {}\n", next.run, shown(&next.title));
     out.push_str(&format!(
@@ -487,7 +509,7 @@ pub(crate) fn render(next: &Next) -> String {
         out.push_str(&format!("\nMove to {target} ({})\n", mv.kind));
         if mv.kind == "rework" {
             out.push_str(&format!(
-                "  with: jidoka run update {} running --rework <n> --activity \"<findings>\"\n",
+                "  with: jidoka run update {} running --rework <n> --finding <check> <location|-> \"<text>\" (repeat --finding)\n",
                 next.run
             ));
         } else {

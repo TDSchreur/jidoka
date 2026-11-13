@@ -138,7 +138,7 @@ fn plan_run(dir: &TestDir, own: bool) -> (String, String) {
     let repository = dir.0.path().join("repo");
     let id = document_run(&runs, &worktree, &repository, "x.md", &[]);
     let other = document_run(&runs, &worktree, &repository, "x.md", &[]);
-    let plans = crate::plans::plans_dir(&runs, DEFAULT_PORT);
+    let plans = crate::plans::plans_dir(&runs);
     fs::create_dir_all(&plans).unwrap();
     fs::write(plans.join(format!("{id}.md")), "own plan").unwrap();
     fs::write(plans.join(format!("{other}.md")), "other plan").unwrap();
@@ -208,7 +208,13 @@ async fn dashboard_page() -> String {
     let dir = TestDir::new();
     let api = client(&dir).await;
     let mut page = String::new();
-    for path in ["/", "/assets/style.css", "/assets/app.js"] {
+    for path in [
+        "/",
+        "/assets/style.css",
+        "/assets/app.js",
+        "/assets/format.js",
+        "/assets/history.js",
+    ] {
         page += &api
             .get(path)
             .header(Header::new("Host", "127.0.0.1:4311"))
@@ -227,7 +233,9 @@ async fn assets_are_served_with_their_content_types() {
     let api = client(&dir).await;
     for (path, content_type) in [
         ("/assets/app.js", ContentType::JavaScript),
+        ("/assets/format.js", ContentType::JavaScript),
         ("/assets/help.js", ContentType::JavaScript),
+        ("/assets/history.js", ContentType::JavaScript),
         ("/assets/favicon.svg", ContentType::SVG),
         ("/assets/style.css", ContentType::CSS),
         ("/assets/vendor/preact.js", ContentType::JavaScript),
@@ -514,8 +522,12 @@ async fn linked_worktrees_group_under_their_repository_and_cards_show_progress_a
     assert!(script.contains("url.protocol === 'http:' || url.protocol === 'https:'"));
     assert!(script.contains("named('Pull request')"));
     // Detail lists the tickets in order with their status, and the summaries per Stage.
-    assert!(script.contains("tickets.map((ticket) =>"));
-    assert!(script.contains("run.summaries?.[id]"));
+    assert!(script.contains("tickets.map(({ ticket, reports }) =>"));
+    assert!(
+        asset("/assets/history.js")
+            .await
+            .contains("run.summaries?.[id]")
+    );
 }
 
 #[rocket::async_test]
@@ -1194,4 +1206,42 @@ async fn run_details_preserve_recorded_skips_after_check() {
         "no matching path"
     );
     assert_eq!(body["recorded_skipped_rework"], 1);
+}
+
+#[test]
+fn a_second_dashboard_in_the_same_data_folder_reports_already_running() {
+    let dir = TestDir::new();
+    let runs = dir.0.path().join("runs.json");
+    let launch = |rocket: Rocket<Build>| {
+        let quiet = rocket.figment().clone().merge(("log_level", "off"));
+        rocket.configure(quiet)
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let first = launch(build_rocket(&runs, 0).unwrap()).attach(rocket::fairing::AdHoc::on_liftoff(
+        "Report test server",
+        move |rocket| {
+            let _ = sender.send((rocket.config().port, rocket.shutdown()));
+            Box::pin(async {})
+        },
+    ));
+    let thread = std::thread::spawn(move || rocket::execute(first.launch()).is_ok());
+    let (port, shutdown) = receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the first dashboard should lift off");
+    let found = crate::discovery::running(dir.0.path()).expect("the first dashboard is found");
+    assert_eq!(found.port, port);
+
+    let second = rocket::execute(launch(build_rocket(&runs, 0).unwrap()).launch()).unwrap();
+    let stop = second
+        .state::<LiftoffStopSlot>()
+        .unwrap()
+        .0
+        .lock()
+        .unwrap()
+        .take();
+    assert!(matches!(stop, Some(LiftoffStop::AlreadyRunning)));
+    assert_eq!(crate::discovery::running(dir.0.path()).unwrap().port, port);
+
+    shutdown.notify();
+    assert!(thread.join().unwrap());
 }

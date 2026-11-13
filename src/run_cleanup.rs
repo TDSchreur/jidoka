@@ -55,6 +55,10 @@ fn git_problem(what: &str, error: &str) -> ToolProblem {
 
 /// Removes the Run's worktree and local branch when its pull request is merged and nothing would be lost.
 /// Every refusal comes before anything is removed. `cwd` is where the command runs.
+#[expect(
+    clippy::too_many_lines,
+    reason = "checks PR merge state, then removes worktree and branch with a step report for each"
+)]
 pub(crate) fn cleanup(
     run: &Recorded,
     gh: &dyn Gh,

@@ -82,6 +82,24 @@ CURRENT = {**ACTIVE, "id": "run-current", "title": "Current one", "current_ticke
                        {"reference": "local-2", "title": "Other", "status": "pending"}]}
 NO_CURRENT = {**{k: v for k, v in ACTIVE.items() if k != "current_ticket"}, "id": "run-no-current", "title": "No current one",
               "tickets": [{"title": "Unreferenced work", "status": "pending"}]}
+def finding(id, state, rework, at, **extra):
+    return {"id": id, "check": "code-review", "location": "src/a.rs:1", "text": f"Problem {id} in a very long_unbroken_path_name_that_must_wrap", "reviewed_commit": "abcdef1234567",
+            "rework": rework, "state": state, "reason": None, "fix_commit": None, "at": at, **extra}
+
+
+FOUND = {
+    "id": "run-found", "title": "Findings run", "project": "/work/shop", "stage": "check", "status": "running", "updated_at": AT, "rework": 1,
+    "timeline": [{"stage": "build", "at": AT}, {"stage": "check", "at": AT + 1000}, {"stage": "build", "rework": 1, "at": AT + 2000}, {"stage": "check", "at": AT + 3000}],
+    "findings": [
+        finding("F1", "fixed", 1, AT + 1500, fix_commit="1234567890abc"),
+        finding("F2", "open", 1, AT + 1600),
+        finding("F3", "dismissed", None, AT + 3500, reason="Not reachable"),
+        finding("F4", "deferred", None, AT + 3600, reason="Later ticket"),
+        finding("F5", "dismissed", None, AT + 1700, reason="Fine as is", resolved_at=AT + 3700),
+        {"bad": True}, None,
+    ],
+}
+FOUND_SHIPPED = {**SHIPPED, "id": "run-found-shipped", "title": "Shipped with deferred", "findings": [finding("F1", "deferred", None, AT, reason="Later")]}
 RUNS = [SHIPPED, ACTIVE, BLOCKED, STRAY, CURRENT, NO_CURRENT]
 
 # Opens each Run's sheet in turn like a visitor and reports what it shows.
@@ -202,6 +220,33 @@ return {shipped: await snap('run-shipped'), active: await snap('run-active'), bl
 """
         result = drive(body)
         return result["shipped"], result["active"], result["blocked"], result["stray"], result["current"], result["noCurrent"]
+
+    def test_findings_show_on_passes_and_rows(self):
+        body = """
+const row = await wait(() => [...document.querySelectorAll('.line-row')].find((r) => text(r).includes('Findings run')), 'the line row');
+const chip = text(row.querySelector('.chip'));
+const shippedRow = await wait(() => [...document.querySelectorAll('.shipped-table tr')].find((r) => text(r).includes('Shipped with deferred')), 'the shipped row');
+const dialog = await openRun('run-found');
+const lists = [...dialog.querySelectorAll('.route ul.findings')].map((ul) => ({label: ul.getAttribute('aria-label'), items: [...ul.children].map(text), prev: text(ul.previousElementSibling)}));
+const hole = getComputedStyle(dialog.querySelector('.finding.open .finding-hole'));
+const overflow = [...dialog.querySelectorAll('.finding')].every((f) => f.scrollWidth <= f.clientWidth + 1);
+return {chip, deferred: text(shippedRow), lists, hole: hole.borderTopColor, overflow, codes: [...dialog.querySelectorAll('.finding code')].map(text)};
+"""
+        r = drive(body, runs=[FOUND, FOUND_SHIPPED])
+        self.assertEqual(r["chip"], "Rework 1/3 · 1 open")
+        self.assertIn("1 deferred", r["deferred"])
+        self.assertEqual([l["label"] for l in r["lists"]], ["Findings that sent Check back", "Findings for Rework 1", "Findings recorded in this Check", "Findings resolved in this Check"])
+        self.assertEqual(r["lists"][0]["prev"], "Sent back with 2 findings · reviewed abcdef1")
+        self.assertIn("F1 code-review src/a.rs:1", r["lists"][0]["items"][0])
+        self.assertIn("Fixed in 1234567", r["lists"][1]["items"][0])
+        self.assertIn("Open", r["lists"][1]["items"][1])
+        self.assertEqual(r["lists"][2]["prev"], "2 findings")
+        self.assertIn("Dismissed: Not reachable", r["lists"][2]["items"][0])
+        self.assertIn("Deferred: Later ticket", r["lists"][2]["items"][1])
+        self.assertIn("F5", r["lists"][3]["items"][0])
+        self.assertIn("Dismissed: Fine as is", r["lists"][3]["items"][0])
+        self.assertTrue(r["overflow"])
+        self.assertIn("1234567", r["codes"])
 
     def stop(self, snapshot, name):
         return next(s for s in snapshot["stops"] if s["name"] == name)
@@ -427,7 +472,7 @@ return out;
 
     def test_time_format_for_today_yesterday_and_older(self):
         body = """
-const {sheetTime} = await import('/assets/app.js');
+const {sheetTime} = await import('/assets/format.js');
 const now = new Date(2026, 10, 8, 12, 0).getTime();
 return {
   today: sheetTime(new Date(2026, 10, 8, 9, 22).getTime(), now),

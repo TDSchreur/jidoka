@@ -57,6 +57,10 @@ pub(crate) struct Record {
     pub(crate) check: Option<String>,
 }
 
+const RESOLVE_FINDINGS: &str = "resolve them with `jidoka run update <id> running --finding-status <finding-id>=<fixed|dismissed|deferred>[:<reason>]` or start Rework with --finding";
+/// The remedy `advance` names for this gate, which fails either on open Findings or on no recorded pass.
+const RECORD_OR_RESOLVE_FINDINGS: &str = "record `jidoka run gate <id> no-actionable-findings pass` once no Finding is open; resolve open Findings with `jidoka run update <id> running --finding-status <finding-id>=<fixed|dismissed|deferred>[:<reason>]` or start Rework with --finding";
+
 pub(crate) fn parse_options(options: &[&str]) -> Result<(Option<String>, Option<String>), String> {
     let mut evidence = None;
     let mut check = None;
@@ -87,6 +91,20 @@ pub(crate) fn head(run: &Run, git: &dyn Git) -> Result<String, String> {
         .map_err(|e| format!("Could not read the worktree HEAD: {e}"))
 }
 
+/// Refuses while a Finding is open, naming the ids and how to resolve them.
+fn no_open_findings(run: &Run) -> Result<(), String> {
+    let open: Vec<&str> = run
+        .findings
+        .iter()
+        .filter(|finding| finding.state == crate::run::FindingState::Open)
+        .map(|finding| finding.id.as_str())
+        .collect();
+    if open.is_empty() {
+        return Ok(());
+    }
+    Err(format!("Findings {} are open", open.join(", ")))
+}
+
 pub(crate) fn record(run: &mut Run, record: Record, git: &dyn Git) -> Result<(), String> {
     if run.status != RunStatus::Running {
         return Err("Resume the run before recording a gate".into());
@@ -97,6 +115,9 @@ pub(crate) fn record(run: &mut Run, record: Record, git: &dyn Git) -> Result<(),
         .is_some_and(|s| s.trim().is_empty() || s.len() > 2000)
     {
         return Err("Evidence must be non-empty and at most 2000 bytes".into());
+    }
+    if record.gate == Gate::NoActionableFindings && record.passed {
+        no_open_findings(run).map_err(|problem| format!("{problem}; {RESOLVE_FINDINGS}"))?;
     }
     if matches!(record.gate, Gate::TicketsDone | Gate::CiPassed) {
         return Err("This gate is checked automatically".into());
@@ -219,6 +240,10 @@ pub(crate) fn advance(run: &mut Run, git: &dyn Git, tool: &dyn pr_wait::Gh) -> R
     advance_with_clock(run, git, tool, &pr_wait::RealClock(Instant::now()))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "collects gate failures for every stage kind before applying the transition"
+)]
 fn advance_with_clock(
     run: &mut Run,
     git: &dyn Git,
@@ -239,6 +264,7 @@ fn advance_with_clock(
     } else {
         None
     };
+    let mut ci_evidence = None;
     for gate in transition.gates {
         let (result, remedy) = match gate {
             Gate::TicketsDone => (
@@ -279,14 +305,16 @@ fn advance_with_clock(
                 "record each result with `jidoka run gate <id> checks-recorded pass --check <name>`",
             ),
             Gate::NoActionableFindings => (
-                require(
-                    latest(run, *gate).is_some_and(|r| r.passed),
-                    "No passing result was recorded",
-                ),
-                "record `jidoka run gate <id> no-actionable-findings pass` or start Rework",
+                no_open_findings(run).and_then(|()| {
+                    require(
+                        latest(run, *gate).is_some_and(|r| r.passed),
+                        "No passing result was recorded",
+                    )
+                }),
+                RECORD_OR_RESOLVE_FINDINGS,
             ),
             Gate::CiPassed => (
-                ci_passed(run, git, tool, clock),
+                ci_passed(run, git, tool, clock).map(|evidence| ci_evidence = Some(evidence)),
                 "open the pull request and pass CI; run `jidoka pr wait <id>`",
             ),
         };
@@ -311,6 +339,24 @@ fn advance_with_clock(
     }
     if let Some(selection) = selection {
         record_snapshot(run, &selection)?;
+    }
+    if let Some((evidence, commit)) = ci_evidence {
+        if run.gates.len() >= MAX_GATE_RESULTS {
+            return Err(format!(
+                "A run can hold at most {MAX_GATE_RESULTS} gate results"
+            ));
+        }
+        run.gates.push(GateResult {
+            gate: Gate::CiPassed,
+            stage: run.stage,
+            rework: run.rework,
+            passed: true,
+            evidence: Some(evidence),
+            commit: Some(commit),
+            ticket: None,
+            check: None,
+            skipped_checks: vec![],
+        });
     }
     apply(run, transition.to);
     Ok(())
@@ -416,7 +462,7 @@ fn ci_passed(
     git: &dyn Git,
     tool: &dyn pr_wait::Gh,
     clock: &dyn pr_wait::Clock,
-) -> Result<(), String> {
+) -> Result<(String, String), String> {
     let url = run.pr.as_deref().ok_or("No pull request is recorded")?;
     let state = pr_state::read(tool, url)
         .map_err(|error| format!("Could not read pull request state: {}", error.0))?;
@@ -452,7 +498,14 @@ fn ci_passed(
             pr_wait::Outcome::Passed | pr_wait::Outcome::NoCi
         ),
         &format!("CI outcome is {:?}", result.outcome),
-    )
+    )?;
+    let short: String = commit.chars().take(7).collect();
+    let evidence = if result.outcome == pr_wait::Outcome::Passed {
+        format!("CI passed on {short}")
+    } else {
+        format!("No CI on {short}")
+    };
+    Ok((evidence, commit))
 }
 
 #[cfg(test)]
@@ -514,6 +567,39 @@ mod tests {
             head: "abc1234",
         }
     }
+
+    #[test]
+    fn change_gate_keeps_usage_collected_meanwhile_but_refuses_other_changes() {
+        use crate::run::RunStore;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("runs.json");
+        std::fs::write(&path, serde_json::to_vec(&vec![run(Stage::Build)]).unwrap()).unwrap();
+        let store = RunStore::open(&path).unwrap();
+        let usage: crate::usage::Usage =
+            serde_json::from_value(serde_json::json!({"status":"tracked","collected_at":7}))
+                .unwrap();
+        store
+            .change_gate("1", |run| {
+                store.set_usage("1", usage.clone()).unwrap();
+                advance_forced(run, "Tickets done by hand")
+            })
+            .unwrap();
+        let saved = store.get("1").unwrap().unwrap();
+        assert_eq!(saved.stage, Stage::Finish);
+        assert_eq!(saved.usage, Some(usage));
+        assert!(!saved.run_reports.is_empty());
+
+        let refused = store.change_gate("1", |run| {
+            store.set_stage("1", Stage::Build);
+            advance_forced(run, "Again")
+        });
+        assert_eq!(
+            refused.unwrap_err(),
+            "The run changed while checking gates; try again"
+        );
+        assert_eq!(store.get("1").unwrap().unwrap().stage, Stage::Build);
+    }
+
     #[test]
     fn forced_advance_skips_gates_records_the_reason_and_needs_one() {
         let mut run = run(Stage::Build);
@@ -602,7 +688,7 @@ mod tests {
         let store = RunStore::open(&path).unwrap();
         let update = |options: &[&str]| {
             store
-                .update("1", parse_update("running", options).unwrap())
+                .update_with("1", parse_update("running", options).unwrap(), &git)
                 .unwrap()
                 .unwrap();
         };
@@ -630,9 +716,13 @@ mod tests {
         }
         advance().unwrap();
         assert_eq!(store.get("1").unwrap().unwrap().stage, Stage::Check);
-        update(&["--rework", "1"]);
+        update(&["--finding", "code-review", "-", "Bug", "--rework", "1"]);
         advance().unwrap();
         gate(result(Gate::ChecksRecorded, true)).unwrap();
+        let error = advance().unwrap_err();
+        assert!(error.contains("F1 are open"), "{error}");
+        assert!(gate(result(Gate::NoActionableFindings, true)).is_err());
+        update(&["--finding-status", "F1=fixed"]);
         gate(result(Gate::NoActionableFindings, true)).unwrap();
         gate(result(Gate::Verified, true)).unwrap();
         advance().unwrap();
@@ -779,6 +869,17 @@ mod tests {
             }
             host().run(args)
         }
+    }
+
+    #[test]
+    fn advancing_out_of_finish_stores_the_ci_result() {
+        let git = FakeGit(RefCell::new("abc1234".into()));
+        let mut run = run(Stage::Finish);
+        advance(&mut run, &git, &host()).unwrap();
+        let stored = run.gates.iter().find(|r| r.gate == Gate::CiPassed).unwrap();
+        assert!(stored.passed);
+        assert_eq!(stored.stage, Stage::Finish);
+        assert_eq!(stored.evidence.as_deref(), Some("CI passed on abc1234"));
     }
 
     #[test]

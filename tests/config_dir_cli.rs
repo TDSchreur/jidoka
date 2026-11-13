@@ -1,5 +1,5 @@
 //! `--config-dir` installs the Claude skills into each named folder and leaves `~/.claude` alone.
-#![expect(
+#![allow(
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
 )]

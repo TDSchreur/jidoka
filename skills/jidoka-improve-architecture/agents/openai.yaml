@@ -1,0 +1,5 @@
+interface:
+  display_name: "Improve Architecture"
+  short_description: "Find, grill and file deepening opportunities"
+policy:
+  allow_implicit_invocation: false

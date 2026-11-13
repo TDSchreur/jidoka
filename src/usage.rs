@@ -136,10 +136,11 @@ fn is_false(value: &bool) -> bool {
 pub(crate) enum PauseKind {
     UsageLimit,
     Compaction,
+    AgentStopped,
 }
 
 impl PauseKind {
-    pub(crate) const ALL: [Self; 2] = [Self::UsageLimit, Self::Compaction];
+    pub(crate) const ALL: [Self; 3] = [Self::UsageLimit, Self::Compaction, Self::AgentStopped];
 
     /// The pause kind whose blocking reason this is: `None` for a reason the agent gave.
     pub(crate) fn from_reason(reason: &str) -> Option<Self> {
@@ -151,6 +152,7 @@ impl PauseKind {
         match self {
             Self::UsageLimit => "Usage limit reached",
             Self::Compaction => "Context compaction in progress",
+            Self::AgentStopped => "Agent stopped; it may need you",
         }
     }
 }
@@ -211,6 +213,11 @@ pub(crate) struct Usage {
     /// Not stored: only the collection that just ran knows.
     #[serde(skip)]
     pub(crate) log_complete: bool,
+    /// Current coordinator attention state; derived from logs and never persisted.
+    #[serde(skip)]
+    pub(crate) attention: Option<Pause>,
+    #[serde(skip)]
+    pub(crate) attention_requested: bool,
 }
 
 impl Usage {
@@ -227,6 +234,8 @@ impl Usage {
             pauses: Vec::new(),
             idle: Vec::new(),
             log_complete: false,
+            attention: None,
+            attention_requested: false,
         }
     }
 
@@ -561,6 +570,10 @@ pub(crate) fn collect(
     collect_limited(target, runs, roots, now, deadline, ReadLimits::default())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "finds overlapping runs, reads all agent logs and merges usage in one function"
+)]
 fn collect_limited(
     target: &Run,
     runs: &[Run],
@@ -608,6 +621,51 @@ fn collect_limited(
     }
     let (rows, unattributed, counted) = attribute(target, runs, &read.sessions, now);
     let (pauses, idle) = derive_pauses(target, &read.sessions, now);
+    // Each session is evaluated independently: other sessions cannot answer its request.
+    let attention = claimed
+        .iter()
+        .filter_map(|session| {
+            let mut latest = session.attention.clone();
+            latest.sort_by_key(|(at, _)| *at);
+            match latest.last() {
+                Some((
+                    at,
+                    signal @ (crate::attention::Signal::Requested
+                    | crate::attention::Signal::Finished),
+                )) if *at >= first.at
+                    && *at <= now
+                    && (*signal == crate::attention::Signal::Requested
+                        || target
+                            .agent_updated_at
+                            .or(target.updated_at)
+                            .is_none_or(|updated| *at >= updated))
+                    && tracked
+                        .iter()
+                        .filter(|run| {
+                            claims(run, session)
+                                && run.timeline.first().is_some_and(|mark| mark.at <= *at)
+                                && run.finished_at.is_none_or(|end| *at <= end)
+                        })
+                        .count()
+                        == 1 =>
+                {
+                    Some((
+                        Pause {
+                            kind: PauseKind::AgentStopped,
+                            at: *at,
+                            resumed_at: None,
+                        },
+                        *signal == crate::attention::Signal::Requested,
+                    ))
+                }
+                _ => None,
+            }
+        })
+        .max_by_key(|(pause, requested)| (*requested, pause.at));
+    let (attention, attention_requested) = match attention {
+        Some((pause, requested)) => (Some(pause), requested),
+        None => (None, false),
+    };
     let log_complete = read.roots_found > 0 && !read.timed_out && !read.truncated;
     let mut notes: Vec<String> = Vec::new();
     for note in &read.notes {
@@ -661,6 +719,8 @@ fn collect_limited(
         usage.pauses = pauses;
         usage.idle = idle;
         usage.log_complete = log_complete;
+        usage.attention = attention;
+        usage.attention_requested = attention_requested;
         return usage;
     }
     let mut no_data: Vec<Stage> = Vec::new();
@@ -686,6 +746,8 @@ fn collect_limited(
         pauses,
         idle,
         log_complete,
+        attention,
+        attention_requested,
     }
 }
 
@@ -745,10 +807,14 @@ fn same_counts(a: &Usage, b: &Usage) -> bool {
     Usage {
         collected_at: 0,
         log_complete: false,
+        attention: None,
+        attention_requested: false,
         ..a.clone()
     } == Usage {
         collected_at: 0,
         log_complete: false,
+        attention: None,
+        attention_requested: false,
         ..b.clone()
     }
 }
@@ -821,6 +887,10 @@ impl Collection {
     }
 
     #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "passes each channel and setting separately; a hook struct would collapse these"
+    )]
     pub(crate) fn collect_paused(
         &self,
         store: &crate::run::RunStore,
@@ -867,24 +937,26 @@ fn collect_locked(
         return Ok(());
     };
     let now = crate::run::updated_now()?;
-    let fresh = if settings.enabled {
-        collect(
-            target,
-            &runs,
-            &settings.roots,
-            now,
-            Instant::now() + settings.budget,
-        )
-    } else {
-        Usage::not_tracked(SWITCHED_OFF, now)
-    };
+    // Attention still needs the session logs when token usage is switched off.
+    let fresh = collect(
+        target,
+        &runs,
+        &settings.roots,
+        now,
+        Instant::now() + settings.budget,
+    );
+    let authoritative = fresh.log_complete;
+    let attention_requested = fresh.attention_requested;
+    let attention = fresh.attention.clone();
+    let latest = attention.clone().or_else(|| fresh.pauses.last().cloned());
     let usage = if settings.enabled {
         keep_more(target.usage.as_ref(), fresh)
     } else {
-        fresh
+        target
+            .usage
+            .clone()
+            .unwrap_or_else(|| Usage::not_tracked(SWITCHED_OFF, now))
     };
-    let latest = usage.pauses.last().cloned();
-    let authoritative = usage.log_complete;
     if target.model_routing.is_some()
         || !target
             .usage
@@ -895,10 +967,14 @@ fn collect_locked(
     }
     // "No pause in the log" only counts when the whole log was read: a run is never resumed on a reading
     // that is off, partial or empty.
-    if latest.is_none() && !authoritative {
+    if !authoritative
+        && (latest.is_none()
+            || (attention.is_none()
+                && target.blocking_reason.as_deref() == Some(PauseKind::AgentStopped.reason())))
+    {
         return Ok(());
     }
-    store.apply_pause(id, latest.as_ref())
+    store.apply_pause(id, latest.as_ref(), attention_requested)
 }
 
 /// How long a run may go without an update before it is no longer watched for pauses.
@@ -911,9 +987,6 @@ pub(crate) fn collect_active(
     settings: &UsageSettings,
     now: u64,
 ) -> std::io::Result<()> {
-    if !settings.enabled {
-        return Ok(());
-    }
     let mut first_error = None;
     for run in store.list()? {
         let automatic = crate::run::is_automatic_reason(run.status, run.blocking_reason.as_deref());

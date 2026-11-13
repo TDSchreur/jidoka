@@ -29,7 +29,7 @@ function Get-JidokaAntivirusAdvice([string]$Detail) {
     return @"
 Windows Defender (or another antivirus) blocked the downloaded jidoka.exe: $Detail
 
-The release is not code-signed yet, so antivirus heuristics sometimes flag it as a false positive. Nothing was installed. To continue:
+The release is not code-signed, so antivirus heuristics sometimes flag it as a false positive. Nothing was installed. To continue:
   1. Compare the SHA256 of the downloaded file with the .sha256 file on the release page.
   2. Report the file at https://www.microsoft.com/wdsi/filesubmission as a software developer.
   3. Only if the checksum matches, restore it from Windows Security > Protection history, or ask your administrator to allow it, and run this installer again.

@@ -1,8 +1,10 @@
+mod attention;
 mod checks;
 mod client;
 mod codex_requests;
 mod copilot_requests;
 mod cost;
+mod discovery;
 mod doctor;
 mod document;
 mod gitignore;
@@ -33,9 +35,9 @@ mod token;
 mod usage;
 mod usage_logs;
 
-use client::{Probe, fetch_run, fetch_runs, probe_dashboard, report_run, start_run};
+use client::{fetch_run, fetch_runs, start_run};
 use run::UPDATE_HELP;
-use server::{ADDRESS, DEFAULT_PORT, serve};
+use server::{DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
 const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...   (asks which agents when none are given on a terminal; else JIDOKA_AGENT, JIDOKA_CLAUDE_CONFIG_DIRS)\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run next <id> [--json]   (current stage, instructions, open gates, allowed moves, summaries, tickets and routed model)\n  jidoka run gate <id> <gate> <pass|fail> [--check <name>] [--evidence <text>]\n  jidoka run advance <id> [--force --reason <text>]   (--force skips the gates, still follows the stage graph and records the reason)\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <running|blocked|done> [options]   (never changes the stage; --rework <n> from Check returns to Build)\n  jidoka --help | --version\n\nSetup:\n  `jidoka install` writes an install record (agents and Claude config dirs) next to the model routing policy. A command run before Setup prints a hint to run `jidoka install`; after an upgrade, the first command refreshes the installed skills automatically.";
@@ -80,6 +82,10 @@ fn main() -> ExitCode {
 }
 
 /// Runs the command and returns its exit status; a non-zero one means it already reported why.
+#[expect(
+    clippy::too_many_lines,
+    reason = "dispatches every top-level subcommand in one match"
+)]
 fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args().skip(1).collect();
     if let Ok(home) = install::home_dir() {
@@ -113,7 +119,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             println!(
                 "{}",
                 start_run(
-                    ADDRESS,
+                    &cli_address()?,
                     &cli_token_file()?,
                     title,
                     &dir.display().to_string(),
@@ -150,7 +156,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
         ["run", "next", id, options @ ..] if !id.starts_with('-') => {
             let json =
                 run_next::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
-            let run = fetch_run(&cli_address(), id)?;
+            let run = fetch_run_cli(id)?;
             let paths = if run.stage == run::Stage::Check && run.mode != Some(run::Mode::Fast) {
                 run_next::changed_paths(&run, &run_check::ReadOnlyGit)?
             } else {
@@ -182,7 +188,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 check,
             };
             client::api_post(
-                &cli_address(),
+                &cli_address()?,
                 &cli_token_file()?,
                 &format!("/api/runs/{id}/gate"),
                 &serde_json::to_vec(&record)?,
@@ -207,7 +213,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             };
             request.forced_reason()?;
             client::api_post(
-                &cli_address(),
+                &cli_address()?,
                 &cli_token_file()?,
                 &format!("/api/runs/{id}/advance"),
                 &serde_json::to_vec(&request)?,
@@ -220,7 +226,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 ["--json"] => true,
                 _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
             };
-            let run = fetch_run(&cli_address(), id)?;
+            let run = fetch_run_cli(id)?;
             let plan = plan_path(id)?.to_string_lossy().into_owned();
             if json {
                 let mut shown = serde_json::to_value(&run)?;
@@ -231,14 +237,14 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 print!("{}", inspect::plan_line(&plan));
             }
         }
-        ["run", "stats", "--all"] => print!("{}", stats::render_all(&fetch_runs(ADDRESS)?)),
+        ["run", "stats", "--all"] => print!("{}", stats::render_all(&fetch_runs(&cli_address()?)?)),
         ["run", "stats", id] if !id.starts_with('-') => {
-            print!("{}", stats::render_run(&fetch_run(ADDRESS, id)?))
+            print!("{}", stats::render_run(&fetch_run_cli(id)?))
         }
         ["run", "requests", "--all", options @ ..] => {
             let (pool, json) = requests_pool::parse_options(options)
                 .map_err(|error| format!("{error}\n{HELP}"))?;
-            let runs = fetch_runs(ADDRESS)?;
+            let runs = fetch_runs(&cli_address()?)?;
             let roots =
                 usage_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
             let result = requests_pool::pool(
@@ -260,8 +266,8 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 ["--json"] => true,
                 _ => return Err(format!("Invalid arguments.\n{HELP}").into()),
             };
-            let target = fetch_run(ADDRESS, id)?;
-            let runs = fetch_runs(ADDRESS)?;
+            let target = fetch_run_cli(id)?;
+            let runs = fetch_runs(&cli_address()?)?;
             let roots =
                 usage_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
             let result = requests::analyze(
@@ -284,7 +290,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             for session in &sessions {
                 options.extend(["--session", session]);
             }
-            report_run(&cli_address(), &cli_token_file()?, id, status, &options)?;
+            report_to_dashboard(id, status, &options)?;
             println!("Updated run {id}");
         }
         ["pr", "wait", id, options @ ..] if !id.starts_with('-') => {
@@ -311,10 +317,8 @@ impl pr_open::RunApi for ServerApi {
 /// request, or finds the one that is open, and records it on the run.
 fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
     let parsed = pr_open::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
-    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("Invalid run id".into());
-    }
-    let run = fetch_run(ADDRESS, id)?;
+    client::check_run_id(id)?;
+    let run = fetch_run_cli(id)?;
     let info = pr_open::PrRun {
         id: id.to_string(),
         worktree: run.worktree.clone(),
@@ -342,7 +346,7 @@ fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
 /// The exit status is 0 when nothing differs, 2 when something does, and 1 for a problem.
 fn run_check_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
     let json = run_check::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
-    let run = fetch_run(ADDRESS, id)?;
+    let run = fetch_run_cli(id)?;
     let recorded = run_check::Recorded {
         id: id.to_string(),
         repository: run.repository.clone(),
@@ -362,10 +366,8 @@ fn run_check_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::erro
 /// `jidoka run sync <run-id>`: reads the state of the run's pull request from its host and brings the run in
 /// line with it: a merged pull request finishes the run, a closed one blocks it, and an open one changes nothing.
 fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Error>> {
-    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("Invalid run id".into());
-    }
-    let run = fetch_run(ADDRESS, id)?;
+    client::check_run_id(id)?;
+    let run = fetch_run_cli(id)?;
     let Some(url) = run.pr.as_deref() else {
         return Err("The run has no pull request recorded. Record it with `jidoka run update <id> running --pr <url>`.".into());
     };
@@ -391,11 +393,11 @@ fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Erro
 /// Applies what the state of the run's pull request means for the run (see `pr_state::follow_up`), deciding
 /// from the run as it is now: the host may have taken seconds to answer. Returns whether the run was changed.
 fn apply_pr_state(id: &str, state: pr_state::PrState) -> Result<bool, Box<dyn std::error::Error>> {
-    let run = fetch_run(ADDRESS, id)?;
+    let run = fetch_run_cli(id)?;
     let Some(update) = pr_state::follow_up(&run, state) else {
         return Ok(false);
     };
-    client::send_update(ADDRESS, &cli_token_file()?, id, &update)?;
+    client::send_update(&cli_address()?, &cli_token_file()?, id, &update)?;
     Ok(true)
 }
 
@@ -408,7 +410,7 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
     if let Some(other) = options.first() {
         return Err(format!("Unknown option: {other}\n{HELP}").into());
     }
-    let run = fetch_run(ADDRESS, id)?;
+    let run = fetch_run_cli(id)?;
     let recorded = run_cleanup::Recorded {
         id: id.to_string(),
         repository: run.repository.clone(),
@@ -425,9 +427,7 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
             .as_str()
             .unwrap_or("running")
             .to_string();
-        report_run(
-            ADDRESS,
-            &cli_token_file()?,
+        report_to_dashboard(
             id,
             &status,
             &[
@@ -445,10 +445,8 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
 /// outcome's; 1 is a problem.
 fn pr_sync_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
     let parsed = pr_sync::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
-    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("Invalid run id".into());
-    }
-    let run = fetch_run(ADDRESS, id)?;
+    client::check_run_id(id)?;
+    let run = fetch_run_cli(id)?;
     let text =
         |value: serde_json::Value, fallback: &str| value.as_str().unwrap_or(fallback).to_string();
     let info = pr_open::PrRun {
@@ -473,11 +471,9 @@ fn pr_sync_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
 fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
     let (mut wait_options, json) =
         pr_wait::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
-    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("Invalid run id".into());
-    }
+    client::check_run_id(id)?;
     let gh = pr_wait::RealGh;
-    let run = fetch_run(ADDRESS, id)?;
+    let run = fetch_run_cli(id)?;
     if !run.pr.as_deref().is_some_and(pr_wait::is_azure_pr_url) {
         pr_wait::check_gh(&gh).map_err(|problem| problem.0)?;
     }
@@ -555,13 +551,19 @@ impl run_begin::RunApi for ServerApi {
     ) -> Result<String, String> {
         let token = cli_token_file().map_err(|e| e.to_string())?;
         start_run(
-            ADDRESS, &token, title, project, repository, session, routing,
+            &cli_address()?,
+            &token,
+            title,
+            project,
+            repository,
+            session,
+            routing,
         )
         .map_err(|e| e.to_string())
     }
 
     fn get(&self, id: &str) -> Result<run_begin::RunSummary, String> {
-        let run = fetch_run(ADDRESS, id).map_err(|e| e.to_string())?;
+        let run = fetch_run_cli(id).map_err(|e| e.to_string())?;
         Ok(run_begin::RunSummary {
             title: run.title,
             finished: matches!(run.status, run::RunStatus::Done),
@@ -574,7 +576,7 @@ impl run_begin::RunApi for ServerApi {
     }
 
     fn runs_with_session(&self, session: &str) -> Result<Vec<(String, String)>, String> {
-        let runs = fetch_runs(ADDRESS).map_err(|e| e.to_string())?;
+        let runs = fetch_runs(&cli_address()?).map_err(|e| e.to_string())?;
         Ok(runs
             .into_iter()
             .filter(|run| run.sessions.iter().any(|known| known == session))
@@ -663,7 +665,7 @@ fn sessions_from(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<String
 fn parse_dashboard_options(
     options: &[&str],
     jidoka_usage: Option<&str>,
-) -> Result<(u16, bool), String> {
+) -> Result<(Option<u16>, bool), String> {
     let (mut port, mut usage) = (None, true);
     let mut args = options.iter();
     while let Some(arg) = args.next() {
@@ -680,7 +682,7 @@ fn parse_dashboard_options(
     if usage::switched_off_by(jidoka_usage) {
         usage = false;
     }
-    Ok((port.unwrap_or(DEFAULT_PORT), usage))
+    Ok((port, usage))
 }
 
 fn parse_port(port: &str) -> Result<u16, String> {
@@ -712,82 +714,109 @@ fn dashboard_url(port: u16, project: &str) -> String {
     )
 }
 
-/// Serves the dashboard, or, when a Jidoka dashboard already answers on the port, prints its URL.
-fn dashboard(port: u16, usage: bool) -> Result<(), Box<dyn std::error::Error>> {
+/// The port to bind. An explicit port must be free, else this fails. Without one, `default` if it is free, else 0,
+/// which lets the operating system pick a free port.
+fn choose_port(requested: Option<u16>, default: u16) -> Result<u16, String> {
+    let is_free = |port| std::net::TcpListener::bind((server::LOOPBACK_HOST, port)).is_ok();
+    match requested {
+        Some(port) if is_free(port) => Ok(port),
+        Some(port) => Err(format!(
+            "Port {port} is already in use. Pick another with 'jidoka dashboard --port <port>', or leave --port out to let Jidoka choose a free port."
+        )),
+        None if is_free(default) => Ok(default),
+        None => Ok(0),
+    }
+}
+
+/// Serves the dashboard, or, when a Jidoka dashboard is already running, prints its URL.
+fn dashboard(requested: Option<u16>, usage: bool) -> Result<(), Box<dyn std::error::Error>> {
     // A Project is identified by its repository, so a linked worktree opens its main checkout's row.
     let dir = env::current_dir()?;
     let project =
         repository::canonical_repository(&dir).unwrap_or_else(|| dir.display().to_string());
-    let url = dashboard_url(port, &project);
-    match probe_dashboard(&format!("127.0.0.1:{port}"))? {
-        Probe::Running(info) => {
-            println!("Dashboard already running (pid {}): {url}", info.pid);
-            if !usage {
-                eprintln!("Note: --no-usage and JIDOKA_USAGE only apply to a dashboard this command starts.");
-            }
-            let ours = current_build();
-            if info.version != ours {
-                eprintln!(
-                    "Warning: the running dashboard is jidoka {}, this is jidoka {ours}. It was left running; stop it and run 'jidoka dashboard' again to use this version.",
-                    info.version
-                );
-            }
+    let runs = runs_path()?;
+    if let Some(running) = discovery::running(server::data_dir(&runs)) {
+        println!(
+            "Dashboard already running (pid {}): {}",
+            running.pid,
+            dashboard_url(running.port, &project)
+        );
+        if !usage {
+            eprintln!(
+                "Note: --no-usage and JIDOKA_USAGE only apply to a dashboard this command starts."
+            );
         }
-        Probe::Foreign => {
-            return Err(format!(
-                "Port {port} is in use by something that is not a Jidoka dashboard (it may be a dashboard from an older Jidoka; stop it and run 'jidoka dashboard' again). Or use 'jidoka dashboard --port <port>'."
-            )
-            .into())
+        let ours = current_build();
+        if running.version != ours {
+            eprintln!(
+                "Warning: the running dashboard is jidoka {}, this is jidoka {ours}. It was left running; stop it and run 'jidoka dashboard' again to use this version.",
+                running.version
+            );
         }
-        Probe::Absent => {
-            let home = install::home_dir()?;
-            let settings = usage::UsageSettings {
-                enabled: usage,
-                roots: usage_logs::Roots::from_home(&home, &|name| env::var_os(name))?,
-                budget: DASHBOARD_USAGE_BUDGET,
-                settle: usage::UsageSettings::default_settle(),
-            };
-            serve(&data_path(port)?, port, &url, settings)?
-        }
+        return Ok(());
     }
+    let port = choose_port(requested, DEFAULT_PORT)?;
+    let home = install::home_dir()?;
+    let settings = usage::UsageSettings {
+        enabled: usage,
+        roots: usage_logs::Roots::from_home(&home, &|name| env::var_os(name))?,
+        budget: DASHBOARD_USAGE_BUDGET,
+        settle: usage::UsageSettings::default_settle(),
+    };
+    serve(
+        &runs,
+        port,
+        move |bound| dashboard_url(bound, &project),
+        settings,
+    )?;
     Ok(())
 }
 
-/// Reports a run update to the default dashboard, with the CLI token it wrote.
+/// Reports a run update to the running dashboard, with the CLI token it wrote. A bad id or option is refused
+/// before the dashboard is looked for.
 fn report_to_dashboard(id: &str, status: &str, options: &[&str]) -> Result<(), String> {
+    let update = client::prepare_update(id, status, options).map_err(|e| e.to_string())?;
     let token_file = cli_token_file().map_err(|e| e.to_string())?;
-    report_run(ADDRESS, &token_file, id, status, options).map_err(|e| e.to_string())
+    client::send_update(&cli_address()?, &token_file, id, &update).map_err(|e| e.to_string())
 }
 
-/// The server `run update` talks to. Debug builds honor `JIDOKA_TEST_ADDRESS`, so CLI tests can use a
-/// fake server on an OS-assigned port; release builds always use the default dashboard.
-fn cli_address() -> String {
+/// Reads run `id` from the dashboard; a bad id is refused before the dashboard is looked for.
+fn fetch_run_cli(id: &str) -> Result<run::Run, Box<dyn std::error::Error>> {
+    client::check_run_id(id)?;
+    fetch_run(&cli_address()?, id)
+}
+
+/// The server the CLI talks to: the dashboard `dashboard.json` points to, or an error saying to start one. Debug
+/// builds honor `JIDOKA_TEST_ADDRESS`, so CLI tests can use a fake server on an OS-assigned port.
+fn cli_address() -> Result<String, String> {
     #[cfg(debug_assertions)]
     if let Ok(address) = env::var("JIDOKA_TEST_ADDRESS") {
-        return address;
+        return Ok(address);
     }
-    ADDRESS.to_string()
+    let runs = runs_path().map_err(|error| error.to_string())?;
+    discovery::running(server::data_dir(&runs))
+        .map(|running| format!("{}:{}", server::LOOPBACK_HOST, running.port))
+        .ok_or_else(|| {
+            "no Jidoka dashboard is running; start it with 'jidoka dashboard'".to_string()
+        })
 }
 
-/// Where the default dashboard writes the CLI token that POSTs must send.
+/// Where the dashboard writes the CLI token that POSTs must send.
 fn cli_token_file() -> io::Result<PathBuf> {
-    Ok(server::token_path(&data_path(DEFAULT_PORT)?, DEFAULT_PORT))
+    Ok(server::token_path(&runs_path()?))
 }
 
-/// Where the plan of run `id` is saved, in the default dashboard's data dir; its folder is created.
+/// Where the plan of run `id` is saved, in the data dir; its folder is created.
 fn plan_path(id: &str) -> io::Result<PathBuf> {
-    plans::plan_path_ready(&data_path(DEFAULT_PORT)?, DEFAULT_PORT, id)
+    plans::plan_path_ready(&runs_path()?, id)
 }
 
-/// The default dashboard keeps `runs.json`; one on another port keeps its own file and shares nothing.
-fn data_path(port: u16) -> io::Result<PathBuf> {
-    data_path_in(port, &|name| env::var_os(name))
+/// The dashboard's `runs.json`; its folder also holds the CLI token, the plans and `dashboard.json`.
+fn runs_path() -> io::Result<PathBuf> {
+    runs_path_in(&|name| env::var_os(name))
 }
 
-fn data_path_in(
-    port: u16,
-    var: &impl Fn(&str) -> Option<std::ffi::OsString>,
-) -> io::Result<PathBuf> {
+fn runs_path_in(var: &impl Fn(&str) -> Option<std::ffi::OsString>) -> io::Result<PathBuf> {
     #[cfg(windows)]
     let base = var("LOCALAPPDATA").map(PathBuf::from);
     #[cfg(not(windows))]
@@ -800,12 +829,7 @@ fn data_path_in(
             "cannot determine the user data directory",
         )
     })?;
-    let file = if port == DEFAULT_PORT {
-        "runs.json".to_string()
-    } else {
-        format!("runs-{port}.json")
-    };
-    Ok(base.join("jidoka").join(file))
+    Ok(base.join("jidoka").join("runs.json"))
 }
 
 #[cfg(test)]
@@ -878,15 +902,30 @@ mod tests {
     }
 
     #[test]
+    fn the_default_port_is_used_when_free_and_a_free_one_when_taken() {
+        let taken = std::net::TcpListener::bind((server::LOOPBACK_HOST, 0)).unwrap();
+        let port = taken.local_addr().unwrap().port();
+        assert_eq!(choose_port(None, port), Ok(0));
+    }
+
+    #[test]
+    fn a_requested_port_that_is_taken_is_an_error() {
+        let taken = std::net::TcpListener::bind((server::LOOPBACK_HOST, 0)).unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let error = choose_port(Some(port), DEFAULT_PORT).unwrap_err();
+        assert!(error.contains("already in use"), "{error}");
+    }
+
+    #[test]
     fn dashboard_options_set_the_port_and_the_usage_switch_in_any_order() {
-        assert_eq!(parse_dashboard_options(&[], None), Ok((DEFAULT_PORT, true)));
+        assert_eq!(parse_dashboard_options(&[], None), Ok((None, true)));
         assert_eq!(
             parse_dashboard_options(&["--no-usage", "--port", "4400"], None),
-            Ok((4400, false))
+            Ok((Some(4400), false))
         );
         assert_eq!(
             parse_dashboard_options(&["--port", "4400"], Some("off")),
-            Ok((4400, false))
+            Ok((Some(4400), false))
         );
         for on in [None, Some(""), Some("on"), Some("1"), Some("true")] {
             assert!(parse_dashboard_options(&[], on).unwrap().1, "{on:?}");

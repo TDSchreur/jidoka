@@ -2,7 +2,7 @@
 
 How to install, update and configure Jidoka. The [README](../README.md#install) has the short version.
 
-See the [Code signing policy](../README.md#code-signing-policy).
+See [Network and privacy](../README.md#network-and-privacy).
 
 ## Requirements
 
@@ -69,7 +69,7 @@ cargo run -- --version
 cargo run -- dashboard
 ```
 
-The Rocket server binds to localhost at <http://127.0.0.1:4311>; press Ctrl+C to stop it. It stores run progress under `$XDG_DATA_HOME/jidoka/` (or `~/.local/share/jidoka/` when unset) on Linux, and `%LOCALAPPDATA%\jidoka\` on Windows. Keep it running while using Jidoka. After a merge, `scripts/update-local.sh` updates the checkout and prompts for one or more agents; `jidoka install` asks, and `JIDOKA_AGENT` (names, numbers or `all`) answers it without a prompt. To install from a checkout, use `cargo install --path . --locked`, ensure Cargo's bin directory is on PATH, and run `jidoka install --agent <codex|claude|copilot>`. Restart a previously running dashboard after upgrading.
+The Rocket server binds to localhost, on port 4311 or a free port when 4311 is taken, and prints its URL; the CLI finds it through `dashboard.json` in the data folder. Press Ctrl+C to stop it. It stores run progress under `$XDG_DATA_HOME/jidoka/` (or `~/.local/share/jidoka/` when unset) on Linux, and `%LOCALAPPDATA%\jidoka\` on Windows. Keep it running while using Jidoka. After a merge, `scripts/update-local.sh` updates the checkout and prompts for one or more agents; `jidoka install` asks, and `JIDOKA_AGENT` (names, numbers or `all`) answers it without a prompt. To install from a checkout, use `cargo install --path . --locked`, ensure Cargo's bin directory is on PATH, and run `jidoka install --agent <codex|claude|copilot>`. Restart a previously running dashboard after upgrading.
 
 ## Which build is running
 
@@ -77,11 +77,11 @@ The dashboard footer and `jidoka --version` show which build is running: the ver
 
 ## Windows Defender blocks the download
 
-The Windows release is not code-signed yet. Windows Defender can therefore flag `jidoka.exe` as a false positive (for example `Trojan:Win32/Bearfoos.A!ml`; the `!ml` suffix marks a machine-learning heuristic, not a known malware signature) and remove it. The installer then stops with a message that names the antivirus block, and nothing is installed.
+The Windows release is not code-signed. Windows Defender can therefore flag `jidoka.exe` as a false positive (for example `Trojan:Win32/Bearfoos.A!ml`; the `!ml` suffix marks a machine-learning heuristic, not a known malware signature) and remove it. The installer then stops with a message that names the antivirus block, and nothing is installed.
 
 1. Check the file. Download `jidoka-windows-x86_64.exe` and `jidoka-windows-x86_64.exe.sha256` from the [latest release](https://github.com/TDSchreur/jidoka/releases/latest), and compare the hash: `(Get-FileHash -Algorithm SHA256 .\jidoka-windows-x86_64.exe).Hash` must equal the value in the `.sha256` file. Do not continue when it differs.
 2. Report the false positive to Microsoft at <https://www.microsoft.com/wdsi/filesubmission> as a software developer, with the detection name from Windows Security > Protection history.
 3. Once the hash matches, restore the file from Windows Security > Protection history (Allow on device), or ask your administrator to allow it, and run the installer again. Prefer allowing this one file over excluding a whole folder such as `%TEMP%`.
 
-Each new release has a new hash, so it can be flagged again until the executable is signed.
+Each new release has a new hash, so it can be flagged again because the executable is unsigned.
 

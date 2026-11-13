@@ -546,6 +546,10 @@ fn add_worktree(
 
 /// Fetches the base and adds the worktree, or on a resume finishes what an earlier attempt began. The
 /// failure is a reason that says what to do. Nothing is ever deleted, reset, checked out over or cleaned.
+#[expect(
+    clippy::too_many_lines,
+    reason = "picks a branch name, resumes or creates the worktree and reports each failure"
+)]
 fn workspace(
     main: &Path,
     options: &Options,

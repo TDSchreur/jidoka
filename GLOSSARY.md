@@ -16,7 +16,9 @@
 
 **Pull request state**: Whether a run's pull request is open, a draft, merged or closed. The dashboard server reads it from GitHub with `gh` or from Azure Repos with `az`, keeps it on the run and reads it again about once a minute until it is merged. When it cannot be read, it is unknown, with the reason; it is never guessed.
 
-**Rework**: A return from Check to Build to fix actionable findings, followed by another Check. `jidoka-full` and `jidoka-balanced` allow at most three per run; after the second, findings that change only wording or documentation are fixed without asking and the user decides only on findings that change behaviour; after the third, the user decides whether to do another Rework, finish with the findings listed in the pull request, or stop. Findings alone never block a run; the run is `blocked` only while it waits for that decision.
+**Rework**: A return from Check to Build to fix actionable Findings, followed by another Check. A Rework starts only together with at least one new open Finding, which records why the run was sent back. `jidoka-full` and `jidoka-balanced` allow at most three per run; after the second, findings that change only wording or documentation are fixed without asking and the user decides only on findings that change behaviour; after the third, the user decides whether to do another Rework, finish with the findings listed in the pull request, or stop. Findings alone never block a run; the run is `blocked` only while it waits for that decision.
+
+**Finding**: One issue a check reported in Check, recorded on the run with the check's name, an optional location, one line of text, the reviewed commit and the Rework it sent back, if any. Each has an id per run (`F1`, `F2`, …) and an outcome: `open`, `fixed` (with the commit that fixed it), `dismissed` (judged not worth fixing, with the reason) or `deferred` (left unfixed by the user's choice and named in the pull request, with the reason). Check cannot be left while a Finding is open.
 
 **Workflow mode**: The workflow skill that carries a run: `jidoka-full` (quality), `jidoka-balanced`, or `jidoka-fast` (speed). Modes differ in how much Define, Build, and Check do.
 
@@ -38,7 +40,7 @@
 
 **Session token**: The random value in the dashboard page that the page sends as `X-Session-Token` to delete runs. Any local process can read it through `GET /`, so it does not authorise POST.
 
-**CLI token**: The random value the dashboard writes on each start to `session-token` (`session-token-<port>` for a non-default port) in its data folder, readable only by the user. If the dashboard cannot write it, the dashboard exits. A POST without the right value gets 401. The `jidoka` CLI sends it as `X-Jidoka-Token` on every POST. It is never part of a response, and differs from the Session token.
+**CLI token**: The random value the dashboard writes on each start to `session-token` in its data folder, readable only by the user. If the dashboard cannot write it, the dashboard exits. A POST without the right value gets 401. The `jidoka` CLI sends it as `X-Jidoka-Token` on every POST. It is never part of a response, and differs from the Session token.
 
 **Token usage**: The tokens a run used, read from the agents' session logs and kept as counts per stage, model and ticket (plus the reasoning efforts the logs recorded), with the rework and work with no ticket in their own buckets. It is `tracked`, `partial` or `not tracked`, with the reason; unknown usage is never shown as zero.
 
@@ -61,3 +63,9 @@
 **Run report**: A short, agent-reported skill or activity associated with a run rather than a particular ticket. Reports may be incomplete and are not independent proof of the work.
 
 **Reader**: The dashboard's view of a run's local spec or ticket, rendered from the Markdown file the run recorded. It shows only documents the run recorded, and says so when the file is no longer there.
+
+**Timeline**: The marks a run records of when its Stage, Rework or active ticket changed, each with its time, Stage and optional Rework, ticket and activity, ordered by time. The dashboard builds a run's route from it, and Token usage is attributed by it.
+
+**Pass**: One pass through a Stage on a run's Timeline, from its first mark to the next Stage's mark. Consecutive Build marks of the same Rework form one Pass, which lists the tickets worked on in it. A Rework adds a Build Pass and a Check Pass.
+
+**Station**: One of the route's stops in the dashboard's run sheet. A run with a Timeline shows one Pass per stop; a run with no Timeline shows one Station per Stage, with its reports placed by Stage.

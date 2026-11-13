@@ -46,7 +46,7 @@ Windows Defender sometimes flags the unsigned Windows build; see [what to do](do
    jidoka dashboard
    ```
 
-   Open <http://127.0.0.1:4311> to follow your runs.
+   The command prints the dashboard URL (<http://127.0.0.1:4311>, or another port when 4311 is taken); open it to follow your runs.
 
 2. **Prepare a repository** once: in your project, ask your agent to run `/jidoka-setup`. It records the issue tracker and conventions the workflows use.
 
@@ -77,6 +77,22 @@ Useful commands:
 
 Run `jidoka --help` for every command.
 
+### Where runs are stored
+
+Jidoka keeps its data in one folder per user:
+
+- Linux and macOS: `$XDG_DATA_HOME/jidoka/`, or `~/.local/share/jidoka/` when `XDG_DATA_HOME` is not set.
+- Windows: `%LOCALAPPDATA%\jidoka\`.
+
+| File | What it holds |
+| --- | --- |
+| `runs.json` | Every run: stage, status, gates, Findings, timeline, reports, summaries and token usage. |
+| `plans/<run-id>.md` | A run's saved plan, kept after its worktree is cleaned up. |
+| `session-token` | The token the CLI sends to the dashboard, replaced on each dashboard start and readable only by you. |
+| `dashboard.json` | The port, pid and build of the running dashboard, written when it starts and removed when it stops. The CLI reads it to find the dashboard. |
+
+There is one data folder and one dashboard per user. The dashboard owns `runs.json` and rewrites it on every update, so read runs with `jidoka run inspect <id>` (`--json` for the raw record) and change them with `jidoka run update`, not by editing the file.
+
 ## Documentation
 
 | Guide | Covers |
@@ -90,13 +106,7 @@ Run `jidoka --help` for every command.
 | [Checking readiness](docs/doctor.md) | What `jidoka doctor` checks |
 | [Glossary](GLOSSARY.md) | The terms Jidoka uses |
 
-## Code signing policy
-
-Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)
-
-- **Authors:** T.D. Schreur may change the source without further review.
-- **Reviewers:** T.D. Schreur reviews every change from outside the team, including pull requests.
-- **Approvers:** T.D. Schreur approves every signing request in SignPath.
+## Network and privacy
 
 This program will not transfer any information to other networked systems unless specifically requested by the user.
 

@@ -1,5 +1,7 @@
 //! Fixture-based tests: small log files written to a temporary folder, in the three agents' formats.
 //! Nothing here reads a real user's logs or needs an agent installed.
+#![expect(clippy::too_many_arguments, reason = "tests walk whole scenarios")]
+#![expect(clippy::too_many_lines, reason = "tests walk whole scenarios")]
 
 use super::*;
 use crate::run::{Run, Stage};
@@ -739,6 +741,94 @@ fn a_usage_limit_with_no_later_activity_is_an_unresumed_pause_and_is_not_a_model
     );
 }
 
+#[test]
+fn copilot_coordinator_response_needs_attention_until_the_user_replies() {
+    let world = World::new();
+    let target = run(RUN_A, &[(0, "build", None, None)], None, &["c1"]);
+    let response = vec![
+        json!({"type":"assistant.message", "timestamp":iso(10), "data":{"content":"Can we skip this?", "toolRequests":[]}}).to_string(),
+        json!({"type":"assistant.turn_end", "timestamp":iso(11), "data":{}}).to_string(),
+    ];
+    world.write("copilot/session-state/c1/events.jsonl", &response);
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert_eq!(
+        usage.attention.as_ref().map(|p| p.kind),
+        Some(PauseKind::AgentStopped)
+    );
+    let mut answered = response;
+    answered.push(
+        json!({"type":"user.message", "timestamp":iso(20), "data":{"content":"Continue"}})
+            .to_string(),
+    );
+    world.write("copilot/session-state/c1/events.jsonl", &answered);
+    assert!(
+        world
+            .collect(&target, std::slice::from_ref(&target))
+            .attention
+            .is_none()
+    );
+}
+
+#[test]
+fn codex_coordinator_response_needs_attention_until_the_next_turn() {
+    let world = World::new();
+    let target = run(RUN_A, &[(0, "build", None, None)], None, &["s1"]);
+    let mut lines = vec![
+        codex_meta_line("s1", None),
+        json!({"type":"event_msg", "timestamp":iso(10), "payload":{"type":"task_complete"}})
+            .to_string(),
+    ];
+    let path = "codex/sessions/2026/11/05/rollout-fixture.jsonl";
+    world.write(path, &lines);
+    assert_eq!(
+        world
+            .collect(&target, std::slice::from_ref(&target))
+            .attention
+            .as_ref()
+            .map(|p| p.kind),
+        Some(PauseKind::AgentStopped)
+    );
+    lines.push(
+        json!({"type":"event_msg", "timestamp":iso(20), "payload":{"type":"task_started"}})
+            .to_string(),
+    );
+    world.write(path, &lines);
+    assert!(
+        world
+            .collect(&target, std::slice::from_ref(&target))
+            .attention
+            .is_none()
+    );
+}
+
+#[test]
+fn codex_async_request_survives_progress_and_waits_for_user_message() {
+    let world = World::new();
+    let mut target = run(RUN_A, &[(0, "build", None, None)], None, &["s1"]);
+    target.agent_updated_at = Some(at(20));
+    let path = "codex/sessions/2026/11/05/rollout-fixture.jsonl";
+    let mut lines = vec![
+        codex_meta_line("s1", None),
+        json!({"type":"response_item", "timestamp":iso(10), "payload":{"type":"function_call", "name":"request_user_input_async", "call_id":"a"}}).to_string(),
+        json!({"type":"response_item", "timestamp":iso(11), "payload":{"type":"function_call_output", "call_id":"a"}}).to_string(),
+    ];
+    world.write(path, &lines);
+    assert!(
+        world
+            .collect(&target, std::slice::from_ref(&target))
+            .attention
+            .is_some()
+    );
+    lines.push(json!({"type":"response_item", "timestamp":iso(30), "payload":{"type":"message", "role":"user"}}).to_string());
+    world.write(path, &lines);
+    assert!(
+        world
+            .collect(&target, std::slice::from_ref(&target))
+            .attention
+            .is_none()
+    );
+}
+
 // --- blocking and resuming through the store --------------------------------------------------------
 
 mod auto_block {
@@ -820,15 +910,145 @@ mod auto_block {
         fn agent_update(&self, status: RunStatus, reason: Option<&str>) {
             let mut update = UpdateRun::new(status);
             if status == RunStatus::Done {
-                update
-                    .summaries
-                    .insert(Stage::Finish, Some("Shipped".into()));
+                update.summaries.set(Stage::Finish, Some("Shipped".into()));
             }
             if let Some(reason) = reason {
                 update.blocking_reason = FieldUpdate::Set(reason.into());
             }
             self.store.update(&self.id, update).unwrap();
         }
+    }
+
+    #[test]
+    fn a_finished_response_alerts_and_the_next_user_message_resumes() {
+        let mut f = Fixture::new();
+        let blocked = f.log(
+            |ts| {
+                json!({"type":"assistant", "timestamp":ts,
+            "message":{"stop_reason":"end_turn", "content":[{"type":"text", "text":"What next?"}]}})
+                .to_string()
+            },
+            1_000,
+        );
+        assert_eq!(blocked.status, RunStatus::Blocked);
+        assert_eq!(
+            blocked.blocking_reason.as_deref(),
+            Some("Agent stopped; it may need you")
+        );
+        let resumed = f.log(
+            |ts| {
+                json!({"type":"user", "timestamp":ts,
+            "message":{"content":"Continue"}})
+                .to_string()
+            },
+            2_000,
+        );
+        assert_eq!(resumed.status, RunStatus::Running);
+    }
+
+    #[test]
+    fn explicit_request_survives_later_progress_until_session_response() {
+        let mut f = Fixture::new();
+        f.lines.push(
+            json!({"type":"assistant", "timestamp":iso_timestamp(f.began + 1_000),
+            "message":{"content":[{"type":"tool_use","name":"AskUserQuestion","id":"a"}]}})
+            .to_string(),
+        );
+        f.world.write("claude/projects/-w/S1.jsonl", &f.lines);
+        f.agent_update(RunStatus::Running, None);
+        collect_and_store(&f.store, &f.id, &f.settings).unwrap();
+        assert_eq!(f.run().status, RunStatus::Blocked);
+        collect_and_store(&f.store, &f.id, &f.settings).unwrap();
+        assert_eq!(f.run().status, RunStatus::Blocked);
+        let resumed = f.log(
+            |ts| {
+                json!({"type":"user", "timestamp":ts,
+            "message":{"content":[{"type":"tool_result","tool_use_id":"a"}]}})
+                .to_string()
+            },
+            2_000,
+        );
+        assert_eq!(resumed.status, RunStatus::Running);
+    }
+
+    #[test]
+    fn finished_response_before_progress_does_not_alert() {
+        let mut f = Fixture::new();
+        f.lines.push(
+            json!({"type":"assistant", "timestamp":iso_timestamp(f.began + 1_000),
+            "message":{"stop_reason":"end_turn"}})
+            .to_string(),
+        );
+        f.world.write("claude/projects/-w/S1.jsonl", &f.lines);
+        f.agent_update(RunStatus::Running, None);
+        collect_and_store(&f.store, &f.id, &f.settings).unwrap();
+        assert_eq!(f.run().status, RunStatus::Running);
+    }
+
+    #[test]
+    fn user_attention_is_checked_when_token_usage_is_disabled() {
+        let mut f = Fixture::new();
+        f.settings.enabled = false;
+        let blocked = f.log(
+            |ts| {
+                json!({"type":"assistant", "timestamp":ts,
+            "message":{"stop_reason":"end_turn", "content":[{"type":"text", "text":"What next?"}]}})
+                .to_string()
+            },
+            1_000,
+        );
+        assert_eq!(blocked.status, RunStatus::Blocked);
+        assert_eq!(
+            blocked.blocking_reason.as_deref(),
+            Some("Agent stopped; it may need you")
+        );
+        assert_eq!(blocked.usage.unwrap().status, UsageStatus::NotTracked);
+    }
+
+    #[test]
+    fn another_coordinator_session_does_not_answer_an_outstanding_request() {
+        let mut f = Fixture::new();
+        let blocked = f.log(
+            |ts| {
+                json!({"type":"assistant", "timestamp":ts,
+            "message":{"stop_reason":"end_turn", "content":[{"type":"text", "text":"What next?"}]}})
+                .to_string()
+            },
+            1_000,
+        );
+        assert_eq!(blocked.status, RunStatus::Blocked);
+        f.world.write(
+            "claude/projects/-w/S2.jsonl",
+            &[
+                mention(&f.id),
+                json!({"type":"user", "timestamp": iso_timestamp(f.began + 2_000),
+                "message":{"content":"Other session"}})
+                .to_string(),
+            ],
+        );
+        collect_and_store(&f.store, &f.id, &f.settings).unwrap();
+        assert_eq!(
+            f.run().blocking_reason.as_deref(),
+            Some("Agent stopped; it may need you")
+        );
+    }
+
+    #[test]
+    fn an_agent_reported_block_is_not_replaced_by_attention_detection() {
+        let mut f = Fixture::new();
+        f.agent_update(RunStatus::Blocked, Some("Need a project decision"));
+        let run = f.log(
+            |ts| {
+                json!({"type":"assistant", "timestamp":ts,
+            "message":{"stop_reason":"end_turn", "content":[{"type":"text", "text":"What next?"}]}})
+                .to_string()
+            },
+            1_000,
+        );
+        assert_eq!(
+            run.blocking_reason.as_deref(),
+            Some("Need a project decision")
+        );
     }
 
     #[test]
@@ -973,7 +1193,7 @@ fn codex_models_without_an_official_price_stay_unknown_and_make_totals_partial()
 }
 
 #[test]
-fn completed_routed_stage_persists_model_warning_without_duplicates() {
+fn completed_routed_stage_with_only_coordinator_usage_adds_no_model_warning() {
     let world = World::new();
     let path = world.dir.path().join("runs.json");
     fs::write(&path, json!([{ "id": RUN_A, "title": "task", "gates": [], "project": "/p", "stage": "build", "status": "running",
@@ -1028,7 +1248,5 @@ fn completed_routed_stage_persists_model_warning_without_duplicates() {
         .get(RUN_A)
         .unwrap()
         .unwrap();
-    assert_eq!(reopened.run_reports.len(), 1);
-    assert!(reopened.run_reports[0].text.contains("claude-opus-5"));
-    assert!(crate::inspect::render(&reopened).contains("Model routing warning"));
+    assert!(reopened.run_reports.is_empty());
 }

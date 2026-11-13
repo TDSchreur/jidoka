@@ -57,23 +57,71 @@ fn rework_moves_check_to_build_and_is_refused_elsewhere() {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     let run = new_run(&store, "task");
-    let rework = || parse_update("running", &["--rework", "1"]).unwrap();
+    let rework = || {
+        parse_update(
+            "running",
+            &["--rework", "1", "--finding", "code-review", "-", "Bug"],
+        )
+        .unwrap()
+    };
+    let git = FixedGit;
     store.set_stage(&run.id, Stage::Check);
-    let error = store.update(&run.id, rework()).unwrap_err();
+    let error = store.update_with(&run.id, rework(), &git).unwrap_err();
     assert!(error.to_string().contains("mode"));
 
     store
         .update(
             &run.id,
-            parse_update("running", &["--mode", "jidoka-balanced"]).unwrap(),
+            parse_update(
+                "running",
+                &["--mode", "jidoka-balanced", "--worktree", "/work/wt"],
+            )
+            .unwrap(),
         )
         .unwrap();
-    let moved = store.update(&run.id, rework()).unwrap().unwrap();
+    let moved = store.update_with(&run.id, rework(), &git).unwrap().unwrap();
     assert_eq!((moved.stage, moved.rework), (Stage::Build, Some(1)));
 
     // Outside Check the count is only recorded.
-    let again = store.update(&run.id, rework()).unwrap().unwrap();
+    let again = store.update(&run.id, rework_count()).unwrap().unwrap();
     assert_eq!(again.stage, Stage::Build);
+}
+
+struct FixedGit;
+impl crate::pr_sync::Git for FixedGit {
+    fn git(&self, _: &Path, _: &[&str]) -> Result<String, String> {
+        Ok("abc1234".into())
+    }
+}
+
+fn rework_count() -> UpdateRun {
+    parse_update("running", &["--rework", "1"]).unwrap()
+}
+
+#[test]
+fn findings_are_recorded_resolved_and_gate_the_rework() {
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    let run = new_run(&store, "task");
+    let id = run.id.as_str();
+    let update = |options: &[&str]| {
+        let parsed = parse_update("running", options).map_err(io_invalid)?;
+        store.update_with(id, parsed, &FixedGit)
+    };
+    update(&["--mode", "jidoka-balanced", "--worktree", "/work/wt"]).unwrap();
+    store.set_stage(id, Stage::Check);
+
+    let moved = update(&["--rework", "1", "--finding", "code-review", "-", "Bug"])
+        .unwrap()
+        .unwrap();
+    assert_eq!(moved.stage, Stage::Build);
+    assert_eq!(moved.findings[0].id, "F1");
+    assert_eq!(moved.findings[0].rework, Some(1));
+    assert_eq!(moved.findings[0].reviewed_commit, "abc1234");
+
+    let fixed = update(&["--finding-status", "F1=fixed"]).unwrap().unwrap();
+    assert_eq!(fixed.findings[0].fix_commit.as_deref(), Some("abc1234"));
+    assert!(fixed.findings[0].resolved_at.is_some());
 }
 
 #[test]
@@ -253,6 +301,13 @@ fn new_run(store: &RunStore, title: &str) -> Run {
             model_routing: None,
         })
         .unwrap()
+}
+
+/// A stored run for the unit tests of the update field groups, which need a `Run` but no store.
+pub(super) fn sample_run() -> Run {
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    new_run(&store, "task")
 }
 
 fn selection() -> crate::routing::ModelRouting {
@@ -779,6 +834,57 @@ fn usage_is_replaced_atomically_and_a_failed_save_keeps_the_old_usage() {
     store.set_usage("nope", Usage::not_tracked("x", 1)).unwrap();
 }
 
+#[test]
+fn only_subagent_usage_on_another_model_warns_when_a_routed_stage_is_done() {
+    use crate::usage::Usage;
+    let dir = TestDir::new();
+    let path = dir.0.path().join("runs.json");
+    let store = RunStore::open(&path).unwrap();
+    let run = new_run(&store, "task");
+    let id = run.id.clone();
+    let mut runs = store.list().unwrap();
+    let mut stored = runs.remove(0);
+    stored.status = RunStatus::Done;
+    stored.model_routing = serde_json::from_value(
+        serde_json::json!({"agent": "claude", "stages": {"define": {"model": "sonnet"}}}),
+    )
+    .unwrap();
+    fs::write(&path, serde_json::to_string(&[stored]).unwrap()).unwrap();
+    let store = RunStore::open(&path).unwrap();
+    let usage = |subagents: bool| -> Usage {
+        let mut row = serde_json::json!({"stage": "define", "model": "claude-opus-5-5", "input": 10, "output": 5});
+        if subagents {
+            row["subagents"] = serde_json::json!({"input": 4, "output": 2});
+        }
+        serde_json::from_value(
+            serde_json::json!({"status": "tracked", "collected_at": 1, "rows": [row]}),
+        )
+        .unwrap()
+    };
+    store.set_usage(&id, usage(false)).unwrap();
+    assert!(store.get(&id).unwrap().unwrap().run_reports.is_empty());
+    store.set_usage(&id, usage(true)).unwrap();
+    let reports = store.get(&id).unwrap().unwrap().run_reports;
+    assert_eq!(reports.len(), 1);
+    assert!(
+        reports[0].text.ends_with(
+            "define subagent usage recorded model claude-opus-5-5 while sonnet was assigned"
+        ),
+        "{}",
+        reports[0].text
+    );
+    let mut row =
+        serde_json::json!({"stage": "define", "model": "sonnet", "input": 10, "output": 5});
+    row["subagents"] = serde_json::json!({"input": 4, "output": 2});
+    let on_model: Usage = serde_json::from_value(
+        serde_json::json!({"status": "tracked", "collected_at": 2, "rows": [row]}),
+    )
+    .unwrap();
+    store.set_usage(&id, on_model).unwrap();
+    let after = store.get(&id).unwrap().unwrap().run_reports;
+    assert_eq!(after.len(), 1, "{after:?}");
+}
+
 fn event_store() -> (TestDir, RunStore, String) {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
@@ -1080,5 +1186,21 @@ fn gate_record_rejects_run_change_reverted_during_validation() {
     assert!(
         store.get(&run.id).unwrap().unwrap().gates.is_empty(),
         "stale gate must not be recorded"
+    );
+}
+
+#[test]
+fn json_null_clears_and_missing_keeps_each_field_group() {
+    let cleared: UpdateRun = serde_json::from_str(
+        r#"{"status":"running","tickets":null,"model_routing":null,"summaries":{"build":null}}"#,
+    )
+    .unwrap();
+    assert!(matches!(cleared.tickets.tickets, FieldUpdate::Clear));
+    assert!(matches!(cleared.routing.model_routing, FieldUpdate::Clear));
+    let kept: UpdateRun = serde_json::from_str(r#"{"status":"running"}"#).unwrap();
+    assert!(kept.tickets.tickets.is_keep() && kept.routing.model_routing.is_keep());
+    assert_eq!(
+        serde_json::to_value(&cleared).unwrap()["summaries"],
+        serde_json::json!({"build": null})
     );
 }
