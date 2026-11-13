@@ -208,7 +208,13 @@ async fn dashboard_page() -> String {
     let dir = TestDir::new();
     let api = client(&dir).await;
     let mut page = String::new();
-    for path in ["/", "/assets/style.css", "/assets/app.js"] {
+    for path in [
+        "/",
+        "/assets/style.css",
+        "/assets/app.js",
+        "/assets/format.js",
+        "/assets/history.js",
+    ] {
         page += &api
             .get(path)
             .header(Header::new("Host", "127.0.0.1:4311"))
@@ -227,7 +233,9 @@ async fn assets_are_served_with_their_content_types() {
     let api = client(&dir).await;
     for (path, content_type) in [
         ("/assets/app.js", ContentType::JavaScript),
+        ("/assets/format.js", ContentType::JavaScript),
         ("/assets/help.js", ContentType::JavaScript),
+        ("/assets/history.js", ContentType::JavaScript),
         ("/assets/favicon.svg", ContentType::SVG),
         ("/assets/style.css", ContentType::CSS),
         ("/assets/vendor/preact.js", ContentType::JavaScript),
@@ -514,8 +522,12 @@ async fn linked_worktrees_group_under_their_repository_and_cards_show_progress_a
     assert!(script.contains("url.protocol === 'http:' || url.protocol === 'https:'"));
     assert!(script.contains("named('Pull request')"));
     // Detail lists the tickets in order with their status, and the summaries per Stage.
-    assert!(script.contains("tickets.map((ticket) =>"));
-    assert!(script.contains("run.summaries?.[id]"));
+    assert!(script.contains("tickets.map(({ ticket, reports }) =>"));
+    assert!(
+        asset("/assets/history.js")
+            .await
+            .contains("run.summaries?.[id]")
+    );
 }
 
 #[rocket::async_test]

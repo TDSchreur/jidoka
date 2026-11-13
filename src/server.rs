@@ -57,9 +57,19 @@ const ASSETS: &[(&str, ContentType, &[u8])] = &[
         include_bytes!("../dashboard/favicon.svg"),
     ),
     (
+        "format.js",
+        ContentType::JavaScript,
+        include_bytes!("../dashboard/format.js"),
+    ),
+    (
         "help.js",
         ContentType::JavaScript,
         include_bytes!("../dashboard/help.js"),
+    ),
+    (
+        "history.js",
+        ContentType::JavaScript,
+        include_bytes!("../dashboard/history.js"),
     ),
     (
         "style.css",

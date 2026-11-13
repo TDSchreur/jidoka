@@ -472,7 +472,7 @@ return out;
 
     def test_time_format_for_today_yesterday_and_older(self):
         body = """
-const {sheetTime} = await import('/assets/app.js');
+const {sheetTime} = await import('/assets/format.js');
 const now = new Date(2026, 10, 8, 12, 0).getTime();
 return {
   today: sheetTime(new Date(2026, 10, 8, 9, 22).getTime(), now),

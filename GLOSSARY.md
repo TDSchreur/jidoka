@@ -63,3 +63,9 @@
 **Run report**: A short, agent-reported skill or activity associated with a run rather than a particular ticket. Reports may be incomplete and are not independent proof of the work.
 
 **Reader**: The dashboard's view of a run's local spec or ticket, rendered from the Markdown file the run recorded. It shows only documents the run recorded, and says so when the file is no longer there.
+
+**Timeline**: The marks a run records of when its Stage, Rework or active ticket changed, each with its time, Stage and optional Rework, ticket and activity, ordered by time. The dashboard builds a run's route from it, and Token usage is attributed by it.
+
+**Pass**: One pass through a Stage on a run's Timeline, from its first mark to the next Stage's mark. Consecutive Build marks of the same Rework form one Pass, which lists the tickets worked on in it. A Rework adds a Build Pass and a Check Pass.
+
+**Station**: One of the route's stops in the dashboard's run sheet. A run with a Timeline shows one Pass per stop; a run with no Timeline shows one Station per Stage, with its reports placed by Stage.
