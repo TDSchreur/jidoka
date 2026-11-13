@@ -1,3 +1,4 @@
+mod attention;
 mod checks;
 mod client;
 mod codex_requests;

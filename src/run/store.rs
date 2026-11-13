@@ -454,8 +454,13 @@ impl RunStore {
     /// run is blocked for an unresumed pause; a run this method blocked takes the reason of the current
     /// pause, and is set running again once the log shows later activity or no pause at all. Only a state
     /// the dashboard itself set is changed: never a block or reason the agent set, a done run, or a run the
-    /// agent updated after the pause began.
-    pub(crate) fn apply_pause(&self, id: &str, latest: Option<&Pause>) -> io::Result<()> {
+    /// agent updated after the pause began, unless an explicit request remains unanswered.
+    pub(crate) fn apply_pause(
+        &self,
+        id: &str,
+        latest: Option<&Pause>,
+        requested: bool,
+    ) -> io::Result<()> {
         self.change(id, Stamp::Dashboard, |next, now| {
             let agent_at = next.agent_updated_at.or(next.updated_at);
             let automatic = is_automatic_reason(next.status, next.blocking_reason.as_deref());
@@ -467,7 +472,7 @@ impl RunStore {
                             resumed_at: None, ..
                         },
                     ),
-                ) if Some(pause.at) >= agent_at => {
+                ) if requested || Some(pause.at) >= agent_at => {
                     next.status = RunStatus::Blocked;
                     next.blocking_reason = Some(pause.kind.reason().to_string());
                     (RunEventKind::Blocked, pause.at)
