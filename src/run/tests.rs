@@ -303,6 +303,13 @@ fn new_run(store: &RunStore, title: &str) -> Run {
         .unwrap()
 }
 
+/// A stored run for the unit tests of the update field groups, which need a `Run` but no store.
+pub(super) fn sample_run() -> Run {
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    new_run(&store, "task")
+}
+
 fn selection() -> crate::routing::ModelRouting {
     serde_json::from_value(serde_json::json!({
         "agent": "claude",
