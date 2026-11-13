@@ -11,7 +11,7 @@ Day-to-day pull requests target `develop`. Release pull requests merge `develop`
 - Handle errors with useful context, especially at user-facing and I/O boundaries.
 - Use the [Rust skill](.agents/skills/rust/SKILL.md) for guidance when writing or reviewing Rust. Apply its recommendations with judgment: avoid abstractions that add complexity without a concrete benefit.
 - Consult the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) when designing public APIs.
-- Follow existing conventions and keep changes proportional to the task. TDD is not required.
+- Follow existing conventions and keep changes proportional to the task.
 
 ## Development principles
 
