@@ -88,6 +88,10 @@ pub(crate) struct PrRun {
     pub(crate) stage: String,
     /// `running`, `blocked` or `done`. Only a running run is updated.
     pub(crate) status: String,
+    /// The commit the branch started from, when recorded. `pr sync` uses it to tell the branch's own commits.
+    pub(crate) base_commit: Option<String>,
+    /// The pull request state the dashboard last stored. `pr sync` reads it instead of asking the host.
+    pub(crate) pr_state: Option<crate::pr_state::PrState>,
 }
 
 impl PrRun {

@@ -17,6 +17,7 @@ Implement the provided spec on a single feature branch. A clear user request wit
 
    Choose the seams yourself; do not ask for seam approval. Follow the project’s instructions on test scope and explain any omission.
 5. Run targeted or quick checks during iteration and fix failures, following the project's required cadence. Reuse passing results only while the checked code and its relevant inputs are unchanged; rerun affected checks after changes and honor stricter checks the project requires. Run the project's full verification at the point the calling workflow sets, or after the last ticket when used on its own; a missing tool or a failing check is a blocker, never something to skip.
-6. Verify the result against the acceptance criteria. Report the completed work, tests added, checks performed, and any remaining blockers. Leave commits, pushing, and PR creation to the calling workflow unless the user explicitly requests them.
+6. When the change has a runnable entrypoint (application, server, CLI), start it once from the working directory a user would use, with its default configuration and no test overrides, and exercise the main path; report what you ran, or why no entrypoint applies.
+7. Verify the result against the acceptance criteria and end by listing each criterion with the test or evidence that shows it. Report the completed work, tests added, checks performed, and any remaining blockers. Leave commits, pushing, and PR creation to the calling workflow unless the user explicitly requests them.
 
 Do not require subagents, extra worktrees, a draft PR, or a separate code review as part of this skill.

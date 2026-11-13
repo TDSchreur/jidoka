@@ -331,6 +331,8 @@ fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
             .as_str()
             .unwrap_or("running")
             .to_string(),
+        base_commit: run.base_commit.clone(),
+        pr_state: run.pr_status.as_ref().map(|status| status.state),
     };
     let opened = pr_open::open(&info, &parsed, &pr_open::RealGh, &ServerApi)
         .map_err(|problem| inspect::shown(&problem.0))?;
@@ -455,6 +457,8 @@ fn pr_sync_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
         branch: run.branch.clone(),
         stage: text(serde_json::to_value(run.stage)?, "finish"),
         status: text(serde_json::to_value(run.status)?, "running"),
+        base_commit: run.base_commit.clone(),
+        pr_state: run.pr_status.as_ref().map(|status| status.state),
     };
     let synced = pr_sync::sync(&info, &parsed, &pr_sync::RealGit, &ServerApi)
         .map_err(|problem| inspect::shown(&problem.0))?;
