@@ -1,5 +1,5 @@
 //! `jidoka pr open` validates arguments before contacting the server.
-#![expect(
+#![allow(
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
 )]

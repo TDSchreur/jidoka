@@ -1,5 +1,5 @@
 //! The startup check hints on stderr when Setup is missing and adopts existing installs.
-#![expect(
+#![allow(
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
 )]
