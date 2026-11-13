@@ -603,7 +603,7 @@ fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::erro
         &dir,
         &parsed,
         &ServerApi,
-        current_sessions().into_iter().next(),
+        current_agent_sessions().into_iter().next(),
         resolution.selection,
     ) {
         Ok(begun) => {
@@ -648,18 +648,35 @@ fn current_sessions() -> Vec<String> {
 }
 
 fn sessions_from(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<String> {
-    let mut sessions: Vec<String> = Vec::new();
-    for name in [
-        "CLAUDE_CODE_SESSION_ID",
-        "CODEX_SESSION_ID",
-        "CODEX_THREAD_ID",
-        "COPILOT_AGENT_SESSION_ID",
+    agent_sessions_from(var)
+        .into_iter()
+        .map(|session| session.id)
+        .collect()
+}
+
+/// Like `current_sessions`, with the agent each session id belongs to.
+fn current_agent_sessions() -> Vec<run_begin::AgentSession> {
+    agent_sessions_from(&|name| env::var_os(name))
+}
+
+fn agent_sessions_from(
+    var: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<run_begin::AgentSession> {
+    let mut sessions: Vec<run_begin::AgentSession> = Vec::new();
+    for (name, agent) in [
+        ("CLAUDE_CODE_SESSION_ID", "claude"),
+        ("CODEX_SESSION_ID", "codex"),
+        ("CODEX_THREAD_ID", "codex"),
+        ("COPILOT_AGENT_SESSION_ID", "copilot"),
     ] {
         let Some(id) = var(name).and_then(|value| value.into_string().ok()) else {
             continue;
         };
-        if run::check_session_id(&id).is_ok() && !sessions.contains(&id) {
-            sessions.push(id);
+        if run::check_session_id(&id).is_ok() && !sessions.iter().any(|known| known.id == id) {
+            sessions.push(run_begin::AgentSession {
+                id,
+                agent: Some(agent),
+            });
         }
     }
     sessions
@@ -876,6 +893,24 @@ mod tests {
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| (*value).into())
         }
+    }
+
+    #[test]
+    fn each_session_variable_names_its_agent() {
+        let agents = |pairs: &[(&str, &str)]| -> Vec<Option<&'static str>> {
+            agent_sessions_from(&lookup(pairs))
+                .into_iter()
+                .map(|session| session.agent)
+                .collect()
+        };
+        let id = "019e1f00-aaaa-7bbb-8ccc-000000000001";
+        assert_eq!(agents(&[("CLAUDE_CODE_SESSION_ID", id)]), [Some("claude")]);
+        assert_eq!(agents(&[("CODEX_SESSION_ID", id)]), [Some("codex")]);
+        assert_eq!(agents(&[("CODEX_THREAD_ID", id)]), [Some("codex")]);
+        assert_eq!(
+            agents(&[("COPILOT_AGENT_SESSION_ID", id)]),
+            [Some("copilot")]
+        );
     }
 
     #[test]
