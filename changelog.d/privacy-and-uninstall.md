@@ -1,6 +1,6 @@
 ## Added
 
-- Document the code signing policy, network contacts, and uninstall steps.
+- Document network contacts and uninstall steps.
 
 ## Changed
 

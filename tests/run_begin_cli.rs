@@ -1,5 +1,5 @@
 //! `jidoka run begin` arguments, checked before any run is created.
-#![expect(
+#![allow(
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
 )]

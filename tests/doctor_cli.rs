@@ -1,5 +1,5 @@
 //! `jidoka doctor` as a user runs it: exit status, JSON and argument errors.
-#![expect(
+#![allow(
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
 )]

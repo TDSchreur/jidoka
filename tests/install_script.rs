@@ -1,6 +1,6 @@
 //! Behavior of `scripts/install.sh`, run against a fake `curl` and a fake `jidoka` in a temporary home.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
-#![expect(
+#![allow(
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
 )]

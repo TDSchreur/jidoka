@@ -1,5 +1,5 @@
 //! `jidoka pr wait` arguments and a missing `gh`, checked before any server is contacted.
-#![expect(
+#![allow(
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
 )]
