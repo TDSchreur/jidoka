@@ -58,6 +58,8 @@ pub(crate) struct Record {
 }
 
 const RESOLVE_FINDINGS: &str = "resolve them with `jidoka run update <id> running --finding-status <finding-id>=<fixed|dismissed|deferred>[:<reason>]` or start Rework with --finding";
+/// The remedy `advance` names for this gate, which fails either on open Findings or on no recorded pass.
+const RECORD_OR_RESOLVE_FINDINGS: &str = "record `jidoka run gate <id> no-actionable-findings pass` once no Finding is open; resolve open Findings with `jidoka run update <id> running --finding-status <finding-id>=<fixed|dismissed|deferred>[:<reason>]` or start Rework with --finding";
 
 pub(crate) fn parse_options(options: &[&str]) -> Result<(Option<String>, Option<String>), String> {
     let mut evidence = None;
@@ -305,7 +307,7 @@ fn advance_with_clock(
                         "No passing result was recorded",
                     )
                 }),
-                RESOLVE_FINDINGS,
+                RECORD_OR_RESOLVE_FINDINGS,
             ),
             Gate::CiPassed => (
                 ci_passed(run, git, tool, clock).map(|evidence| ci_evidence = Some(evidence)),
