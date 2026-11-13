@@ -81,7 +81,7 @@ function Overview({ reworkCap }) {
         </li>
         <li>
           Start <${Code}>jidoka dashboard<//> and keep it running. It listens on${' '}
-          <${Code}>http://127.0.0.1:4311<//> by default.
+          <${Code}>http://127.0.0.1:4311<//>, or on a free port when 4311 is taken. It prints the URL.
         </li>
         <li>
           In your project, ask your agent to run <${Code}>/jidoka<//> to pick a workflow, or choose${' '}
@@ -588,7 +588,7 @@ function Commands() {
     <${Topic} title="Look at Runs">
       <${Terms}
         items=${[
-          [html`<${Code}>jidoka dashboard<//>`, html`Starts this dashboard on <${Code}>127.0.0.1:4311<//>. Use <${Code}>--port<//> for a separate dashboard with its own data, and <${Code}>--no-usage<//> to leave token usage off.`],
+          [html`<${Code}>jidoka dashboard<//>`, html`Starts this dashboard on <${Code}>127.0.0.1:4311<//>, or a free port when that is taken. Use <${Code}>--port<//> to pick the port, and <${Code}>--no-usage<//> to leave token usage off.`],
           [html`<${Code}>jidoka run inspect ${'<id>'}<//>`, html`Prints what a Run has recorded, the same as the Run detail. Add <${Code}>--json<//> for the stored record.`],
           [html`<${Code}>jidoka run stats ${'<id>'}<//>`, html`Prints the token usage by Stage, model and ticket. <${Code}>--all<//> shows the totals for every Run.`],
         ]}

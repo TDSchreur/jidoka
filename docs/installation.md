@@ -69,7 +69,7 @@ cargo run -- --version
 cargo run -- dashboard
 ```
 
-The Rocket server binds to localhost at <http://127.0.0.1:4311>; press Ctrl+C to stop it. It stores run progress under `$XDG_DATA_HOME/jidoka/` (or `~/.local/share/jidoka/` when unset) on Linux, and `%LOCALAPPDATA%\jidoka\` on Windows. Keep it running while using Jidoka. After a merge, `scripts/update-local.sh` updates the checkout and prompts for one or more agents; `jidoka install` asks, and `JIDOKA_AGENT` (names, numbers or `all`) answers it without a prompt. To install from a checkout, use `cargo install --path . --locked`, ensure Cargo's bin directory is on PATH, and run `jidoka install --agent <codex|claude|copilot>`. Restart a previously running dashboard after upgrading.
+The Rocket server binds to localhost, on port 4311 or a free port when 4311 is taken, and prints its URL; the CLI finds it through `dashboard.json` in the data folder. Press Ctrl+C to stop it. It stores run progress under `$XDG_DATA_HOME/jidoka/` (or `~/.local/share/jidoka/` when unset) on Linux, and `%LOCALAPPDATA%\jidoka\` on Windows. Keep it running while using Jidoka. After a merge, `scripts/update-local.sh` updates the checkout and prompts for one or more agents; `jidoka install` asks, and `JIDOKA_AGENT` (names, numbers or `all`) answers it without a prompt. To install from a checkout, use `cargo install --path . --locked`, ensure Cargo's bin directory is on PATH, and run `jidoka install --agent <codex|claude|copilot>`. Restart a previously running dashboard after upgrading.
 
 ## Which build is running
 
