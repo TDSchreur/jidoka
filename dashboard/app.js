@@ -409,6 +409,15 @@ function ContextLinks({ run }) {
     : null;
 }
 
+/** The run's findings that have an id, text and a known state; anything else is ignored. */
+const FINDING_STATES = ['open', 'fixed', 'dismissed', 'deferred'];
+function findingsOf(run) {
+  return listOf(run?.findings).filter(
+    (f) => f && typeof f.id === 'string' && typeof f.text === 'string' && FINDING_STATES.includes(f.state),
+  );
+}
+const countOf = (run, state) => findingsOf(run).filter((f) => f.state === state).length;
+
 const reworkLabel = (count) =>
   count <= REWORK_CAP ? `${count}/${REWORK_CAP}` : `${count} (past the cap of ${REWORK_CAP})`;
 
@@ -461,7 +470,7 @@ function LineRow({ run, now, onOpen }) {
     <div class="meta">
       <span class="meta-project"><${ProjectName} path=${projectOf(run)} /></span>
       <${ContextChips} run=${run} />
-      ${rework !== null ? html`<span class="chip">Rework${' '}${reworkLabel(rework)}</span>` : null}
+      ${rework !== null ? html`<span class="chip">Rework${' '}${reworkLabel(rework)}${countOf(run, 'open') ? ` · ${countOf(run, 'open')} open` : ''}</span>` : null}
       <${ContextLinks} run=${run} /><${PrStateLabel} run=${run} />
       <${Updated} run=${run} now=${now} />
     </div>
@@ -741,6 +750,53 @@ function TicketList({ run, tickets, byTicket, now }) {
   </ol>`;
 }
 
+const short = (sha) => (typeof sha === 'string' ? sha.slice(0, 7) : '');
+
+/** The outcome of a finding in words; the hole beside it repeats the state, never alone. */
+function FindingOutcome({ finding }) {
+  const reason = typeof finding.reason === 'string' && finding.reason ? finding.reason : null;
+  if (finding.state === 'fixed') {
+    return finding.fix_commit ? html`Fixed in${' '}<code>${short(finding.fix_commit)}</code>` : 'Fixed';
+  }
+  if (finding.state === 'dismissed') return reason ? `Dismissed: ${reason}` : 'Dismissed';
+  if (finding.state === 'deferred') return reason ? `Deferred: ${reason}` : 'Deferred';
+  return 'Open';
+}
+
+/** Findings as defect tags: a hole whose look carries the state, the id, check and location, the text, then the outcome. */
+function FindingList({ findings, label, outcome }) {
+  return html`<ul class="findings" aria-label=${label}>
+    ${findings.map(
+      (f) => html`<li key=${f.id} class=${`finding ${f.state}`}>
+        <span class="finding-hole" aria-hidden="true"></span>
+        <div class="finding-body">
+          <p class="finding-head">
+            <strong class="finding-id">${f.id}</strong>${' '}
+            <span class="finding-check">${f.check}</span>${' '}
+            ${f.location ? html`<code class="finding-location">${f.location}</code>` : null}
+          </p>
+          <p class="finding-text">${f.text}</p>
+          ${outcome ? html`<p class="finding-outcome"><${FindingOutcome} finding=${f} /></p>` : null}
+        </div>
+      </li>`,
+    )}
+  </ul>`;
+}
+
+/** What a Check pass shows: the findings it recorded, under a heading line when it sent the run back. */
+function CheckFindings({ pass, findings }) {
+  const mine = findings.filter((f) => f.at >= pass.start && f.at < pass.end);
+  if (!mine.length && !pass.sentBack) return null;
+  const sent = mine.filter((f) => Number.isInteger(f.rework));
+  const commits = [...new Set(sent.map((f) => f.reviewed_commit).filter(Boolean))];
+  const noun = (n) => `${n} ${n === 1 ? 'finding' : 'findings'}`;
+  const heading = pass.sentBack
+    ? `Sent back${sent.length ? ` with ${noun(sent.length)}` : ''}${commits.length === 1 ? ` · reviewed ${short(commits[0])}` : ''}`
+    : noun(mine.length);
+  return html`<p class="sent-back-note">${heading}</p>
+    ${mine.length ? html`<${FindingList} findings=${mine} label=${pass.sentBack ? 'Findings that sent Check back' : 'Findings recorded in this Check'} outcome=${!pass.sentBack} />` : null}`;
+}
+
 /** One pass through a stage on the route: when it started and how long it ran, what it started with, then what was recorded in it. */
 function Pass({ run, pass, placed, now }) {
   const label = pass.rework === null ? STATION_NAME[pass.stage] : `${STATION_NAME[pass.stage]} · Rework ${pass.rework <= REWORK_CAP ? pass.rework : `${pass.rework} (past the cap of ${REWORK_CAP})`}`;
@@ -762,7 +818,10 @@ function Pass({ run, pass, placed, now }) {
     <${SkillChips} reports=${placed.reports} />
     <${ReportList} reports=${placed.reports} now=${now} showTicket=${true} />
     ${pass.tickets.length ? html`<${TicketList} run=${run} tickets=${pass.tickets} byTicket=${(ref) => placed.byTicket.get(ref) ?? []} now=${now} />` : null}
-    ${pass.sentBack ? html`<p class="sent-back-note">sent back</p>` : null}
+    ${pass.stage === 'check' ? html`<${CheckFindings} pass=${pass} findings=${findingsOf(run)} />` : null}
+    ${pass.stage === 'build' && pass.rework !== null && findingsOf(run).some((f) => f.rework === pass.rework)
+      ? html`<${FindingList} findings=${findingsOf(run).filter((f) => f.rework === pass.rework)} label=${`Findings fixed in Rework ${pass.rework}`} outcome=${true} />`
+      : null}
   </li>`;
 }
 
@@ -1081,7 +1140,7 @@ function ShippedLog({ entries, now, onOpen, onClear }) {
                 <td>
                   <button type="button" class="link log-open" data-run-key=${runKey(run)} onClick=${() => onOpen(runKey(run))}>
                     ${run.title}
-                  </button>
+                  </button>${countOf(run, 'deferred') ? html`${' '}<span class="chip">${countOf(run, 'deferred')} deferred</span>` : null}
                 </td>
                 <td><${ProjectName} path=${projectOf(run)} /></td>
                 <td>${run.pr ? html`<${RefLink} value=${run.pr} label=${html`Pull request<span class="visually-hidden">${` of ${run.title}`}</span>`} />` : html`<span class="not-set">None</span>`}${' '}<${PrStateLabel} run=${run} /></td>

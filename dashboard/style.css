@@ -326,6 +326,21 @@ body:has(.confirm[open]) { overflow: hidden; }
 /* A Check pass that was sent back ends in a dashed connector, labelled in words. */
 .stop.sent-back::before { background: repeating-linear-gradient(to bottom, var(--color-blue) 0 var(--space-3), var(--color-panel) var(--space-3) var(--space-5)); }
 .sent-back-note { margin: var(--space-4) 0 0; font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-slate); font-weight: var(--weight-strong); }
+/* Findings hang on the route like defect tags: the hole carries the state next to the outcome words. */
+.findings { margin: var(--space-4) 0 0; padding: 0; list-style: none; display: grid; gap: var(--space-3); }
+.finding { display: flex; gap: var(--space-4); padding: var(--space-3) var(--space-4); background: var(--color-tint); border-left: var(--stroke-thick) solid var(--color-rule); border-radius: var(--radius-m); }
+.finding-hole { flex: none; box-sizing: border-box; width: var(--space-4); height: var(--space-4); margin-top: var(--space-3); border: var(--stroke-thick) solid var(--color-slate); border-radius: var(--radius-round); }
+.finding.fixed .finding-hole { border-color: var(--color-blue); background: var(--color-blue); }
+.finding.dismissed .finding-hole { border-color: var(--color-muted); background: var(--color-muted); }
+.finding.deferred .finding-hole { border-style: dashed; }
+.finding-body { min-width: 0; flex: 1; }
+.finding-body p { margin: 0; overflow-wrap: anywhere; }
+.finding-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-4); font-size: var(--text-xs); line-height: var(--leading-xs); }
+.finding-id { font-weight: var(--weight-strong); font-variant-numeric: tabular-nums; }
+.finding-check { color: var(--color-muted); }
+.finding code { font-family: var(--font-mono); font-size: var(--text-xs); }
+.finding-text { font-size: var(--text-s); line-height: var(--leading-s); }
+.finding-outcome { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); }
 .skills { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin: var(--space-3) 0 0; padding: 0; list-style: none; }
 .skill { padding: 0 var(--space-3); border: var(--stroke-thin) solid var(--color-rule); border-radius: var(--radius-s); font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); }
 .reports { margin: var(--space-3) 0 0; padding: 0; list-style: none; font-size: var(--text-xs); line-height: var(--leading-xs); }
