@@ -19,7 +19,7 @@ export function usageTotal(run) {
 }
 
 /** Dollars as text: `$1.23`, `<$0.01`, or `unknown` (never $0) for null. */
-function usdText(usd) {
+export function usdText(usd) {
   if (usd === null || usd === undefined) return 'unknown';
   return usd > 0 && usd < 0.005 ? '<$0.01' : `$${usd.toFixed(2)}`;
 }

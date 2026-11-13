@@ -1,7 +1,7 @@
 import { createContext, h, render } from 'preact';
 import { useContext, useEffect, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
-import { ago, compactTokens, costText, durationWords, freshTokens, sheetTime, timestamp, tokenCount, usageTotal } from '/assets/format.js';
+import { ago, compactTokens, costText, durationWords, freshTokens, sheetTime, timestamp, tokenCount, usageTotal, usdText } from '/assets/format.js';
 import { Help } from '/assets/help.js';
 import { GROUPS, STATIONS, STATION_NAME, findingCount, runHistory, shortSha, ticketProgress } from '/assets/history.js';
 
