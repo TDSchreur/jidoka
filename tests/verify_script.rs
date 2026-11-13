@@ -1,7 +1,7 @@
 //! Behavior of `scripts/verify.sh`, run against a fake `cargo` so no real check executes.
 #![cfg_attr(
     unix,
-    expect(
+    allow(
         clippy::unwrap_used,
         reason = "integration test helpers fail the test by panicking"
     )
