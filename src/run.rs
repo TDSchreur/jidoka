@@ -2,8 +2,6 @@ use crate::pr_state::PrStatus;
 use crate::routing::{ModelChoice, ModelRouting};
 use crate::stages::{self, Destination};
 use crate::usage::{Collection, Mark, Pause, PauseKind, Usage};
-mod findings;
-
 use findings::{FindingsContext, FindingsUpdate};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -13,6 +11,8 @@ use std::{
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+mod findings;
 
 pub(crate) const UPDATE_HELP: &str = concat!(
     "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework (on a running run in Check, --rework <n> also moves it back to Build for a Rework and needs a new --finding in the same update; elsewhere it only sets the count)\n  --mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n",
@@ -50,6 +50,7 @@ const BASE_COMMIT_LENGTH: std::ops::RangeInclusive<usize> = 7..=64;
 const MAX_REPORTS_PER_UPDATE: usize = 100;
 /// Ticket reports or run reports a run may hold in total, so a long run cannot grow its record without bound.
 pub(crate) const MAX_REPORTS_PER_RUN: usize = 1000;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Run {
     /// In-memory generation of changes that invalidate gate validation.

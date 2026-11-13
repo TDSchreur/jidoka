@@ -71,6 +71,7 @@ pub(crate) struct FindingsContext<'a> {
     pub(crate) stage: Stage,
     /// Whether the update started a Rework.
     pub(crate) moved: bool,
+    /// The update's timestamp, for new and resolved Findings.
     pub(crate) at: u64,
     pub(crate) git: &'a dyn crate::pr_sync::Git,
 }
@@ -116,6 +117,7 @@ impl FindingsUpdate {
         Ok(())
     }
 
+    /// Checks the limits, check names, texts and outcome reasons before anything is applied.
     pub(super) fn validate(&self) -> Result<(), String> {
         if self.new.len() > MAX_FINDINGS_PER_UPDATE {
             return Err(format!(
@@ -432,5 +434,33 @@ mod tests {
         apply(deferred, &mut run, Stage::Check, false).unwrap();
         assert_eq!(run.findings[0].reason.as_deref(), Some("not worth it"));
         assert_eq!(run.findings[0].fix_commit, None);
+    }
+
+    #[test]
+    fn a_rework_tags_earlier_open_findings_but_not_resolved_ones() {
+        let mut run = run_in(Stage::Check);
+        run.rework = Some(1);
+        let mut fixed = finding("F2");
+        fixed.state = FindingState::Fixed;
+        run.findings = vec![finding("F1"), fixed];
+        let update = parsed(&["--finding", "security", "-", "Another"]);
+        apply(update, &mut run, Stage::Check, true).unwrap();
+        let tagged: Vec<_> = run.findings.iter().map(|f| f.rework).collect();
+        assert_eq!(tagged, [Some(1), None, Some(1)]);
+    }
+
+    #[test]
+    fn json_keeps_its_field_names_and_rejects_unknown_keys() {
+        let update: crate::run::UpdateRun = serde_json::from_str(
+            r#"{"status":"running","findings":[{"check":"security","text":"Leak"}],"finding_status":[{"id":"F1","state":"open"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(update.findings.new.len(), 1);
+        assert_eq!(update.findings.statuses.len(), 1);
+        let json = serde_json::to_value(&update).unwrap();
+        assert!(json["findings"].is_array() && json["finding_status"].is_array());
+        let unknown =
+            serde_json::from_str::<crate::run::UpdateRun>(r#"{"status":"running","bogus":1}"#);
+        assert!(unknown.is_err());
     }
 }
