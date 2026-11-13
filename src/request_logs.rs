@@ -133,7 +133,7 @@ struct Pending {
 /// `ids`, or was recorded for one in `recorded`, together with the logs of its subagents.
 #[expect(
     clippy::too_many_lines,
-    reason = "does several steps in one function; deepening candidate"
+    reason = "scans Claude logs, filters by run, and tallies usage in one pass; six inputs"
 )]
 pub(crate) fn read_requests(
     root: &Path,

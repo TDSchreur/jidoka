@@ -126,7 +126,7 @@ fn lines(text: &str) -> Vec<String> {
 /// merges the pull request.
 #[expect(
     clippy::too_many_lines,
-    reason = "does several steps in one function; deepening candidate"
+    reason = "validates the worktree, then fetches, rebases and pushes and reports each step"
 )]
 pub(crate) fn sync(
     run: &PrRun,

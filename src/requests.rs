@@ -110,7 +110,7 @@ fn claims(run: &Run, session: &SessionRequests) -> bool {
 /// note.
 #[expect(
     clippy::too_many_lines,
-    reason = "does several steps in one function; deepening candidate"
+    reason = "reads logs per agent and builds categories, subagent and ambiguity counts together"
 )]
 pub(crate) fn analyze(
     target: &Run,

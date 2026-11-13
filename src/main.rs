@@ -82,7 +82,7 @@ fn main() -> ExitCode {
 /// Runs the command and returns its exit status; a non-zero one means it already reported why.
 #[expect(
     clippy::too_many_lines,
-    reason = "does several steps in one function; deepening candidate"
+    reason = "dispatches every top-level subcommand in one match"
 )]
 fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args().skip(1).collect();

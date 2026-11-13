@@ -583,7 +583,7 @@ fn check_text(name: &str, value: &str, limit: usize) -> Result<(), String> {
 /// started a Rework.
 #[expect(
     clippy::too_many_arguments,
-    reason = "takes one parameter per input instead of a parameter struct; deepening candidate"
+    reason = "seven inputs for one findings update; an update struct would collapse these"
 )]
 fn apply_findings(
     run: &mut Run,
@@ -743,7 +743,7 @@ impl UpdateRun {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "does several steps in one function; deepening candidate"
+        reason = "checks every `run update` field in one function"
     )]
     pub(crate) fn validate(&self) -> Result<(), String> {
         self.activity.validate(MAX_NOTE_BYTES)?;
@@ -905,7 +905,7 @@ fn split_pair<'a>(flag: &str, value: &'a str) -> Result<(&'a str, &'a str), Stri
 
 #[expect(
     clippy::too_many_lines,
-    reason = "does several steps in one function; deepening candidate"
+    reason = "parses every `run update` option in one match"
 )]
 pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, String> {
     let mut update =
@@ -1259,7 +1259,7 @@ impl RunStore {
     /// Like [`update`](Self::update), reading commits for findings through `git`.
     #[expect(
         clippy::too_many_lines,
-        reason = "does several steps in one function; deepening candidate"
+        reason = "applies every update field, side effect and timeline change under one lock"
     )]
     pub(crate) fn update_with(
         &self,

@@ -421,7 +421,7 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
 
 #[expect(
     clippy::too_many_lines,
-    reason = "does several steps in one function; deepening candidate"
+    reason = "formats every section of the next-step instructions as one long string builder"
 )]
 pub(crate) fn render(next: &Next) -> String {
     let mut out = format!("Run {}: {}\n", next.run, shown(&next.title));

@@ -579,7 +579,7 @@ struct PreparedPr {
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "takes one parameter per input instead of a parameter struct; deepening candidate"
+    reason = "seven inputs; a struct for the Azure context would collapse these"
 )]
 fn open_azure(
     run: &PrRun,
@@ -691,7 +691,7 @@ fn open_azure(
 /// Nothing is pushed unless the checks pass and `gh` can see the repository. It never forces a push.
 #[expect(
     clippy::too_many_lines,
-    reason = "does several steps in one function; deepening candidate"
+    reason = "validates the worktree, pushes, finds or creates the PR for both providers"
 )]
 pub(crate) fn open(
     run: &PrRun,
@@ -912,7 +912,7 @@ pub(crate) fn open(
 /// Records the pull request on a running run and returns the result.
 #[expect(
     clippy::too_many_arguments,
-    reason = "takes one parameter per input instead of a parameter struct; deepening candidate"
+    reason = "seven inputs describing the opened PR; an Opened-like struct would collapse these"
 )]
 fn finish(
     run: &PrRun,

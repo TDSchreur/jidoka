@@ -134,7 +134,7 @@ fn percentile(sorted: &[u64], p: f64) -> f64 {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "does several steps in one function; deepening candidate"
+    reason = "reads every root, categorizes requests and builds notes in one function"
 )]
 pub(crate) fn pool(
     runs: &[Run],

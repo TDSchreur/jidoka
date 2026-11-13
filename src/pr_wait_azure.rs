@@ -318,7 +318,7 @@ fn result(
 
 #[expect(
     clippy::too_many_lines,
-    reason = "does several steps in one function; deepening candidate"
+    reason = "walks iterations, statuses and policy evaluations into check results in one go"
 )]
 fn checks_for(
     pr: &AzurePr,

@@ -563,7 +563,7 @@ pub(crate) fn collect(
 
 #[expect(
     clippy::too_many_lines,
-    reason = "does several steps in one function; deepening candidate"
+    reason = "finds overlapping runs, reads all agent logs and merges usage in one function"
 )]
 fn collect_limited(
     target: &Run,
@@ -827,7 +827,7 @@ impl Collection {
     #[cfg(test)]
     #[expect(
         clippy::too_many_arguments,
-        reason = "takes one parameter per input instead of a parameter struct; deepening candidate"
+        reason = "passes each channel and setting separately; a hook struct would collapse these"
     )]
     pub(crate) fn collect_paused(
         &self,

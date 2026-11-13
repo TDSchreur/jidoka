@@ -13,7 +13,7 @@ use std::{
 /// Creates a run on the Jidoka server at `server` and returns its id.
 #[expect(
     clippy::too_many_arguments,
-    reason = "takes one parameter per input instead of a parameter struct; deepening candidate"
+    reason = "seven inputs mirror the NewRun body fields; passing NewRun directly would collapse these"
 )]
 pub(crate) fn start_run(
     server: &str,

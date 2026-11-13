@@ -57,7 +57,7 @@ fn git_problem(what: &str, error: &str) -> ToolProblem {
 /// Every refusal comes before anything is removed. `cwd` is where the command runs.
 #[expect(
     clippy::too_many_lines,
-    reason = "does several steps in one function; deepening candidate"
+    reason = "checks PR merge state, then removes worktree and branch with a step report for each"
 )]
 pub(crate) fn cleanup(
     run: &Recorded,

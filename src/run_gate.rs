@@ -242,7 +242,7 @@ pub(crate) fn advance(run: &mut Run, git: &dyn Git, tool: &dyn pr_wait::Gh) -> R
 
 #[expect(
     clippy::too_many_lines,
-    reason = "does several steps in one function; deepening candidate"
+    reason = "collects gate failures for every stage kind before applying the transition"
 )]
 fn advance_with_clock(
     run: &mut Run,
