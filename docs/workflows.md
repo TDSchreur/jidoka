@@ -84,7 +84,7 @@ flowchart TB
     implfast -->|/jidoka-fast skips Check| pr
 ```
 
-`jidoka install` also installs `jidoka-codebase-design` and `jidoka-triage`, which no workflow calls directly, and `jidoka-setup`, which you run yourself (see below).
+`jidoka install` also installs `jidoka-codebase-design`, `jidoka-improve-architecture` (finds deepening opportunities and files the one you pick as a spec) and `jidoka-triage`, which no workflow calls directly, and `jidoka-setup`, which you run yourself (see below).
 
 ## Agent comparison
 
