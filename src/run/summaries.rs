@@ -48,6 +48,7 @@ impl SummariesUpdate {
         Ok(())
     }
 
+    /// Checks every summary text before anything is applied.
     pub(super) fn validate(&self) -> Result<(), String> {
         for summary in self.summaries.values().flatten() {
             check_text("Stage summary", summary, MAX_NOTE_BYTES)?;

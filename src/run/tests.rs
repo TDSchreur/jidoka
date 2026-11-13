@@ -1188,3 +1188,19 @@ fn gate_record_rejects_run_change_reverted_during_validation() {
         "stale gate must not be recorded"
     );
 }
+
+#[test]
+fn json_null_clears_and_missing_keeps_each_field_group() {
+    let cleared: UpdateRun = serde_json::from_str(
+        r#"{"status":"running","tickets":null,"model_routing":null,"summaries":{"build":null}}"#,
+    )
+    .unwrap();
+    assert!(matches!(cleared.tickets.tickets, FieldUpdate::Clear));
+    assert!(matches!(cleared.routing.model_routing, FieldUpdate::Clear));
+    let kept: UpdateRun = serde_json::from_str(r#"{"status":"running"}"#).unwrap();
+    assert!(kept.tickets.tickets.is_keep() && kept.routing.model_routing.is_keep());
+    assert_eq!(
+        serde_json::to_value(&cleared).unwrap()["summaries"],
+        serde_json::json!({"build": null})
+    );
+}

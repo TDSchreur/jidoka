@@ -17,6 +17,7 @@ macro_rules! help {
 }
 pub(super) use help;
 
+/// A report on the run as a whole, as submitted by an update.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct NewRunReport {
@@ -24,6 +25,7 @@ pub(crate) struct NewRunReport {
     pub(crate) text: String,
 }
 
+/// A report on one listed ticket, as submitted by an update.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct NewTicketReport {

@@ -44,16 +44,11 @@ impl RoutingUpdate {
         })?;
         let choice = ModelChoice::parse(choice)
             .map_err(|problem| format!("Invalid --model-routing for {name}: {problem}"))?;
-        let overrides = match &mut self.model_routing {
-            FieldUpdate::Keep => {
-                self.model_routing = FieldUpdate::Set(BTreeMap::new());
-                let FieldUpdate::Set(overrides) = &mut self.model_routing else {
-                    unreachable!("just set");
-                };
-                overrides
-            }
-            FieldUpdate::Set(overrides) => overrides,
-            FieldUpdate::Clear => return Err(repeated(flag)),
+        if self.model_routing.is_keep() {
+            self.model_routing = FieldUpdate::Set(BTreeMap::new());
+        }
+        let FieldUpdate::Set(overrides) = &mut self.model_routing else {
+            return Err(repeated(flag));
         };
         if overrides.insert(stage, choice).is_some() {
             return Err(format!("Model for {name} given twice"));
