@@ -7,7 +7,7 @@ use std::{
 
 /// The folder holding the plans that belong to the runs file at `runs`: `plans` beside `runs.json`.
 pub(crate) fn plans_dir(runs: &Path) -> PathBuf {
-    runs.parent().unwrap_or_else(|| Path::new("")).join("plans")
+    crate::server::data_dir(runs).join("plans")
 }
 
 /// `<plans dir>/<run id>.md`; nothing is created.

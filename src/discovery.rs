@@ -3,7 +3,7 @@
 
 use crate::{
     client::{Probe, probe_dashboard},
-    server::{LOOPBACK_HOST, write_token_file},
+    server::{LOOPBACK_HOST, write_private_file},
 };
 use serde::{Deserialize, Serialize};
 use std::{io, path::Path};
@@ -29,7 +29,7 @@ pub(crate) struct Running {
 /// Writes `dashboard.json` into `dir`, replacing any file there; it is private to the user like the CLI token.
 pub(crate) fn write(dir: &Path, dashboard: &Dashboard) -> io::Result<()> {
     let json = serde_json::to_string(dashboard).map_err(io::Error::other)?;
-    write_token_file(&dir.join(FILE_NAME), &json)
+    write_private_file(&dir.join(FILE_NAME), &json)
 }
 
 /// The file's content, or `None` when it is missing or malformed.
@@ -97,5 +97,29 @@ mod tests {
         // Port 1 is never a test server's port.
         write(dir.0.path(), &entry(1, std::process::id())).unwrap();
         assert!(running(dir.0.path()).is_none());
+    }
+
+    #[test]
+    fn a_live_dashboard_with_another_pid_is_no_dashboard() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind((LOOPBACK_HOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let pid = std::process::id() + 1;
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 512];
+            let _ = stream.read(&mut request).unwrap();
+            let body = format!(r#"{{"pid":{pid},"version":"dev abc"}}"#);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        let dir = TestDir::new();
+        write(dir.0.path(), &entry(port, std::process::id())).unwrap();
+        assert!(running(dir.0.path()).is_none());
+        server.join().unwrap();
     }
 }

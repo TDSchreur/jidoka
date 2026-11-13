@@ -137,12 +137,17 @@ pub(crate) fn token_path(runs: &Path) -> PathBuf {
     runs.with_file_name("session-token")
 }
 
-/// Writes `token` to `path` so no reader sees a partial file; on Unix only the user can read it and the
-/// directory is made private. Also used for the discovery file.
-pub(crate) fn write_token_file(path: &Path, token: &str) -> io::Result<()> {
+/// The data folder: the folder that holds `runs.json`, and with it the CLI token, `dashboard.json` and plans.
+pub(crate) fn data_dir(runs: &Path) -> &Path {
+    runs.parent().unwrap_or(Path::new("."))
+}
+
+/// Writes `contents` to `path` so no reader sees a partial file; on Unix only the user can read it and the
+/// directory is made private. Used for the CLI token and the discovery file.
+pub(crate) fn write_private_file(path: &Path, contents: &str) -> io::Result<()> {
     static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let first = COUNTER.fetch_add(TOKEN_TEMP_ATTEMPTS, std::sync::atomic::Ordering::Relaxed);
-    write_token_file_from(path, token, first)
+    write_private_file_from(path, contents, first)
 }
 
 /// How many temporary names a token write tries before it gives up.
@@ -156,9 +161,9 @@ fn token_temp_path(path: &Path, counter: u32) -> PathBuf {
     dir.join(format!(".{name}.{}.{counter}.tmp", std::process::id()))
 }
 
-/// `write_token_file`, trying the temporary names from `first_counter` on. A name left by a killed dashboard
+/// `write_private_file`, trying the temporary names from `first_counter` on. A name left by a killed dashboard
 /// (same pid, same counter) is skipped; after `TOKEN_TEMP_ATTEMPTS` taken names the error is returned.
-fn write_token_file_from(path: &Path, token: &str, first_counter: u32) -> io::Result<()> {
+fn write_private_file_from(path: &Path, contents: &str, first_counter: u32) -> io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     #[cfg(unix)]
     {
@@ -173,7 +178,7 @@ fn write_token_file_from(path: &Path, token: &str, first_counter: u32) -> io::Re
     let mut attempt = 0;
     loop {
         let temp = token_temp_path(path, first_counter.wrapping_add(attempt));
-        match write_new_file(&temp, token) {
+        match write_new_file(&temp, contents) {
             Err(error)
                 if error.kind() == io::ErrorKind::AlreadyExists
                     && attempt + 1 < TOKEN_TEMP_ATTEMPTS =>
@@ -985,12 +990,12 @@ fn build_rocket_with_tokens(
 /// Makes this dashboard findable once its port is bound: stops with `AlreadyRunning` when another live dashboard
 /// is in the data folder, otherwise writes the CLI token and then `dashboard.json`. Returns why it stopped, if it did.
 fn announce(runs: &Path, token: &str, port: u16) -> Option<LiftoffStop> {
-    let dir = runs.parent().unwrap_or(Path::new("."));
+    let dir = data_dir(runs);
     if crate::discovery::running(dir).is_some() {
         return Some(LiftoffStop::AlreadyRunning);
     }
     let token_file = token_path(runs);
-    if let Err(error) = write_token_file(&token_file, token) {
+    if let Err(error) = write_private_file(&token_file, token) {
         return Some(LiftoffStop::Failed(format!(
             "could not write the CLI token to {}: {error}",
             token_file.display()

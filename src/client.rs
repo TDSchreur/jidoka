@@ -35,23 +35,6 @@ pub(crate) fn start_run(
     Ok(run.id)
 }
 
-/// Sends a CLI run update (status and metadata options) to the Jidoka server at `server`.
-#[cfg(test)]
-pub(crate) fn report_run(
-    server: &str,
-    token_file: &Path,
-    id: &str,
-    status: &str,
-    options: &[&str],
-) -> Result<(), Box<dyn std::error::Error>> {
-    send_update(
-        server,
-        token_file,
-        id,
-        &prepare_update(id, status, options)?,
-    )
-}
-
 /// The update for run `id`, or why the id, status or options are refused. Needs no server.
 pub(crate) fn prepare_update(
     id: &str,
@@ -358,9 +341,7 @@ mod tests {
             None,
         )
         .unwrap();
-        report_run(
-            &server.address,
-            &server.token_file,
+        prepare_update(
             &id,
             "running",
             &[
@@ -370,6 +351,7 @@ mod tests {
                 repo.to_str().unwrap(),
             ],
         )
+        .and_then(|update| send_update(&server.address, &server.token_file, &id, &update))
         .unwrap();
         for gate in ["no-actionable-findings", "verified", "verified"] {
             let body = serde_json::json!({"gate": gate, "passed":true, "evidence":"reviewed"});
@@ -437,7 +419,9 @@ mod tests {
         ];
         let mut snapshots = Vec::new();
         for (status, options) in steps {
-            report_run(&server.address, &server.token_file, &id, status, options).unwrap();
+            prepare_update(&id, status, options)
+                .and_then(|update| send_update(&server.address, &server.token_file, &id, &update))
+                .unwrap();
             snapshots.push(server.runs()[1].clone());
         }
         assert_eq!(snapshots[0]["activity"], "Implementing");
@@ -460,14 +444,9 @@ mod tests {
                 >= snapshots[0]["updated_at"].as_u64().unwrap()
         );
 
-        report_run(
-            &server.address,
-            &server.token_file,
-            "42",
-            "blocked",
-            &["--blocking-reason", "Legacy run"],
-        )
-        .unwrap();
+        prepare_update("42", "blocked", &["--blocking-reason", "Legacy run"])
+            .and_then(|update| send_update(&server.address, &server.token_file, "42", &update))
+            .unwrap();
         drop(server);
 
         let restarted = TestServer::start(&path);
@@ -485,11 +464,13 @@ mod tests {
     fn cli_reports_rejections_and_unreachable_server() {
         let dir = TestDir::new();
         let server = TestServer::start(&dir.0.path().join("runs.json"));
-        let missing =
-            report_run(&server.address, &server.token_file, "123", "running", &[]).unwrap_err();
+        let missing = prepare_update("123", "running", &[])
+            .and_then(|update| send_update(&server.address, &server.token_file, "123", &update))
+            .unwrap_err();
         assert!(missing.to_string().contains("Not found"), "{missing}");
-        let invalid =
-            report_run(&server.address, &server.token_file, "12a", "running", &[]).unwrap_err();
+        let invalid = prepare_update("12a", "running", &[])
+            .and_then(|update| send_update(&server.address, &server.token_file, "12a", &update))
+            .unwrap_err();
         assert_eq!(invalid.to_string(), "Invalid run id");
         // Nothing listens on port 1. A port that was just freed could be taken by another test's server.
         let address = NOTHING_LISTENS.to_string();
@@ -538,7 +519,9 @@ mod tests {
         drop(first);
         let second = TestServer::start(&path);
         assert_ne!(token_of(&second), old, "a restart issues a new token");
-        report_run(&second.address, &second.token_file, &id, "running", &[]).unwrap();
+        prepare_update(&id, "running", &[])
+            .and_then(|update| send_update(&second.address, &second.token_file, &id, &update))
+            .unwrap();
         assert_eq!(second.runs()[0]["stage"], "define");
     }
 
@@ -563,7 +546,8 @@ mod tests {
         assert!(!missing.contains(&token), "{missing}");
         // A directory in place of the file is unreadable.
         fs::create_dir(&server.token_file).unwrap();
-        let unreadable = report_run(&server.address, &server.token_file, "1", "running", &[])
+        let unreadable = prepare_update("1", "running", &[])
+            .and_then(|update| send_update(&server.address, &server.token_file, "1", &update))
             .unwrap_err()
             .to_string();
         assert!(unreadable.contains("jidoka dashboard"), "{unreadable}");
@@ -585,7 +569,8 @@ mod tests {
             !error.contains("stale-token-value") && !error.contains(&real),
             "{error}"
         );
-        let error = report_run(&server.address, &stale, "1", "running", &[])
+        let error = prepare_update("1", "running", &[])
+            .and_then(|update| send_update(&server.address, &stale, "1", &update))
             .unwrap_err()
             .to_string();
         assert!(error.contains("restart 'jidoka dashboard'"), "{error}");
@@ -637,14 +622,9 @@ mod tests {
         )
         .unwrap();
         fs::write(&policy, both_agents("opus", "gpt-6-luna")).unwrap();
-        report_run(
-            &server.address,
-            &server.token_file,
-            &id,
-            "running",
-            &["--activity", "go"],
-        )
-        .unwrap();
+        prepare_update(&id, "running", &["--activity", "go"])
+            .and_then(|update| send_update(&server.address, &server.token_file, &id, &update))
+            .unwrap();
         // The run holds only the Codex entry as it was at the start, and a continued session sees the same.
         let run = fetch_run(&server.address, &id).unwrap();
         assert!(crate::inspect::render(&run).contains("Model routing codex"));
@@ -653,14 +633,9 @@ mod tests {
         assert_eq!(routing.stages[&Stage::Check].model, "gpt-6-astra");
         assert_eq!(routing.stages.len(), 1);
         // A per-run override keeps working on the recorded selection.
-        report_run(
-            &server.address,
-            &server.token_file,
-            &id,
-            "running",
-            &["--model-routing", "check=opus:low"],
-        )
-        .unwrap();
+        prepare_update(&id, "running", &["--model-routing", "check=opus:low"])
+            .and_then(|update| send_update(&server.address, &server.token_file, &id, &update))
+            .unwrap();
         let run = fetch_run(&server.address, &id).unwrap();
         assert!(
             run.model_routing
@@ -722,9 +697,7 @@ mod tests {
             None,
         )
         .unwrap();
-        report_run(
-            &server.address,
-            &server.token_file,
+        prepare_update(
             &id,
             "blocked",
             &[
@@ -752,6 +725,7 @@ mod tests {
                 "Need a decision",
             ],
         )
+        .and_then(|update| send_update(&server.address, &server.token_file, &id, &update))
         .unwrap();
         let run = fetch_run(&server.address, &id).unwrap();
         let text = crate::inspect::render(&run);
@@ -779,14 +753,9 @@ mod tests {
             fetch_run(&server.address, "1x").unwrap_err().to_string(),
             "Invalid run id"
         );
-        let rejected = report_run(
-            &server.address,
-            &server.token_file,
-            &id,
-            "running",
-            &["--ticket-status", "ghost=done"],
-        )
-        .unwrap_err();
+        let rejected = prepare_update(&id, "running", &["--ticket-status", "ghost=done"])
+            .and_then(|update| send_update(&server.address, &server.token_file, &id, &update))
+            .unwrap_err();
         assert!(
             rejected.to_string().contains("No ticket ghost"),
             "{rejected}"

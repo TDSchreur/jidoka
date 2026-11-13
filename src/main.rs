@@ -37,11 +37,7 @@ mod usage_logs;
 use client::{fetch_run, fetch_runs, start_run};
 use run::UPDATE_HELP;
 use server::{DEFAULT_PORT, serve};
-use std::{
-    env, io,
-    path::{Path, PathBuf},
-    process::ExitCode,
-};
+use std::{env, io, path::PathBuf, process::ExitCode};
 
 const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...   (asks which agents when none are given on a terminal; else JIDOKA_AGENT, JIDOKA_CLAUDE_CONFIG_DIRS)\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run next <id> [--json]   (current stage, instructions, open gates, allowed moves, summaries, tickets and routed model)\n  jidoka run gate <id> <gate> <pass|fail> [--check <name>] [--evidence <text>]\n  jidoka run advance <id> [--force --reason <text>]   (--force skips the gates, still follows the stage graph and records the reason)\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <running|blocked|done> [options]   (never changes the stage; --rework <n> from Check returns to Build)\n  jidoka --help | --version\n\nSetup:\n  `jidoka install` writes an install record (agents and Claude config dirs) next to the model routing policy. A command run before Setup prints a hint to run `jidoka install`; after an upgrade, the first command refreshes the installed skills automatically.";
 
@@ -320,9 +316,7 @@ impl pr_open::RunApi for ServerApi {
 /// request, or finds the one that is open, and records it on the run.
 fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
     let parsed = pr_open::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
-    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("Invalid run id".into());
-    }
+    client::check_run_id(id)?;
     let run = fetch_run_cli(id)?;
     let info = pr_open::PrRun {
         id: id.to_string(),
@@ -371,9 +365,7 @@ fn run_check_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::erro
 /// `jidoka run sync <run-id>`: reads the state of the run's pull request from its host and brings the run in
 /// line with it: a merged pull request finishes the run, a closed one blocks it, and an open one changes nothing.
 fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Error>> {
-    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("Invalid run id".into());
-    }
+    client::check_run_id(id)?;
     let run = fetch_run_cli(id)?;
     let Some(url) = run.pr.as_deref() else {
         return Err("The run has no pull request recorded. Record it with `jidoka run update <id> running --pr <url>`.".into());
@@ -452,9 +444,7 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
 /// outcome's; 1 is a problem.
 fn pr_sync_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
     let parsed = pr_sync::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
-    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("Invalid run id".into());
-    }
+    client::check_run_id(id)?;
     let run = fetch_run_cli(id)?;
     let text =
         |value: serde_json::Value, fallback: &str| value.as_str().unwrap_or(fallback).to_string();
@@ -480,9 +470,7 @@ fn pr_sync_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
 fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error::Error>> {
     let (mut wait_options, json) =
         pr_wait::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
-    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("Invalid run id".into());
-    }
+    client::check_run_id(id)?;
     let gh = pr_wait::RealGh;
     let run = fetch_run_cli(id)?;
     if !run.pr.as_deref().is_some_and(pr_wait::is_azure_pr_url) {
@@ -746,7 +734,7 @@ fn dashboard(requested: Option<u16>, usage: bool) -> Result<(), Box<dyn std::err
     let project =
         repository::canonical_repository(&dir).unwrap_or_else(|| dir.display().to_string());
     let runs = runs_path()?;
-    if let Some(running) = discovery::running(runs.parent().unwrap_or(Path::new("."))) {
+    if let Some(running) = discovery::running(server::data_dir(&runs)) {
         println!(
             "Dashboard already running (pid {}): {}",
             running.pid,
@@ -805,7 +793,7 @@ fn cli_address() -> Result<String, String> {
         return Ok(address);
     }
     let runs = runs_path().map_err(|error| error.to_string())?;
-    discovery::running(runs.parent().unwrap_or(Path::new(".")))
+    discovery::running(server::data_dir(&runs))
         .map(|running| format!("{}:{}", server::LOOPBACK_HOST, running.port))
         .ok_or_else(|| {
             "no Jidoka dashboard is running; start it with 'jidoka dashboard'".to_string()
