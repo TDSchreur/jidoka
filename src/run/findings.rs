@@ -128,7 +128,7 @@ impl FindingsUpdate {
             if !finding_checks().any(|name| name == finding.check) {
                 let names: Vec<_> = finding_checks().collect();
                 return Err(format!(
-                    "Unknown check {:?} for --finding; use one of: {}",
+                    "Unknown check {:?} for --finding; use one of: {} (Standards and Spec findings of jidoka-code-review use code-review)",
                     finding.check,
                     names.join(", ")
                 ));
