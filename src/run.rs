@@ -1,8 +1,10 @@
 use crate::pr_state::PrStatus;
-use crate::routing::{ModelChoice, ModelRouting};
+use crate::routing::ModelRouting;
 use crate::stages::{self, Destination};
 use crate::usage::{Collection, Mark, Pause, PauseKind, Usage};
 use findings::{FindingsContext, FindingsUpdate};
+use model_routing::RoutingUpdate;
+use reports::ReportsUpdate;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -11,18 +13,27 @@ use std::{
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
+use summaries::SummariesUpdate;
+use tickets::TicketsUpdate;
 
 mod findings;
+mod model_routing;
+mod reports;
+mod summaries;
+mod tickets;
 
 pub(crate) const UPDATE_HELP: &str = concat!(
-    "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework (on a running run in Check, --rework <n> also moves it back to Build for a Rework and needs a new --finding in the same update; elsewhere it only sets the count)\n  --mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n",
+    "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework (on a running run in Check, --rework <n> also moves it back to Build for a Rework and needs a new --finding in the same update; elsewhere it only sets the count)\n  --mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n",
+    tickets::help!(),
     findings::help!(),
-    "  --ticket-report <reference> <skill|activity> <text> (repeat)\n  --run-report <skill|activity> <text> (repeat)\n  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `done` is only accepted in Finish and needs a Finish summary)\n  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n  --model-routing <define|build|check|finish>=<model>[:<effort>] (repeat; the flags are all of the run's overrides) | --clear-model-routing\nOmitted fields are preserved; clear flags remove them."
+    reports::help!(),
+    summaries::help!(),
+    "  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n",
+    model_routing::help!(),
+    "Omitted fields are preserved; clear flags remove them."
 );
 /// Highest Rework count a run can report.
 pub(crate) const MAX_REWORK: u32 = 99;
-/// Tickets one update may list; a spec split into more pieces than this is too big to track on one board.
-const MAX_TICKETS: usize = 100;
 /// Sessions one update may attribute to a run; a run rarely spans more than a handful of agent sessions.
 const MAX_SESSIONS: usize = 20;
 /// Sessions kept per run; the oldest are dropped first.
@@ -46,8 +57,6 @@ const SESSION_ID_LENGTH: std::ops::RangeInclusive<usize> = 8..=100;
 /// 7 is git's default abbreviation and 64 a full SHA-256 id. Stricter than `run_check`'s `ACCEPTED_COMMIT_ID_LENGTH`,
 /// which must also read older records.
 const BASE_COMMIT_LENGTH: std::ops::RangeInclusive<usize> = 7..=64;
-/// Ticket reports or run reports one update may submit; matches `MAX_TICKETS`, one report per ticket.
-const MAX_REPORTS_PER_UPDATE: usize = 100;
 /// Ticket reports or run reports a run may hold in total, so a long run cannot grow its record without bound.
 pub(crate) const MAX_REPORTS_PER_RUN: usize = 1000;
 
@@ -230,13 +239,6 @@ pub(crate) enum ReportKind {
     Activity,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct NewRunReport {
-    pub(crate) kind: ReportKind,
-    pub(crate) text: String,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum RunEventKind {
@@ -260,14 +262,6 @@ pub(crate) struct RunReport {
     pub(crate) text: String,
     pub(crate) stage: Stage,
     pub(crate) at: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct NewTicketReport {
-    pub(crate) ticket: String,
-    pub(crate) kind: ReportKind,
-    pub(crate) text: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -309,14 +303,6 @@ pub(crate) struct Finding {
     /// When its state was last set to something other than open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) resolved_at: Option<u64>,
-}
-
-/// A ticket as listed by an update; its status is carried over from the stored list or starts pending.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct NewTicket {
-    pub(crate) reference: String,
-    pub(crate) title: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -393,27 +379,19 @@ pub(crate) struct UpdateRun {
     pub(crate) spec: FieldUpdate,
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub(crate) pr: FieldUpdate,
-    /// The whole ordered ticket list; null removes it.
-    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
-    pub(crate) tickets: FieldUpdate<Vec<NewTicket>>,
-    /// New statuses by ticket reference, applied after `tickets`.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) ticket_status: BTreeMap<String, TicketStatus>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) ticket_reports: Vec<NewTicketReport>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) run_reports: Vec<NewRunReport>,
+    #[serde(flatten)]
+    pub(crate) tickets: TicketsUpdate,
+    #[serde(flatten)]
+    pub(crate) reports: ReportsUpdate,
     #[serde(flatten)]
     pub(crate) findings: FindingsUpdate,
-    /// Stage summaries to set; null removes that stage's summary. Other stages keep theirs.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) summaries: BTreeMap<Stage, Option<String>>,
+    #[serde(flatten)]
+    pub(crate) summaries: SummariesUpdate,
     /// Agent sessions to attribute to this run, added to the ones already recorded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) sessions: Vec<String>,
-    /// The run's whole set of model-routing overrides; null removes them.
-    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
-    pub(crate) model_routing: FieldUpdate<BTreeMap<Stage, ModelChoice>>,
+    #[serde(flatten)]
+    pub(crate) routing: RoutingUpdate,
 }
 
 // Missing fields preserve stored values; null clears them; values replace them.
@@ -593,21 +571,15 @@ impl UpdateRun {
             base_commit: FieldUpdate::Keep,
             spec: FieldUpdate::Keep,
             pr: FieldUpdate::Keep,
-            tickets: FieldUpdate::Keep,
-            ticket_status: BTreeMap::new(),
-            ticket_reports: Vec::new(),
-            run_reports: Vec::new(),
+            tickets: TicketsUpdate::default(),
+            reports: ReportsUpdate::default(),
             findings: FindingsUpdate::default(),
-            summaries: BTreeMap::new(),
+            summaries: SummariesUpdate::default(),
             sessions: Vec::new(),
-            model_routing: FieldUpdate::Keep,
+            routing: RoutingUpdate::default(),
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "checks every `run update` field in one function"
-    )]
     pub(crate) fn validate(&self) -> Result<(), String> {
         self.activity.validate(MAX_NOTE_BYTES)?;
         self.blocking_reason.validate(MAX_NOTE_BYTES)?;
@@ -660,57 +632,10 @@ impl UpdateRun {
         if let FieldUpdate::Set(value) = &self.pr {
             check_plain_url("Pull request", value)?;
         }
-        if let FieldUpdate::Set(list) = &self.tickets {
-            if list.len() > MAX_TICKETS {
-                return Err(format!("At most {MAX_TICKETS} tickets can be listed"));
-            }
-            for (index, ticket) in list.iter().enumerate() {
-                check_reference("Ticket reference", &ticket.reference, MAX_PATH_BYTES)?;
-                if ticket.reference.chars().any(char::is_whitespace) {
-                    return Err(format!(
-                        "Ticket reference {:?} must not contain spaces",
-                        ticket.reference
-                    ));
-                }
-                check_text("Ticket title", &ticket.title, MAX_TEXT_BYTES)?;
-                if list[..index]
-                    .iter()
-                    .any(|other| other.reference == ticket.reference)
-                {
-                    return Err(format!("Ticket {} is listed twice", ticket.reference));
-                }
-            }
-        }
-        if self.ticket_reports.len() > MAX_REPORTS_PER_UPDATE {
-            return Err(format!(
-                "At most {MAX_REPORTS_PER_UPDATE} ticket reports can be submitted at once"
-            ));
-        }
-        for report in &self.ticket_reports {
-            check_reference("Ticket reference", &report.ticket, MAX_PATH_BYTES)?;
-            if report.ticket.chars().any(char::is_whitespace) {
-                return Err("Ticket reference must not contain spaces".into());
-            }
-            check_text("Ticket report", &report.text, MAX_TEXT_BYTES)?;
-            if has_control(&report.text) {
-                return Err("Ticket report must not contain control characters".into());
-            }
-        }
-        if self.run_reports.len() > MAX_REPORTS_PER_UPDATE {
-            return Err(format!(
-                "At most {MAX_REPORTS_PER_UPDATE} run reports can be submitted at once"
-            ));
-        }
-        for report in &self.run_reports {
-            check_text("Run report", &report.text, MAX_TEXT_BYTES)?;
-            if has_control(&report.text) {
-                return Err("Run report must not contain control characters".into());
-            }
-        }
+        self.tickets.validate()?;
+        self.reports.validate()?;
         self.findings.validate()?;
-        for summary in self.summaries.values().flatten() {
-            check_text("Stage summary", summary, MAX_NOTE_BYTES)?;
-        }
+        self.summaries.validate()?;
         for session in &self.sessions {
             check_session_id(session)?;
         }
@@ -730,15 +655,13 @@ fn split_pair<'a>(flag: &str, value: &'a str) -> Result<(&'a str, &'a str), Stri
         .ok_or_else(|| format!("{flag} needs the form <name>=<value>, got {value:?}"))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "parses every `run update` option in one match"
-)]
+fn repeated(flag: &str) -> String {
+    format!("Repeated or conflicting run update option: {flag}")
+}
+
 pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, String> {
     let mut update =
         UpdateRun::new(serde_json::from_value(status.into()).map_err(|e| e.to_string())?);
-    let mut tickets: Vec<NewTicket> = Vec::new();
-    let mut overrides: BTreeMap<Stage, ModelChoice> = BTreeMap::new();
     let mut args = options.iter();
     while let Some(flag) = args.next() {
         let mut next_value = || {
@@ -746,11 +669,10 @@ pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, 
                 .filter(|value| !value.starts_with("--"))
                 .ok_or_else(|| format!("Missing value for {flag}\n{UPDATE_HELP}"))
         };
-        let repeated = || format!("Repeated or conflicting run update option: {flag}");
         match *flag {
             "--rework" | "--clear-rework" => {
                 if !update.rework.is_keep() {
-                    return Err(repeated());
+                    return Err(repeated(flag));
                 }
                 update.rework = if *flag == "--clear-rework" {
                     FieldUpdate::Clear
@@ -764,7 +686,7 @@ pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, 
             }
             "--mode" | "--clear-mode" => {
                 if !update.mode.is_keep() {
-                    return Err(repeated());
+                    return Err(repeated(flag));
                 }
                 update.mode = if *flag == "--clear-mode" {
                     FieldUpdate::Clear
@@ -776,52 +698,20 @@ pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, 
                 };
                 continue;
             }
-            "--ticket" => {
-                if !update.tickets.is_keep() && tickets.is_empty() {
-                    return Err(repeated());
-                }
-                let value = next_value()?;
-                let (reference, title) = value
-                    .split_once(char::is_whitespace)
-                    .map(|(reference, title)| (reference, title.trim()))
-                    .filter(|(_, title)| !title.is_empty())
-                    .ok_or_else(|| {
-                        format!("--ticket needs \"<reference> <title>\", got {value:?}")
-                    })?;
-                tickets.push(NewTicket {
-                    reference: reference.to_string(),
-                    title: title.to_string(),
-                });
+            "--ticket" | "--clear-tickets" | "--ticket-status" => {
+                update.tickets.parse_option(flag, &mut next_value)?;
                 continue;
             }
-            "--clear-tickets" => {
-                if !update.tickets.is_keep() || !tickets.is_empty() {
-                    return Err(repeated());
-                }
-                update.tickets = FieldUpdate::Clear;
+            "--model-routing" | "--clear-model-routing" => {
+                update.routing.parse_option(flag, &mut next_value)?;
                 continue;
             }
-            "--model-routing" => {
-                if !update.model_routing.is_keep() {
-                    return Err(repeated());
-                }
-                let value = next_value()?;
-                let (name, choice) = split_pair(flag, value)?;
-                let stage: Stage = serde_json::from_value(name.into()).map_err(|_| {
-                    format!("Unknown stage {name:?} for --model-routing; use define, build, check or finish")
-                })?;
-                let choice = ModelChoice::parse(choice)
-                    .map_err(|problem| format!("Invalid --model-routing for {name}: {problem}"))?;
-                if overrides.insert(stage, choice).is_some() {
-                    return Err(format!("Model for {name} given twice"));
-                }
+            "--run-report" | "--ticket-report" => {
+                update.reports.parse_option(flag, &mut next_value)?;
                 continue;
             }
-            "--clear-model-routing" => {
-                if !update.model_routing.is_keep() || !overrides.is_empty() {
-                    return Err(repeated());
-                }
-                update.model_routing = FieldUpdate::Clear;
+            "--summary" | "--clear-summary" => {
+                update.summaries.parse_option(flag, &mut next_value)?;
                 continue;
             }
             "--session" => {
@@ -832,65 +722,8 @@ pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, 
                 }
                 continue;
             }
-            "--run-report" => {
-                let kind = *next_value()?;
-                let text = *next_value()?;
-                let kind = serde_json::from_value(kind.into())
-                    .map_err(|_| "Run report kind must be skill or activity")?;
-                update.run_reports.push(NewRunReport {
-                    kind,
-                    text: text.to_string(),
-                });
-                continue;
-            }
-            "--ticket-report" => {
-                let reference = *next_value()?;
-                let kind = *next_value()?;
-                let text = *next_value()?;
-                let kind = serde_json::from_value(kind.into())
-                    .map_err(|_| "Ticket report kind must be skill or activity")?;
-                update.ticket_reports.push(NewTicketReport {
-                    ticket: reference.to_string(),
-                    kind,
-                    text: text.to_string(),
-                });
-                continue;
-            }
             "--finding" | "--finding-status" => {
                 update.findings.parse_option(flag, &mut next_value)?;
-                continue;
-            }
-            "--ticket-status" => {
-                let value = next_value()?;
-                let (reference, status) = value.rsplit_once('=').ok_or_else(|| {
-                    format!("--ticket-status needs <reference>=<status>, got {value:?}")
-                })?;
-                let status: TicketStatus = serde_json::from_value(status.into()).map_err(|_| {
-                    format!("Invalid ticket status {status:?}; use pending, in-progress or done")
-                })?;
-                if update
-                    .ticket_status
-                    .insert(reference.to_string(), status)
-                    .is_some()
-                {
-                    return Err(format!("Ticket status for {reference} given twice"));
-                }
-                continue;
-            }
-            "--summary" | "--clear-summary" => {
-                let value = next_value()?;
-                let (name, text) = if *flag == "--summary" {
-                    let (name, text) = split_pair(flag, value)?;
-                    (name, Some(text.to_string()))
-                } else {
-                    (*value, None)
-                };
-                let stage: Stage = serde_json::from_value(name.into()).map_err(|_| {
-                    format!("Unknown stage {name:?} for {flag}; use define, build, check or finish")
-                })?;
-                if update.summaries.insert(stage, text).is_some() {
-                    return Err(format!("Summary for {name} given twice"));
-                }
                 continue;
             }
             _ => {}
@@ -907,7 +740,7 @@ pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, 
             _ => return Err(format!("Unknown run update option: {flag}\n{UPDATE_HELP}")),
         };
         if !field.is_keep() {
-            return Err(repeated());
+            return Err(repeated(flag));
         }
         *field = if flag.starts_with("--clear-") {
             FieldUpdate::Clear
@@ -915,14 +748,30 @@ pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, 
             FieldUpdate::Set((*next_value()?).to_string())
         };
     }
-    if !tickets.is_empty() {
-        update.tickets = FieldUpdate::Set(tickets);
-    }
-    if !overrides.is_empty() {
-        update.model_routing = FieldUpdate::Set(overrides);
-    }
     update.validate()?;
     Ok(update)
+}
+
+/// Logs a Blocked or Resumed event when the update changed whether the run is blocked.
+fn record_block_change(run: &mut Run, was_blocked: bool, at: u64) {
+    let is_blocked = matches!(run.status, RunStatus::Blocked);
+    if was_blocked == is_blocked || run.events.len() >= MAX_EVENTS {
+        return;
+    }
+    run.events.push(RunEvent {
+        at,
+        kind: if is_blocked {
+            RunEventKind::Blocked
+        } else {
+            RunEventKind::Resumed
+        },
+        stage: run.stage,
+        reason: if is_blocked {
+            run.blocking_reason.clone()
+        } else {
+            None
+        },
+    });
 }
 
 pub(crate) fn updated_now() -> io::Result<u64> {
@@ -1054,10 +903,6 @@ impl RunStore {
     }
 
     /// Like [`update`](Self::update), reading commits for findings through `git`.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "applies every update field, side effect and timeline change under one lock"
-    )]
     pub(crate) fn update_with(
         &self,
         id: &str,
@@ -1125,116 +970,15 @@ impl RunStore {
                 next.stage.name()
             )));
         }
-        match update.tickets {
-            FieldUpdate::Keep => {}
-            FieldUpdate::Clear => next.tickets.clear(),
-            FieldUpdate::Set(list) => {
-                let old = std::mem::take(&mut next.tickets);
-                next.tickets = list
-                    .into_iter()
-                    .map(|ticket| Ticket {
-                        status: old
-                            .iter()
-                            .find(|kept| kept.reference == ticket.reference)
-                            .map_or(TicketStatus::Pending, |kept| kept.status),
-                        reference: ticket.reference,
-                        title: ticket.title,
-                    })
-                    .collect();
-            }
-        }
-        for (reference, status) in update.ticket_status {
-            let ticket = next
-                .tickets
-                .iter_mut()
-                .find(|ticket| ticket.reference == reference)
-                .ok_or_else(|| {
-                    io_invalid(format!(
-                        "No ticket {reference} is listed on this run; list it with --ticket first"
-                    ))
-                })?;
-            ticket.status = status;
-        }
-        if next
-            .tickets
-            .iter()
-            .filter(|t| t.status == TicketStatus::InProgress)
-            .count()
-            > 1
-        {
-            return Err(io_invalid("Only one ticket can be in progress at a time"));
-        }
-        if next.ticket_reports.len() + update.ticket_reports.len() > MAX_REPORTS_PER_RUN {
-            return Err(io_invalid(format!(
-                "A run can hold at most {MAX_REPORTS_PER_RUN} ticket reports"
-            )));
-        }
-        for report in update.ticket_reports {
-            if !next
-                .tickets
-                .iter()
-                .any(|ticket| ticket.reference == report.ticket)
-            {
-                return Err(io_invalid(format!(
-                    "No ticket {} is listed on this run",
-                    report.ticket
-                )));
-            }
-            next.ticket_reports.push(TicketReport {
-                ticket: report.ticket,
-                kind: report.kind,
-                text: report.text,
-                stage: next.stage,
-                at: updated_at,
-            });
-        }
-        if next.run_reports.len() + update.run_reports.len() > MAX_REPORTS_PER_RUN {
-            return Err(io_invalid(format!(
-                "A run can hold at most {MAX_REPORTS_PER_RUN} run reports"
-            )));
-        }
-        for report in update.run_reports {
-            next.run_reports.push(RunReport {
-                kind: report.kind,
-                text: report.text,
-                stage: next.stage,
-                at: updated_at,
-            });
-        }
-        match update.model_routing {
-            FieldUpdate::Keep => {}
-            FieldUpdate::Clear => {
-                if let Some(routing) = next.model_routing.as_mut() {
-                    routing.overrides.clear();
-                }
-            }
-            FieldUpdate::Set(overrides) => {
-                let routing = next.model_routing.as_mut().ok_or_else(|| {
-                    io_invalid("This run has no model routing selection to override")
-                })?;
-                routing.overrides = overrides;
-                routing.validate().map_err(io_invalid)?;
-            }
-        }
-        for (stage, summary) in update.summaries {
-            match summary {
-                Some(text) => {
-                    next.summaries.insert(stage, text);
-                }
-                None => {
-                    next.summaries.remove(&stage);
-                }
-            }
-        }
-        if update.status == RunStatus::Done
-            && next
-                .summaries
-                .get(&Stage::Finish)
-                .is_none_or(|text| text.trim().is_empty())
-        {
-            return Err(io_invalid(
-                "Finish cannot be marked done without a Finish summary; add --summary finish=<what shipped>",
-            ));
+        update.tickets.apply(&mut next).map_err(io_invalid)?;
+        update
+            .reports
+            .apply(&mut next, updated_at)
+            .map_err(io_invalid)?;
+        update.routing.apply(&mut next).map_err(io_invalid)?;
+        update.summaries.apply(&mut next);
+        if update.status == RunStatus::Done {
+            summaries::check_done(&next).map_err(io_invalid)?;
         }
         for session in update.sessions {
             if !next.sessions.contains(&session) {
@@ -1246,23 +990,7 @@ impl RunStore {
         }
         next.updated_at = Some(updated_at);
         next.agent_updated_at = Some(updated_at);
-        let is_blocked = matches!(next.status, RunStatus::Blocked);
-        if was_blocked != is_blocked && next.events.len() < MAX_EVENTS {
-            next.events.push(RunEvent {
-                at: updated_at,
-                kind: if is_blocked {
-                    RunEventKind::Blocked
-                } else {
-                    RunEventKind::Resumed
-                },
-                stage: next.stage,
-                reason: if is_blocked {
-                    next.blocking_reason.clone()
-                } else {
-                    None
-                },
-            });
-        }
+        record_block_change(&mut next, was_blocked, updated_at);
         // Where the work is now, for attributing token usage; and when it ended.
         mark(&mut next, updated_at, started_with);
         next.finished_at = match (next.status, next.finished_at) {

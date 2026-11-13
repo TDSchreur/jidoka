@@ -212,7 +212,7 @@ pub(crate) fn follow_up(run: &Run, state: PrState) -> Option<UpdateRun> {
             if !run.summaries.contains_key(&Stage::Finish) {
                 update
                     .summaries
-                    .insert(Stage::Finish, Some("Pull request merged".into()));
+                    .set(Stage::Finish, Some("Pull request merged".into()));
             }
             update
         }

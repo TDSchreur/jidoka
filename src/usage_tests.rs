@@ -822,9 +822,7 @@ mod auto_block {
         fn agent_update(&self, status: RunStatus, reason: Option<&str>) {
             let mut update = UpdateRun::new(status);
             if status == RunStatus::Done {
-                update
-                    .summaries
-                    .insert(Stage::Finish, Some("Shipped".into()));
+                update.summaries.set(Stage::Finish, Some("Shipped".into()));
             }
             if let Some(reason) = reason {
                 update.blocking_reason = FieldUpdate::Set(reason.into());

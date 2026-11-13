@@ -303,6 +303,13 @@ fn new_run(store: &RunStore, title: &str) -> Run {
         .unwrap()
 }
 
+/// A stored run for the unit tests of the update field groups, which need a `Run` but no store.
+pub(super) fn sample_run() -> Run {
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    new_run(&store, "task")
+}
+
 fn selection() -> crate::routing::ModelRouting {
     serde_json::from_value(serde_json::json!({
         "agent": "claude",
@@ -1179,5 +1186,21 @@ fn gate_record_rejects_run_change_reverted_during_validation() {
     assert!(
         store.get(&run.id).unwrap().unwrap().gates.is_empty(),
         "stale gate must not be recorded"
+    );
+}
+
+#[test]
+fn json_null_clears_and_missing_keeps_each_field_group() {
+    let cleared: UpdateRun = serde_json::from_str(
+        r#"{"status":"running","tickets":null,"model_routing":null,"summaries":{"build":null}}"#,
+    )
+    .unwrap();
+    assert!(matches!(cleared.tickets.tickets, FieldUpdate::Clear));
+    assert!(matches!(cleared.routing.model_routing, FieldUpdate::Clear));
+    let kept: UpdateRun = serde_json::from_str(r#"{"status":"running"}"#).unwrap();
+    assert!(kept.tickets.tickets.is_keep() && kept.routing.model_routing.is_keep());
+    assert_eq!(
+        serde_json::to_value(&cleared).unwrap()["summaries"],
+        serde_json::json!({"build": null})
     );
 }
