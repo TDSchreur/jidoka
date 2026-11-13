@@ -90,13 +90,7 @@ Run `jidoka --help` for every command.
 | [Checking readiness](docs/doctor.md) | What `jidoka doctor` checks |
 | [Glossary](GLOSSARY.md) | The terms Jidoka uses |
 
-## Code signing policy
-
-Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)
-
-- **Authors:** T.D. Schreur may change the source without further review.
-- **Reviewers:** T.D. Schreur reviews every change from outside the team, including pull requests.
-- **Approvers:** T.D. Schreur approves every signing request in SignPath.
+## Network and privacy
 
 This program will not transfer any information to other networked systems unless specifically requested by the user.
 
