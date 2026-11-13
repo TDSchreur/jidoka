@@ -5,7 +5,7 @@ The session that starts a run coordinates it to the end: the stages in order, th
 
 ## Using the bundled skills
 
-In this project's checkout, the bundled skills are in `skills/<name>/`; in an installed bundle, they are siblings of this directory. Otherwise use the corresponding installed skills. `jidoka-grill-with-docs`, `jidoka-to-spec` and `jidoka-to-tickets` can only be invoked by the user, so the agent's skill tool may refuse them: read their `SKILL.md` from that location instead of invoking them. A workflow's instructions take precedence where they differ from those skills.
+In this project's checkout, the bundled skills are in `skills/<name>/`; in an installed bundle, they are siblings of this directory. Otherwise use the corresponding installed skills. `jidoka-grill-with-docs`, `jidoka-to-spec`, `jidoka-to-tickets` and `jidoka-implement` can only be invoked by the user, so the agent's skill tool may refuse them: read their `SKILL.md` from that location instead of invoking them. A workflow's instructions take precedence where they differ from those skills.
 
 
 ## Continuing a run
