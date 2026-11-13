@@ -763,11 +763,12 @@ function FindingOutcome({ finding }) {
   return 'Open';
 }
 
-/** Findings as defect tags: a hole whose look carries the state, the id, check and location, the text, then the outcome. */
+/** Findings as defect tags: a hole whose look carries the state, the id, check and location, the text, then the outcome.
+ * Without `outcome` the list shows the Findings as raised: every hole is open. */
 function FindingList({ findings, label, outcome }) {
   return html`<ul class="findings" aria-label=${label}>
     ${findings.map(
-      (f) => html`<li key=${f.id} class=${`finding ${f.state}`}>
+      (f) => html`<li key=${f.id} class=${`finding ${outcome ? f.state : 'open'}`}>
         <span class="finding-hole" aria-hidden="true"></span>
         <div class="finding-body">
           <p class="finding-head">
@@ -820,7 +821,7 @@ function Pass({ run, pass, placed, now }) {
     ${pass.tickets.length ? html`<${TicketList} run=${run} tickets=${pass.tickets} byTicket=${(ref) => placed.byTicket.get(ref) ?? []} now=${now} />` : null}
     ${pass.stage === 'check' ? html`<${CheckFindings} pass=${pass} findings=${findingsOf(run)} />` : null}
     ${pass.stage === 'build' && pass.rework !== null && findingsOf(run).some((f) => f.rework === pass.rework)
-      ? html`<${FindingList} findings=${findingsOf(run).filter((f) => f.rework === pass.rework)} label=${`Findings fixed in Rework ${pass.rework}`} outcome=${true} />`
+      ? html`<${FindingList} findings=${findingsOf(run).filter((f) => f.rework === pass.rework)} label=${`Findings for Rework ${pass.rework}`} outcome=${true} />`
       : null}
   </li>`;
 }

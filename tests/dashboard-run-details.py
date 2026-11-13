@@ -234,7 +234,7 @@ return {chip, deferred: text(shippedRow), lists, hole: hole.borderTopColor, over
         r = drive(body, runs=[FOUND, FOUND_SHIPPED])
         self.assertEqual(r["chip"], "Rework 1/3 · 1 open")
         self.assertIn("1 deferred", r["deferred"])
-        self.assertEqual([l["label"] for l in r["lists"]], ["Findings that sent Check back", "Findings fixed in Rework 1", "Findings recorded in this Check"])
+        self.assertEqual([l["label"] for l in r["lists"]], ["Findings that sent Check back", "Findings for Rework 1", "Findings recorded in this Check"])
         self.assertEqual(r["lists"][0]["prev"], "Sent back with 2 findings · reviewed abcdef1")
         self.assertIn("F1 code-review src/a.rs:1", r["lists"][0]["items"][0])
         self.assertIn("Fixed in 1234567", r["lists"][1]["items"][0])
