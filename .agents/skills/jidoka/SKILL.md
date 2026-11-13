@@ -5,7 +5,7 @@ description: Assess a software change and select the appropriate jidoka executio
 
 # Jidoka workflow selection
 
-Start each run in a fresh agent session or after `/clear`, and heed the warning `jidoka run begin` prints when the session already belongs to another run.
+Start each run in a fresh agent session (`/clear` in Claude Code, `/new` in Codex, `/clear` in Copilot CLI). A long session re-reads its whole context on every turn, which makes later runs expensive. When `jidoka run begin` prints a session warning, stop and follow the Workspace procedure instead of carrying on.
 
 Assess the request before starting a workflow. Identify the intended outcome and constraints, read applicable project instructions, and inspect enough relevant code or documentation to understand the change.
 

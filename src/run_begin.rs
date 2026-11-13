@@ -282,15 +282,34 @@ fn retry_command(run: &str, options: &Options, named: &Named) -> String {
     command
 }
 
+/// The agent session a command runs in, and which agent it belongs to when that is known.
+#[derive(Clone, Debug)]
+pub(crate) struct AgentSession {
+    pub(crate) id: String,
+    /// `claude`, `codex` or `copilot`.
+    pub(crate) agent: Option<&'static str>,
+}
+
+/// What to do in `agent` to get a fresh conversation, for the session warning.
+fn fresh_session_advice(agent: Option<&str>) -> &'static str {
+    match agent {
+        Some("claude") => "Start each run in a fresh agent session: use /clear in Claude Code.",
+        Some("codex") => "Start each run in a fresh agent session: use /new in Codex.",
+        Some("copilot") => "Start each run in a fresh agent session: use /clear in Copilot CLI.",
+        _ => "Start each run in a fresh agent session.",
+    }
+}
+
 /// A warning when `session` is already recorded on a run other than `resumed`. Any failure to list runs
 /// gives no warning.
 fn session_warning(
     api: &dyn RunApi,
-    session: Option<&str>,
+    session: Option<&AgentSession>,
     resumed: Option<&str>,
 ) -> Option<String> {
+    let session = session?;
     let others: Vec<String> = api
-        .runs_with_session(session?)
+        .runs_with_session(&session.id)
         .ok()?
         .into_iter()
         .filter(|(id, _)| Some(id.as_str()) != resumed)
@@ -300,8 +319,9 @@ fn session_warning(
         return None;
     }
     Some(format!(
-        "This agent session is already recorded on run {}. Start each run in a fresh agent session or after /clear.",
-        others.join(", ")
+        "This agent session is already recorded on run {}. {}",
+        others.join(", "),
+        fresh_session_advice(session.agent)
     ))
 }
 
@@ -310,7 +330,7 @@ pub(crate) fn begin(
     dir: &Path,
     options: &Options,
     api: &dyn RunApi,
-    session: Option<String>,
+    session: Option<AgentSession>,
     routing: Option<ModelRouting>,
 ) -> Result<Begun, BeginError> {
     let Some(repository) = crate::repository::canonical_repository(dir) else {
@@ -328,7 +348,7 @@ pub(crate) fn begin(
                 .into(),
         ));
     }
-    let session_warning = session_warning(api, session.as_deref(), options.run.as_deref());
+    let session_warning = session_warning(api, session.as_ref(), options.run.as_deref());
     let (run, title) = match &options.run {
         Some(id) => {
             let known = api.get(id).map_err(BeginError::NoRun)?;
@@ -348,7 +368,7 @@ pub(crate) fn begin(
                     &options.title,
                     &dir.display().to_string(),
                     Some(repository.clone()),
-                    session.clone(),
+                    session.as_ref().map(|session| session.id.clone()),
                     routing,
                 )
                 .map_err(BeginError::NoRun)?;
@@ -378,7 +398,7 @@ pub(crate) fn begin(
                 "Workspace ready",
             ]);
             if let Some(session) = &session {
-                args.extend(["--session", session]);
+                args.extend(["--session", &session.id]);
             }
             match api.update(&run, "running", &args) {
                 Ok(()) => {

@@ -218,7 +218,14 @@ fn a_fresh_run_gets_a_worktree_from_the_fetched_base_and_records_it() {
     let api = FakeApi::default();
     let mut opts = options("Add a thing");
     opts.mode = Some("jidoka-full".into());
-    let begun = begin(&project.repo, &opts, &api, Some("sess-1".into()), None).unwrap();
+    let begun = begin(
+        &project.repo,
+        &opts,
+        &api,
+        Some(session("sess-1", None)),
+        None,
+    )
+    .unwrap();
 
     let expected_path = project.worktrees.join("add-a-thing");
     assert_eq!(begun.run, "100");
@@ -689,15 +696,34 @@ fn api_with_session_run(id: &str, title: &str) -> FakeApi {
     api
 }
 
+fn session(id: &str, agent: Option<&'static str>) -> AgentSession {
+    AgentSession {
+        id: id.into(),
+        agent,
+    }
+}
+
 #[test]
-fn a_session_already_on_another_run_gives_a_warning() {
-    let project = Project::new();
-    let api = api_with_session_run("7", "Earlier work");
-    let begun = begin(&project.repo, &options("New"), &api, Some("s".into()), None).unwrap();
-    let warning = begun.session_warning.clone().unwrap();
-    assert!(warning.contains("7 (Earlier work)"), "{warning}");
-    assert!(warning.contains("/clear"), "{warning}");
-    assert!(render(&begun, "/p/plans/100.md").contains("Warning: This agent session"));
-    let json = serde_json::to_value(&begun).unwrap();
-    assert_eq!(json["session_warning"], warning);
+fn a_session_already_on_another_run_gives_a_warning_naming_the_agents_command() {
+    let cases = [
+        (Some("claude"), "use /clear in Claude Code"),
+        (Some("codex"), "use /new in Codex"),
+        (Some("copilot"), "use /clear in Copilot CLI"),
+        (None, "Start each run in a fresh agent session."),
+    ];
+    for (agent, expected) in cases {
+        let project = Project::new();
+        let api = api_with_session_run("7", "Earlier work");
+        let current = session("s", agent);
+        let begun = begin(&project.repo, &options("New"), &api, Some(current), None).unwrap();
+        let warning = begun.session_warning.clone().unwrap();
+        assert!(warning.contains("7 (Earlier work)"), "{warning}");
+        assert!(warning.contains(expected), "{warning}");
+        if agent.is_none() {
+            assert!(!warning.contains('/'), "{warning}");
+        }
+        assert!(render(&begun, "/p/plans/100.md").contains("Warning: This agent session"));
+        let json = serde_json::to_value(&begun).unwrap();
+        assert_eq!(json["session_warning"], warning);
+    }
 }
