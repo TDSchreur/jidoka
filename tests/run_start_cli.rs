@@ -1,7 +1,7 @@
 //! `jidoka run start` reads the model-routing policy before it contacts the dashboard, so a mistake in
 //! the file stops the start, and so does a policy for several agents without `--agent`. These tests only
 //! check starts that fail before the dashboard is contacted, so they never reach one.
-#![expect(
+#![allow(
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
 )]
