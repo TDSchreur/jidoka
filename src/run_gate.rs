@@ -57,6 +57,8 @@ pub(crate) struct Record {
     pub(crate) check: Option<String>,
 }
 
+const RESOLVE_FINDINGS: &str = "resolve them with `jidoka run update <id> running --finding-status <finding-id>=<fixed|dismissed|deferred>[:<reason>]` or start Rework with --finding";
+
 pub(crate) fn parse_options(options: &[&str]) -> Result<(Option<String>, Option<String>), String> {
     let mut evidence = None;
     let mut check = None;
@@ -87,6 +89,20 @@ pub(crate) fn head(run: &Run, git: &dyn Git) -> Result<String, String> {
         .map_err(|e| format!("Could not read the worktree HEAD: {e}"))
 }
 
+/// Refuses while a Finding is open, naming the ids and how to resolve them.
+fn no_open_findings(run: &Run) -> Result<(), String> {
+    let open: Vec<&str> = run
+        .findings
+        .iter()
+        .filter(|finding| finding.state == crate::run::FindingState::Open)
+        .map(|finding| finding.id.as_str())
+        .collect();
+    if open.is_empty() {
+        return Ok(());
+    }
+    Err(format!("Findings {} are open", open.join(", ")))
+}
+
 pub(crate) fn record(run: &mut Run, record: Record, git: &dyn Git) -> Result<(), String> {
     if run.status != RunStatus::Running {
         return Err("Resume the run before recording a gate".into());
@@ -97,6 +113,9 @@ pub(crate) fn record(run: &mut Run, record: Record, git: &dyn Git) -> Result<(),
         .is_some_and(|s| s.trim().is_empty() || s.len() > 2000)
     {
         return Err("Evidence must be non-empty and at most 2000 bytes".into());
+    }
+    if record.gate == Gate::NoActionableFindings && record.passed {
+        no_open_findings(run).map_err(|problem| format!("{problem}; {RESOLVE_FINDINGS}"))?;
     }
     if matches!(record.gate, Gate::TicketsDone | Gate::CiPassed) {
         return Err("This gate is checked automatically".into());
@@ -280,11 +299,13 @@ fn advance_with_clock(
                 "record each result with `jidoka run gate <id> checks-recorded pass --check <name>`",
             ),
             Gate::NoActionableFindings => (
-                require(
-                    latest(run, *gate).is_some_and(|r| r.passed),
-                    "No passing result was recorded",
-                ),
-                "record `jidoka run gate <id> no-actionable-findings pass` or start Rework",
+                no_open_findings(run).and_then(|()| {
+                    require(
+                        latest(run, *gate).is_some_and(|r| r.passed),
+                        "No passing result was recorded",
+                    )
+                }),
+                "resolve open findings with `jidoka run update <id> running --finding-status <finding-id>=<fixed|dismissed|deferred>[:<reason>]`, record `jidoka run gate <id> no-actionable-findings pass`, or start Rework with --finding",
             ),
             Gate::CiPassed => (
                 ci_passed(run, git, tool, clock).map(|evidence| ci_evidence = Some(evidence)),
@@ -661,7 +682,7 @@ mod tests {
         let store = RunStore::open(&path).unwrap();
         let update = |options: &[&str]| {
             store
-                .update("1", parse_update("running", options).unwrap())
+                .update_with("1", parse_update("running", options).unwrap(), &git)
                 .unwrap()
                 .unwrap();
         };
@@ -689,9 +710,13 @@ mod tests {
         }
         advance().unwrap();
         assert_eq!(store.get("1").unwrap().unwrap().stage, Stage::Check);
-        update(&["--rework", "1"]);
+        update(&["--finding", "code-review", "-", "Bug", "--rework", "1"]);
         advance().unwrap();
         gate(result(Gate::ChecksRecorded, true)).unwrap();
+        let error = advance().unwrap_err();
+        assert!(error.contains("F1 are open"), "{error}");
+        assert!(gate(result(Gate::NoActionableFindings, true)).is_err());
+        update(&["--finding-status", "F1=fixed"]);
         gate(result(Gate::NoActionableFindings, true)).unwrap();
         gate(result(Gate::Verified, true)).unwrap();
         advance().unwrap();

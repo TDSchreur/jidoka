@@ -505,7 +505,7 @@ pub(crate) fn render(next: &Next) -> String {
         out.push_str(&format!("\nMove to {target} ({})\n", mv.kind));
         if mv.kind == "rework" {
             out.push_str(&format!(
-                "  with: jidoka run update {} running --rework <n> --activity \"<findings>\"\n",
+                "  with: jidoka run update {} running --rework <n> --finding <check> <location|-> \"<text>\" (repeat --finding)\n",
                 next.run
             ));
         } else {

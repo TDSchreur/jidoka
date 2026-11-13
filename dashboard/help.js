@@ -178,7 +178,7 @@ function Stages({ reworkCap }) {
     <${Topic} title="Rework">
       <p>
         A <strong>Rework</strong> is a return from Check to Build to fix findings, followed by another Check that covers
-        only the fixes. A Run gets at most ${reworkCap} Reworks; its row shows the current one as${' '}
+        only the fixes. The agent records each issue as a finding before it sends the Run back. A Run gets at most ${reworkCap} Reworks; its row shows the current one as${' '}
         <em>Rework 1/${reworkCap}</em>. Findings alone never block a Run: the agent fixes them within the
         ${reworkCap} Reworks. After the second Rework, findings that only change wording or documentation are fixed
         without asking, and the Run shows <em>Needs you</em> only for findings that would change behaviour. When
