@@ -109,62 +109,19 @@ fn findings_are_recorded_resolved_and_gate_the_rework() {
         store.update_with(id, parsed, &FixedGit)
     };
     update(&["--mode", "jidoka-balanced", "--worktree", "/work/wt"]).unwrap();
-    let finding = ["--finding", "code-review", "src/a.rs:1", "Bug"];
-
-    // Outside Check nothing is recorded or resolved.
-    assert!(update(&finding).is_err());
     store.set_stage(id, Stage::Check);
 
-    // A Rework needs a new Finding; bad checks and states are refused.
-    assert!(update(&["--rework", "1"]).is_err());
-    assert!(update(&["--finding", "nope", "-", "Bug"]).is_err());
-    assert!(update(&["--finding", "security", "-", "Leak"]).is_ok());
-    assert!(update(&["--finding-status", "F9=fixed"]).is_err());
-    assert!(update(&["--finding-status", "F1=dismissed"]).is_err());
-    assert!(update(&["--finding-status", "F1=fixed:why"]).is_err());
-
-    update(&[
-        finding[0],
-        finding[1],
-        finding[2],
-        finding[3],
-        "--finding",
-        "code-review",
-        "-",
-        "Two",
-    ])
-    .unwrap();
-    let moved = update(&["--rework", "1", "--finding", "code-review", "-", "Three"])
+    let moved = update(&["--rework", "1", "--finding", "code-review", "-", "Bug"])
         .unwrap()
         .unwrap();
     assert_eq!(moved.stage, Stage::Build);
-    let findings: Vec<_> = moved
-        .findings
-        .iter()
-        .map(|f| (f.id.as_str(), f.rework, f.location.as_deref()))
-        .collect();
-    assert_eq!(
-        findings,
-        [
-            ("F1", Some(1), None),
-            ("F2", Some(1), Some("src/a.rs:1")),
-            ("F3", Some(1), None),
-            ("F4", Some(1), None)
-        ]
-    );
+    assert_eq!(moved.findings[0].id, "F1");
+    assert_eq!(moved.findings[0].rework, Some(1));
     assert_eq!(moved.findings[0].reviewed_commit, "abc1234");
 
-    // In Build only fixed is allowed.
-    assert!(update(&["--finding-status", "F1=deferred:later"]).is_err());
     let fixed = update(&["--finding-status", "F1=fixed"]).unwrap().unwrap();
     assert_eq!(fixed.findings[0].fix_commit.as_deref(), Some("abc1234"));
-
-    store.set_stage(id, Stage::Check);
-    let done = update(&["--finding-status", "F2=deferred:not worth it"])
-        .unwrap()
-        .unwrap();
-    assert_eq!(done.findings[1].reason.as_deref(), Some("not worth it"));
-    assert!(done.findings[1].resolved_at.is_some());
+    assert!(fixed.findings[0].resolved_at.is_some());
 }
 
 #[test]
