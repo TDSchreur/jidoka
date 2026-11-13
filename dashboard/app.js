@@ -750,13 +750,13 @@ function TicketList({ run, tickets, byTicket, now }) {
   </ol>`;
 }
 
-const short = (sha) => (typeof sha === 'string' ? sha.slice(0, 7) : '');
+const shortSha = (sha) => (typeof sha === 'string' ? sha.slice(0, 7) : '');
 
 /** The outcome of a finding in words; the hole beside it repeats the state, never alone. */
 function FindingOutcome({ finding }) {
   const reason = typeof finding.reason === 'string' && finding.reason ? finding.reason : null;
   if (finding.state === 'fixed') {
-    return finding.fix_commit ? html`Fixed in${' '}<code>${short(finding.fix_commit)}</code>` : 'Fixed';
+    return finding.fix_commit ? html`Fixed in${' '}<code>${shortSha(finding.fix_commit)}</code>` : 'Fixed';
   }
   if (finding.state === 'dismissed') return reason ? `Dismissed: ${reason}` : 'Dismissed';
   if (finding.state === 'deferred') return reason ? `Deferred: ${reason}` : 'Deferred';
@@ -786,16 +786,19 @@ function FindingList({ findings, label, outcome }) {
 
 /** What a Check pass shows: the findings it recorded, under a heading line when it sent the run back. */
 function CheckFindings({ pass, findings }) {
-  const mine = findings.filter((f) => f.at >= pass.start && f.at < pass.end);
-  if (!mine.length && !pass.sentBack) return null;
+  const within = (t) => t >= pass.start && t < pass.end;
+  const mine = findings.filter((f) => within(f.at));
+  const resolved = findings.filter((f) => !within(f.at) && within(f.resolved_at) && (f.state === 'dismissed' || f.state === 'deferred'));
+  if (!mine.length && !resolved.length && !pass.sentBack) return null;
   const sent = mine.filter((f) => Number.isInteger(f.rework));
   const commits = [...new Set(sent.map((f) => f.reviewed_commit).filter(Boolean))];
   const noun = (n) => `${n} ${n === 1 ? 'finding' : 'findings'}`;
   const heading = pass.sentBack
-    ? `Sent back${sent.length ? ` with ${noun(sent.length)}` : ''}${commits.length === 1 ? ` · reviewed ${short(commits[0])}` : ''}`
+    ? `Sent back${sent.length ? ` with ${noun(sent.length)}` : ''}${commits.length === 1 ? ` · reviewed ${shortSha(commits[0])}` : ''}`
     : noun(mine.length);
   return html`<p class="sent-back-note">${heading}</p>
-    ${mine.length ? html`<${FindingList} findings=${mine} label=${pass.sentBack ? 'Findings that sent Check back' : 'Findings recorded in this Check'} outcome=${!pass.sentBack} />` : null}`;
+    ${mine.length ? html`<${FindingList} findings=${mine} label=${pass.sentBack ? 'Findings that sent Check back' : 'Findings recorded in this Check'} outcome=${!pass.sentBack} />` : null}
+    ${resolved.length ? html`<${FindingList} findings=${resolved} label="Findings resolved in this Check" outcome=${true} />` : null}`;
 }
 
 /** One pass through a stage on the route: when it started and how long it ran, what it started with, then what was recorded in it. */

@@ -54,8 +54,9 @@ const BASE_COMMIT_LENGTH: std::ops::RangeInclusive<usize> = 7..=64;
 const MAX_REPORTS_PER_UPDATE: usize = 100;
 /// Ticket reports or run reports a run may hold in total, so a long run cannot grow its record without bound.
 pub(crate) const MAX_REPORTS_PER_RUN: usize = 1000;
-/// Findings one update may record, and a run may hold in total.
+/// Findings one update may record; matches `MAX_REPORTS_PER_UPDATE`.
 const MAX_FINDINGS_PER_UPDATE: usize = 100;
+/// Findings a run may hold in total, so a long run cannot grow its record without bound, like its reports.
 const MAX_FINDINGS_PER_RUN: usize = 1000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -313,6 +314,9 @@ pub(crate) struct Finding {
     /// The worktree HEAD when it was marked fixed.
     pub(crate) fix_commit: Option<String>,
     pub(crate) at: u64,
+    /// When its state was last set to something other than open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) resolved_at: Option<u64>,
 }
 
 /// A finding as submitted by an update.
@@ -619,6 +623,7 @@ fn apply_findings(
                 reason: None,
                 fix_commit: None,
                 at,
+                resolved_at: None,
             });
         }
     }
@@ -664,6 +669,7 @@ fn apply_findings(
             .ok_or_else(|| format!("No finding {} is recorded on this run", status.id))?;
         finding.state = status.state;
         finding.reason = status.reason;
+        finding.resolved_at = (status.state != FindingState::Open).then_some(at);
         finding.fix_commit = if status.state == FindingState::Fixed {
             fix_commit.clone()
         } else {

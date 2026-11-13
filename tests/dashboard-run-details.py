@@ -95,6 +95,7 @@ FOUND = {
         finding("F2", "open", 1, AT + 1600),
         finding("F3", "dismissed", None, AT + 3500, reason="Not reachable"),
         finding("F4", "deferred", None, AT + 3600, reason="Later ticket"),
+        finding("F5", "dismissed", None, AT + 1700, reason="Fine as is", resolved_at=AT + 3700),
         {"bad": True}, None,
     ],
 }
@@ -234,7 +235,7 @@ return {chip, deferred: text(shippedRow), lists, hole: hole.borderTopColor, over
         r = drive(body, runs=[FOUND, FOUND_SHIPPED])
         self.assertEqual(r["chip"], "Rework 1/3 · 1 open")
         self.assertIn("1 deferred", r["deferred"])
-        self.assertEqual([l["label"] for l in r["lists"]], ["Findings that sent Check back", "Findings for Rework 1", "Findings recorded in this Check"])
+        self.assertEqual([l["label"] for l in r["lists"]], ["Findings that sent Check back", "Findings for Rework 1", "Findings recorded in this Check", "Findings resolved in this Check"])
         self.assertEqual(r["lists"][0]["prev"], "Sent back with 2 findings · reviewed abcdef1")
         self.assertIn("F1 code-review src/a.rs:1", r["lists"][0]["items"][0])
         self.assertIn("Fixed in 1234567", r["lists"][1]["items"][0])
@@ -242,6 +243,8 @@ return {chip, deferred: text(shippedRow), lists, hole: hole.borderTopColor, over
         self.assertEqual(r["lists"][2]["prev"], "2 findings")
         self.assertIn("Dismissed: Not reachable", r["lists"][2]["items"][0])
         self.assertIn("Deferred: Later ticket", r["lists"][2]["items"][1])
+        self.assertIn("F5", r["lists"][3]["items"][0])
+        self.assertIn("Dismissed: Fine as is", r["lists"][3]["items"][0])
         self.assertTrue(r["overflow"])
         self.assertIn("1234567", r["codes"])
 

@@ -305,7 +305,7 @@ fn advance_with_clock(
                         "No passing result was recorded",
                     )
                 }),
-                "resolve open findings with `jidoka run update <id> running --finding-status <finding-id>=<fixed|dismissed|deferred>[:<reason>]`, record `jidoka run gate <id> no-actionable-findings pass`, or start Rework with --finding",
+                RESOLVE_FINDINGS,
             ),
             Gate::CiPassed => (
                 ci_passed(run, git, tool, clock).map(|evidence| ci_evidence = Some(evidence)),

@@ -164,6 +164,7 @@ fn findings_are_recorded_resolved_and_gate_the_rework() {
         .unwrap()
         .unwrap();
     assert_eq!(done.findings[1].reason.as_deref(), Some("not worth it"));
+    assert!(done.findings[1].resolved_at.is_some());
 }
 
 #[test]
