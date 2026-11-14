@@ -41,6 +41,18 @@ Jidoka is a small application. Keep it simple and fast to develop:
 - GitHub and Azure DevOps get the same level of support. When something cannot be implemented for one of them, discuss it with the user and record an ADR in `docs/adr/` before proceeding.
 - Claude, Codex and Copilot get the same level of support. When something cannot be implemented for one of them, discuss it with the user and record an ADR in `docs/adr/` before proceeding.
 
+## Architecture decision records
+
+Record decisions in `docs/adr/` (format: [ADR-FORMAT.md](skills/jidoka-domain-modeling/ADR-FORMAT.md)), in the same pull request that makes them, so the rejected alternatives are not lost. Write an ADR when a change involves a real trade-off and is hard to reverse or surprising. In this project that usually means a change that:
+
+- sets or changes a format or contract between parts, such as the data folder layout, the dashboard API, tokens or the run record;
+- removes a command, feature, tracker or supported option;
+- sets a cap, default or routing choice that looks arbitrary;
+- overwrites or deletes user files;
+- is a breaking change on 0.x that a user will have to act on.
+
+Skip it for routine fixes and changes that are easy to reverse. If the reason for a decision is unknown, write the ADR with status `proposed` and ask the user instead of guessing. Say in the pull request description which ADR the change adds or follows, or that none was needed.
+
 ## Shipped skills are project-agnostic
 
 The skills that `jidoka install` bundles (listed in `build.rs`) are used by anyone, on any kind of project. They must not name this repository's scripts, branches, tools or conventions, such as `scripts/verify.sh` or `develop`. Put those in `AGENTS.md`, the README or `.github/instructions/`, and word the skill generically, for example "the project's verification" or "the base branch chosen in Workspace". A test in `src/install.rs` fails when a bundled skill names this repository; search the skills you changed for this repository's names before opening a pull request.
