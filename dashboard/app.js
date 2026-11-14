@@ -869,7 +869,7 @@ function ShippedLog({ entries, now, onOpen, onClear }) {
                   </button>${findingCount(run, 'deferred') ? html`${' '}<span class="chip">${findingCount(run, 'deferred')} deferred</span>` : null}
                 </td>
                 <td><${ProjectName} path=${projectOf(run)} /></td>
-                <td>${run.pr ? html`<${RefLink} value=${run.pr} label=${html`Pull request<span class="visually-hidden">${` of ${run.title}`}</span>`} />` : html`<span class="not-set">None</span>`}${' '}<${PrStateLabel} run=${run} /></td>
+                <td class="pr-cell">${run.pr ? html`<${RefLink} value=${run.pr} label=${html`Pull request<span class="visually-hidden">${` of ${run.title}`}</span>`} />` : html`<span class="not-set">None</span>`}${' '}<${PrStateLabel} run=${run} /></td>
                 <td class="num">${tokens === null ? 'n/a' : compactTokens(tokens)}</td>
                 <td>
                   ${ts === null
