@@ -415,6 +415,16 @@ fn claims(run: &Run, session: &RunSession) -> bool {
 /// before `jidoka run begin` creates the run.
 const SKILL_LEAD_MS: u64 = 5 * 60 * 1000;
 
+/// Whether a skill used at `at` could belong to `run`: it is inside the run's stages, or in the lead
+/// before its first one.
+fn skill_window(run: &Run, at: u64) -> bool {
+    mark_at(run, at).is_some()
+        || run
+            .timeline
+            .first()
+            .is_some_and(|first| at < first.at && at + SKILL_LEAD_MS >= first.at)
+}
+
 /// The skills the sessions that `target` claims used, in time order, each with the stage it fell in.
 /// A skill used while another run claiming the same session was active is left out: it cannot be
 /// told apart. `tracked` holds the runs that overlap `target`.
@@ -431,7 +441,7 @@ fn used_skills(target: &Run, tracked: &[&Run], sessions: &[&RunSession]) -> Vec<
                 mark_at(target, *at).map(|mark| mark.stage)
             };
             let shared = tracked.iter().any(|other| {
-                other.id != target.id && claims(other, session) && mark_at(other, *at).is_some()
+                other.id != target.id && claims(other, session) && skill_window(other, *at)
             });
             if let (Some(stage), false) = (stage, shared) {
                 used.push(UsedSkill {

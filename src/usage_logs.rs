@@ -312,27 +312,55 @@ impl LogUsage {
 /// The longest skill name kept: real ones are far shorter, so a longer one is junk.
 const MAX_SKILL_NAME_LEN: usize = 64;
 
-/// A skill name as the logs write it: letters, digits and `-_.:` only (`:` joins a plugin and its skill).
-/// Anything else is not a skill name, so no path or text slips into a report.
+/// Whether `c` can be part of a skill name: letters, digits and `-_.:` (`:` joins a plugin and its skill).
+fn is_skill_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "-_.:".contains(c)
+}
+
+/// A skill name as the logs write it. Anything else is not a skill name, so no path or text slips into a report.
 fn skill_name(raw: &str) -> Option<String> {
-    let plain = !raw.is_empty()
-        && raw.len() <= MAX_SKILL_NAME_LEN
-        && raw
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_.:".contains(c))
+    let plain = raw.len() <= MAX_SKILL_NAME_LEN
+        && raw.chars().all(is_skill_char)
         && raw.chars().any(|c| c.is_ascii_alphanumeric());
     plain.then(|| raw.to_string())
 }
 
-/// The names of the skills a shell command reads: each `<name>/SKILL.md` in it. That is how Codex loads a
-/// skill, as it has no tool for it.
+/// The programs that read a file to the agent. A command that only lists, searches or edits a skill's
+/// file (`ls`, `rg`, `git diff`, `apply_patch`) does not load the skill, so it does not count.
+const FILE_READERS: [&str; 9] = [
+    "cat",
+    "sed",
+    "head",
+    "tail",
+    "less",
+    "more",
+    "bat",
+    "nl",
+    "Get-Content",
+];
+
+/// The names of the skills a shell command reads: each `<name>/SKILL.md` (or `<name>\SKILL.md`) in a
+/// command that runs a file reader. That is how Codex loads a skill, as it has no tool for it. A command
+/// that also lists or searches skill files is still counted when it reads one; the names it lists are
+/// then counted too, which is a heuristic.
 fn skills_read_by(command: &str) -> Vec<String> {
+    let reads = command
+        .split(|c: char| c.is_whitespace() || "\"'`;&|(){}".contains(c))
+        .any(|word| FILE_READERS.contains(&word.rsplit('/').next().unwrap_or(word)));
+    if !reads || command.contains("*** ") {
+        return Vec::new();
+    }
     command
-        .match_indices("/SKILL.md")
+        .match_indices("SKILL.md")
         .filter_map(|(end, _)| {
-            let before = &command[..end];
+            // Arguments are JSON text, so a Windows separator may be doubled.
+            let path = &command[..end];
+            let before = path.trim_end_matches(['/', '\\']);
+            if before.len() == path.len() {
+                return None;
+            }
             let start = before
-                .rfind(|c: char| !(c.is_ascii_alphanumeric() || "-_.:".contains(c)))
+                .rfind(|c: char| !is_skill_char(c))
                 .map_or(0, |at| at + 1);
             skill_name(&before[start..])
         })

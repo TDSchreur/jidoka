@@ -1324,6 +1324,10 @@ fn codex_reading_a_skill_file_counts_but_output_and_instructions_do_not() {
             codex_meta_line("cdx1", None),
             codex_call_line(150, "custom_tool_call", "cat .agents/skills/jidoka-fast/SKILL.md && ls skills/*/SKILL.md"),
             codex_call_line(250, "function_call", "{\"cmd\":\"sed -n 1,20p /home/u/.codex/skills/rust/SKILL.md\"}"),
+            // Editing, listing and searching a skill's file does not load the skill.
+            codex_call_line(255, "custom_tool_call", "*** Update File: skills/edited/SKILL.md"),
+            codex_call_line(256, "function_call", "{\"cmd\":\"rg -n x skills/searched/SKILL.md\"}"),
+            codex_call_line(257, "function_call", "{\"cmd\":\"Get-Content skills\\\\windows\\\\SKILL.md\"}"),
             json!({"type": "response_item", "timestamp": iso(260), "payload": {"type": "custom_tool_call_output",
                 "output": "see skills/from-output/SKILL.md"}}).to_string(),
             codex_context("gpt-5"),
@@ -1332,7 +1336,11 @@ fn codex_reading_a_skill_file_counts_but_output_and_instructions_do_not() {
     let usage = world.collect(&target, std::slice::from_ref(&target));
     assert_eq!(
         skills_of(&usage),
-        vec![(Stage::Define, "jidoka-fast"), (Stage::Build, "rust")]
+        vec![
+            (Stage::Define, "jidoka-fast"),
+            (Stage::Build, "rust"),
+            (Stage::Build, "windows"),
+        ]
     );
 }
 
@@ -1363,6 +1371,19 @@ fn a_skill_used_while_another_run_shares_the_session_is_not_assigned() {
     world.write(
         "claude/projects/-w/S1.jsonl",
         &[claude_skill_line(150, "shared")],
+    );
+    let usage = world.collect(&a, &[a.clone(), b]);
+    assert!(usage.skills.is_empty());
+}
+
+#[test]
+fn a_skill_loaded_before_another_runs_first_stage_is_not_taken_by_the_run_still_active() {
+    let world = World::new();
+    let a = run(RUN_A, &[(0, "build", None, None)], None, &["S1"]);
+    let b = run(RUN_B, &[(400, "define", None, None)], None, &["S1"]);
+    world.write(
+        "claude/projects/-w/S1.jsonl",
+        &[claude_skill_line(380, "jidoka")],
     );
     let usage = world.collect(&a, &[a.clone(), b]);
     assert!(usage.skills.is_empty());

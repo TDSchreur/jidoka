@@ -149,8 +149,12 @@ impl ReportsUpdate {
 /// A skill already reported for the stage, by the agent or earlier, is not added again. Returns whether
 /// the report was added; a run at its report limit takes no more.
 pub(crate) fn observe_skill(run: &mut Run, name: &str, stage: Stage, at: u64) -> bool {
+    // A log may name a plugin's skill as `plugin:skill` where the agent reports `skill`: the same skill.
+    let bare = |text: &str| text.rsplit(':').next().unwrap_or(text).to_string();
     let known = run.run_reports.iter().any(|report| {
-        matches!(report.kind, ReportKind::Skill) && report.stage == stage && report.text == name
+        matches!(report.kind, ReportKind::Skill)
+            && report.stage == stage
+            && bare(&report.text) == bare(name)
     });
     if known || run.run_reports.len() >= MAX_REPORTS_PER_RUN {
         return false;
@@ -211,6 +215,20 @@ mod tests {
         reported.apply(&mut run, 4).unwrap();
         let stage = run.stage;
         assert!(!observe_skill(&mut run, "rust", stage, 5));
+    }
+
+    #[test]
+    fn an_observed_skill_matches_its_plugin_qualified_name_and_respects_the_report_limit() {
+        let mut run = sample_run();
+        let stage = run.stage;
+        assert!(observe_skill(&mut run, "plugin:review", stage, 1));
+        assert!(!observe_skill(&mut run, "review", stage, 2));
+        run.run_reports.truncate(0);
+        for n in 0..MAX_REPORTS_PER_RUN {
+            assert!(observe_skill(&mut run, &format!("skill-{n}"), stage, 3));
+        }
+        assert!(!observe_skill(&mut run, "one-too-many", stage, 4));
+        assert_eq!(run.run_reports.len(), MAX_REPORTS_PER_RUN);
     }
 
     #[test]
