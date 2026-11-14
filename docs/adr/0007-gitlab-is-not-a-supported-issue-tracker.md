@@ -1,12 +1,14 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # GitLab is not a supported issue tracker
 
-Setup used to offer GitLab and an "other tracker" option next to GitHub, Azure Boards and local Markdown. We decided that setup offers only GitHub, Azure Boards and local Markdown files in `.scratch/` ([PR #246](https://github.com/TDSchreur/jidoka/pull/246)). The PR, its commits and its changelog fragment do not say why GitLab was dropped, so this record is `proposed` until that reason is written down here.
+Setup used to offer GitLab and an "other tracker" option next to GitHub, Azure Boards and local Markdown. We decided that setup offers only GitHub, Azure Boards and local Markdown files in `.scratch/` ([PR #246](https://github.com/TDSchreur/jidoka/pull/246)). We cannot support every tool: the maintainer does not use GitLab, and none of the project's users do, so supporting it would be maintenance with no one to benefit. The "other tracker" option went for the same reason, since it promised support for any tool.
 
-<!-- Reason to fill in: why GitLab and the "other tracker" option were dropped. -->
+## Considered Options
+
+- **Keep GitLab and "other tracker".** Rejected: nobody uses them, and every supported tracker has to work for every agent ([parity rules](../../AGENTS.md)).
 
 ## Consequences
 
