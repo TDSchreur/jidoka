@@ -1,8 +1,8 @@
 //! The reports of a `jidoka run update`: what skills and activities a run or one of its tickets used.
 
 use super::{
-    MAX_PATH_BYTES, MAX_REPORTS_PER_RUN, MAX_TEXT_BYTES, ReportKind, Run, RunReport, TicketReport,
-    check_reference, check_text, has_control,
+    MAX_PATH_BYTES, MAX_REPORTS_PER_RUN, MAX_TEXT_BYTES, ReportKind, Run, RunReport, Stage,
+    TicketReport, check_reference, check_text, has_control,
 };
 use serde::{Deserialize, Serialize};
 
@@ -145,6 +145,25 @@ impl ReportsUpdate {
     }
 }
 
+/// Adds a skill report Jidoka observed itself (the workflow skill, or a skill seen in a session log).
+/// A skill already reported for the stage, by the agent or earlier, is not added again. Returns whether
+/// the report was added; a run at its report limit takes no more.
+pub(crate) fn observe_skill(run: &mut Run, name: &str, stage: Stage, at: u64) -> bool {
+    let known = run.run_reports.iter().any(|report| {
+        matches!(report.kind, ReportKind::Skill) && report.stage == stage && report.text == name
+    });
+    if known || run.run_reports.len() >= MAX_REPORTS_PER_RUN {
+        return false;
+    }
+    run.run_reports.push(RunReport {
+        kind: ReportKind::Skill,
+        text: name.to_string(),
+        stage,
+        at,
+    });
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +199,18 @@ mod tests {
             (Stage::Build, 9)
         );
         assert_eq!(run.run_reports[0].text, "Built");
+    }
+
+    #[test]
+    fn an_observed_skill_is_added_once_per_stage() {
+        let mut run = sample_run();
+        assert!(observe_skill(&mut run, "jidoka-fast", Stage::Define, 1));
+        assert!(!observe_skill(&mut run, "jidoka-fast", Stage::Define, 2));
+        assert!(observe_skill(&mut run, "jidoka-fast", Stage::Build, 3));
+        let reported = parsed(&["--run-report", "skill", "rust"]).unwrap();
+        reported.apply(&mut run, 4).unwrap();
+        let stage = run.stage;
+        assert!(!observe_skill(&mut run, "rust", stage, 5));
     }
 
     #[test]

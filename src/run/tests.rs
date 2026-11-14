@@ -53,6 +53,46 @@ fn update_never_changes_the_stage_and_rejects_a_stage_field() {
 }
 
 #[test]
+fn recording_the_mode_reports_the_workflow_skill_and_observed_skills_are_stored_once() {
+    use crate::usage::UsedSkill;
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    let run = new_run(&store, "task");
+    let skills = |run: &Run| -> Vec<(String, Stage)> {
+        run.run_reports
+            .iter()
+            .filter(|report| matches!(report.kind, ReportKind::Skill))
+            .map(|report| (report.text.clone(), report.stage))
+            .collect()
+    };
+    let mode = || parse_update("running", &["--mode", "jidoka-fast"]).unwrap();
+    store.update(&run.id, mode()).unwrap();
+    // Recording the mode again adds nothing.
+    let after = store.update(&run.id, mode()).unwrap().unwrap();
+    assert_eq!(skills(&after), vec![("jidoka-fast".into(), Stage::Define)]);
+
+    let seen = |name: &str, stage| UsedSkill {
+        stage,
+        name: name.into(),
+        at: 5,
+    };
+    let observed = [
+        seen("jidoka-fast", Stage::Define),
+        seen("rust", Stage::Build),
+    ];
+    store.observe_skills(&run.id, &observed).unwrap();
+    store.observe_skills(&run.id, &observed).unwrap();
+    let stored = store.get(&run.id).unwrap().unwrap();
+    assert_eq!(
+        skills(&stored),
+        vec![
+            ("jidoka-fast".into(), Stage::Define),
+            ("rust".into(), Stage::Build)
+        ]
+    );
+}
+
+#[test]
 fn rework_moves_check_to_build_and_is_refused_elsewhere() {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();

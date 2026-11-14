@@ -4,7 +4,7 @@ Jidoka reads the session logs your agents already write, to show what each run c
 
 ## Token usage
 
-The dashboard reads the token counts your agents write to their own session logs and shows them per run, stage, model and ticket. It also estimates the cost from a built-in price table (see below), and it keeps only counts, identifiers and the reasoning effort of each call: no conversation text, prompts, tool output or credentials are stored.
+The dashboard reads the token counts your agents write to their own session logs and shows them per run, stage, model and ticket. It also estimates the cost from a built-in price table (see below), and it keeps only counts, identifiers, the reasoning effort of each call and the names of the skills the agent used (see [runs](runs.md)): no conversation text, prompts, tool output or credentials are stored.
 
 - `jidoka run stats <id>` prints the breakdown (stage, model and ticket, with the rework and work with no ticket in their own rows), the totals per model, and what the figures do not cover. `jidoka run stats --all` adds the totals per model over all runs and names the runs it leaves out.
 - The dashboard shows the fresh tokens on a run's row and the breakdown in the run's detail: per row, per model (fresh tokens, cache reads and estimated cost) and per stage.
