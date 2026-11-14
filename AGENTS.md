@@ -4,6 +4,15 @@ The old project means [TDSchreur/tds-factory](https://github.com/TDSchreur/tds-f
 
 Day-to-day pull requests target `develop`. Release pull requests merge `develop` into `master`; see [the release guide](docs/releasing.md).
 
+## Always work through jidoka
+
+Every change to this repository goes through the `jidoka` skill: features, bug fixes, docs, skills, scripts and config. Start with `jidoka` (or continue the run when given a run ID) and let it pick the workflow.
+
+- "The change is small" is never a reason to skip jidoka. Small changes use `jidoka-fast`, which exists for exactly this: it keeps the run record and workspace without the Check stage.
+- Do not edit files, commit or open a pull request outside a jidoka run. This applies to one-line fixes, typos and changelog-only edits too.
+- Skip jidoka only when the user explicitly says so in this conversation (for example "do this without jidoka"). Your own judgment about size or urgency does not count.
+- Pure questions and read-only investigation need no run.
+
 ## Rust
 
 - Write idiomatic, safe Rust; avoid `unsafe` unless there is a clear need.
