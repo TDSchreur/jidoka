@@ -63,12 +63,11 @@ When a term is resolved, update `GLOSSARY.md` right there. Don't batch these up:
 
 `GLOSSARY.md` should be totally devoid of implementation details. Do not treat `GLOSSARY.md` as a spec, a scratch pad, or a repository for implementation decisions. It is a glossary and nothing else.
 
-### Offer ADRs sparingly
+### Offer ADRs when a decision is worth recording
 
-Only offer to create an ADR when all three are true:
+Offer to create an ADR when the decision was a **real trade-off** (there were genuine alternatives and you picked one for specific reasons) and at least one of these is also true:
 
 1. **Hard to reverse**: the cost of changing your mind later is meaningful
 2. **Surprising without context**: a future reader will wonder "why did they do it this way?"
-3. **The result of a real trade-off**: there were genuine alternatives and you picked one for specific reasons
 
-If any of the three is missing, skip the ADR. Use the format in [ADR-FORMAT.md](./ADR-FORMAT.md).
+Offer it as soon as the decision lands, while the reasons are fresh, and keep it short: a paragraph and the rejected alternatives is enough. Without a real trade-off there is nothing to record, so skip it. When you cannot tell why a decision was made, write the ADR with status `proposed` and say what is missing instead of guessing. Use the format in [ADR-FORMAT.md](./ADR-FORMAT.md).
