@@ -113,6 +113,7 @@ fn main() {
         "jidoka-code-review",
         "jidoka-security-review",
         "jidoka-pr",
+        "jidoka-run-report",
         "jidoka-setup",
     ] {
         files(
