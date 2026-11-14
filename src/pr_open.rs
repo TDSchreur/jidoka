@@ -210,8 +210,16 @@ fn push_problem(branch: &str, error: &str) -> ToolProblem {
         || lower.contains("permission denied")
         || lower.contains("publickey")
     {
+        // Git prints a failing credential helper's complaint before the final `fatal:` line, so show every line.
+        let all_lines = error
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" / ");
         return ToolProblem(format!(
-            "git is not allowed to push to origin. Sign in (for example `gh auth login`, or set up your SSH key or credential helper) and try again. ({detail})"
+            "git is not allowed to push to origin. Read git's output below first: a credential helper that crashes is not fixed by signing in. Otherwise sign in (for example `gh auth login`, or set up your SSH key or credential helper; `git config --show-origin --get-all credential.helper` lists the helpers git uses) and try again. ({})",
+            shown(&all_lines)
         ));
     }
     if lower.contains("could not resolve host") || lower.contains("unable to access") {

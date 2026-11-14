@@ -540,3 +540,20 @@ fn azure_remote_opens_pull_request_in_the_selected_repository() {
         assert!(command.contains("--repository Kahoot"), "{command}");
     }
 }
+
+#[test]
+fn a_failed_push_login_shows_the_credential_helper_lines_before_fatal() {
+    let error = "You must install or update .NET to run this application.\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n";
+    let problem = push_problem("feature", error);
+    assert!(
+        problem.0.contains("You must install or update .NET"),
+        "{}",
+        problem.0
+    );
+    assert!(
+        problem.0.contains("terminal prompts disabled"),
+        "{}",
+        problem.0
+    );
+    assert!(problem.0.contains("credential.helper"), "{}", problem.0);
+}
