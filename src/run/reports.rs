@@ -223,7 +223,7 @@ mod tests {
         let stage = run.stage;
         assert!(observe_skill(&mut run, "plugin:review", stage, 1));
         assert!(!observe_skill(&mut run, "review", stage, 2));
-        run.run_reports.truncate(0);
+        run.run_reports.clear();
         for n in 0..MAX_REPORTS_PER_RUN {
             assert!(observe_skill(&mut run, &format!("skill-{n}"), stage, 3));
         }
