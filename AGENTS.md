@@ -40,6 +40,7 @@ Jidoka is a small application. Keep it simple and fast to develop:
 
 - GitHub and Azure DevOps get the same level of support. When something cannot be implemented for one of them, discuss it with the user and record an ADR in `docs/adr/` before proceeding.
 - Claude, Codex and Copilot get the same level of support. When something cannot be implemented for one of them, discuss it with the user and record an ADR in `docs/adr/` before proceeding.
+- Linux and Windows get the same level of support; macOS is not supported ([ADR-0008](docs/adr/0008-linux-and-windows-are-supported-equally-macos-is-not.md)). When something cannot be implemented for one of them, discuss it with the user and record an ADR in `docs/adr/` before proceeding.
 
 ## Architecture decision records
 
