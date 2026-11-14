@@ -1250,3 +1250,141 @@ fn completed_routed_stage_with_only_coordinator_usage_adds_no_model_warning() {
         .unwrap();
     assert!(reopened.run_reports.is_empty());
 }
+
+// --- skills ------------------------------------------------------------------------------------------
+
+fn claude_skill_line(at: u64, skill: &str) -> String {
+    json!({"type": "assistant", "timestamp": iso(at), "message": {"content": [
+        {"type": "text", "text": "SECRET text"},
+        {"type": "tool_use", "name": "Skill", "input": {"skill": skill, "args": "SECRET args"}}]}})
+    .to_string()
+}
+
+fn codex_call_line(at: u64, kind: &str, command: &str) -> String {
+    let field = if kind == "custom_tool_call" {
+        "input"
+    } else {
+        "arguments"
+    };
+    json!({"type": "response_item", "timestamp": iso(at), "payload": {"type": kind, field: command}}).to_string()
+}
+
+fn skills_of(usage: &Usage) -> Vec<(Stage, &str)> {
+    usage
+        .skills
+        .iter()
+        .map(|s| (s.stage, s.name.as_str()))
+        .collect()
+}
+
+#[test]
+fn claude_skill_calls_are_found_in_the_stage_they_happened() {
+    let world = World::new();
+    let target = run(
+        RUN_A,
+        &[(400, "define", None, None), (500, "build", None, None)],
+        None,
+        &["S1"],
+    );
+    world.write(
+        "claude/projects/-w/S1.jsonl",
+        &[
+            // The workflow skill is loaded just before the run starts; an older one belongs to other work.
+            claude_skill_line(360, "jidoka"),
+            claude_skill_line(1, "unrelated"),
+            claude_skill_line(550, "plugin:review"),
+            claude_skill_line(560, "plugin:review"),
+            claude_skill_line(570, "../escape"),
+            activity_line("assistant", 580),
+        ],
+    );
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert_eq!(
+        skills_of(&usage),
+        vec![
+            (Stage::Define, "jidoka"),
+            (Stage::Build, "plugin:review"),
+            (Stage::Build, "plugin:review"),
+        ]
+    );
+}
+
+#[test]
+fn codex_reading_a_skill_file_counts_but_output_and_instructions_do_not() {
+    let world = World::new();
+    let target = run(
+        RUN_A,
+        &[(100, "define", None, None), (200, "build", None, None)],
+        None,
+        &["cdx1"],
+    );
+    world.write(
+        "codex/sessions/2026/11/05/rollout-cdx1.jsonl",
+        &[
+            codex_meta_line("cdx1", None),
+            codex_call_line(150, "custom_tool_call", "cat .agents/skills/jidoka-fast/SKILL.md && ls skills/*/SKILL.md"),
+            codex_call_line(250, "function_call", "{\"cmd\":\"sed -n 1,20p /home/u/.codex/skills/rust/SKILL.md\"}"),
+            // Editing, listing and searching a skill's file does not load the skill.
+            codex_call_line(255, "custom_tool_call", "*** Update File: skills/edited/SKILL.md"),
+            codex_call_line(256, "function_call", "{\"cmd\":\"rg -n x skills/searched/SKILL.md\"}"),
+            codex_call_line(257, "function_call", "{\"cmd\":\"Get-Content skills\\\\windows\\\\SKILL.md\"}"),
+            json!({"type": "response_item", "timestamp": iso(260), "payload": {"type": "custom_tool_call_output",
+                "output": "see skills/from-output/SKILL.md"}}).to_string(),
+            codex_context("gpt-5"),
+        ],
+    );
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert_eq!(
+        skills_of(&usage),
+        vec![
+            (Stage::Define, "jidoka-fast"),
+            (Stage::Build, "rust"),
+            (Stage::Build, "windows"),
+        ]
+    );
+}
+
+#[test]
+fn copilot_skill_tool_calls_are_found() {
+    let world = World::new();
+    let target = run(RUN_A, &[(100, "define", None, None)], None, &["cop-1"]);
+    world.write(
+        "copilot/session-state/cop-1/events.jsonl",
+        &[
+            json!({"type": "tool.execution_start", "timestamp": iso(150),
+                "data": {"toolName": "skill", "arguments": {"skill": "jidoka-balanced"}}})
+            .to_string(),
+            json!({"type": "tool.execution_start", "timestamp": iso(160),
+                "data": {"toolName": "bash", "arguments": {"skill": "not-a-skill"}}})
+            .to_string(),
+        ],
+    );
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert_eq!(skills_of(&usage), vec![(Stage::Define, "jidoka-balanced")]);
+}
+
+#[test]
+fn a_skill_used_while_another_run_shares_the_session_is_not_assigned() {
+    let world = World::new();
+    let a = run(RUN_A, &[(100, "build", None, None)], None, &["S1"]);
+    let b = run(RUN_B, &[(100, "build", None, None)], None, &["S1"]);
+    world.write(
+        "claude/projects/-w/S1.jsonl",
+        &[claude_skill_line(150, "shared")],
+    );
+    let usage = world.collect(&a, &[a.clone(), b]);
+    assert!(usage.skills.is_empty());
+}
+
+#[test]
+fn a_skill_loaded_before_another_runs_first_stage_is_not_taken_by_the_run_still_active() {
+    let world = World::new();
+    let a = run(RUN_A, &[(0, "build", None, None)], None, &["S1"]);
+    let b = run(RUN_B, &[(400, "define", None, None)], None, &["S1"]);
+    world.write(
+        "claude/projects/-w/S1.jsonl",
+        &[claude_skill_line(380, "jidoka")],
+    );
+    let usage = world.collect(&a, &[a.clone(), b]);
+    assert!(usage.skills.is_empty());
+}

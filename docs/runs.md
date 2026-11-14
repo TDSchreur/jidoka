@@ -49,6 +49,8 @@ Besides its stage and status, a run records the context a new session needs to c
 | `--summary <stage>=<text>` | A short summary per stage, kept after later stages begin. |
 | `--blocking-reason <text>` | The status reason of a blocked run. |
 
+Skills are also recorded without a report: recording the mode adds the workflow skill, and the dashboard reads the agent's session log for the sessions of the run and adds each skill the agent used (Claude Code's `Skill` tool, Copilot's `skill` tool, and a Codex command that reads `<name>/SKILL.md` with `cat`, `sed`, `head` or a similar reader, not one that only lists, searches or edits it) to the stage it was used in, from five minutes before the first stage (the workflow skill is loaded just before the run starts). Only the skill's name and time are kept. A skill used while another run was active in the same session is left out, because it cannot be assigned. This needs the dashboard to be running, like usage tracking.
+
 Options left out keep their value, each has a `--clear-*` form (`--clear-tickets`, `--clear-summary <stage>`), and an inconsistent update is refused with the reason and changes nothing.
 
 `jidoka run next <id>` prints what the run does now: the current stage, its instructions, the open gates, the allowed moves (next stage and Rework), the stored summaries and tickets, and the stage's routed model and effort (`--json` for the same as data). In Check it also lists applicable and skipped checks, delivers the applicable checks’ instructions, and shows their gates and any model routes. Check selection requires a readable diff from the recorded base commit to HEAD.

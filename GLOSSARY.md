@@ -60,7 +60,7 @@
 
 **Ticket report**: A short, agent-reported skill or activity associated with a ticket in a run. Reports may be incomplete and are not independent proof of the work.
 
-**Run report**: A short, agent-reported skill or activity associated with a run rather than a particular ticket. Reports may be incomplete and are not independent proof of the work.
+**Run report**: A short skill or activity associated with a run rather than a particular ticket. The agent reports activities and skills; Jidoka adds the workflow skill and the skills it finds in the agent's session logs. Reports may be incomplete and are not independent proof of the work.
 
 **Reader**: The dashboard's view of a run's local spec or ticket, rendered from the Markdown file the run recorded. It shows only documents the run recorded, and says so when the file is no longer there.
 

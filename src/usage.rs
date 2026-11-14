@@ -218,6 +218,17 @@ pub(crate) struct Usage {
     pub(crate) attention: Option<Pause>,
     #[serde(skip)]
     pub(crate) attention_requested: bool,
+    /// The skills the logs show the run used; stored as run reports, never persisted here.
+    #[serde(skip)]
+    pub(crate) skills: Vec<UsedSkill>,
+}
+
+/// A skill a session log shows used, with the stage the run was in at that moment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct UsedSkill {
+    pub(crate) stage: Stage,
+    pub(crate) name: String,
+    pub(crate) at: u64,
 }
 
 impl Usage {
@@ -236,6 +247,7 @@ impl Usage {
             log_complete: false,
             attention: None,
             attention_requested: false,
+            skills: Vec::new(),
         }
     }
 
@@ -397,6 +409,51 @@ pub(crate) fn overlaps(a: &Run, b: &Run) -> bool {
 
 fn claims(run: &Run, session: &RunSession) -> bool {
     session.mentions.contains(&run.id) || run.sessions.contains(&session.id)
+}
+
+/// How long before a run's first stage a skill still counts for it: the workflow skill is loaded just
+/// before `jidoka run begin` creates the run.
+const SKILL_LEAD_MS: u64 = 5 * 60 * 1000;
+
+/// Whether a skill used at `at` could belong to `run`: it is inside the run's stages, or in the lead
+/// before its first one.
+fn skill_window(run: &Run, at: u64) -> bool {
+    mark_at(run, at).is_some()
+        || run
+            .timeline
+            .first()
+            .is_some_and(|first| at < first.at && at + SKILL_LEAD_MS >= first.at)
+}
+
+/// The skills the sessions that `target` claims used, in time order, each with the stage it fell in.
+/// A skill used while another run claiming the same session was active is left out: it cannot be
+/// told apart. `tracked` holds the runs that overlap `target`.
+fn used_skills(target: &Run, tracked: &[&Run], sessions: &[&RunSession]) -> Vec<UsedSkill> {
+    let Some(first) = target.timeline.first() else {
+        return Vec::new();
+    };
+    let mut used = Vec::new();
+    for session in sessions {
+        for (at, name) in &session.skills {
+            let stage = if *at < first.at {
+                (*at + SKILL_LEAD_MS >= first.at).then_some(first.stage)
+            } else {
+                mark_at(target, *at).map(|mark| mark.stage)
+            };
+            let shared = tracked.iter().any(|other| {
+                other.id != target.id && claims(other, session) && skill_window(other, *at)
+            });
+            if let (Some(stage), false) = (stage, shared) {
+                used.push(UsedSkill {
+                    stage,
+                    name: name.clone(),
+                    at: *at,
+                });
+            }
+        }
+    }
+    used.sort_by_key(|skill| skill.at);
+    used
 }
 
 /// Where a mark's work is counted: a ticket, the rework, or neither.
@@ -619,6 +676,7 @@ fn collect_limited(
         };
         return Usage::not_tracked(reason, now);
     }
+    let skills = used_skills(target, &tracked, &claimed);
     let (rows, unattributed, counted) = attribute(target, runs, &read.sessions, now);
     let (pauses, idle) = derive_pauses(target, &read.sessions, now);
     // Each session is evaluated independently: other sessions cannot answer its request.
@@ -721,6 +779,7 @@ fn collect_limited(
         usage.log_complete = log_complete;
         usage.attention = attention;
         usage.attention_requested = attention_requested;
+        usage.skills = skills;
         return usage;
     }
     let mut no_data: Vec<Stage> = Vec::new();
@@ -748,6 +807,7 @@ fn collect_limited(
         log_complete,
         attention,
         attention_requested,
+        skills,
     }
 }
 
@@ -947,6 +1007,7 @@ fn collect_locked(
     );
     let authoritative = fresh.log_complete;
     let attention_requested = fresh.attention_requested;
+    let skills = fresh.skills.clone();
     let attention = fresh.attention.clone();
     let latest = attention.clone().or_else(|| fresh.pauses.last().cloned());
     let usage = if settings.enabled {
@@ -965,6 +1026,8 @@ fn collect_locked(
     {
         store.set_usage(id, usage)?;
     }
+    // Skills are recorded even when usage is off or unchanged: they come from the same logs.
+    store.observe_skills(id, &skills)?;
     // "No pause in the log" only counts when the whole log was read: a run is never resumed on a reading
     // that is off, partial or empty.
     if !authoritative
