@@ -300,6 +300,11 @@ impl RunStore {
             let stage_before = next.stage;
             let rework_set = matches!(update.rework, FieldUpdate::Set(_));
             update.rework.apply(&mut next.rework);
+            // The workflow skill carries the run, so it counts as used from the moment the mode is recorded.
+            if let FieldUpdate::Set(mode) = &update.mode {
+                let stage = next.stage;
+                reports::observe_skill(next, mode.name(), stage, updated_at);
+            }
             update.mode.apply(&mut next.mode);
             update.worktree.apply(&mut next.worktree);
             update.branch.apply(&mut next.branch);
@@ -563,6 +568,26 @@ impl RunStore {
             }
             run.usage = Some(usage);
             Ok(Edit::Save)
+        })
+        .map(|_| ())
+    }
+
+    /// Records the skills the session logs show used as run skill reports, each once per stage; skills the
+    /// agent already reported are not repeated. Saves only when a report was added.
+    pub(crate) fn observe_skills(
+        &self,
+        id: &str,
+        skills: &[crate::usage::UsedSkill],
+    ) -> io::Result<()> {
+        if skills.is_empty() {
+            return Ok(());
+        }
+        self.change(id, Stamp::Collector, |run, _| {
+            let mut added = false;
+            for skill in skills {
+                added |= reports::observe_skill(run, &skill.name, skill.stage, skill.at);
+            }
+            Ok(if added { Edit::Save } else { Edit::Skip })
         })
         .map(|_| ())
     }

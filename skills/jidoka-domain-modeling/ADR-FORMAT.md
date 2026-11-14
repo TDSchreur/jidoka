@@ -28,13 +28,14 @@ Scan `docs/adr/` for the highest existing number and increment by one.
 
 ## When to offer an ADR
 
-All three of these must be true:
+The decision must be **the result of a real trade-off**: there were genuine alternatives and you picked one for specific reasons. At least one of these must also be true:
 
 1. **Hard to reverse**: the cost of changing your mind later is meaningful
 2. **Surprising without context**: a future reader will look at the code and wonder "why on earth did they do it this way?"
-3. **The result of a real trade-off**: there were genuine alternatives and you picked one for specific reasons
 
-If a decision is easy to reverse, skip it: you'll just reverse it. If it's not surprising, nobody will wonder why. If there was no real alternative, there's nothing to record beyond "we did the obvious thing."
+If there was no real alternative, there's nothing to record beyond "we did the obvious thing." If a decision is both easy to reverse and unsurprising, skip it: you'll just reverse it, and nobody will wonder why.
+
+Write the ADR when the decision is made, in the same change that makes it. A decision recorded months later loses the rejected alternatives, which are the part nobody can reconstruct.
 
 ### What qualifies
 
@@ -44,4 +45,8 @@ If a decision is easy to reverse, skip it: you'll just reverse it. If it's not s
 - **Boundary and scope decisions.** "Customer data is owned by the Customer context; other contexts reference it by ID only." The explicit no-s are as valuable as the yes-s.
 - **Deliberate deviations from the obvious path.** "We're using manual SQL instead of an ORM because X." Anything where a reasonable reader would assume the opposite. These stop the next engineer from "fixing" something that was deliberate.
 - **Constraints not visible in the code.** "We can't use AWS because of compliance requirements." "Response times must be under 200ms because of the partner API contract."
+- **Formats and contracts between components.** File and folder layouts, wire formats, how one part finds or authenticates another. Other code and users' data depend on them.
+- **Removing a command, feature or supported option.** A reader sees only that it is missing and will want to bring it back.
+- **Limits, caps and defaults that look arbitrary.** "At most three retries." "Cheaper models by default." Record what the number trades off.
+- **Behaviour that overwrites or discards user data.** "Install replaces local edits to shipped files."
 - **Rejected alternatives when the rejection is non-obvious.** If you considered GraphQL and picked REST for subtle reasons, record it; otherwise someone will suggest GraphQL again in six months.

@@ -23,11 +23,22 @@ pub(crate) enum Signal {
 #[derive(Default)]
 struct Parser {
     pending: HashSet<String>,
+    /// Claude and Copilot background agents and commands that have not reported back yet.
+    background: HashSet<String>,
     codex_sync: HashSet<String>,
     copilot_final: bool,
 }
 
 impl Parser {
+    /// Forget the background work named by each `<task-id>` in a notification.
+    fn finish_background(&mut self, text: &str) {
+        for part in text.split("<task-id>").skip(1) {
+            if let Some((id, _)) = part.split_once("</task-id>") {
+                self.background.remove(id.trim());
+            }
+        }
+    }
+
     fn claude(&mut self, record: &Value) -> Option<Signal> {
         let message = &record["message"];
         match record["type"].as_str() {
@@ -46,13 +57,25 @@ impl Parser {
                 }
                 if requested {
                     Some(Signal::Requested)
-                } else if message["stop_reason"] == "end_turn" && self.pending.is_empty() {
+                } else if message["stop_reason"] == "end_turn"
+                    && self.pending.is_empty()
+                    && self.background.is_empty()
+                {
                     Some(Signal::Finished)
                 } else {
                     None
                 }
             }
             Some("user") => {
+                let started = &record["toolUseResult"];
+                if started["status"] == "async_launched"
+                    && let Some(id) = started["agentId"].as_str()
+                {
+                    self.background.insert(id.to_owned());
+                }
+                if let Some(id) = started["backgroundTaskId"].as_str() {
+                    self.background.insert(id.to_owned());
+                }
                 if let Some(blocks) = message["content"].as_array() {
                     let answered = blocks.iter().fold(false, |answered, block| {
                         let matched = block["type"] == "tool_result"
@@ -69,9 +92,17 @@ impl Parser {
                     } else {
                         None
                     }
-                } else if message["content"].is_string() {
-                    self.pending.clear();
-                    Some(Signal::Resumed)
+                } else if let Some(text) = message["content"].as_str() {
+                    // Notifications and subagent hand-backs are not the user.
+                    if text.contains("<task-notification>") {
+                        self.finish_background(text);
+                        None
+                    } else if text.contains("<agent-message") {
+                        None
+                    } else {
+                        self.pending.clear();
+                        Some(Signal::Resumed)
+                    }
                 } else {
                     None
                 }
@@ -126,6 +157,13 @@ impl Parser {
 
     fn copilot(&mut self, record: &Value) -> Option<Signal> {
         let data = &record["data"];
+        // A finished background agent is named by the task's tool call; its own `agentId` is on the record.
+        if record["type"] == "subagent.completed"
+            && let Some(id) = data["toolCallId"].as_str()
+        {
+            self.background.remove(id);
+            return None;
+        }
         // Copilot interleaves subagent turns in the coordinator transcript. Their events name
         // an agent or parent tool call; neither their questions nor their turns affect this session.
         if !record["agentId"].is_null()
@@ -139,6 +177,31 @@ impl Parser {
                 let id = data["toolCallId"].as_str()?;
                 self.pending.insert(id.to_owned());
                 Some(Signal::Requested)
+            }
+            Some("tool.execution_start") if data["toolName"] == "task" => {
+                if data["arguments"]["mode"] == "background"
+                    && let Some(id) = data["toolCallId"].as_str()
+                {
+                    self.background.insert(id.to_owned());
+                }
+                None
+            }
+            // The result of a shell the user moved to the background names it by `shellId`.
+            Some("tool.execution_complete")
+                if data["result"]["content"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("moved to background")) =>
+            {
+                if let Some(id) = data["result"]["structuredContent"]["shellId"].as_str() {
+                    self.background.insert(format!("shell:{id}"));
+                }
+                None
+            }
+            Some("system.notification") => {
+                if let Some(id) = data["kind"]["shellId"].as_str() {
+                    self.background.remove(&format!("shell:{id}"));
+                }
+                None
             }
             Some("human_response.recorded") => {
                 if data["toolCallId"]
@@ -161,7 +224,9 @@ impl Parser {
                     && data["toolRequests"].as_array().is_none_or(Vec::is_empty);
                 None
             }
-            Some("assistant.turn_end") if self.copilot_final && self.pending.is_empty() => {
+            Some("assistant.turn_end")
+                if self.copilot_final && self.pending.is_empty() && self.background.is_empty() =>
+            {
                 self.copilot_final = false;
                 Some(Signal::Finished)
             }
@@ -231,6 +296,55 @@ mod tests {
                 Signal::Finished,
                 Signal::Resumed
             ]
+        );
+    }
+
+    fn launched(id: &str) -> Value {
+        json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t"}]},"toolUseResult":{"status":"async_launched","agentId":id}})
+    }
+    fn command(id: &str) -> Value {
+        json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t"}]},"toolUseResult":{"backgroundTaskId":id}})
+    }
+    fn notification(id: &str) -> Value {
+        json!({"type":"user","message":{"content":format!("<task-notification><task-id>{id}</task-id><status>completed</status></task-notification>")}})
+    }
+    fn end_turn() -> Value {
+        json!({"type":"assistant","message":{"stop_reason":"end_turn"}})
+    }
+
+    #[test]
+    fn claude_background_agent_and_command_do_not_finish() {
+        assert_eq!(
+            kinds(
+                Agent::Claude,
+                &[
+                    launched("a1"),
+                    command("c1"),
+                    end_turn(),
+                    json!({"type":"user","message":{"content":"Another Claude session sent a message: <agent-message from=\"a1\">done</agent-message>"}}),
+                    notification("a1"),
+                    end_turn(),
+                    notification("c1"),
+                    end_turn(),
+                ]
+            ),
+            [Signal::Finished]
+        );
+    }
+
+    #[test]
+    fn claude_question_during_background_work_is_requested_and_kept() {
+        assert_eq!(
+            kinds(
+                Agent::Claude,
+                &[
+                    launched("a1"),
+                    json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"AskUserQuestion","id":"q"}]}}),
+                    notification("a1"),
+                    end_turn(),
+                ]
+            ),
+            [Signal::Requested]
         );
     }
 
@@ -336,6 +450,51 @@ mod tests {
                 ]
             ),
             [Signal::Requested, Signal::Resumed, Signal::Finished]
+        );
+    }
+
+    fn final_turn() -> [Value; 2] {
+        [
+            json!({"type":"assistant.message","data":{"content":"waiting","toolRequests":[]}}),
+            json!({"type":"assistant.turn_end","data":{}}),
+        ]
+    }
+
+    #[test]
+    fn copilot_background_task_defers_finished_until_it_completes() {
+        let mut records = vec![
+            json!({"type":"tool.execution_start","data":{"toolCallId":"t1","toolName":"task","arguments":{"mode":"background"}}}),
+            json!({"type":"tool.execution_complete","data":{"toolCallId":"t1","success":true,"result":{"content":"Agent started in background with agent_id: a1."}}}),
+        ];
+        records.extend(final_turn());
+        records
+            .push(json!({"type":"subagent.completed","agentId":"a1","data":{"toolCallId":"t1"}}));
+        records.extend(final_turn());
+        assert_eq!(kinds(Agent::Copilot, &records), [Signal::Finished]);
+    }
+
+    #[test]
+    fn copilot_background_shell_defers_finished_until_it_completes() {
+        let mut records = vec![
+            json!({"type":"tool.execution_complete","data":{"toolCallId":"s1","success":true,"result":{"content":"<command with shellId: 41 moved to background by the user.>","structuredContent":{"shellId":"41"}}}}),
+        ];
+        records.extend(final_turn());
+        records.push(json!({"type":"system.notification","data":{"kind":{"type":"shell_completed","shellId":"41","exitCode":0}}}));
+        records.extend(final_turn());
+        assert_eq!(kinds(Agent::Copilot, &records), [Signal::Finished]);
+    }
+
+    #[test]
+    fn copilot_ask_user_is_requested_while_background_work_runs() {
+        assert_eq!(
+            kinds(
+                Agent::Copilot,
+                &[
+                    json!({"type":"tool.execution_start","data":{"toolCallId":"t1","toolName":"task","arguments":{"mode":"background"}}}),
+                    json!({"type":"tool.execution_start","data":{"toolName":"ask_user","toolCallId":"q"}}),
+                ]
+            ),
+            [Signal::Requested]
         );
     }
 

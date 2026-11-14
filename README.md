@@ -66,6 +66,8 @@ Windows Defender sometimes flags the unsigned Windows build; see [what to do](do
 
 4. **Review the pull request** the run opens. The agent watches CI and fixes failures until it is green.
 
+5. **Report problems** (optional): ask your agent to run `/jidoka-run-report` with a run id. It looks for Jidoka bugs and avoidable token usage in that run and, after you approve the text, files a detailed issue in the Jidoka repository.
+
 Useful commands:
 
 | Command | What it does |

@@ -18,6 +18,8 @@ Use this template for writing the PR body:
 
 <optional: linked tickets or spec>
 
+<optional: **Decision:** the ADR this change adds or follows>
+
 <diagram, diff-sketch, or tree>
 
 ## Evidence
@@ -52,6 +54,8 @@ Skip all preambles and keep prose brief. Use the user's domain language from `GL
 ### Summary
 
 When the change has tickets or a spec, put them on one line above the visual, in the form the tracker links or closes them by (a closing keyword such as `Closes #123`, or a plain link).
+
+When the change adds an architecture decision record or follows one that constrains it, add a `**Decision:**` line with a link and a few words on what was decided. When the change makes a hard-to-reverse or surprising trade-off and no record exists, say so under Merge Danger so the reviewer can ask for one. Leave the line out when no decision is involved.
 
 Pick the smallest view that makes the key point clear.
 

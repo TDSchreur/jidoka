@@ -4,6 +4,15 @@ The old project means [TDSchreur/tds-factory](https://github.com/TDSchreur/tds-f
 
 Day-to-day pull requests target `develop`. Release pull requests merge `develop` into `master`; see [the release guide](docs/releasing.md).
 
+## Always work through jidoka
+
+Every change to this repository goes through the `jidoka` skill: features, bug fixes, docs, skills, scripts and config. Start with `jidoka` (or continue the run when given a run ID) and let it pick the workflow.
+
+- "The change is small" is never a reason to skip jidoka. Small changes use `jidoka-fast`, which exists for exactly this: it keeps the run record and workspace without the Check stage.
+- Do not edit files, commit or open a pull request outside a jidoka run. This applies to one-line fixes, typos and changelog-only edits too.
+- Skip jidoka only when the user explicitly says so in this conversation (for example "do this without jidoka"). Your own judgment about size or urgency does not count.
+- Pure questions and read-only investigation need no run.
+
 ## Rust
 
 - Write idiomatic, safe Rust; avoid `unsafe` unless there is a clear need.
@@ -11,7 +20,7 @@ Day-to-day pull requests target `develop`. Release pull requests merge `develop`
 - Handle errors with useful context, especially at user-facing and I/O boundaries.
 - Use the [Rust skill](.agents/skills/rust/SKILL.md) for guidance when writing or reviewing Rust. Apply its recommendations with judgment: avoid abstractions that add complexity without a concrete benefit.
 - Consult the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) when designing public APIs.
-- Follow existing conventions and keep changes proportional to the task. TDD is not required.
+- Follow existing conventions and keep changes proportional to the task.
 
 ## Development principles
 
@@ -31,6 +40,19 @@ Jidoka is a small application. Keep it simple and fast to develop:
 
 - GitHub and Azure DevOps get the same level of support. When something cannot be implemented for one of them, discuss it with the user and record an ADR in `docs/adr/` before proceeding.
 - Claude, Codex and Copilot get the same level of support. When something cannot be implemented for one of them, discuss it with the user and record an ADR in `docs/adr/` before proceeding.
+- Linux and Windows get the same level of support; macOS is not supported ([ADR-0008](docs/adr/0008-linux-and-windows-are-supported-equally-macos-is-not.md)). When something cannot be implemented for one of them, discuss it with the user and record an ADR in `docs/adr/` before proceeding.
+
+## Architecture decision records
+
+Record decisions in `docs/adr/` (format: [ADR-FORMAT.md](skills/jidoka-domain-modeling/ADR-FORMAT.md)), in the same pull request that makes them, so the rejected alternatives are not lost. Write an ADR when a change involves a real trade-off and is hard to reverse or surprising. In this project that usually means a change that:
+
+- sets or changes a format or contract between parts, such as the data folder layout, the dashboard API, tokens or the run record;
+- removes a command, feature, tracker or supported option;
+- sets a cap, default or routing choice that looks arbitrary;
+- overwrites or deletes user files;
+- is a breaking change on 0.x that a user will have to act on.
+
+Skip it for routine fixes and changes that are easy to reverse. If the reason for a decision is unknown, write the ADR with status `proposed` and ask the user instead of guessing. Say in the pull request description which ADR the change adds or follows, or that none was needed.
 
 ## Shipped skills are project-agnostic
 

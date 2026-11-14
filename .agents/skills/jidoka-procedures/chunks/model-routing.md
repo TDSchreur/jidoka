@@ -23,7 +23,7 @@ Define and Finish are also not routed when the run's mode is `jidoka-fast`, or w
   - Compare the models you read with the requested one before you write the Stage summary. Any record with a different model is a failed switch: keep the agent's work and report the switch as Reporting below says. With no record for the agent, you cannot confirm the model, so report it as not applied with that reason. When `jidoka-code-review` starts the review agents, it does this check and reports the result to you.
 - On Codex, set the model and effort of the agent you start through the subagent settings Codex documents.
 - If the recorded model is not one the host takes, or the host refuses a setting, such as a Claude Code that rejects `effort`, start the agent with neither the model nor the effort, so an effort is never paired with a model it was not chosen for.
-- Give each agent what it needs to work on its own: the run's worktree, the spec or plan reference, its task and the skill to follow. For a ticket that changes an agent skill, also point it to "Changing agent skills" in the procedures. It reports back to you, and you record its result on the run.
+- Give each agent what it needs to work on its own: the run's worktree, the saved plan or spec by its path or URL, which the agent reads itself rather than a coordinator summary, its task and the skill to follow. For a ticket that changes an agent skill, also point it to "Changing agent skills" in the procedures. It reports back to you, and you record its result on the run.
 
 ## Per Stage
 

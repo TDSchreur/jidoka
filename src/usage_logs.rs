@@ -1,5 +1,5 @@
 //! Readers for the session logs of Claude Code, Codex and Copilot. Each keeps only the model, the
-//! reasoning effort (Claude Code and Codex record it), the token counts and the timestamp of a response, plus which run ids and session ids a log names. No conversation
+//! reasoning effort (Claude Code and Codex record it), the token counts and the timestamp of a response, the names and times of the skills the agent used, plus which run ids and session ids a log names. No conversation
 //! text, prompt, tool output or credential leaves this module. Claude Code logs also give the moments of
 //! pause markers (usage limit, compaction) and of activity, as timestamps only.
 //!
@@ -91,6 +91,8 @@ pub(crate) struct RunSession {
     /// When the log shows the agent or the user working, sorted. Claude Code only.
     pub(crate) activity: Vec<u64>,
     pub(crate) attention: Vec<(u64, crate::attention::Signal)>,
+    /// The skills the agent used, with when, sorted. Only the skill's name is kept.
+    pub(crate) skills: Vec<(u64, String)>,
 }
 
 /// Something that limits what a session's usage covers.
@@ -279,6 +281,7 @@ struct LogUsage {
     pauses: Vec<(PauseKind, u64)>,
     activity: Vec<u64>,
     attention: Vec<(u64, crate::attention::Signal)>,
+    skills: Vec<(u64, String)>,
 }
 
 impl LogUsage {
@@ -302,7 +305,66 @@ impl LogUsage {
         self.pauses.extend(other.pauses);
         self.activity.extend(other.activity);
         self.attention.extend(other.attention);
+        self.skills.extend(other.skills);
     }
+}
+
+/// The longest skill name kept: real ones are far shorter, so a longer one is junk.
+const MAX_SKILL_NAME_LEN: usize = 64;
+
+/// Whether `c` can be part of a skill name: letters, digits and `-_.:` (`:` joins a plugin and its skill).
+fn is_skill_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "-_.:".contains(c)
+}
+
+/// A skill name as the logs write it. Anything else is not a skill name, so no path or text slips into a report.
+fn skill_name(raw: &str) -> Option<String> {
+    let plain = raw.len() <= MAX_SKILL_NAME_LEN
+        && raw.chars().all(is_skill_char)
+        && raw.chars().any(|c| c.is_ascii_alphanumeric());
+    plain.then(|| raw.to_string())
+}
+
+/// The programs that read a file to the agent. A command that only lists, searches or edits a skill's
+/// file (`ls`, `rg`, `git diff`, `apply_patch`) does not load the skill, so it does not count.
+const FILE_READERS: [&str; 9] = [
+    "cat",
+    "sed",
+    "head",
+    "tail",
+    "less",
+    "more",
+    "bat",
+    "nl",
+    "Get-Content",
+];
+
+/// The names of the skills a shell command reads: each `<name>/SKILL.md` (or `<name>\SKILL.md`) in a
+/// command that runs a file reader. That is how Codex loads a skill, as it has no tool for it. A command
+/// that also lists or searches skill files is still counted when it reads one; the names it lists are
+/// then counted too, which is a heuristic.
+fn skills_read_by(command: &str) -> Vec<String> {
+    let reads = command
+        .split(|c: char| c.is_whitespace() || "\"'`;&|(){}".contains(c))
+        .any(|word| FILE_READERS.contains(&word.rsplit('/').next().unwrap_or(word)));
+    if !reads || command.contains("*** ") {
+        return Vec::new();
+    }
+    command
+        .match_indices("SKILL.md")
+        .filter_map(|(end, _)| {
+            // Arguments are JSON text, so a Windows separator may be doubled.
+            let path = &command[..end];
+            let before = path.trim_end_matches(['/', '\\']);
+            if before.len() == path.len() {
+                return None;
+            }
+            let start = before
+                .rfind(|c: char| !is_skill_char(c))
+                .map_or(0, |at| at + 1);
+            skill_name(&before[start..])
+        })
+        .collect()
 }
 
 // --- Claude Code ------------------------------------------------------------------------------------
@@ -403,6 +465,29 @@ fn claude_pauses(text: &str, parsed: &mut LogUsage) {
     }
 }
 
+/// The skills a Claude Code transcript shows used: assistant `Skill` tool calls. Only names and times are kept.
+fn claude_skills(text: &str, parsed: &mut LogUsage) {
+    for line in text.lines().filter(|line| line.contains("\"Skill\"")) {
+        let Ok(data) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let (Some(ts), Some(content)) = (
+            timestamp(data.get("timestamp")),
+            data["message"]["content"].as_array(),
+        ) else {
+            continue;
+        };
+        for call in content
+            .iter()
+            .filter(|c| c["type"] == "tool_use" && c["name"] == "Skill")
+        {
+            if let Some(name) = call["input"]["skill"].as_str().and_then(skill_name) {
+                parsed.skills.push((ts, name));
+            }
+        }
+    }
+}
+
 fn read_claude(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
     for slug in sub_dirs(root) {
         for file in files_in(&slug.path()) {
@@ -430,6 +515,7 @@ fn read_claude(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
             }
             let mut parsed = parse_claude(&text, &stem, false);
             claude_pauses(&text, &mut parsed);
+            claude_skills(&text, &mut parsed);
             parsed.attention = crate::attention::signals(crate::attention::Agent::Claude, &text);
             drop(text);
             // The subagents of a session are in its own folder; the same response is never counted twice.
@@ -444,6 +530,7 @@ fn read_claude(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
                 if let Some(sub_text) = pass.load(&sub_path, &stem, out) {
                     let mut sub = parse_claude(&sub_text, &stem, true);
                     claude_pauses(&sub_text, &mut sub);
+                    claude_skills(&sub_text, &mut sub);
                     parsed.absorb(sub);
                 }
             }
@@ -584,6 +671,34 @@ fn parse_codex(text: &str, session: &str, subagent: bool) -> LogUsage {
     parsed
 }
 
+/// The skills a Codex rollout shows used: tool calls whose command reads a `<name>/SKILL.md`. Tool output
+/// and the session's own instructions mention skill files too, so only the calls are looked at.
+fn codex_skills(text: &str, parsed: &mut LogUsage) {
+    for line in text.lines().filter(|line| line.contains("SKILL.md")) {
+        let Ok(data) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let payload = &data["payload"];
+        if !matches!(
+            payload["type"].as_str(),
+            Some("function_call" | "custom_tool_call")
+        ) {
+            continue;
+        }
+        let Some(ts) = timestamp(data.get("timestamp")) else {
+            continue;
+        };
+        // A call's command is its `arguments` (a JSON string) or, for a custom tool, its `input`.
+        let command = payload["arguments"]
+            .as_str()
+            .or_else(|| payload["input"].as_str())
+            .unwrap_or_default();
+        parsed
+            .skills
+            .extend(skills_read_by(command).into_iter().map(|name| (ts, name)));
+    }
+}
+
 fn read_codex(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
     let earliest_day = civil_day(pass.from.saturating_sub(DAY_MS));
     let mut rollouts: Vec<Rollout> = Vec::new();
@@ -653,6 +768,7 @@ fn read_codex(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
             continue;
         };
         let mut parsed = parse_codex(&text, &rollout.root, rollout.subagent);
+        codex_skills(&text, &mut parsed);
         if !rollout.subagent {
             parsed.attention = crate::attention::signals(crate::attention::Agent::Codex, &text);
         }
@@ -740,6 +856,29 @@ fn parse_copilot(text: &str, session: &str) -> LogUsage {
     parsed
 }
 
+/// The skills a Copilot log shows used: `skill` tool calls.
+fn copilot_skills(text: &str, parsed: &mut LogUsage) {
+    for line in text
+        .lines()
+        .filter(|line| line.contains("\"tool.execution_start\""))
+    {
+        let Ok(data) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if data["type"] != "tool.execution_start" || data["data"]["toolName"] != "skill" {
+            continue;
+        }
+        if let (Some(ts), Some(name)) = (
+            timestamp(data.get("timestamp")),
+            data["data"]["arguments"]["skill"]
+                .as_str()
+                .and_then(skill_name),
+        ) {
+            parsed.skills.push((ts, name));
+        }
+    }
+}
+
 fn read_copilot(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
     for dir in sub_dirs(root) {
         let session = dir.file_name().to_string_lossy().into_owned();
@@ -761,6 +900,7 @@ fn read_copilot(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
             continue;
         }
         let mut parsed = parse_copilot(&text, &session);
+        copilot_skills(&text, &mut parsed);
         parsed.attention = crate::attention::signals(crate::attention::Agent::Copilot, &text);
         pass.add(&session, mentions, parsed, "Copilot", out);
     }
@@ -787,6 +927,8 @@ struct ReadPass<'a> {
     /// Per session: its pause markers and moments of activity.
     pauses: BTreeMap<String, Markers>,
     attention: BTreeMap<String, Vec<(u64, crate::attention::Signal)>>,
+    /// Per session: the skills it used and when.
+    skills: BTreeMap<String, Vec<(u64, String)>>,
 }
 
 impl ReadPass<'_> {
@@ -897,6 +1039,10 @@ impl ReadPass<'_> {
             .entry(id.to_string())
             .or_default()
             .extend(parsed.attention);
+        self.skills
+            .entry(id.to_string())
+            .or_default()
+            .extend(parsed.skills);
         self.sessions
             .entry(id.to_string())
             .or_default()
@@ -926,6 +1072,7 @@ pub(crate) fn read_sessions(
         sessions: BTreeMap::new(),
         pauses: BTreeMap::new(),
         attention: BTreeMap::new(),
+        skills: BTreeMap::new(),
     };
     let sources = roots
         .claude
@@ -969,6 +1116,9 @@ pub(crate) fn read_sessions(
         activity.sort_unstable();
         activity.dedup();
         let attention = pass.attention.remove(&id).unwrap_or_default();
+        let mut skills = pass.skills.remove(&id).unwrap_or_default();
+        skills.sort();
+        skills.dedup();
         out.sessions.push(RunSession {
             id,
             mentions,
@@ -976,6 +1126,7 @@ pub(crate) fn read_sessions(
             pauses,
             activity,
             attention,
+            skills,
         });
     }
     out

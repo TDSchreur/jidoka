@@ -88,6 +88,10 @@ pub(crate) struct PrRun {
     pub(crate) stage: String,
     /// `running`, `blocked` or `done`. Only a running run is updated.
     pub(crate) status: String,
+    /// The commit the branch started from, when recorded. `pr sync` uses it to tell the branch's own commits.
+    pub(crate) base_commit: Option<String>,
+    /// The pull request state the dashboard last stored. `pr sync` reads it instead of asking the host.
+    pub(crate) pr_state: Option<crate::pr_state::PrState>,
 }
 
 impl PrRun {
@@ -206,8 +210,16 @@ fn push_problem(branch: &str, error: &str) -> ToolProblem {
         || lower.contains("permission denied")
         || lower.contains("publickey")
     {
+        // Git prints a failing credential helper's complaint before the final `fatal:` line, so show every line.
+        let all_lines = error
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" / ");
         return ToolProblem(format!(
-            "git is not allowed to push to origin. Sign in (for example `gh auth login`, or set up your SSH key or credential helper) and try again. ({detail})"
+            "git is not allowed to push to origin. Read git's output below first: a credential helper that crashes is not fixed by signing in. Otherwise sign in (for example `gh auth login`, or set up your SSH key or credential helper; `git config --show-origin --get-all credential.helper` lists the helpers git uses) and try again. ({})",
+            shown(&all_lines)
         ));
     }
     if lower.contains("could not resolve host") || lower.contains("unable to access") {

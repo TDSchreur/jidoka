@@ -626,6 +626,8 @@ mod tests {
     /// Names that belong to this repository, not to the projects the skills are installed in.
     /// Concrete commands and branches go in AGENTS.md, README or .github/instructions instead.
     const PROJECT_SPECIFIC: [&str; 3] = ["verify.sh", "TDSchreur/jidoka", "for this project"];
+    /// The one skill that files issues in this repository and so names it.
+    const REPORTS_TO_THIS_REPOSITORY: &str = "jidoka-run-report";
     /// Workflow skills must also not assume this repository's branch name.
     const WORKFLOW_SKILLS: [&str; 3] = ["jidoka-full", "jidoka-balanced", "jidoka-fast"];
 
@@ -834,6 +836,10 @@ mod tests {
             let text = String::from_utf8_lossy(content);
             let lowercase = text.to_lowercase();
             for term in PROJECT_SPECIFIC {
+                // The run report skill files issues in this repository, so it must name it.
+                if skill == REPORTS_TO_THIS_REPOSITORY && term == "TDSchreur/jidoka" {
+                    continue;
+                }
                 if lowercase.contains(term) {
                     offenders.push(format!("{path}: {term}"));
                 }

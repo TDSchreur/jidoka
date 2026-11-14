@@ -437,6 +437,9 @@ a:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline
 .shipped-table td { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); }
 .shipped-table td:first-child { font-size: var(--text-s); line-height: var(--leading-s); color: var(--color-slate); }
 .shipped-table .num { text-align: right; }
+/* The link and its state stay on one line, so long Run titles wrap instead of the badge dropping below the link. */
+.shipped-table .pr-cell { white-space: nowrap; }
+.shipped-table .pr-cell .pr-state { vertical-align: middle; }
 .shipped-table thead th:nth-child(4) { text-align: right; }
 .log-open { text-align: left; color: var(--color-slate); text-decoration: none; font-weight: var(--weight-strong); overflow-wrap: anywhere; }
 .log-open:hover { color: var(--color-blue); text-decoration: underline; }

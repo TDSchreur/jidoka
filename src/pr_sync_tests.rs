@@ -212,6 +212,8 @@ fn run_of(project: &Project) -> PrRun {
         branch: Some("feature".into()),
         stage: "finish".into(),
         status: "running".into(),
+        base_commit: None,
+        pr_state: None,
     }
 }
 
@@ -420,3 +422,53 @@ fn running_again_never_pushes_a_merge_that_still_needs_verification() {
 }
 
 // --- rework 2 ---------------------------------------------------------------------------------------
+
+#[test]
+fn a_merged_or_closed_pull_request_is_refused_without_a_commit_or_push() {
+    for state in [PrState::Merged, PrState::Closed] {
+        let project = Project::new();
+        project.base_moves("b.txt", "b changed\n");
+        let (head, pushed) = (project.head(), project.remote_branch("feature"));
+        let mut run = run_of(&project);
+        run.pr_state = Some(state);
+        let git = TestGit::default();
+        let problem = sync(&run, &options(), &git, &FakeApi::default()).unwrap_err();
+        assert!(problem.0.contains(state.label()), "{}", problem.0);
+        assert_eq!(
+            problem.0.contains("jidoka run cleanup"),
+            state == PrState::Merged
+        );
+        assert_eq!(project.head(), head);
+        assert_eq!(project.remote_branch("feature"), pushed);
+        assert!(
+            git.commands.borrow().is_empty(),
+            "git was not asked anything"
+        );
+    }
+}
+
+#[test]
+fn a_branch_whose_commits_are_all_in_the_base_is_refused() {
+    let project = Project::new();
+    let start = run_git(&project.wt, &["rev-parse", "HEAD~1"]);
+    // The pull request was merged with a merge commit; the stored state does not know yet.
+    run_git(&project.other, &["pull", "-q", "origin", "develop"]);
+    run_git(&project.other, &["fetch", "-q", "origin", "feature"]);
+    run_git(
+        &project.other,
+        &["merge", "-q", "--no-ff", "-m", "merge pr", "origin/feature"],
+    );
+    run_git(&project.other, &["push", "-q", "origin", "develop"]);
+    let (head, pushed) = (project.head(), project.remote_branch("feature"));
+    let mut run = run_of(&project);
+    run.base_commit = Some(start);
+    let problem = sync(&run, &options(), &TestGit::default(), &FakeApi::default()).unwrap_err();
+    assert!(problem.0.contains("was merged"), "{}", problem.0);
+    assert!(
+        problem.0.contains("jidoka run cleanup 100"),
+        "{}",
+        problem.0
+    );
+    assert_eq!(project.head(), head, "no merge commit");
+    assert_eq!(project.remote_branch("feature"), pushed);
+}

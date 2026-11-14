@@ -9,21 +9,6 @@ An AI-powered security scanner that reasons about your codebase the way a human 
 researcher would — tracing data flows, understanding component interactions, and catching
 vulnerabilities that pattern-matching tools miss.
 
-## When to Use This Skill
-
-Use this skill when the request involves:
-
-- Scanning a codebase or file for security vulnerabilities
-- Running a security review or vulnerability check
-- Checking for SQL injection, XSS, command injection, or other injection flaws
-- Finding exposed API keys, hardcoded secrets, or credentials in code
-- Auditing dependencies for known CVEs
-- Reviewing authentication, authorization, or access control logic
-- Detecting insecure cryptography or weak randomness
-- Performing a data flow analysis to trace user input to dangerous sinks
-- Any request phrasing like "is my code secure?", "scan this file", or "check my repo for vulnerabilities"
-- Running `/jidoka-security-review` or `/jidoka-security-review <path>`
-
 ## How This Skill Works
 
 Reason about the code like a security researcher rather than matching patterns: follow how user input moves across files, and re-examine each finding before reporting it. Every finding gets a severity rating and a concrete fix, and nothing is auto-applied.

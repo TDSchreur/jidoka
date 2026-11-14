@@ -30,7 +30,7 @@ The solution to the problem, from the user's perspective.
 
 ## User Stories
 
-A long, numbered list of user stories, so that edge cases and secondary actors are covered. Each user story should be in the format of:
+A numbered list of user stories covering the primary actors, secondary actors and the edge cases that change behavior. Each user story should be in the format of:
 
 1. As an <actor>, I want a <feature>, so that <benefit>
 
@@ -38,7 +38,7 @@ A long, numbered list of user stories, so that edge cases and secondary actors a
 1. As a mobile bank customer, I want to see balance on my accounts, so that I can make better informed decisions about my spending
 </user-story-example>
 
-This list of user stories should be extremely extensive and cover all aspects of the feature.
+Leave out stories that only restate another one.
 
 ## Implementation Decisions
 

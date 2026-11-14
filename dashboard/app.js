@@ -869,7 +869,7 @@ function ShippedLog({ entries, now, onOpen, onClear }) {
                   </button>${findingCount(run, 'deferred') ? html`${' '}<span class="chip">${findingCount(run, 'deferred')} deferred</span>` : null}
                 </td>
                 <td><${ProjectName} path=${projectOf(run)} /></td>
-                <td>${run.pr ? html`<${RefLink} value=${run.pr} label=${html`Pull request<span class="visually-hidden">${` of ${run.title}`}</span>`} />` : html`<span class="not-set">None</span>`}${' '}<${PrStateLabel} run=${run} /></td>
+                <td class="pr-cell">${run.pr ? html`<${RefLink} value=${run.pr} label=${html`Pull request<span class="visually-hidden">${` of ${run.title}`}</span>`} />` : html`<span class="not-set">None</span>`}${' '}<${PrStateLabel} run=${run} /></td>
                 <td class="num">${tokens === null ? 'n/a' : compactTokens(tokens)}</td>
                 <td>
                   ${ts === null
@@ -1001,12 +1001,7 @@ function useRuns() {
 function Connection({ failed, lastOk, now }) {
   const state = failed ? 'offline' : lastOk === null ? 'connecting' : 'connected';
   const label = { offline: 'Offline', connecting: 'Connecting…', connected: 'Connected' }[state];
-  const age =
-    lastOk === null
-      ? ''
-      : state === 'offline'
-        ? `last contact ${ago(now - lastOk)}`
-        : `updated ${ago(now - lastOk)}`;
+  const age = state === 'offline' && lastOk !== null ? `last contact ${ago(now - lastOk)}` : '';
   return html`<p class=${`connection ${state}`}>
     <span class="pulse" key=${state} aria-hidden="true"></span>
     <span role="status">${label}</span>${age ? html`<span class="connection-age">${` · ${age}`}</span>` : null}

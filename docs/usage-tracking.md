@@ -4,7 +4,7 @@ Jidoka reads the session logs your agents already write, to show what each run c
 
 ## Token usage
 
-The dashboard reads the token counts your agents write to their own session logs and shows them per run, stage, model and ticket. It also estimates the cost from a built-in price table (see below), and it keeps only counts, identifiers and the reasoning effort of each call: no conversation text, prompts, tool output or credentials are stored.
+The dashboard reads the token counts your agents write to their own session logs and shows them per run, stage, model and ticket. It also estimates the cost from a built-in price table (see below), and it keeps only counts, identifiers, the reasoning effort of each call and the names of the skills the agent used (see [runs](runs.md)): no conversation text, prompts, tool output or credentials are stored.
 
 - `jidoka run stats <id>` prints the breakdown (stage, model and ticket, with the rework and work with no ticket in their own rows), the totals per model, and what the figures do not cover. `jidoka run stats --all` adds the totals per model over all runs and names the runs it leaves out.
 - The dashboard shows the fresh tokens on a run's row and the breakdown in the run's detail: per row, per model (fresh tokens, cache reads and estimated cost) and per stage.
@@ -31,6 +31,8 @@ The dashboard reads the token counts your agents write to their own session logs
 ## Pauses and requests for attention
 
 The dashboard checks the coordinator logs of Claude Code, Codex and Copilot for user-input requests and for a finished response while the run is still active. It marks such a run blocked with “Agent stopped; it may need you”. A finished response can also follow an interruption, so the message does not assert that a question was asked. Activity in a different session does not answer the request. When the relevant session resumes, the dashboard clears its own block. Manually reported blocks and finished runs are not changed.
+
+Codex can finish a coordinator turn while a subagent is still working. In the local logs examined for [issue #448](https://github.com/TDSchreur/jidoka/issues/448), child-to-coordinator messages did not trigger a new turn; one child finished after its coordinator and its result arrived during a later coordinator turn. The dashboard therefore still treats a finished Codex turn as needing attention even if a child is outstanding: waiting for that child might otherwise hide a real pause. This is an observed behavior, not a guarantee about future Codex versions. The logs did not establish whether an eventual answer to `request_user_input_async` can wake a finished coordinator or interact with a child completing. See [ADR 0002](adr/0002-codex-attention-and-subagents.md) for the parity decision.
 
 Claude Code logs also show usage limits and context compaction. The dashboard marks an active run blocked while such a pause is outstanding and resumes it after later activity. Pauses and idle gaps appear in run details and `jidoka run inspect`. The dashboard checks active and automatically blocked runs about once a minute and stops watching a run that has had no update for seven days. Detection depends on recognizable logs being available and may be incomplete if logs change, cannot be read, or a read reaches its limits.
 
