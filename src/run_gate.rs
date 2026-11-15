@@ -432,18 +432,17 @@ pub(crate) fn parse_advance_options(options: &[&str]) -> Result<AdvanceOptions, 
         if seen.contains(&option) {
             return Err(format!("{option} is given more than once"));
         }
+        let mut value = || {
+            rest.next()
+                .map(str::to_string)
+                .ok_or_else(|| format!("{option} needs a value"))
+        };
         match option {
-            "--summary" | "--activity" | "--reason" => {
-                let value = rest
-                    .next()
-                    .ok_or_else(|| format!("{option} needs a value"))?;
-                match option {
-                    "--reason" => parsed.request.reason = Some(value.to_string()),
-                    _ => parsed
-                        .update
-                        .extend([option.to_string(), value.to_string()]),
-                }
+            "--summary" | "--activity" => {
+                let value = value()?;
+                parsed.update.extend([option.to_string(), value]);
             }
+            "--reason" => parsed.request.reason = Some(value()?),
             "--clear-current-ticket" => parsed.update.push(option.to_string()),
             "--force" => parsed.request.force = true,
             "--json" => parsed.json = true,

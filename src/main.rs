@@ -190,14 +190,10 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             }
             let parsed = run_gate::parse_advance_options(options)
                 .map_err(|error| format!("{error}\n{HELP}"))?;
-            let mut update_options: Vec<&str> = parsed.update.iter().map(String::as_str).collect();
-            // Check the whole update before anything is sent, so a bad option records nothing.
-            if !update_options.is_empty() {
-                // The agent's own session is recorded with the update, like `run update` does.
-                let sessions = current_sessions();
-                for session in &sessions {
-                    update_options.extend(["--session", session]);
-                }
+            if !parsed.update.is_empty() {
+                let update = with_sessions(&parsed.update);
+                let update_options: Vec<&str> = update.iter().map(String::as_str).collect();
+                // Check the whole update before anything is sent, so a bad option records nothing.
                 client::prepare_update(id, "running", &update_options)?;
                 // The update sends status `running`, which would resume a blocked run; only a
                 // running run may advance, so refuse the others before recording anything.
@@ -283,12 +279,8 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             }
         }
         ["run", "update", id, status, options @ ..] => {
-            // The agent's own session is recorded with every update, so its token usage can be attributed.
-            let sessions = current_sessions();
-            let mut options = options.to_vec();
-            for session in &sessions {
-                options.extend(["--session", session]);
-            }
+            let options = with_sessions(options);
+            let options: Vec<&str> = options.iter().map(String::as_str).collect();
             report_to_dashboard(id, status, &options)?;
             println!("Updated run {id}");
         }
@@ -658,6 +650,16 @@ fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::erro
             Ok(1)
         }
     }
+}
+
+/// `options` followed by `--session <id>` for each agent session this command runs in, so the update
+/// records the session and its token usage can be attributed to the run.
+fn with_sessions(options: &[impl AsRef<str>]) -> Vec<String> {
+    let mut all: Vec<String> = options.iter().map(|o| o.as_ref().to_owned()).collect();
+    for session in current_sessions() {
+        all.extend(["--session".to_owned(), session]);
+    }
+    all
 }
 
 /// Prints what `jidoka run next <id>` prints: the run's current stage, as text or JSON.
