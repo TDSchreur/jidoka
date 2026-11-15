@@ -171,6 +171,7 @@ fn claude_model_check(selection: &ModelRouting) -> Check {
     let wrong: Vec<String> = selection
         .stages
         .iter()
+        .chain(selection.complex.iter())
         .filter_map(|(stage, choice)| {
             let model = &choice.model;
             (!CLAUDE_MODELS.contains(&model.as_str())).then(|| format!("{}: {model}", stage.name()))
@@ -195,7 +196,7 @@ fn claude_model_check(selection: &ModelRouting) -> Check {
 
 fn effort_check(selection: &ModelRouting, host: &str, accepted: &[&str]) -> Check {
     let (mut unsupported, mut unset) = (Vec::new(), Vec::new());
-    for (stage, choice) in &selection.stages {
+    for (stage, choice) in selection.stages.iter().chain(selection.complex.iter()) {
         match choice.effort.as_deref() {
             None => unset.push(stage.name().to_string()),
             Some(effort) if !accepted.contains(&effort) => {

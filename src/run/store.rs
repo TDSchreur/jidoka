@@ -535,10 +535,14 @@ impl RunStore {
                             marks[0].stage == row.stage && marks[1].stage != row.stage
                         });
                     // The coordinator keeps its own model; only subagent usage is judged against the routing.
-                    if let Some(choice) = routing.choice_for(row.stage)
-                        && completed
+                    // Without a current route, coordinator and subagent work may both be legitimate.
+                    if let Some(choice) = routing.choice_for(row.stage).or_else(|| {
+                        (row.stage == Stage::Finish)
+                            .then(|| routing.choice_for(Stage::Build))
+                            .flatten()
+                    }) && completed
                         && !row.subagents.is_empty()
-                        && !crate::routing::model_matches(&choice.model, &row.model)
+                        && !routing.allows_model(row.stage, &row.model)
                     {
                         // Log model names are untrusted and can exceed a run report's size limit.
                         let model: String = row.model.chars().take(50).collect();

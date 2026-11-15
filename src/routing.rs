@@ -42,6 +42,12 @@ pub(crate) struct ModelRouting {
     /// Choices made for this run by hand; they win over `stages` and leave it untouched.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) overrides: BTreeMap<Stage, ModelChoice>,
+    /// Previously assigned choices, retained so aggregate usage can be interpreted honestly.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) prior_choices: BTreeMap<Stage, Vec<ModelChoice>>,
+    /// Optional choices offered for complex Define and Build work.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) complex: BTreeMap<Stage, ModelChoice>,
 }
 
 /// Whether an observed model id is the model that was requested. A requested alias is a whole part of the
@@ -63,6 +69,8 @@ pub(crate) fn model_matches(requested: &str, observed: &str) -> bool {
 
 /// Longest model or effort text. They are shown in a terminal and handed to agents, so they stay short.
 const MAX_TEXT: usize = 64;
+/// Bound the run record while allowing multiple deliberate routing changes per stage.
+pub(crate) const MAX_PRIOR_CHOICES: usize = 32;
 
 fn check_text(name: &str, value: &str) -> Result<(), String> {
     let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-');
@@ -82,9 +90,59 @@ impl ModelRouting {
             .or_else(|| self.stages.get(&stage))
     }
 
+    /// The effective choice, raising known lower efforts for a Build rework.
+    pub(crate) fn effective(&self, stage: Stage, rework: Option<u32>) -> Option<ModelChoice> {
+        let mut choice = self.choice_for(stage)?.clone();
+        if stage == Stage::Build && rework.is_some() {
+            let lower = match self.agent {
+                RoutingAgent::Claude => &["low", "medium"][..],
+                RoutingAgent::Codex => &["minimal", "low", "medium"][..],
+                RoutingAgent::Copilot => &["none", "minimal", "low", "medium"][..],
+            };
+            if choice.effort.as_deref().is_none_or(|e| lower.contains(&e)) {
+                choice.effort = Some("high".into());
+            }
+        }
+        Some(choice)
+    }
+
+    /// Models permitted in a stage's aggregate usage, including Finish CI repairs.
+    pub(crate) fn allows_model(&self, stage: Stage, model: &str) -> bool {
+        let assigned = |stage| {
+            self.choice_for(stage)
+                .into_iter()
+                .chain(self.prior_choices.get(&stage).into_iter().flatten())
+                .any(|choice| model_matches(&choice.model, model))
+        };
+        assigned(stage) || (stage == Stage::Finish && assigned(Stage::Build))
+    }
+
     /// The rules every selection follows, whether the CLI resolved it or the API received it.
     pub(crate) fn validate(&self) -> Result<(), String> {
-        for choice in self.stages.values().chain(self.overrides.values()) {
+        if self
+            .complex
+            .keys()
+            .any(|stage| !matches!(stage, Stage::Define | Stage::Build))
+        {
+            return Err("Complex choices may only name define or build".into());
+        }
+        if self
+            .prior_choices
+            .values()
+            .any(|choices| choices.len() > MAX_PRIOR_CHOICES)
+        {
+            return Err(format!(
+                "A stage can have at most {MAX_PRIOR_CHOICES} prior model choices"
+            ));
+        }
+        for choice in self
+            .prior_choices
+            .values()
+            .flatten()
+            .chain(self.stages.values())
+            .chain(self.overrides.values())
+            .chain(self.complex.values())
+        {
             choice.validate()?;
             if self.agent == RoutingAgent::Copilot {
                 choice.validate_for_copilot()?;

@@ -349,3 +349,16 @@ fn a_starter_is_created_with_its_folder_and_never_replaces_anything() {
     assert!(!create_starter(&path, &[RoutingAgent::Codex]).unwrap());
     assert_eq!(fs::read_to_string(&path).unwrap(), "my own policy");
 }
+
+#[test]
+fn complex_choices_are_optional_validated_and_recorded() {
+    let valid = r#"{"agents":{"copilot":{"stages":{"build":{"model":"gpt-6.1-sol"}},"complex":{"build":{"model":"gpt-6-astra","effort":"high"}}}}}"#;
+    let routing = selection(valid, Some(Host::Copilot));
+    assert_eq!(routing.complex[&Stage::Build].model, "gpt-6-astra");
+    assert!(read_error(&valid.replace("gpt-6-astra", "sonnet")).contains("alias"));
+    assert!(read_error(&valid.replace("high", "ultra")).contains("Effort"));
+    assert!(
+        read_error(&valid.replace("\"complex\":{\"build\"", "\"complex\":{\"finish\""))
+            .contains("Complex")
+    );
+}

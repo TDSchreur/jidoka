@@ -450,7 +450,7 @@ fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
     if let Some(routing) = &run.model_routing {
         value["model_route"] = serde_json::json!({
             "agent": routing.agent,
-            "stages": crate::inspect::route_entries(routing, run.usage.as_ref()),
+            "stages": crate::inspect::route_entries(routing, run.usage.as_ref(), run.rework),
         });
     }
     if let Some(snapshot) = run.check_history.last() {
