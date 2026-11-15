@@ -68,13 +68,44 @@ fn routing_section(routing: &ModelRouting, usage: Option<&Usage>) -> String {
         };
         out.push_str(&format!("  {:<6}  {line}\n", stage.name()));
         if let Some(requested) = choice {
-            out.push_str(&format!(
-                "          {}\n",
-                observed_line(requested, stage, usage)
-            ));
+            let (observed, _) = observed_text(requested, stage, usage);
+            out.push_str(&format!("          observed: {observed}\n"));
         }
     }
     out
+}
+
+/// One routed stage for the dashboard: what was requested next to what the usage shows.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct RouteEntry {
+    pub stage: Stage,
+    pub model: String,
+    pub effort: Option<String>,
+    #[serde(rename = "override")]
+    pub overridden: bool,
+    /// The same text `jidoka run inspect` prints after `observed: `.
+    pub observed: String,
+    /// True exactly when `observed` holds a `MISMATCH:` verdict.
+    pub mismatch: bool,
+}
+
+/// The routed stages in order; a stage the selection does not map is left out.
+pub(crate) fn route_entries(routing: &ModelRouting, usage: Option<&Usage>) -> Vec<RouteEntry> {
+    Stage::ALL
+        .into_iter()
+        .filter_map(|stage| {
+            let choice = routing.choice_for(stage)?;
+            let (observed, mismatch) = observed_text(choice, stage, usage);
+            Some(RouteEntry {
+                stage,
+                model: choice.model.clone(),
+                effort: choice.effort.clone(),
+                overridden: routing.overrides.contains_key(&stage),
+                observed,
+                mismatch,
+            })
+        })
+        .collect()
 }
 
 /// What the run's usage shows for one model in one stage.
@@ -87,13 +118,16 @@ struct Seen<'a> {
 /// The models the run's usage shows for `stage`, next to whether the request is met. The request is an
 /// alias or an id and the log has an id, so both are shown and only a missing request counts. When an
 /// effort was requested, it is compared with the efforts the logs recorded for the models that match.
-fn observed_line(requested: &ModelChoice, stage: Stage, usage: Option<&Usage>) -> String {
+fn observed_text(requested: &ModelChoice, stage: Stage, usage: Option<&Usage>) -> (String, bool) {
     let Some(usage) = usage else {
-        return "observed: not tracked: usage has not been collected for this run yet".into();
+        return (
+            "not tracked: usage has not been collected for this run yet".into(),
+            false,
+        );
     };
     if usage.status == UsageStatus::NotTracked {
         let reason = usage.reason.as_deref().unwrap_or("no reason recorded");
-        return format!("observed: not tracked: {}", shown(reason));
+        return (format!("not tracked: {}", shown(reason)), false);
     }
     // Models in the order they first appear.
     let mut seen: Vec<Seen> = Vec::new();
@@ -120,7 +154,7 @@ fn observed_line(requested: &ModelChoice, stage: Stage, usage: Option<&Usage>) -
             (false, true) => " (usage is partial)",
             (false, false) => "",
         };
-        return format!("observed: none recorded for this stage{why}");
+        return (format!("none recorded for this stage{why}"), false);
     }
     let list: Vec<String> = seen
         .iter()
@@ -142,20 +176,17 @@ fn observed_line(requested: &ModelChoice, stage: Stage, usage: Option<&Usage>) -
             }
         })
         .collect();
-    format!(
-        "observed: {}; {}",
-        list.join(", "),
-        verdict(requested, &seen, partial)
-    )
+    let (verdict, mismatch) = verdict(requested, &seen, partial);
+    (format!("{}; {verdict}", list.join(", ")), mismatch)
 }
 
 /// Whether the request is met by what was observed. Only subagents are routed, so their models are judged;
 /// a stage with only coordinator usage is neutral.
-fn verdict(requested: &ModelChoice, seen: &[Seen], partial: bool) -> String {
+fn verdict(requested: &ModelChoice, seen: &[Seen], partial: bool) -> (String, bool) {
     let model = shown(&requested.model);
     if !seen.iter().any(|s| s.subagents) {
         let note = if partial { "; usage is partial" } else { "" };
-        return if seen
+        let text = if seen
             .iter()
             .any(|s| model_matches(&requested.model, s.model))
         {
@@ -165,6 +196,7 @@ fn verdict(requested: &ModelChoice, seen: &[Seen], partial: bool) -> String {
         } else {
             "kept on the coordinator".to_string()
         };
+        return (text, false);
     }
     let matching: Vec<&Seen> = seen
         .iter()
@@ -172,9 +204,15 @@ fn verdict(requested: &ModelChoice, seen: &[Seen], partial: bool) -> String {
         .collect();
     if matching.is_empty() {
         return if partial {
-            format!("{model} not observed (usage is partial, so it may be missing)")
+            (
+                format!("{model} not observed (usage is partial, so it may be missing)"),
+                false,
+            )
         } else {
-            format!("MISMATCH: {model} was requested and never observed")
+            (
+                format!("MISMATCH: {model} was requested and never observed"),
+                true,
+            )
         };
     }
     let mut notes = Vec::new();
@@ -188,22 +226,29 @@ fn verdict(requested: &ModelChoice, seen: &[Seen], partial: bool) -> String {
         } else if !efforts.iter().any(|e| e.eq_ignore_ascii_case(want)) {
             let (want, got) = (shown(want), join_efforts(efforts.iter().copied()));
             return if partial {
-                format!(
-                    "effort {want} not observed, only {got} (usage is partial, so it may be missing)"
+                (
+                    format!(
+                        "effort {want} not observed, only {got} (usage is partial, so it may be missing)"
+                    ),
+                    false,
                 )
             } else {
-                format!("MISMATCH: effort {want} was requested, observed {got}")
+                (
+                    format!("MISMATCH: effort {want} was requested, observed {got}"),
+                    true,
+                )
             };
         }
     }
     if partial {
         notes.push("usage is partial");
     }
-    if notes.is_empty() {
+    let text = if notes.is_empty() {
         "matches the request".to_string()
     } else {
         format!("matches the request ({})", notes.join("; "))
-    }
+    };
+    (text, false)
 }
 
 /// Efforts as one piece of text, such as `high/medium`.
@@ -547,6 +592,36 @@ mod tests {
             observed(&render(&partial), "check"),
             "observed: claude-opus-5-5 (effort medium, +subagents); effort high not observed, only medium (usage is partial, so it may be missing)"
         );
+    }
+
+    #[test]
+    fn route_entries_follow_inspect_and_flag_only_mismatches() {
+        let mut run = with_usage(
+            "tracked",
+            &[
+                ("build", "claude-sonnet-5-5", false),
+                ("check", "claude-opus-5-5", true),
+            ],
+        );
+        set_efforts(&mut run, Stage::Check, "claude-opus-5-5", &["medium"]);
+        let routing = run.model_routing.as_ref().unwrap();
+        let entries = route_entries(routing, run.usage.as_ref());
+        let stages: Vec<_> = entries.iter().map(|e| e.stage.name()).collect();
+        assert_eq!(stages, ["build", "check"]);
+        assert!(!entries[0].mismatch && !entries[0].overridden);
+        assert_eq!(entries[1].effort.as_deref(), Some("high"));
+        assert!(entries[1].mismatch);
+        let text = render(&run);
+        for entry in &entries {
+            assert!(
+                text.contains(&format!("observed: {}\n", entry.observed)),
+                "{text}"
+            );
+        }
+        let json = serde_json::to_value(&entries[1]).unwrap();
+        assert_eq!(json["stage"], "check");
+        assert_eq!(json["override"], false);
+        assert!(route_entries(routing, None).iter().all(|e| !e.mismatch));
     }
 
     #[test]

@@ -447,6 +447,12 @@ fn run_with_cost(run: &Run) -> serde_json::Result<serde_json::Value> {
 fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
     let mut value = run_with_cost(run)?;
     value["stage_gates"] = serde_json::to_value(crate::run_next::stage_gates(run))?;
+    if let Some(routing) = &run.model_routing {
+        value["model_route"] = serde_json::json!({
+            "agent": routing.agent,
+            "stages": crate::inspect::route_entries(routing, run.usage.as_ref()),
+        });
+    }
     if let Some(snapshot) = run.check_history.last() {
         value["recorded_skipped_checks"] = serde_json::to_value(&snapshot.skipped)?;
         value["recorded_skipped_rework"] = serde_json::to_value(snapshot.rework)?;

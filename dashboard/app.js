@@ -239,9 +239,41 @@ function TicketRef({ value }) {
     : value;
 }
 
+/** The display name of a stage id, or the id itself when it is not a known stage. */
+function stageName(id) {
+  return (GROUPS.find(([key]) => key === id) ?? [id, id])[1];
+}
+
+/** What model routing requested per stage next to what the usage shows, from the run detail's `model_route`. */
+function ModelRoute({ route }) {
+  return html`<section aria-labelledby="model-route-heading">
+    <h3 id="model-route-heading">Model routing <span>(${route.agent})</span></h3>
+    <div class="table-scroll" role="region" aria-label="Requested model per stage and what was observed" tabindex="0">
+      <table class="usage-table">
+        <caption class="visually-hidden">Requested model per stage and what was observed</caption>
+        <thead>
+          <tr>
+            <th scope="col" class="text">Stage</th>
+            <th scope="col" class="text">Requested</th>
+            <th scope="col" class="text">Observed</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${route.stages.map(
+            (entry) => html`<tr key=${entry.stage}>
+              <td class="text">${stageName(entry.stage)}</td>
+              <td class="text wrap">${entry.model}${entry.effort ? `, effort ${entry.effort}` : ''}${entry.override ? ' (override)' : ''}</td>
+              <td class="text wrap">${entry.mismatch ? html`<strong>Mismatch: </strong>` : null}${entry.observed}</td>
+            </tr>`,
+          )}
+        </tbody>
+      </table>
+    </div>
+  </section>`;
+}
+
 /** The stage, model and ticket breakdown of a Run's token usage, with what is missing from it. */
 function UsageDetail({ usage }) {
-  const stageName = (id) => (GROUPS.find(([key]) => key === id) ?? [id, id])[1];
   const rows = Array.isArray(usage.rows) ? usage.rows : [];
   const total = rows.map(freshTokens).filter((n) => n !== null).reduce((a, b) => a + b, 0);
   const status =
@@ -786,6 +818,7 @@ function Detail({ run, now, onClose, onDelete, onSynced }) {
       </ol>
       <${UnstartedTickets} run=${run} tickets=${other.tickets} now=${now} />
       <${OtherReports} reports=${other.reports} events=${other.events} summaries=${other.summaries} now=${now} />
+      ${gateData?.model_route?.stages?.length ? html`<${ModelRoute} route=${gateData.model_route} />` : null}
       ${run.usage
         ? html`<details class="usage" open=${active}>
             <summary>
