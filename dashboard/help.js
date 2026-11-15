@@ -567,6 +567,7 @@ function Dashboard({ reworkCap }) {
           <strong>Fresh tokens</strong> are the input that was not read from a cache, plus cache writes and output.
           Cache reads are shown next to them, not inside. Reasoning is part of the output.
         </li>
+        <li><strong>Effort</strong> is the reasoning effort the agent used for the rows' calls. A dash means the log did not report it.</li>
         <li><strong>n/a</strong> means the log did not report a number. It is never zero.</li>
         <li>
           <strong>Partial</strong> means some usage could not be attributed or read, so the totals may be too low. The
