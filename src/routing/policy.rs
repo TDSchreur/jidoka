@@ -470,20 +470,20 @@ fn choice(model: &str, effort: &str) -> ModelChoice {
 fn starter_stages(agent: RoutingAgent) -> StarterStages {
     match agent {
         RoutingAgent::Claude => StarterStages {
-            define: choice("sonnet", "low"),
-            build: choice("sonnet", "low"),
+            define: choice("sonnet", "medium"),
+            build: choice("sonnet", "medium"),
             check: choice("sonnet", "medium"),
             finish: choice("haiku", "low"),
         },
         RoutingAgent::Codex => StarterStages {
-            define: choice("gpt-6.1-terra", "low"),
-            build: choice("gpt-6.1-terra", "low"),
+            define: choice("gpt-6.1-terra", "medium"),
+            build: choice("gpt-6.1-terra", "medium"),
             check: choice("gpt-6.1-terra", "medium"),
             finish: choice("gpt-6-luna", "low"),
         },
         RoutingAgent::Copilot => StarterStages {
-            define: choice("claude-sonnet-5.5", "low"),
-            build: choice("claude-sonnet-5.5", "low"),
+            define: choice("claude-sonnet-5.5", "medium"),
+            build: choice("claude-sonnet-5.5", "medium"),
             check: choice("claude-sonnet-5.5", "medium"),
             finish: choice("claude-haiku-4.5", "low"),
         },
