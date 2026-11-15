@@ -667,9 +667,17 @@ pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, 
     let mut args = options.iter();
     while let Some(flag) = args.next() {
         let mut next_value = || {
-            args.next()
-                .filter(|value| !value.starts_with("--"))
-                .ok_or_else(|| format!("Missing value for {flag}\n{UPDATE_HELP}"))
+            let value = args
+                .next()
+                .ok_or_else(|| format!("Missing value for {flag}\n{UPDATE_HELP}"))?;
+            // A lone `--word` is most likely the next option after a forgotten value.
+            // Free text such as "--rework is odd" has whitespace and passes.
+            if value.starts_with("--") && !value.contains(char::is_whitespace) {
+                return Err(format!(
+                    "Missing value for {flag}: found {value}, which looks like an option\n{UPDATE_HELP}"
+                ));
+            }
+            Ok(value)
         };
         match *flag {
             "--rework" | "--clear-rework" => {
