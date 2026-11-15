@@ -63,6 +63,10 @@ pub(crate) struct Next {
     tickets: Vec<Ticket>,
     /// The routed model for this Stage; none when routing is off or leaves the Stage out.
     model: Option<ModelChoice>,
+    /// Optional complex choice and Finish's CI repair route.
+    complex_model: Option<ModelChoice>,
+    ci_model: Option<ModelChoice>,
+    model_reason: Option<&'static str>,
     /// Why there is no move, when the run is blocked or done.
     note: Option<String>,
 }
@@ -253,7 +257,7 @@ fn instructions(mode: Mode, stage: Stage, routing: Option<RoutingAgent>) -> Stri
             "committing-for-check",
             "check-review",
         ],
-        Stage::Finish => &["stage-reporting", "finish"],
+        Stage::Finish => &["stage-reporting", "finish", "pull-request-and-ci"],
     };
     let routed = routing.map(|agent| match agent {
         RoutingAgent::Claude => "routing-claude",
@@ -376,15 +380,24 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
         }
         Err(reason) => note = Some(reason),
     }
-    let mut stage_instructions = instructions(
-        mode,
-        run.stage,
-        run.model_routing
-            .as_ref()
-            .filter(|routing| routing.choice_for(run.stage).is_some())
-            .map(|routing| routing.agent),
-    );
-    if run.stage == Stage::Check {
+    // A done run has no stage left to carry out, so it gets no instructions.
+    let mut stage_instructions = if run.status == RunStatus::Done {
+        String::new()
+    } else {
+        instructions(
+            mode,
+            run.stage,
+            run.model_routing
+                .as_ref()
+                .filter(|routing| {
+                    routing.choice_for(run.stage).is_some()
+                        || (run.stage == Stage::Finish
+                            && routing.choice_for(Stage::Build).is_some())
+                })
+                .map(|routing| routing.agent),
+        )
+    };
+    if run.stage == Stage::Check && run.status != RunStatus::Done {
         for applicable in checks::select(mode, changed_paths).applicable {
             stage_instructions.push_str("\n\n");
             stage_instructions.push_str(applicable.check.instructions);
@@ -413,8 +426,26 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
         model: run
             .model_routing
             .as_ref()
-            .and_then(|routing| routing.choice_for(run.stage))
+            .and_then(|r| r.effective(run.stage, run.rework)),
+        complex_model: run
+            .model_routing
+            .as_ref()
+            .and_then(|r| r.complex.get(&run.stage))
             .cloned(),
+        ci_model: (run.stage == Stage::Finish)
+            .then(|| {
+                run.model_routing
+                    .as_ref()
+                    .and_then(|r| r.effective(Stage::Build, run.rework))
+            })
+            .flatten(),
+        model_reason: (run.stage == Stage::Build
+            && run.rework.is_some()
+            && run
+                .model_routing
+                .as_ref()
+                .is_some_and(|r| r.choice_for(Stage::Build).is_some()))
+        .then_some("Build rework; known lower effort raised to high"),
         note,
     })
 }
@@ -448,7 +479,37 @@ pub(crate) fn render(next: &Next) -> String {
         )),
         None => out.push_str("Model not routed\n"),
     }
-    out.push_str(&format!("\nInstructions\n  {}\n", next.instructions));
+    if let Some(reason) = next.model_reason {
+        out.push_str(&format!(
+            "  {reason} (stronger or unknown effort preserved)\n"
+        ));
+    }
+    if let Some(choice) = &next.complex_model {
+        out.push_str(&format!(
+            "Complex option {}, effort {}\n",
+            shown(&choice.model),
+            choice.effort.as_deref().map_or("unspecified".into(), shown)
+        ));
+    }
+    if next.stage == Stage::Finish {
+        let route = next
+            .ci_model
+            .as_ref()
+            .map_or("not routed".into(), |choice| {
+                format!(
+                    "{}{}",
+                    shown(&choice.model),
+                    choice
+                        .effort
+                        .as_deref()
+                        .map_or(String::new(), |e| format!(", effort {}", shown(e)))
+                )
+            });
+        out.push_str(&format!("CI repair model {route}\n"));
+    }
+    if !next.instructions.is_empty() {
+        out.push_str(&format!("\nInstructions\n  {}\n", next.instructions));
+    }
     if let Some(checks) = &next.checks {
         out.push_str("\nChecks\n");
         for entry in &checks.applicable {

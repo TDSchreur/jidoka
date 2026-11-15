@@ -89,6 +89,7 @@ pub(crate) struct AgentPolicy {
     /// A disabled entry is not checked and routes nothing.
     pub(crate) enabled: bool,
     pub(crate) stages: BTreeMap<Stage, ModelChoice>,
+    pub(crate) complex: BTreeMap<Stage, ModelChoice>,
 }
 
 impl AgentPolicy {
@@ -98,6 +99,8 @@ impl AgentPolicy {
             agent,
             stages: self.stages.clone(),
             overrides: BTreeMap::new(),
+            prior_choices: BTreeMap::new(),
+            complex: self.complex.clone(),
         }
     }
 }
@@ -287,6 +290,8 @@ struct Entry {
     #[serde(default = "enabled_by_default")]
     enabled: bool,
     stages: Unique<Stage, ModelChoice>,
+    #[serde(default)]
+    complex: Option<Unique<Stage, ModelChoice>>,
 }
 
 /// The `agents` object, as written. A repeated agent is a duplicate-field error.
@@ -317,6 +322,9 @@ impl From<Entry> for AgentPolicy {
         Self {
             enabled: entry.enabled,
             stages: entry.stages.0,
+            complex: entry
+                .complex
+                .map_or_else(BTreeMap::new, |choices| choices.0),
         }
     }
 }
@@ -470,20 +478,20 @@ fn choice(model: &str, effort: &str) -> ModelChoice {
 fn starter_stages(agent: RoutingAgent) -> StarterStages {
     match agent {
         RoutingAgent::Claude => StarterStages {
-            define: choice("sonnet", "low"),
-            build: choice("sonnet", "low"),
+            define: choice("sonnet", "medium"),
+            build: choice("sonnet", "medium"),
             check: choice("sonnet", "medium"),
             finish: choice("haiku", "low"),
         },
         RoutingAgent::Codex => StarterStages {
-            define: choice("gpt-6.1-terra", "low"),
-            build: choice("gpt-6.1-terra", "low"),
+            define: choice("gpt-6.1-terra", "medium"),
+            build: choice("gpt-6.1-terra", "medium"),
             check: choice("gpt-6.1-terra", "medium"),
             finish: choice("gpt-6-luna", "low"),
         },
         RoutingAgent::Copilot => StarterStages {
-            define: choice("claude-sonnet-5.5", "low"),
-            build: choice("claude-sonnet-5.5", "low"),
+            define: choice("claude-sonnet-5.5", "medium"),
+            build: choice("claude-sonnet-5.5", "medium"),
             check: choice("claude-sonnet-5.5", "medium"),
             finish: choice("claude-haiku-4.5", "low"),
         },

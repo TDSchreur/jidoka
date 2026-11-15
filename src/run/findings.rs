@@ -15,7 +15,7 @@ const MAX_FINDINGS_PER_RUN: usize = 1000;
 macro_rules! help {
     () => {
         concat!(
-            "  --finding <check> <location|-> <text> (repeat; only in Check; records an issue a check reported as an open Finding, F1, F2, ...)\n",
+            "  --finding <check> <location|-> <text> (repeat; in Check, or in Build during a Rework; records an issue a check reported as an open Finding, F1, F2, ...)\n",
             "  --finding-status <id>=<open|fixed|dismissed|deferred>[:<reason>] (repeat; dismissed and deferred need a reason; fixed also in Build during a Rework)\n"
         )
     };
@@ -53,7 +53,7 @@ pub(crate) struct FindingStatus {
 /// What an update does to the run's Findings.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub(crate) struct FindingsUpdate {
-    /// Findings to record; only in Check.
+    /// Findings to record; in Check, or in Build during a Rework.
     #[serde(rename = "findings", default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) new: Vec<NewFinding>,
     /// Outcomes for recorded findings.
@@ -180,9 +180,10 @@ impl FindingsUpdate {
         } = *ctx;
         let head = |run: &Run| crate::run_gate::head(run, git);
         if !self.new.is_empty() {
-            if stage != Stage::Check {
+            let late_rework_finding = stage == Stage::Build && run.rework.is_some();
+            if stage != Stage::Check && !late_rework_finding {
                 return Err(format!(
-                    "Findings are recorded in Check; the run is in {}",
+                    "Findings are recorded in Check, or in Build during a Rework; the run is in {}",
                     stage.name()
                 ));
             }
@@ -206,7 +207,11 @@ impl FindingsUpdate {
                     location: finding.location,
                     text: finding.text,
                     reviewed_commit: reviewed_commit.clone(),
-                    rework: if moved { run.rework } else { None },
+                    rework: if moved || late_rework_finding {
+                        run.rework
+                    } else {
+                        None
+                    },
                     state: FindingState::Open,
                     reason: None,
                     fix_commit: None,
@@ -346,7 +351,18 @@ mod tests {
         let mut run = run_in(Stage::Build);
         let update = parsed(&["--finding", "security", "-", "Leak"]);
         let error = apply(update, &mut run, Stage::Build, false).unwrap_err();
-        assert!(error.contains("recorded in Check"));
+        assert!(error.contains("recorded in Check, or in Build during a Rework"));
+    }
+
+    #[test]
+    fn findings_are_recorded_in_build_during_a_rework() {
+        let mut run = run_in(Stage::Build);
+        run.rework = Some(1);
+        let update = parsed(&["--finding", "security", "-", "Late"]);
+        apply(update, &mut run, Stage::Build, false).unwrap();
+        assert_eq!(run.findings[0].rework, Some(1));
+        assert_eq!(run.findings[0].state, FindingState::Open);
+        assert_eq!(run.stage, Stage::Build);
     }
 
     #[test]

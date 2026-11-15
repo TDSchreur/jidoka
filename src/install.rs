@@ -774,11 +774,17 @@ mod tests {
             let text = bundled_text(&format!("{skill}/SKILL.md"));
             for instruction in [
                 "../jidoka-procedures/SKILL.md",
-                "jidoka run next",
-                "jidoka run advance",
+                &format!("jidoka run begin \"<short task title>\" --agent <agent> --mode {skill}"),
+                "jidoka run advance <id> --summary",
+                "so no separate `jidoka run next` is needed",
             ] {
                 assert!(text.contains(instruction), "{skill} lacks {instruction}");
             }
+        }
+        // The selector starts the run itself, so the agent need not read the workflow skill too.
+        let selector = bundled_text("jidoka/SKILL.md");
+        for instruction in ["jidoka run begin", "jidoka run advance <id> --summary"] {
+            assert!(selector.contains(instruction), "jidoka lacks {instruction}");
         }
     }
 
@@ -808,8 +814,8 @@ mod tests {
 
     #[test]
     fn the_procedures_keep_the_pull_request_current_without_rewriting_history() {
-        let section = bundled_text("jidoka-procedures/references/pull-request-and-ci.md")
-            .replace("\r\n", "\n");
+        let section =
+            bundled_text("jidoka-procedures/chunks/pull-request-and-ci.md").replace("\r\n", "\n");
         for needle in [
             "jidoka pr sync <run-id> --base <base>",
             "gh pr view --json mergeStateStatus",
@@ -1065,7 +1071,7 @@ mod tests {
                 .is_file()
         );
         assert!(
-            root.join("jidoka-procedures/references/pull-request-and-ci.md")
+            root.join("jidoka-procedures/chunks/pull-request-and-ci.md")
                 .is_file()
         );
         assert!(!root.join("jidoka-procedures/LICENSE").exists());

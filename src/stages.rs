@@ -84,7 +84,7 @@ pub(crate) fn rework(mode: Mode, stage: Stage, status: RunStatus) -> Result<Tran
     })
 }
 
-fn ensure_running(status: RunStatus) -> Result<(), String> {
+pub(crate) fn ensure_running(status: RunStatus) -> Result<(), String> {
     match status {
         RunStatus::Running => Ok(()),
         RunStatus::Blocked => {

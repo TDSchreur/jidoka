@@ -71,6 +71,18 @@ cargo run -- dashboard
 
 The Rocket server binds to localhost, on port 4311 or a free port when 4311 is taken, and prints its URL; the CLI finds it through `dashboard.json` in the data folder. Press Ctrl+C to stop it. It stores run progress under `$XDG_DATA_HOME/jidoka/` (or `~/.local/share/jidoka/` when unset) on Linux, and `%LOCALAPPDATA%\jidoka\` on Windows. Keep it running while using Jidoka. After a merge, `scripts/update-local.sh` updates the checkout and prompts for one or more agents; `jidoka install` asks, and `JIDOKA_AGENT` (names, numbers or `all`) answers it without a prompt. To install from a checkout, use `cargo install --path . --locked`, ensure Cargo's bin directory is on PATH, and run `jidoka install --agent <codex|claude|copilot>`. Restart a previously running dashboard after upgrading.
 
+## Switch between the official release and a local build
+
+`scripts/switch-jidoka.sh` keeps one `jidoka` on your PATH: the official release in `~/.local/bin`, or the build from your checkout in Cargo's bin directory.
+
+```sh
+scripts/switch-jidoka.sh official   # remove the local build, install the latest release
+scripts/switch-jidoka.sh local      # remove the official release, install this checkout
+scripts/switch-jidoka.sh status     # show which installs exist
+```
+
+Each switch stops a running dashboard, removes the other install first, installs the chosen one and runs `jidoka install` to refresh the skills (`JIDOKA_AGENT` and `JIDOKA_CLAUDE_CONFIG_DIRS` skip its questions). Start the dashboard again afterwards with `jidoka dashboard`. The script is Linux only, like `scripts/update-local.sh`.
+
 ## Which build is running
 
 The dashboard footer and `jidoka --version` show which build is running: the version number, such as `0.3.1`, for an official release, and `dev <commit>`, such as `dev 1a2b3c4`, for any other build, including builds from a checkout. A build without git information, such as from a source archive, shows `dev (unknown commit)`. Official release builds set `JIDOKA_RELEASE=1`.

@@ -6,7 +6,7 @@ A run can carry a model-routing selection: the model and effort each Stage's age
 
 ## Reading the selection
 
-Read it with `jidoka run inspect <id> --json`. `model_routing` holds `agent` (`claude`, `codex` or `copilot`), `stages` and `overrides`; both map a Stage (`define`, `build`, `check`, `finish`) to a `model` and an optional `effort`. The choice for a Stage is `overrides.<stage>`, otherwise `stages.<stage>`. The Stage is not routed, and keeps the session's model, when:
+Read it with `jidoka run inspect <id> --json`. `model_routing` holds `agent` (`claude`, `codex` or `copilot`), `stages`, `overrides`, and optional `complex` choices; both map a Stage (`define`, `build`, `check`, `finish`) to a `model` and an optional `effort`. The choice for a Stage is `overrides.<stage>`, otherwise `stages.<stage>`. The Stage is not routed, and keeps the session's model, when:
 
 - the run has no `model_routing`, or neither map has the Stage;
 - `agent` is not the agent you are running in;
@@ -30,7 +30,7 @@ Define and Finish are also not routed when the run's mode is `jidoka-fast`, or w
 - **Define**: the interview (jidoka-grill-with-docs) stays with you, because it is a conversation with the user. Unless the run is `jidoka-fast` or the change is small, writing the spec, writing the tickets and fact-finding lookups in the code or docs run in agents on the define choice.
 - **Build**: each ticket runs in its own fresh agent on the build choice, one at a time and sequentially in the run's worktree, following the workflow's build skill; so do a Rework's fixes. You still run the verification the workflow requires, or confirm the agent ran it on exactly this code, and you update the run's tickets and Stage.
 - **Check**: tell `jidoka-code-review` the check choice, because its Standards and Spec sub-agents are the agents to route. Run `jidoka-security-review` on the check choice only when you start it as a separate agent the same way. Run inline in your own session, it uses your model: do not claim a switch for it.
-- **Finish**: unless the run is `jidoka-fast` or the change is small, an agent on the finish choice writes the pull request description and fixes CI failures. You run `jidoka pr open`, `jidoka pr wait` and `jidoka pr sync` yourself.
+- **Finish**: unless the run is `jidoka-fast` or the change is small, an agent on the Finish choice writes the pull request description, and an agent on the effective Build choice diagnoses and fixes CI failures. If a task is unrouted, keep it on the coordinator. You run `jidoka pr open`, `jidoka pr wait` and `jidoka pr sync` yourself.
 
 When a Stage is not routed, do its work as the workflow says, without handing it to agents for routing's sake.
 

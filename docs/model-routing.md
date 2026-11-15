@@ -10,24 +10,24 @@ Write one policy file, `model-routing.json`, in Jidoka's config folder: `$XDG_CO
   "agents": {
     "claude": {
       "stages": {
-        "define": { "model": "sonnet", "effort": "low" },
-        "build": { "model": "sonnet", "effort": "low" },
+        "define": { "model": "sonnet", "effort": "medium" },
+        "build": { "model": "sonnet", "effort": "medium" },
         "check": { "model": "sonnet", "effort": "medium" },
         "finish": { "model": "haiku", "effort": "low" }
       }
     },
     "codex": {
       "stages": {
-        "define": { "model": "gpt-6.1-terra", "effort": "low" },
-        "build": { "model": "gpt-6.1-terra", "effort": "low" },
+        "define": { "model": "gpt-6.1-terra", "effort": "medium" },
+        "build": { "model": "gpt-6.1-terra", "effort": "medium" },
         "check": { "model": "gpt-6.1-terra", "effort": "medium" },
         "finish": { "model": "gpt-6-luna", "effort": "low" }
       }
     },
     "copilot": {
       "stages": {
-        "define": { "model": "claude-sonnet-5.5", "effort": "low" },
-        "build": { "model": "claude-sonnet-5.5", "effort": "low" },
+        "define": { "model": "claude-sonnet-5.5", "effort": "medium" },
+        "build": { "model": "claude-sonnet-5.5", "effort": "medium" },
         "check": { "model": "claude-sonnet-5.5", "effort": "medium" },
         "finish": { "model": "claude-haiku-4.5", "effort": "low" }
       }
@@ -38,7 +38,7 @@ Write one policy file, `model-routing.json`, in Jidoka's config folder: `$XDG_CO
 
 `jidoka install` creates this policy when no file exists, printing the path. It preserves any existing file, including an invalid policy and a symbolic link. `jidoka doctor --create-model-routing` can also create it explicitly, with all three agents or just the one named by `--agent`; see [Checking readiness](doctor.md).
 
-- Each entry under `agents` is `claude`, `codex` or `copilot` and has `stages`, and optionally `enabled`. `stages` maps `define`, `build`, `check` and `finish` to a `model` and an optional `effort`; a Stage you leave out is not routed and keeps the session's model. `enabled` defaults to `true`; set it to `false` at the top to switch routing off for every agent, or inside an entry to switch off that agent only, without deleting anything. The defaults above favour cheap models and low effort to keep token use down.
+- Each entry under `agents` is `claude`, `codex` or `copilot` and has `stages`, and optionally `enabled`. `stages` maps `define`, `build`, `check` and `finish` to a `model` and an optional `effort`; a Stage you leave out is not routed and keeps the session's model. `enabled` defaults to `true`; set it to `false` at the top to switch routing off for every agent, or inside an entry to switch off that agent only, without deleting anything. The defaults above favour cheap models to keep token use down. They use medium effort for Define, Build and Check because a Rework loop costs more than the extra reasoning, and low effort for Finish.
 - Models and efforts are plain text of up to 64 letters, digits and `. _ : / -`. Jidoka keeps no list of valid models, so a new model works without a Jidoka release, and checking that your agent accepts a value is up to you. Copilot CLI entries are checked a little further, because it quietly ignores what it does not know: the model must not be a Claude Code alias (`opus`, `sonnet`, `haiku`, `fable`; Copilot needs exact IDs such as `claude-sonnet-5.5`), and the effort must be one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`.
 - `jidoka run start "title" --agent <claude|codex|copilot>` names the agent a run is in; the workflow skills pass it for you. Jidoka reads the file once, records only that agent's policy on the run, and never uses another agent's:
   - The option is required, because the file cannot tell which agent is asking. Without it the start stops and names the agents the file configures. An agent with no entry, or a switched-off entry, is not routed; the first also prints a notice that says which entry to add.
@@ -50,7 +50,7 @@ Write one policy file, `model-routing.json`, in Jidoka's config folder: `$XDG_CO
   - Define: the spec, the tickets and fact-finding agents. The interview stays with you, in the coordinating session. [`jidoka-fast`](../.agents/skills/jidoka-fast/SKILL.md) runs and small changes (a clear, bounded request planned in the conversation, without a spec or tickets) keep Define on the session's model.
   - Build: each ticket, and each Rework, in a fresh agent.
   - Check: the review agents of [`jidoka-code-review`](../skills/jidoka-code-review/SKILL.md), and [`jidoka-security-review`](../skills/jidoka-security-review/SKILL.md) when it runs as a separate agent; run inside the coordinating session it keeps the session's model.
-  - Finish: the pull request description and CI fixes. The coordinator runs the `jidoka pr` commands. [`jidoka-fast`](../.agents/skills/jidoka-fast/SKILL.md) runs and small changes keep Finish on the session's model.
+  - Finish: the pull request description uses Finish; CI diagnosis and fixes use effective Build. The coordinator runs the `jidoka pr` commands. [`jidoka-fast`](../.agents/skills/jidoka-fast/SKILL.md) runs and small changes keep Finish on the session's model.
   - On Claude Code the agents are fresh subagents started with the Agent tool's `model` and `effort`, which accepts only the aliases `opus`, `sonnet`, `haiku` and `fable`. On Codex they use its subagent model and effort settings. On Copilot CLI they are subagents started with the `task` tool's `model` and `reasoning_effort`, which take exact model IDs; an unknown or unavailable model silently runs on the session's model, so compare the models `jidoka run inspect` shows with what you asked for.
   - Each Stage summary says which model and effort its agents ran on, or why routing did not apply.
   - Without a selection, or for a Stage the selection leaves out, the Stage works as before. [`jidoka-fast`](../.agents/skills/jidoka-fast/SKILL.md) has no Check, so its policy's `check` entry is ignored.
@@ -60,6 +60,7 @@ Write one policy file, `model-routing.json`, in Jidoka's config folder: `$XDG_CO
   - When subagents ran and the requested model never appears among them, the line says `MISMATCH`. When usage is only partial it says the model was not observed, because it may be missing, and every observed line notes partial coverage.
   - A Stage with only coordinator usage is neutral: it says `kept on the coordinator`, or `matches the request (kept on the coordinator)` when the coordinator's model matches, and never reports a `MISMATCH`, for the model or the effort.
   - A Stage with no usage rows, or a run whose usage is not tracked, says so.
+  - The dashboard's run detail shows the same comparison in a Model routing table.
   - When an effort was requested, it is compared with the efforts recorded for the subagent models that match the request. A different effort is a `MISMATCH` (or "not observed" when usage is partial), and a log that records none says `effort not recorded`. Claude Code, Codex and Copilot record the effort of each call, so the comparison works the same for a Copilot run (against exact IDs such as `claude-sonnet-5.5`). A Copilot call whose model does not support effort records none, and then says `effort not recorded`.
   - The request counts as met when any one of the recorded efforts is the requested one. When the coordinator and the agents run the same model at different efforts, their efforts land in the same row, so the agents' effort cannot be told apart from the coordinator's. A row keeps at most eight distinct efforts.
   - Runs without a selection, or recorded in the earlier shape, show no Model routing section.
@@ -67,3 +68,11 @@ Write one policy file, `model-routing.json`, in Jidoka's config folder: `$XDG_CO
 Copilot CLI is routed through the `task` tool's `model` and `reasoning_effort` options. Which models an account can use differs, and an unavailable one silently falls back to the session's model, so check the observed models in `jidoka run inspect`. See [the findings](reports/copilot-model-routing-findings.md).
 
 After a routed Stage finishes, usage collection records a non-blocking activity report for each observed model whose subagent usage differs from its assigned model. Coordinator-only usage never warns, because the coordinating session keeps its own model. `jidoka run inspect` shows these warnings and `--json` includes them in `run_reports`. Missing or disabled usage produces no warning.
+
+## Complex work and CI repairs
+
+An agent entry may contain an optional `complex` map with `define` and/or `build` model choices in the same format as `stages`. `run next` displays the applicable option; choose it with the existing `--model-routing` override and record the reason in `--activity` and the stage summary. Overrides replace the complete set, so repeat all overrides to retain them. Normal policy defaults remain unchanged.
+
+For a Rework, the effective Build choice raises known lower host efforts to high and preserves stronger or unknown effort values. Finish uses its own choice for PR text and the effective Build choice for CI diagnosis and repair; Fast and small work may remain on the coordinator. Finish usage is aggregated and cannot attribute a model to either task.
+
+When overrides change, the run retains up to 32 distinct prior choices per Stage. Another distinct change is rejected at that limit. Inspect shows these assignments and judges aggregate model usage against current and prior choices; it cannot prove which assignment or rework used a particular effort. Unrelated subagent models still produce warnings while the stage is currently routed.

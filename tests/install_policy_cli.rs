@@ -31,8 +31,8 @@ fn install_creates_the_two_agent_policy_and_preserves_existing_content() {
         (
             "claude",
             [
-                ("define", "sonnet", "low"),
-                ("build", "sonnet", "low"),
+                ("define", "sonnet", "medium"),
+                ("build", "sonnet", "medium"),
                 ("check", "sonnet", "medium"),
                 ("finish", "haiku", "low"),
             ],
@@ -40,8 +40,8 @@ fn install_creates_the_two_agent_policy_and_preserves_existing_content() {
         (
             "codex",
             [
-                ("define", "gpt-6.1-terra", "low"),
-                ("build", "gpt-6.1-terra", "low"),
+                ("define", "gpt-6.1-terra", "medium"),
+                ("build", "gpt-6.1-terra", "medium"),
                 ("check", "gpt-6.1-terra", "medium"),
                 ("finish", "gpt-6-luna", "low"),
             ],
