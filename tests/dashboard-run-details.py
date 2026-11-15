@@ -43,7 +43,7 @@ SHIPPED = {
     ],
     # Costs come from the server; gpt-x has no price, so its cost is null.
     "usage": {"status": "tracked", "rows": [
-        row("define", "opus", 1500, cost_usd=0.5), row("build", "sonnet", 20000, cost_usd=0.25),
+        row("define", "opus", 1500, cost_usd=0.5, efforts=["xhigh"]), row("build", "sonnet", 20000, cost_usd=0.25, efforts=["high", "medium"]),
         row("build", "sonnet", 3000, ticket=T1, cost_usd=0.05), row("build", "gpt-x", 1000, cost_usd=None),
         row("check", "gpt-x", 4000, cost_usd=None),
     ], "cost": {
@@ -58,6 +58,14 @@ ACTIVE = {
     "tickets": [{"reference": "local-1", "title": "Index in the background", "status": "in-progress"}],
     "run_reports": [{"kind": "activity", "text": "Index builder started", "stage": "build", "at": AT}],
     "usage": {"status": "tracked", "rows": [row("define", "opus", 900), row("build", "sonnet", 2100)]},
+    # The server derives this from model_routing and the usage; the test server returns the fixture as is.
+    "model_routing": {"agent": "claude", "stages": {"define": {"model": "opus", "effort": "high"}, "build": {"model": "sonnet"}}},
+    "model_route": {"agent": "claude", "stages": [
+        {"stage": "define", "model": "opus", "effort": "high", "override": True,
+         "observed": "opus (effort xhigh, +subagents); MISMATCH: effort high was requested, observed xhigh", "mismatch": True},
+        {"stage": "build", "model": "sonnet", "effort": None, "override": False,
+         "observed": "sonnet; matches the request (kept on the coordinator)", "mismatch": False},
+    ]},
 }
 BLOCKED = {
     "id": "run-blocked", "title": "Migrate the orders table", "project": "/work/shop", "stage": "check", "status": "blocked",
@@ -144,6 +152,8 @@ class RunDetailsTest(unittest.TestCase):
         body = """
 const snap = async (id) => {
   const dialog = await openRun(id);
+  // The model route comes with the detail fetch, a moment after the sheet opens.
+  if (id === 'run-active') await wait(() => dialog.querySelector('#model-route-heading'), 'the model routing of ' + id);
   const focusable = [...dialog.querySelectorAll('button, a[href], summary, input')];
   const amber = [...dialog.querySelectorAll('*')].filter((el) => getComputedStyle(el).backgroundColor === 'rgb(242, 183, 5)').length;
   const foot = dialog.querySelector('.detail-foot').getBoundingClientRect();
@@ -186,9 +196,14 @@ const snap = async (id) => {
     })),
     routeIsList: dialog.querySelector('ol.route') !== null && dialog.querySelectorAll('ol.route > li').length === 4,
     marksHidden: [...dialog.querySelectorAll('.route .mark')].every((m) => m.getAttribute('aria-hidden') === 'true'),
+    routeTitle: text(dialog.querySelector('#model-route-heading')),
+    routeRows: [...dialog.querySelectorAll('section[aria-labelledby="model-route-heading"] tbody tr')].map((tr) => [...tr.children].map(text)),
+    routeHeader: [...dialog.querySelectorAll('section[aria-labelledby="model-route-heading"] thead th')].map(text),
+    routeRegion: dialog.querySelector('section[aria-labelledby="model-route-heading"] .table-scroll')?.getAttribute('aria-label'),
     usageOpen: dialog.querySelector('details.usage')?.open,
     usageSummary: text(dialog.querySelector('details.usage summary')),
     usageTable: !!dialog.querySelector('details.usage table.usage-table'),
+    rowEfforts: [...dialog.querySelectorAll('details.usage table.usage-table:not(.model-table) tbody tr')].map((tr) => text(tr.children[2])),
     rowCosts: [...dialog.querySelectorAll('details.usage table.usage-table:not(.model-table) tbody tr')].map((tr) => text(tr.lastElementChild)),
     totalCost: text(dialog.querySelector('details.usage table.usage-table:not(.model-table) tfoot td:last-child')),
     footerLayout: (() => {
@@ -287,6 +302,19 @@ return {chip, deferred: text(shippedRow), lists, hole: hole.borderTopColor, over
             self.assertEqual(snapshot["focused"], "CloseBack")
             self.assertEqual(snapshot["label"], title)
 
+    def test_model_routing_shows_the_request_next_to_what_was_observed(self):
+        self.assertEqual(self.active["routeTitle"], "Model routing (claude)")
+        self.assertEqual(self.active["routeHeader"], ["Stage", "Requested", "Observed"])
+        self.assertTrue(self.active["routeRegion"])
+        define, build = self.active["routeRows"]
+        self.assertEqual(define[:2], ["Define", "opus, effort high (override)"])
+        self.assertEqual(define[2], "Mismatch: opus (effort xhigh, +subagents); MISMATCH: effort high was requested, observed xhigh")
+        self.assertEqual(build, ["Build", "sonnet", "sonnet; matches the request (kept on the coordinator)"])
+        # A Run without model routing shows no section.
+        for snapshot in (self.shipped, self.blocked):
+            self.assertEqual(snapshot["routeRows"], [])
+            self.assertNotIn("Model routing", snapshot["text"])
+
     def test_token_usage_is_open_while_active_and_collapsed_when_shipped(self):
         self.assertTrue(self.active["usageOpen"])
         self.assertFalse(self.shipped["usageOpen"])
@@ -295,6 +323,9 @@ return {chip, deferred: text(shippedRow), lists, hole: hole.borderTopColor, over
         self.assertIn("29,500 fresh", self.shipped["usageSummary"])
         self.assertIn("3,000 fresh", self.active["usageSummary"])
         self.assertNotIn("Token usage", self.blocked["text"])
+
+    def test_token_table_shows_the_effort_of_each_row(self):
+        self.assertEqual(self.shipped["rowEfforts"], ["xhigh", "high/medium", "-", "-", "-"])
 
     def test_token_table_footer_spans_every_column_and_keeps_the_total_on_one_line(self):
         layout = self.shipped["footerLayout"]
