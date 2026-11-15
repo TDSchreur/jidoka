@@ -12,4 +12,6 @@ When no actionable findings remain, record Check's gates; `jidoka run advance` r
 2. Record `jidoka run gate <id> no-actionable-findings pass`.
 3. Run the project's full verification on the clean, final reviewed commit and record it with `jidoka run gate <id> verified pass`. Finish can reuse this result while the checked code and relevant inputs remain unchanged.
 
+Once the verification has passed, run the gate commands and `jidoka run advance` as one shell command joined with `&&`, so recording them costs a single turn.
+
 Finish puts the review record in the pull request, so keep it short in the Check summary as well: each check that ran with its reviewed commit and outcome, the Reworks, the deferred Findings, and each skipped check with the reason.

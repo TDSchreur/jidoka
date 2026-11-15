@@ -199,6 +199,11 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                     update_options.extend(["--session", session]);
                 }
                 client::prepare_update(id, "running", &update_options)?;
+                // The update sends status `running`, which would resume a blocked run; only a
+                // running run may advance, so refuse the others before recording anything.
+                if let Err(reason) = stages::ensure_running(fetch_run_cli(id)?.status) {
+                    return Err(format!("Cannot advance: {reason}").into());
+                }
                 report_to_dashboard(id, "running", &update_options)?;
             }
             client::api_post(

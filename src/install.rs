@@ -774,11 +774,17 @@ mod tests {
             let text = bundled_text(&format!("{skill}/SKILL.md"));
             for instruction in [
                 "../jidoka-procedures/SKILL.md",
-                "jidoka run next",
-                "jidoka run advance",
+                &format!("jidoka run begin \"<short task title>\" --agent <agent> --mode {skill}"),
+                "jidoka run advance <id> --summary",
+                "so no separate `jidoka run next` is needed",
             ] {
                 assert!(text.contains(instruction), "{skill} lacks {instruction}");
             }
+        }
+        // The selector starts the run itself, so the agent need not read the workflow skill too.
+        let selector = bundled_text("jidoka/SKILL.md");
+        for instruction in ["jidoka run begin", "jidoka run advance <id> --summary"] {
+            assert!(selector.contains(instruction), "jidoka lacks {instruction}");
         }
     }
 
