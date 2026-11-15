@@ -535,6 +535,7 @@ impl RunStore {
                             marks[0].stage == row.stage && marks[1].stage != row.stage
                         });
                     // The coordinator keeps its own model; only subagent usage is judged against the routing.
+                    // Without a current route, coordinator and subagent work may both be legitimate.
                     if let Some(choice) = routing.choice_for(row.stage).or_else(|| {
                         (row.stage == Stage::Finish)
                             .then(|| routing.choice_for(Stage::Build))

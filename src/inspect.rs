@@ -93,36 +93,41 @@ fn routing_section(routing: &ModelRouting, usage: Option<&Usage>, rework: Option
         let ci = (stage == Stage::Finish)
             .then_some(effective_build.as_ref())
             .flatten();
-        if let Some(requested) = choice.or(ci) {
+        let requested = choice.or(ci);
+        let prior = routing
+            .prior_choices
+            .get(&stage)
+            .filter(|choices| !choices.is_empty());
+        if requested.is_some() || prior.is_some() {
             out.push_str(&format!(
                 "          {}\n",
                 observed_line(requested, stage, usage, routing, rework)
             ));
-            if let Some(prior) = routing.prior_choices.get(&stage) {
-                let choices: Vec<String> = prior
-                    .iter()
-                    .map(|choice| {
-                        format!(
-                            "{}{}",
-                            shown(&choice.model),
-                            choice
-                                .effort
-                                .as_deref()
-                                .map_or(String::new(), |effort| format!(
-                                    ", effort {}",
-                                    shown(effort)
-                                ))
-                        )
-                    })
-                    .collect();
-                out.push_str(&format!(
-                    "          prior assignments: {}\n",
-                    choices.join("; ")
-                ));
-            }
-            if stage == Stage::Finish && ci.is_some() {
-                out.push_str("          Finish usage aggregates PR text and CI repairs; task attribution is unavailable.\n");
-            }
+        }
+        if let Some(prior) = prior {
+            let choices: Vec<String> = prior
+                .iter()
+                .map(|choice| {
+                    format!(
+                        "{}{}",
+                        shown(&choice.model),
+                        choice
+                            .effort
+                            .as_deref()
+                            .map_or(String::new(), |effort| format!(
+                                ", effort {}",
+                                shown(effort)
+                            ))
+                    )
+                })
+                .collect();
+            out.push_str(&format!(
+                "          prior assignments: {}\n",
+                choices.join("; ")
+            ));
+        }
+        if stage == Stage::Finish && ci.is_some() {
+            out.push_str("          Finish usage aggregates PR text and CI repairs; task attribution is unavailable.\n");
         }
     }
     out
@@ -139,7 +144,7 @@ struct Seen<'a> {
 /// alias or an id and the log has an id, so both are shown and only a missing request counts. When an
 /// effort was requested, it is compared with the efforts the logs recorded for the models that match.
 fn observed_line(
-    requested: &ModelChoice,
+    requested: Option<&ModelChoice>,
     stage: Stage,
     usage: Option<&Usage>,
     routing: &ModelRouting,
@@ -202,16 +207,20 @@ fn observed_line(
     format!(
         "observed: {}; {}",
         list.join(", "),
-        if (stage == Stage::Finish && routing.choice_for(Stage::Build).is_some())
-            || routing
-                .prior_choices
-                .get(&stage)
-                .is_some_and(|choices| !choices.is_empty())
-            || (stage == Stage::Build && rework.is_some())
-        {
-            aggregate_verdict(routing, stage, &seen, partial)
+        if let Some(requested) = requested {
+            if (stage == Stage::Finish && routing.choice_for(Stage::Build).is_some())
+                || routing
+                    .prior_choices
+                    .get(&stage)
+                    .is_some_and(|choices| !choices.is_empty())
+                || (stage == Stage::Build && rework.is_some())
+            {
+                aggregate_verdict(routing, stage, &seen, partial)
+            } else {
+                verdict(requested, &seen, partial)
+            }
         } else {
-            verdict(requested, &seen, partial)
+            "no current route; aggregate usage cannot establish prior compliance".into()
         }
     )
 }
@@ -822,6 +831,27 @@ mod tests {
         assert!(observed(&render(&run), "build").contains("allowed models observed"));
         run.usage.as_mut().unwrap().rows[0].model = "unrelated".into();
         assert!(observed(&render(&run), "build").contains("MISMATCH: unrelated subagent model"));
+    }
+
+    #[test]
+    fn cleared_route_keeps_prior_assignments_without_judging_aggregate_usage() {
+        let mut run = with_usage("tracked", &[("build", "unrelated", true)]);
+        let routing = run.model_routing.as_mut().unwrap();
+        let prior = routing.stages.remove(&Stage::Build).unwrap();
+        routing.prior_choices.insert(Stage::Build, vec![prior]);
+
+        let text = render(&run);
+        assert!(text.contains("  build   not routed"), "{text}");
+        assert!(text.contains("prior assignments: sonnet"), "{text}");
+        let usage = observed(&text, "build");
+        assert!(usage.contains("unrelated (+subagents)"), "{text}");
+        assert!(
+            usage.contains("no current route; aggregate usage cannot establish prior compliance"),
+            "{text}"
+        );
+        assert!(!usage.contains("MISMATCH"), "{text}");
+        assert!(!usage.contains("matches the request"), "{text}");
+        assert!(!usage.contains("allowed models observed"), "{text}");
     }
 
     #[test]

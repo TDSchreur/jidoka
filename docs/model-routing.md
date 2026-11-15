@@ -74,4 +74,4 @@ An agent entry may contain an optional `complex` map with `define` and/or `build
 
 For a Rework, the effective Build choice raises known lower host efforts to high and preserves stronger or unknown effort values. Finish uses its own choice for PR text and the effective Build choice for CI diagnosis and repair; Fast and small work may remain on the coordinator. Finish usage is aggregated and cannot attribute a model to either task.
 
-When overrides change, the run retains up to 32 distinct prior choices per Stage. Another distinct change is rejected at that limit. Inspect shows these assignments and judges aggregate model usage against current and prior choices; it cannot prove which assignment or rework used a particular effort. Unrelated subagent models still produce warnings.
+When overrides change, the run retains up to 32 distinct prior choices per Stage. Another distinct change is rejected at that limit. Inspect shows these assignments and judges aggregate model usage against current and prior choices; it cannot prove which assignment or rework used a particular effort. Unrelated subagent models still produce warnings while the stage is currently routed.
