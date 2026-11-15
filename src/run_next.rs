@@ -253,7 +253,7 @@ fn instructions(mode: Mode, stage: Stage, routing: Option<RoutingAgent>) -> Stri
             "committing-for-check",
             "check-review",
         ],
-        Stage::Finish => &["stage-reporting", "finish"],
+        Stage::Finish => &["stage-reporting", "finish", "pull-request-and-ci"],
     };
     let routed = routing.map(|agent| match agent {
         RoutingAgent::Claude => "routing-claude",
@@ -376,15 +376,20 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
         }
         Err(reason) => note = Some(reason),
     }
-    let mut stage_instructions = instructions(
-        mode,
-        run.stage,
-        run.model_routing
-            .as_ref()
-            .filter(|routing| routing.choice_for(run.stage).is_some())
-            .map(|routing| routing.agent),
-    );
-    if run.stage == Stage::Check {
+    // A done run has no stage left to carry out, so it gets no instructions.
+    let mut stage_instructions = if run.status == RunStatus::Done {
+        String::new()
+    } else {
+        instructions(
+            mode,
+            run.stage,
+            run.model_routing
+                .as_ref()
+                .filter(|routing| routing.choice_for(run.stage).is_some())
+                .map(|routing| routing.agent),
+        )
+    };
+    if run.stage == Stage::Check && run.status != RunStatus::Done {
         for applicable in checks::select(mode, changed_paths).applicable {
             stage_instructions.push_str("\n\n");
             stage_instructions.push_str(applicable.check.instructions);
@@ -448,7 +453,9 @@ pub(crate) fn render(next: &Next) -> String {
         )),
         None => out.push_str("Model not routed\n"),
     }
-    out.push_str(&format!("\nInstructions\n  {}\n", next.instructions));
+    if !next.instructions.is_empty() {
+        out.push_str(&format!("\nInstructions\n  {}\n", next.instructions));
+    }
     if let Some(checks) = &next.checks {
         out.push_str("\nChecks\n");
         for entry in &checks.applicable {
