@@ -1,1 +1,3 @@
 Define: keep the user interview with the coordinator. For Fast or a small, clear request planned in the conversation without a spec or tickets, keep Define on the coordinator; otherwise route spec writing, ticket writing and fact-finding.
+
+For complex work, consider the displayed complex option if configured, or the current model at high effort when appropriate, preserving a stronger or unknown configured effort. To select it, use `jidoka run update <id> running --model-routing define=<model>:<effort> --activity "Complex define route: <reason>"`, repeating `--model-routing` for every existing override you want to keep. Record the choice and reason in the stage summary.

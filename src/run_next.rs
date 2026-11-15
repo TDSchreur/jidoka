@@ -63,6 +63,10 @@ pub(crate) struct Next {
     tickets: Vec<Ticket>,
     /// The routed model for this Stage; none when routing is off or leaves the Stage out.
     model: Option<ModelChoice>,
+    /// Optional complex choice and Finish's CI repair route.
+    complex_model: Option<ModelChoice>,
+    ci_model: Option<ModelChoice>,
+    model_reason: Option<&'static str>,
     /// Why there is no move, when the run is blocked or done.
     note: Option<String>,
 }
@@ -385,7 +389,11 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
             run.stage,
             run.model_routing
                 .as_ref()
-                .filter(|routing| routing.choice_for(run.stage).is_some())
+                .filter(|routing| {
+                    routing.choice_for(run.stage).is_some()
+                        || (run.stage == Stage::Finish
+                            && routing.choice_for(Stage::Build).is_some())
+                })
                 .map(|routing| routing.agent),
         )
     };
@@ -418,8 +426,26 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
         model: run
             .model_routing
             .as_ref()
-            .and_then(|routing| routing.choice_for(run.stage))
+            .and_then(|r| r.effective(run.stage, run.rework)),
+        complex_model: run
+            .model_routing
+            .as_ref()
+            .and_then(|r| r.complex.get(&run.stage))
             .cloned(),
+        ci_model: (run.stage == Stage::Finish)
+            .then(|| {
+                run.model_routing
+                    .as_ref()
+                    .and_then(|r| r.effective(Stage::Build, run.rework))
+            })
+            .flatten(),
+        model_reason: (run.stage == Stage::Build
+            && run.rework.is_some()
+            && run
+                .model_routing
+                .as_ref()
+                .is_some_and(|r| r.choice_for(Stage::Build).is_some()))
+        .then_some("Build rework; known lower effort raised to high"),
         note,
     })
 }
@@ -452,6 +478,34 @@ pub(crate) fn render(next: &Next) -> String {
                 .map_or(String::new(), |e| format!(", effort {}", shown(e)))
         )),
         None => out.push_str("Model not routed\n"),
+    }
+    if let Some(reason) = next.model_reason {
+        out.push_str(&format!(
+            "  {reason} (stronger or unknown effort preserved)\n"
+        ));
+    }
+    if let Some(choice) = &next.complex_model {
+        out.push_str(&format!(
+            "Complex option {}, effort {}\n",
+            shown(&choice.model),
+            choice.effort.as_deref().map_or("unspecified".into(), shown)
+        ));
+    }
+    if next.stage == Stage::Finish {
+        let route = next
+            .ci_model
+            .as_ref()
+            .map_or("not routed".into(), |choice| {
+                format!(
+                    "{}{}",
+                    shown(&choice.model),
+                    choice
+                        .effort
+                        .as_deref()
+                        .map_or(String::new(), |e| format!(", effort {}", shown(e)))
+                )
+            });
+        out.push_str(&format!("CI repair model {route}\n"));
     }
     if !next.instructions.is_empty() {
         out.push_str(&format!("\nInstructions\n  {}\n", next.instructions));

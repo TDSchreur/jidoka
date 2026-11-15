@@ -42,6 +42,9 @@ pub(crate) struct ModelRouting {
     /// Choices made for this run by hand; they win over `stages` and leave it untouched.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) overrides: BTreeMap<Stage, ModelChoice>,
+    /// Optional choices offered for complex Define and Build work.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) complex: BTreeMap<Stage, ModelChoice>,
 }
 
 /// Whether an observed model id is the model that was requested. A requested alias is a whole part of the
@@ -82,9 +85,47 @@ impl ModelRouting {
             .or_else(|| self.stages.get(&stage))
     }
 
+    /// The effective choice, raising known lower efforts for a Build rework.
+    pub(crate) fn effective(&self, stage: Stage, rework: Option<u32>) -> Option<ModelChoice> {
+        let mut choice = self.choice_for(stage)?.clone();
+        if stage == Stage::Build && rework.is_some() {
+            let lower = match self.agent {
+                RoutingAgent::Claude => &["low", "medium"][..],
+                RoutingAgent::Codex => &["minimal", "low", "medium"][..],
+                RoutingAgent::Copilot => &["none", "minimal", "low", "medium"][..],
+            };
+            if choice.effort.as_deref().is_none_or(|e| lower.contains(&e)) {
+                choice.effort = Some("high".into());
+            }
+        }
+        Some(choice)
+    }
+
+    /// Models permitted in a stage's aggregate usage, including Finish CI repairs.
+    pub(crate) fn allows_model(&self, stage: Stage, model: &str) -> bool {
+        self.choice_for(stage)
+            .is_some_and(|c| model_matches(&c.model, model))
+            || (stage == Stage::Finish
+                && self
+                    .choice_for(Stage::Build)
+                    .is_some_and(|c| model_matches(&c.model, model)))
+    }
+
     /// The rules every selection follows, whether the CLI resolved it or the API received it.
     pub(crate) fn validate(&self) -> Result<(), String> {
-        for choice in self.stages.values().chain(self.overrides.values()) {
+        if self
+            .complex
+            .keys()
+            .any(|stage| !matches!(stage, Stage::Define | Stage::Build))
+        {
+            return Err("Complex choices may only name define or build".into());
+        }
+        for choice in self
+            .stages
+            .values()
+            .chain(self.overrides.values())
+            .chain(self.complex.values())
+        {
             choice.validate()?;
             if self.agent == RoutingAgent::Copilot {
                 choice.validate_for_copilot()?;

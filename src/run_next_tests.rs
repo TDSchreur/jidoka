@@ -32,6 +32,7 @@ fn routing() -> ModelRouting {
                 effort: Some("medium".into()),
             },
         )]),
+        complex: BTreeMap::new(),
         overrides: BTreeMap::from([(
             Stage::Check,
             ModelChoice {
@@ -441,4 +442,64 @@ fn finished_run_shows_merged_ci_and_done_tickets_as_recorded() {
         .unwrap();
     assert_eq!(build["gates"][0]["name"], "tickets-done");
     assert_eq!(build["gates"][0]["status"], "unknown");
+}
+
+#[test]
+fn rework_and_finish_use_effective_build_for_each_host() {
+    for agent in [
+        RoutingAgent::Claude,
+        RoutingAgent::Codex,
+        RoutingAgent::Copilot,
+    ] {
+        for (effort, expected) in [
+            (None, "high"),
+            (Some("medium"), "high"),
+            (Some("high"), "high"),
+            (Some("xhigh"), "xhigh"),
+            (Some("max"), "max"),
+            (Some("ultra"), "ultra"),
+            (Some("future"), "future"),
+        ] {
+            let mut routes = routing();
+            routes.agent = agent;
+            routes.stages.get_mut(&Stage::Build).unwrap().effort = effort.map(str::to_string);
+            let mut current = run(Mode::Balanced, Stage::Build, Some(routes));
+            current.rework = Some(1);
+            let next = build(&current, &[]).unwrap();
+            assert_eq!(next.model.unwrap().effort.as_deref(), Some(expected));
+            current.stage = Stage::Finish;
+            let next = build(&current, &[]).unwrap();
+            assert!(next.model.is_none());
+            assert_eq!(next.ci_model.unwrap().effort.as_deref(), Some(expected));
+            assert!(next.instructions.contains("CI diagnosis"));
+        }
+    }
+}
+
+#[test]
+fn complex_policy_option_is_shown_and_override_wins() {
+    let mut routes = routing();
+    routes.complex.insert(
+        Stage::Build,
+        ModelChoice {
+            model: "opus".into(),
+            effort: Some("high".into()),
+        },
+    );
+    let next = build(
+        &run(Mode::Balanced, Stage::Build, Some(routes.clone())),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(next.complex_model.unwrap().model, "opus");
+    routes.overrides.insert(
+        Stage::Build,
+        ModelChoice {
+            model: "custom".into(),
+            effort: Some("xhigh".into()),
+        },
+    );
+    let mut current = run(Mode::Balanced, Stage::Build, Some(routes));
+    current.rework = Some(1);
+    assert_eq!(build(&current, &[]).unwrap().model.unwrap().model, "custom");
 }

@@ -67,11 +67,39 @@ fn routing_section(routing: &ModelRouting, usage: Option<&Usage>) -> String {
             None => "not routed".to_string(),
         };
         out.push_str(&format!("  {:<6}  {line}\n", stage.name()));
-        if let Some(requested) = choice {
+        if let Some(complex) = routing.complex.get(&stage) {
+            out.push_str(&format!(
+                "          complex option {}{}\n",
+                shown(&complex.model),
+                complex
+                    .effort
+                    .as_deref()
+                    .map_or(String::new(), |e| format!(", effort {}", shown(e)))
+            ));
+        }
+        if stage == Stage::Finish
+            && let Some(build) = routing.choice_for(Stage::Build)
+        {
+            out.push_str(&format!(
+                "          CI repair uses Build: {}{}\n",
+                shown(&build.model),
+                build
+                    .effort
+                    .as_deref()
+                    .map_or(String::new(), |e| format!(", effort {}", shown(e)))
+            ));
+        }
+        let ci = (stage == Stage::Finish)
+            .then(|| routing.choice_for(Stage::Build))
+            .flatten();
+        if let Some(requested) = choice.or(ci) {
             out.push_str(&format!(
                 "          {}\n",
-                observed_line(requested, stage, usage)
+                observed_line(requested, stage, usage, ci)
             ));
+            if stage == Stage::Finish && ci.is_some() {
+                out.push_str("          Finish usage aggregates PR text and CI repairs; task attribution is unavailable.\n");
+            }
         }
     }
     out
@@ -87,7 +115,12 @@ struct Seen<'a> {
 /// The models the run's usage shows for `stage`, next to whether the request is met. The request is an
 /// alias or an id and the log has an id, so both are shown and only a missing request counts. When an
 /// effort was requested, it is compared with the efforts the logs recorded for the models that match.
-fn observed_line(requested: &ModelChoice, stage: Stage, usage: Option<&Usage>) -> String {
+fn observed_line(
+    requested: &ModelChoice,
+    stage: Stage,
+    usage: Option<&Usage>,
+    alternative: Option<&ModelChoice>,
+) -> String {
     let Some(usage) = usage else {
         return "observed: not tracked: usage has not been collected for this run yet".into();
     };
@@ -145,8 +178,62 @@ fn observed_line(requested: &ModelChoice, stage: Stage, usage: Option<&Usage>) -
     format!(
         "observed: {}; {}",
         list.join(", "),
-        verdict(requested, &seen, partial)
+        if stage == Stage::Finish && alternative.is_some() {
+            finish_verdict(requested, alternative, &seen, partial)
+        } else {
+            verdict(requested, &seen, partial)
+        }
     )
+}
+
+/// Finish usage does not identify which task ran, so either task's model is allowed.
+fn finish_verdict(
+    requested: &ModelChoice,
+    alternative: Option<&ModelChoice>,
+    seen: &[Seen],
+    partial: bool,
+) -> String {
+    if !seen.iter().any(|s| s.subagents) {
+        return if partial {
+            "kept on the coordinator (usage is partial)".into()
+        } else {
+            "kept on the coordinator".into()
+        };
+    }
+    let unexpected: Vec<&str> = seen
+        .iter()
+        .filter(|s| {
+            s.subagents
+                && !model_matches(&requested.model, s.model)
+                && !alternative.is_some_and(|c| model_matches(&c.model, s.model))
+        })
+        .map(|s| s.model)
+        .collect();
+    if unexpected.is_empty() {
+        if partial {
+            "allowed models observed (usage is partial)".into()
+        } else {
+            "allowed models observed; task and effort attribution unavailable".into()
+        }
+    } else if partial {
+        format!(
+            "unrelated model {} observed (usage is partial)",
+            unexpected
+                .into_iter()
+                .map(shown)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else {
+        format!(
+            "MISMATCH: unrelated subagent model {} observed",
+            unexpected
+                .into_iter()
+                .map(shown)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
 }
 
 /// Whether the request is met by what was observed. Only subagents are routed, so their models are judged;
@@ -267,6 +354,11 @@ pub(crate) fn render(run: &Run) -> String {
     }
     if let Some(routing) = &run.model_routing {
         out.push_str(&routing_section(routing, run.usage.as_ref()));
+        if run.rework.is_some()
+            && let Some(choice) = routing.effective(Stage::Build, run.rework)
+        {
+            out.push_str(&format!("  effective Build for rework and CI: {}{} (known lower effort raised to high; unknown or stronger preserved)\n", shown(&choice.model), choice.effort.as_deref().map_or(String::new(), |e| format!(", effort {}", shown(e)))));
+        }
     }
     for report in &run.run_reports {
         if report.text.starts_with(crate::routing::WARNING_PREFIX) {
@@ -505,6 +597,41 @@ mod tests {
             .find(|row| row.stage == stage && row.model == model)
             .unwrap();
         row.efforts = efforts.iter().map(ToString::to_string).collect();
+    }
+
+    #[test]
+    fn finish_usage_accepts_both_routes_and_reports_unrelated_models() {
+        let make = |status, rows: &[(&str, &str, bool)]| {
+            let mut run = with_usage(status, rows);
+            run.model_routing.as_mut().unwrap().stages.insert(
+                Stage::Finish,
+                ModelChoice {
+                    model: "haiku".into(),
+                    effort: Some("low".into()),
+                },
+            );
+            render(&run)
+        };
+        let text = make("tracked", &[("finish", "claude-sonnet-5-5", true)]);
+        assert!(
+            text.contains("claude-sonnet-5-5 (+subagents); allowed models observed"),
+            "{text}"
+        );
+        let text = make("tracked", &[("finish", "claude-opus-5-5", true)]);
+        assert!(
+            text.contains("MISMATCH: unrelated subagent model"),
+            "{text}"
+        );
+        let text = make("partial", &[("finish", "claude-opus-5-5", true)]);
+        assert!(
+            text.contains("unrelated model claude-opus-5-5 observed (usage is partial)"),
+            "{text}"
+        );
+        let text = make("tracked", &[("finish", "claude-opus-5-5", false)]);
+        assert!(text.contains("kept on the coordinator"), "{text}");
+        let mut only_build = with_usage("tracked", &[("finish", "claude-sonnet-5-5", true)]);
+        only_build.rework = Some(1);
+        assert!(render(&only_build).contains("allowed models observed"));
     }
 
     #[test]

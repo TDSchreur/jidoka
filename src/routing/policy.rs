@@ -89,6 +89,7 @@ pub(crate) struct AgentPolicy {
     /// A disabled entry is not checked and routes nothing.
     pub(crate) enabled: bool,
     pub(crate) stages: BTreeMap<Stage, ModelChoice>,
+    pub(crate) complex: BTreeMap<Stage, ModelChoice>,
 }
 
 impl AgentPolicy {
@@ -98,6 +99,7 @@ impl AgentPolicy {
             agent,
             stages: self.stages.clone(),
             overrides: BTreeMap::new(),
+            complex: self.complex.clone(),
         }
     }
 }
@@ -287,6 +289,8 @@ struct Entry {
     #[serde(default = "enabled_by_default")]
     enabled: bool,
     stages: Unique<Stage, ModelChoice>,
+    #[serde(default)]
+    complex: Option<Unique<Stage, ModelChoice>>,
 }
 
 /// The `agents` object, as written. A repeated agent is a duplicate-field error.
@@ -317,6 +321,9 @@ impl From<Entry> for AgentPolicy {
         Self {
             enabled: entry.enabled,
             stages: entry.stages.0,
+            complex: entry
+                .complex
+                .map_or_else(BTreeMap::new, |choices| choices.0),
         }
     }
 }

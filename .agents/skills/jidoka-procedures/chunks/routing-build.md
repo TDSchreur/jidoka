@@ -1,1 +1,3 @@
 Build: give each agent the saved plan or spec by its path or URL to read itself, not a coordinator summary, and hand each ticket and Rework fix to a fresh agent sequentially. The coordinator verifies the result or confirms verification covered exactly the final code, and reports progress.
+
+For complex work, consider the displayed complex option if configured, or the current model at high effort when appropriate, preserving a stronger or unknown configured effort. To select it, use `jidoka run update <id> running --model-routing build=<model>:<effort> --activity "Complex build route: <reason>"`, repeating `--model-routing` for every existing override you want to keep. Record the choice and reason in the stage summary.
