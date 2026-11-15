@@ -267,6 +267,7 @@ function UsageDetail({ usage }) {
                 <tr>
                   <th scope="col" class="text">Stage</th>
                   <th scope="col" class="text">Model</th>
+                  <th scope="col" class="text">Effort</th>
                   <th scope="col" class="text">Ticket</th>
                   <th scope="col">Fresh</th>
                   <th scope="col">Input</th>
@@ -283,6 +284,7 @@ function UsageDetail({ usage }) {
                   (row, index) => html`<tr key=${index}>
                     <td class="text">${stageName(row.stage)}</td>
                     <td class="text wrap">${row.model}</td>
+                    <td class="text">${Array.isArray(row.efforts) && row.efforts.length ? row.efforts.join('/') : '-'}</td>
                     <td class="text wrap"><${TicketRef} value=${rowBucket(row)} /></td>
                     <td>${tokenCount(freshTokens(row))}</td>
                     <td>${tokenCount(row.input)}</td>
@@ -297,7 +299,7 @@ function UsageDetail({ usage }) {
               </tbody>
               <tfoot>
                 <tr>
-                  <th scope="row" colspan="3" class="text">Total fresh</th>
+                  <th scope="row" colspan="4" class="text">Total fresh</th>
                   <td>${tokenCount(total)}</td>
                   <td colspan="6"></td>
                   <td class="wrap">${costText(usage.cost, true)}</td>

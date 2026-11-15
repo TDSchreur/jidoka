@@ -43,7 +43,7 @@ SHIPPED = {
     ],
     # Costs come from the server; gpt-x has no price, so its cost is null.
     "usage": {"status": "tracked", "rows": [
-        row("define", "opus", 1500, cost_usd=0.5), row("build", "sonnet", 20000, cost_usd=0.25),
+        row("define", "opus", 1500, cost_usd=0.5, efforts=["xhigh"]), row("build", "sonnet", 20000, cost_usd=0.25, efforts=["high", "medium"]),
         row("build", "sonnet", 3000, ticket=T1, cost_usd=0.05), row("build", "gpt-x", 1000, cost_usd=None),
         row("check", "gpt-x", 4000, cost_usd=None),
     ], "cost": {
@@ -189,6 +189,7 @@ const snap = async (id) => {
     usageOpen: dialog.querySelector('details.usage')?.open,
     usageSummary: text(dialog.querySelector('details.usage summary')),
     usageTable: !!dialog.querySelector('details.usage table.usage-table'),
+    rowEfforts: [...dialog.querySelectorAll('details.usage table.usage-table:not(.model-table) tbody tr')].map((tr) => text(tr.children[2])),
     rowCosts: [...dialog.querySelectorAll('details.usage table.usage-table:not(.model-table) tbody tr')].map((tr) => text(tr.lastElementChild)),
     totalCost: text(dialog.querySelector('details.usage table.usage-table:not(.model-table) tfoot td:last-child')),
     footerLayout: (() => {
@@ -295,6 +296,9 @@ return {chip, deferred: text(shippedRow), lists, hole: hole.borderTopColor, over
         self.assertIn("29,500 fresh", self.shipped["usageSummary"])
         self.assertIn("3,000 fresh", self.active["usageSummary"])
         self.assertNotIn("Token usage", self.blocked["text"])
+
+    def test_token_table_shows_the_effort_of_each_row(self):
+        self.assertEqual(self.shipped["rowEfforts"], ["xhigh", "high/medium", "-", "-", "-"])
 
     def test_token_table_footer_spans_every_column_and_keeps_the_total_on_one_line(self):
         layout = self.shipped["footerLayout"]
