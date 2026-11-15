@@ -1288,3 +1288,24 @@ fn json_null_clears_and_missing_keeps_each_field_group() {
         serde_json::json!({"build": null})
     );
 }
+
+#[test]
+fn update_accepts_free_text_that_starts_with_dashes() {
+    let update = parse_update(
+        "running",
+        &[
+            "--activity",
+            "--rework is odd",
+            "--finding",
+            "code-review",
+            "-",
+            "--x and --y",
+        ],
+    )
+    .unwrap();
+    assert!(matches!(update.activity, FieldUpdate::Set(ref text) if text == "--rework is odd"));
+
+    let error = parse_update("running", &["--activity", "--summary"]).unwrap_err();
+    assert!(error.contains("found --summary, which looks like an option"));
+    assert!(parse_update("running", &["--activity"]).is_err());
+}
