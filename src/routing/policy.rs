@@ -99,6 +99,7 @@ impl AgentPolicy {
             agent,
             stages: self.stages.clone(),
             overrides: BTreeMap::new(),
+            prior_choices: BTreeMap::new(),
             complex: self.complex.clone(),
         }
     }

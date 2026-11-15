@@ -58,22 +58,32 @@ impl RoutingUpdate {
 
     /// Replaces or clears the overrides of the run's routing selection.
     pub(super) fn apply(self, run: &mut Run) -> Result<(), String> {
-        match self.model_routing {
-            FieldUpdate::Keep => {}
-            FieldUpdate::Clear => {
-                if let Some(routing) = run.model_routing.as_mut() {
-                    routing.overrides.clear();
+        let overrides = match self.model_routing {
+            FieldUpdate::Keep => return Ok(()),
+            FieldUpdate::Clear if run.model_routing.is_none() => return Ok(()),
+            FieldUpdate::Clear => BTreeMap::new(),
+            FieldUpdate::Set(overrides) => overrides,
+        };
+        let routing = run
+            .model_routing
+            .as_mut()
+            .ok_or("This run has no model routing selection to override")?;
+        // Prepare a complete replacement so validation failures leave the selection untouched.
+        let mut next = routing.clone();
+        next.overrides = overrides;
+        for stage in Stage::ALL {
+            let previous = routing.effective(stage, run.rework);
+            if previous != next.effective(stage, run.rework)
+                && let Some(previous) = previous
+            {
+                let history = next.prior_choices.entry(stage).or_default();
+                if !history.contains(&previous) {
+                    history.push(previous);
                 }
             }
-            FieldUpdate::Set(overrides) => {
-                let routing = run
-                    .model_routing
-                    .as_mut()
-                    .ok_or("This run has no model routing selection to override")?;
-                routing.overrides = overrides;
-                routing.validate()?;
-            }
         }
+        next.validate()?;
+        *routing = next;
         Ok(())
     }
 }

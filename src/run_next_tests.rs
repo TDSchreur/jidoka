@@ -33,6 +33,7 @@ fn routing() -> ModelRouting {
             },
         )]),
         complex: BTreeMap::new(),
+        prior_choices: BTreeMap::new(),
         overrides: BTreeMap::from([(
             Stage::Check,
             ModelChoice {

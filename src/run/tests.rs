@@ -449,6 +449,50 @@ fn a_stage_override_beats_the_policy_replaces_earlier_ones_clears_and_survives_a
 }
 
 #[test]
+fn routing_history_survives_replacement_clear_and_restart_and_bounds_growth() {
+    let dir = TestDir::new();
+    let (store, run) = routed_store(&dir);
+    for name in ["opus", "haiku"] {
+        store
+            .update(
+                &run.id,
+                update(&["--model-routing", &format!("build={name}")]),
+            )
+            .unwrap();
+    }
+    store
+        .update(&run.id, update(&["--clear-model-routing"]))
+        .unwrap();
+    let reopened = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    let routing = reopened
+        .get(&run.id)
+        .unwrap()
+        .unwrap()
+        .model_routing
+        .unwrap();
+    for model in ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"] {
+        assert!(routing.allows_model(Stage::Build, model), "{model}");
+        assert!(routing.allows_model(Stage::Finish, model), "{model}");
+    }
+    assert!(!routing.allows_model(Stage::Build, "unrelated"));
+    for n in 0..30 {
+        store
+            .update(
+                &run.id,
+                update(&["--model-routing", &format!("build=model{n}")]),
+            )
+            .unwrap();
+    }
+    let error = store
+        .update(&run.id, update(&["--model-routing", "build=overflow"]))
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("at most 32 prior model choices"),
+        "{error}"
+    );
+}
+
+#[test]
 fn a_model_routing_selection_recorded_at_start_survives_updates_and_a_restart() {
     let dir = TestDir::new();
     let path = dir.0.path().join("runs.json");

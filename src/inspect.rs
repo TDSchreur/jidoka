@@ -47,7 +47,8 @@ fn field(label: &str, value: Option<&str>) -> String {
 }
 
 /// The model each Stage is routed to; a Stage the selection does not map is not routed.
-fn routing_section(routing: &ModelRouting, usage: Option<&Usage>) -> String {
+fn routing_section(routing: &ModelRouting, usage: Option<&Usage>, rework: Option<u32>) -> String {
+    let effective_build = routing.effective(Stage::Build, rework);
     let mut out = format!("Model routing {}\n", routing.agent.name());
     for stage in Stage::ALL {
         let choice = routing.choice_for(stage);
@@ -78,7 +79,7 @@ fn routing_section(routing: &ModelRouting, usage: Option<&Usage>) -> String {
             ));
         }
         if stage == Stage::Finish
-            && let Some(build) = routing.choice_for(Stage::Build)
+            && let Some(build) = effective_build.as_ref()
         {
             out.push_str(&format!(
                 "          CI repair uses Build: {}{}\n",
@@ -90,13 +91,35 @@ fn routing_section(routing: &ModelRouting, usage: Option<&Usage>) -> String {
             ));
         }
         let ci = (stage == Stage::Finish)
-            .then(|| routing.choice_for(Stage::Build))
+            .then_some(effective_build.as_ref())
             .flatten();
         if let Some(requested) = choice.or(ci) {
             out.push_str(&format!(
                 "          {}\n",
-                observed_line(requested, stage, usage, ci)
+                observed_line(requested, stage, usage, routing, rework)
             ));
+            if let Some(prior) = routing.prior_choices.get(&stage) {
+                let choices: Vec<String> = prior
+                    .iter()
+                    .map(|choice| {
+                        format!(
+                            "{}{}",
+                            shown(&choice.model),
+                            choice
+                                .effort
+                                .as_deref()
+                                .map_or(String::new(), |effort| format!(
+                                    ", effort {}",
+                                    shown(effort)
+                                ))
+                        )
+                    })
+                    .collect();
+                out.push_str(&format!(
+                    "          prior assignments: {}\n",
+                    choices.join("; ")
+                ));
+            }
             if stage == Stage::Finish && ci.is_some() {
                 out.push_str("          Finish usage aggregates PR text and CI repairs; task attribution is unavailable.\n");
             }
@@ -119,7 +142,8 @@ fn observed_line(
     requested: &ModelChoice,
     stage: Stage,
     usage: Option<&Usage>,
-    alternative: Option<&ModelChoice>,
+    routing: &ModelRouting,
+    rework: Option<u32>,
 ) -> String {
     let Some(usage) = usage else {
         return "observed: not tracked: usage has not been collected for this run yet".into();
@@ -178,21 +202,22 @@ fn observed_line(
     format!(
         "observed: {}; {}",
         list.join(", "),
-        if stage == Stage::Finish && alternative.is_some() {
-            finish_verdict(requested, alternative, &seen, partial)
+        if (stage == Stage::Finish && routing.choice_for(Stage::Build).is_some())
+            || routing
+                .prior_choices
+                .get(&stage)
+                .is_some_and(|choices| !choices.is_empty())
+            || (stage == Stage::Build && rework.is_some())
+        {
+            aggregate_verdict(routing, stage, &seen, partial)
         } else {
             verdict(requested, &seen, partial)
         }
     )
 }
 
-/// Finish usage does not identify which task ran, so either task's model is allowed.
-fn finish_verdict(
-    requested: &ModelChoice,
-    alternative: Option<&ModelChoice>,
-    seen: &[Seen],
-    partial: bool,
-) -> String {
+/// Aggregate usage cannot establish which assignment or effort each subagent used.
+fn aggregate_verdict(routing: &ModelRouting, stage: Stage, seen: &[Seen], partial: bool) -> String {
     if !seen.iter().any(|s| s.subagents) {
         return if partial {
             "kept on the coordinator (usage is partial)".into()
@@ -202,18 +227,14 @@ fn finish_verdict(
     }
     let unexpected: Vec<&str> = seen
         .iter()
-        .filter(|s| {
-            s.subagents
-                && !model_matches(&requested.model, s.model)
-                && !alternative.is_some_and(|c| model_matches(&c.model, s.model))
-        })
+        .filter(|s| s.subagents && !routing.allows_model(stage, s.model))
         .map(|s| s.model)
         .collect();
     if unexpected.is_empty() {
         if partial {
             "allowed models observed (usage is partial)".into()
         } else {
-            "allowed models observed; task and effort attribution unavailable".into()
+            "allowed models observed; assignment and effort attribution unavailable".into()
         }
     } else if partial {
         format!(
@@ -353,7 +374,7 @@ pub(crate) fn render(run: &Run) -> String {
         }
     }
     if let Some(routing) = &run.model_routing {
-        out.push_str(&routing_section(routing, run.usage.as_ref()));
+        out.push_str(&routing_section(routing, run.usage.as_ref(), run.rework));
         if run.rework.is_some()
             && let Some(choice) = routing.effective(Stage::Build, run.rework)
         {
@@ -748,6 +769,59 @@ mod tests {
         .unwrap();
         run.usage.as_mut().unwrap().rows.push(row);
         assert!(observed(&render(&run), "build").contains("matches the request"));
+    }
+
+    #[test]
+    fn rework_and_prior_choices_report_aggregate_usage_without_hiding_unrelated_models() {
+        for efforts in [&["high"][..], &["medium", "high"][..]] {
+            let mut run = with_usage("tracked", &[("build", "claude-sonnet-5-5", true)]);
+            run.rework = Some(1);
+            run.model_routing
+                .as_mut()
+                .unwrap()
+                .stages
+                .get_mut(&Stage::Build)
+                .unwrap()
+                .effort = Some("medium".into());
+            set_efforts(&mut run, Stage::Build, "claude-sonnet-5-5", &[efforts[0]]);
+            if efforts.len() == 2 {
+                let mut rework_row = run.usage.as_ref().unwrap().rows[0].clone();
+                rework_row.rework = true;
+                rework_row.efforts = [efforts[1].into()].into_iter().collect();
+                run.usage.as_mut().unwrap().rows.push(rework_row);
+            } else {
+                run.usage.as_mut().unwrap().rows[0].rework = true;
+            }
+            let text = render(&run);
+            assert!(
+                text.contains("effective Build for rework and CI: sonnet, effort high"),
+                "{text}"
+            );
+            assert!(
+                text.contains("CI repair uses Build: sonnet, effort high"),
+                "{text}"
+            );
+            assert!(
+                observed(&text, "build").contains("assignment and effort attribution unavailable"),
+                "{text}"
+            );
+            assert!(!observed(&text, "build").contains("MISMATCH"), "{text}");
+        }
+        let mut run = with_usage("tracked", &[("build", "claude-sonnet-5-5", true)]);
+        let routing = run.model_routing.as_mut().unwrap();
+        routing
+            .prior_choices
+            .insert(Stage::Build, vec![routing.stages[&Stage::Build].clone()]);
+        routing.overrides.insert(
+            Stage::Build,
+            ModelChoice {
+                model: "opus".into(),
+                effort: Some("high".into()),
+            },
+        );
+        assert!(observed(&render(&run), "build").contains("allowed models observed"));
+        run.usage.as_mut().unwrap().rows[0].model = "unrelated".into();
+        assert!(observed(&render(&run), "build").contains("MISMATCH: unrelated subagent model"));
     }
 
     #[test]

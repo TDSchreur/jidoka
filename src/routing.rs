@@ -42,6 +42,9 @@ pub(crate) struct ModelRouting {
     /// Choices made for this run by hand; they win over `stages` and leave it untouched.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) overrides: BTreeMap<Stage, ModelChoice>,
+    /// Previously assigned choices, retained so aggregate usage can be interpreted honestly.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) prior_choices: BTreeMap<Stage, Vec<ModelChoice>>,
     /// Optional choices offered for complex Define and Build work.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) complex: BTreeMap<Stage, ModelChoice>,
@@ -66,6 +69,8 @@ pub(crate) fn model_matches(requested: &str, observed: &str) -> bool {
 
 /// Longest model or effort text. They are shown in a terminal and handed to agents, so they stay short.
 const MAX_TEXT: usize = 64;
+/// Bound the run record while allowing multiple deliberate routing changes per stage.
+pub(crate) const MAX_PRIOR_CHOICES: usize = 32;
 
 fn check_text(name: &str, value: &str) -> Result<(), String> {
     let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-');
@@ -103,12 +108,13 @@ impl ModelRouting {
 
     /// Models permitted in a stage's aggregate usage, including Finish CI repairs.
     pub(crate) fn allows_model(&self, stage: Stage, model: &str) -> bool {
-        self.choice_for(stage)
-            .is_some_and(|c| model_matches(&c.model, model))
-            || (stage == Stage::Finish
-                && self
-                    .choice_for(Stage::Build)
-                    .is_some_and(|c| model_matches(&c.model, model)))
+        let assigned = |stage| {
+            self.choice_for(stage)
+                .into_iter()
+                .chain(self.prior_choices.get(&stage).into_iter().flatten())
+                .any(|choice| model_matches(&choice.model, model))
+        };
+        assigned(stage) || (stage == Stage::Finish && assigned(Stage::Build))
     }
 
     /// The rules every selection follows, whether the CLI resolved it or the API received it.
@@ -120,9 +126,20 @@ impl ModelRouting {
         {
             return Err("Complex choices may only name define or build".into());
         }
-        for choice in self
-            .stages
+        if self
+            .prior_choices
             .values()
+            .any(|choices| choices.len() > MAX_PRIOR_CHOICES)
+        {
+            return Err(format!(
+                "A stage can have at most {MAX_PRIOR_CHOICES} prior model choices"
+            ));
+        }
+        for choice in self
+            .prior_choices
+            .values()
+            .flatten()
+            .chain(self.stages.values())
             .chain(self.overrides.values())
             .chain(self.complex.values())
         {
