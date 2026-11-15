@@ -160,6 +160,8 @@ pub(crate) struct Output<'a> {
     #[serde(flatten)]
     pub(crate) begun: &'a Begun,
     pub(crate) plan: String,
+    /// The Define stage's `run next` data; none when a session warning is printed or it could not be read.
+    pub(crate) next: Option<&'a crate::run_next::Next>,
 }
 
 /// Why no workspace was made.

@@ -228,6 +228,17 @@ fn build_instructions_are_focused_and_full_explains_each_ticket_gate() {
 }
 
 #[test]
+fn finish_includes_the_pull_request_procedure_and_a_done_run_has_no_instructions() {
+    let finish = build(&run(Mode::Balanced, Stage::Finish, None), &[]).unwrap();
+    assert!(finish.instructions.contains("## Pull request and CI"));
+    let mut done = run(Mode::Balanced, Stage::Finish, None);
+    done.status = RunStatus::Done;
+    let next = build(&done, &[]).unwrap();
+    assert!(next.instructions.is_empty());
+    assert!(!render(&next).contains("Instructions"));
+}
+
+#[test]
 fn applicable_check_supplies_instructions_gate_and_routed_model() {
     let next = build(&run(Mode::Balanced, Stage::Check, Some(routing())), &[]).unwrap();
     assert!(next.instructions.contains("## Code review"));

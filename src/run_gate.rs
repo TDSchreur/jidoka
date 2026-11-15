@@ -383,7 +383,7 @@ fn apply(run: &mut Run, to: Destination) {
 }
 
 /// The body of `POST /api/runs/<id>/advance`: an optional forced advance with the reason for it.
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AdvanceRequest {
     #[serde(default)]
@@ -407,6 +407,52 @@ impl AdvanceRequest {
             (false, Some(_)) => Err("--reason is only for --force".into()),
         }
     }
+}
+
+/// What `jidoka run advance <id> [options]` was asked to do.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct AdvanceOptions {
+    pub(crate) request: AdvanceRequest,
+    /// Options for the `run update <id> running` call that records the stage report first; empty when none.
+    pub(crate) update: Vec<String>,
+    pub(crate) json: bool,
+}
+
+/// Reads the options of `run advance`: `--summary <stage>=<text>`, `--activity <text>`,
+/// `--clear-current-ticket`, `--json` and `--force --reason <text>`, in any order and each at most once.
+///
+/// # Errors
+///
+/// Returns a message for an unknown or repeated option, a missing value, or `--force` without a reason.
+pub(crate) fn parse_advance_options(options: &[&str]) -> Result<AdvanceOptions, String> {
+    let mut parsed = AdvanceOptions::default();
+    let mut seen: Vec<&str> = Vec::new();
+    let mut rest = options.iter().copied();
+    while let Some(option) = rest.next() {
+        if seen.contains(&option) {
+            return Err(format!("{option} is given more than once"));
+        }
+        match option {
+            "--summary" | "--activity" | "--reason" => {
+                let value = rest
+                    .next()
+                    .ok_or_else(|| format!("{option} needs a value"))?;
+                match option {
+                    "--reason" => parsed.request.reason = Some(value.to_string()),
+                    _ => parsed
+                        .update
+                        .extend([option.to_string(), value.to_string()]),
+                }
+            }
+            "--clear-current-ticket" => parsed.update.push(option.to_string()),
+            "--force" => parsed.request.force = true,
+            "--json" => parsed.json = true,
+            _ => return Err(format!("Unknown option {option}")),
+        }
+        seen.push(option);
+    }
+    parsed.request.forced_reason()?;
+    Ok(parsed)
 }
 
 /// Moves the run along the stage graph without checking Gates and records `reason` as a run report.
@@ -621,6 +667,53 @@ mod tests {
             Some("why")
         );
         assert_eq!(request(false, None).forced_reason().unwrap(), None);
+    }
+
+    #[test]
+    fn advance_options_are_read_in_any_order_and_refused_when_wrong() {
+        let parsed = parse_advance_options(&[
+            "--json",
+            "--activity",
+            "Checking",
+            "--summary",
+            "build=Done",
+            "--clear-current-ticket",
+        ])
+        .unwrap();
+        assert!(parsed.json && !parsed.request.force);
+        assert_eq!(
+            parsed.update,
+            [
+                "--activity",
+                "Checking",
+                "--summary",
+                "build=Done",
+                "--clear-current-ticket"
+            ]
+        );
+        assert_eq!(
+            parse_advance_options(&["--force", "--reason", "why"])
+                .unwrap()
+                .request,
+            AdvanceRequest {
+                force: true,
+                reason: Some("why".into())
+            }
+        );
+        assert_eq!(
+            parse_advance_options(&[]).unwrap(),
+            AdvanceOptions::default()
+        );
+        for bad in [
+            &["--bogus"][..],
+            &["--activity"],
+            &["--json", "--json"],
+            &["--force"],
+            &["--reason", "why"],
+            &["--summary", "a=b", "--summary", "c=d"],
+        ] {
+            assert!(parse_advance_options(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

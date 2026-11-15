@@ -808,8 +808,8 @@ mod tests {
 
     #[test]
     fn the_procedures_keep_the_pull_request_current_without_rewriting_history() {
-        let section = bundled_text("jidoka-procedures/references/pull-request-and-ci.md")
-            .replace("\r\n", "\n");
+        let section =
+            bundled_text("jidoka-procedures/chunks/pull-request-and-ci.md").replace("\r\n", "\n");
         for needle in [
             "jidoka pr sync <run-id> --base <base>",
             "gh pr view --json mergeStateStatus",
@@ -1065,7 +1065,7 @@ mod tests {
                 .is_file()
         );
         assert!(
-            root.join("jidoka-procedures/references/pull-request-and-ci.md")
+            root.join("jidoka-procedures/chunks/pull-request-and-ci.md")
                 .is_file()
         );
         assert!(!root.join("jidoka-procedures/LICENSE").exists());
