@@ -8,7 +8,7 @@ use std::{
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
 /// Skills maintained in this project, installed without a third-party license.
-const LOCAL_SKILLS: [&str; 7] = [
+const LOCAL_SKILLS: [&str; 9] = [
     "jidoka",
     "jidoka-full",
     "jidoka-procedures",
@@ -16,6 +16,8 @@ const LOCAL_SKILLS: [&str; 7] = [
     "jidoka-balanced",
     "jidoka-implement-fast",
     "jidoka-implement-balanced",
+    "jidoka-run-report",
+    "jidoka-awesome-copilot",
 ];
 
 /// Reads `[--agent <list>] [--config-dir <path>]...` in any order. `--agent` can be given once.
@@ -1079,6 +1081,13 @@ mod tests {
         assert!(!root.join("jidoka-implement-fast/LICENSE").exists());
         assert!(root.join("jidoka-triage/AGENT-BRIEF.md").is_file());
         assert!(root.join("jidoka-triage/LICENSE").is_file());
+        assert!(root.join("jidoka-run-report/SKILL.md").is_file());
+        assert!(!root.join("jidoka-run-report/LICENSE").exists());
+        assert!(
+            root.join("jidoka-awesome-copilot/references/target-layout.md")
+                .is_file()
+        );
+        assert!(!root.join("jidoka-awesome-copilot/LICENSE").exists());
         install_to(root).unwrap();
         let leftovers: Vec<_> = fs::read_dir(root)
             .unwrap()

@@ -84,7 +84,7 @@ flowchart TB
     implfast -->|/jidoka-fast skips Check| pr
 ```
 
-`jidoka install` also installs [`jidoka-codebase-design`](../skills/jidoka-codebase-design/SKILL.md), [`jidoka-improve-architecture`](../skills/jidoka-improve-architecture/SKILL.md) (finds deepening opportunities and files the one you pick as a spec) and [`jidoka-triage`](../.agents/skills/jidoka-triage/SKILL.md), which no workflow calls directly, and [`jidoka-setup`](../skills/jidoka-setup/SKILL.md), which you run yourself (see below).
+`jidoka install` also installs skills that no workflow calls directly: [`jidoka-codebase-design`](../skills/jidoka-codebase-design/SKILL.md), [`jidoka-improve-architecture`](../skills/jidoka-improve-architecture/SKILL.md) (finds deepening opportunities and files the one you pick as a spec) and [`jidoka-triage`](../.agents/skills/jidoka-triage/SKILL.md), plus three you run yourself: [`jidoka-setup`](../skills/jidoka-setup/SKILL.md) (see below), [`jidoka-awesome-copilot`](../skills/jidoka-awesome-copilot/SKILL.md) (adds github/awesome-copilot skills and instructions to a project) and [`jidoka-run-report`](../skills/jidoka-run-report/SKILL.md) (reports Jidoka bugs found in a run). The README lists every skill you can call directly under [Skills you can use directly](../README.md#skills-you-can-use-directly).
 
 ## Agent comparison
 

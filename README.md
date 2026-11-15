@@ -68,6 +68,8 @@ Windows Defender sometimes flags the unsigned Windows build; see [what to do](do
 
 5. **Report problems** (optional): ask your agent to run `/jidoka-run-report` with a run id. It looks for Jidoka bugs and avoidable token usage in that run and, after you approve the text, files a detailed issue in the Jidoka repository.
 
+The installed skills also work on their own, outside a run; see [Skills you can use directly](#skills-you-can-use-directly).
+
 Useful commands:
 
 | Command | What it does |
@@ -78,6 +80,27 @@ Useful commands:
 | `jidoka run cleanup <id>` | Removes a run's worktree and branch after its pull request merged. |
 
 Run `jidoka --help` for every command.
+
+### Skills you can use directly
+
+`jidoka install` adds these skills for every agent you chose. Call one by name, for example `/jidoka-security-review src/api`, or describe the task and let the agent pick it.
+
+| Skill | What it does |
+| --- | --- |
+| [`/jidoka-setup`](skills/jidoka-setup/SKILL.md) | Prepares a repository once: issue tracker, triage labels, domain docs and verification commands. |
+| [`/jidoka-awesome-copilot`](skills/jidoka-awesome-copilot/SKILL.md) | Adds skills and instructions from [github/awesome-copilot](https://github.com/github/awesome-copilot) to a project, adapted to its layout, for Codex, Claude and Copilot. Also updates or removes them. |
+| [`/jidoka-run-report <run-id>`](skills/jidoka-run-report/SKILL.md) | Checks a run for Jidoka bugs and token waste and files an issue in the Jidoka repository after you approve it. |
+| [`/jidoka-code-review <ref>`](skills/jidoka-code-review/SKILL.md) | Reviews changes since a commit or branch against the project's standards and the originating spec. |
+| [`/jidoka-security-review`](skills/jidoka-security-review/SKILL.md) | Scans a path, commit range or the whole project for vulnerabilities. |
+| [`/jidoka-grilling`](skills/jidoka-grilling/SKILL.md) | Stress-tests a plan or decision with pointed questions. |
+| [`/jidoka-grill-with-docs`](skills/jidoka-grill-with-docs/SKILL.md) | Same interview, and records glossary terms and ADRs as decisions land. |
+| [`/jidoka-domain-modeling`](skills/jidoka-domain-modeling/SKILL.md) | Sharpens the domain language: `GLOSSARY.md` and ADRs. |
+| [`/jidoka-improve-architecture`](skills/jidoka-improve-architecture/SKILL.md) | Finds refactoring opportunities and files the one you pick as a spec. |
+| [`/jidoka-to-spec`](skills/jidoka-to-spec/SKILL.md) | Turns the current conversation into a spec in the issue tracker. |
+| [`/jidoka-to-tickets`](skills/jidoka-to-tickets/SKILL.md) | Breaks a spec or plan into tickets in the issue tracker. |
+| [`/jidoka-triage`](.agents/skills/jidoka-triage/SKILL.md) | Triages issues and external pull requests and writes agent-ready briefs. |
+| [`/jidoka-tdd`](skills/jidoka-tdd/SKILL.md) | Builds a feature or fixes a bug test-first. |
+| [`/jidoka-pr`](skills/jidoka-pr/SKILL.md) | Writes a pull request description that reviewers can scan quickly. |
 
 ### Where runs are stored
 

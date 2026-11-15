@@ -115,6 +115,7 @@ fn main() {
         "jidoka-pr",
         "jidoka-run-report",
         "jidoka-setup",
+        "jidoka-awesome-copilot",
     ] {
         files(
             Path::new("skills"),
