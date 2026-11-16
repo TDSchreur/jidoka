@@ -770,6 +770,25 @@ fn copilot_coordinator_response_needs_attention_until_the_user_replies() {
 }
 
 #[test]
+fn an_unanswered_request_in_an_overtaken_session_does_not_need_attention() {
+    let world = World::new();
+    let target = run(RUN_A, &[(0, "build", None, None)], None, &["c1", "c2"]);
+    let ask = [
+        json!({"type":"tool.execution_start", "timestamp":iso(10), "data":{"toolName":"ask_user", "toolCallId":"t1"}}).to_string(),
+    ];
+    world.write("copilot/session-state/c1/events.jsonl", &ask);
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert!(usage.attention_requested);
+    let resumed = [
+        json!({"type":"user.message", "timestamp":iso(20), "data":{"content":"Continue"}})
+            .to_string(),
+    ];
+    world.write("copilot/session-state/c2/events.jsonl", &resumed);
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert!(usage.attention.is_none());
+}
+
+#[test]
 fn codex_coordinator_response_needs_attention_until_the_next_turn() {
     let world = World::new();
     let target = run(RUN_A, &[(0, "build", None, None)], None, &["s1"]);
