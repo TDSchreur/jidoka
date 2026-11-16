@@ -679,10 +679,10 @@ fn collect_limited(
     let skills = used_skills(target, &tracked, &claimed);
     let (rows, unattributed, counted) = attribute(target, runs, &read.sessions, now);
     let (pauses, idle) = derive_pauses(target, &read.sessions, now);
-    // Each session is evaluated independently: other sessions cannot answer its request.
+    // Each session is evaluated on its own signals: another session cannot answer its request.
     // A request left unanswered by a session that a later session has overtaken can no longer be
     // answered, so it must not keep blocking the run.
-    let newest_signal = |session: &RunSession| session.attention.iter().map(|(at, _)| *at).max();
+    let newest_signal_at = |session: &RunSession| session.attention.iter().map(|(at, _)| *at).max();
     let attention = claimed
         .iter()
         .filter_map(|session| {
@@ -697,7 +697,8 @@ fn collect_limited(
                     && *at <= now
                     && (*signal != crate::attention::Signal::Requested
                         || !claimed.iter().any(|other| {
-                            other.id != session.id && newest_signal(other).is_some_and(|n| n > *at)
+                            other.id != session.id
+                                && newest_signal_at(other).is_some_and(|n| n > *at)
                         }))
                     && (*signal == crate::attention::Signal::Requested
                         || target
