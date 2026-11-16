@@ -22,6 +22,9 @@ fn no_global_config() -> PathBuf {
 fn isolated(command: &mut Command) -> &mut Command {
     command
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "safe.bareRepository")
+        .env("GIT_CONFIG_VALUE_0", "all")
         .env("GIT_CONFIG_GLOBAL", no_global_config())
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
