@@ -2,6 +2,7 @@
 # Run the checks CI runs, in the same order, and stop at the first failure.
 # With --quick (for iterating) it skips the Windows clippy step and runs the dashboard browser tests only when the
 # dashboard or its tests changed since the merge base with origin/develop. Run it without --quick before a pull request.
+# The dashboard browser tests are skipped on WSL2 or when JIDOKA_SKIP_BROWSER_TESTS=1; elsewhere a missing browser is a blocker.
 # Keep in sync with the `check` job in .github/workflows/ci.yml. CI lints on Linux only; the Windows clippy step below
 # is an extra local check that runs when the Windows target is installed.
 set -eu
@@ -17,6 +18,15 @@ browser() {
   for name in chromium chromium-browser google-chrome; do
     command -v "$name" 2>/dev/null && return 0
   done
+  return 1
+}
+
+# Prints why the browser tests must be skipped, and succeeds, when they must be: WSL2 or JIDOKA_SKIP_BROWSER_TESTS=1.
+browser_skip_reason() {
+  if [ "${JIDOKA_SKIP_BROWSER_TESTS:-}" = 1 ]; then printf 'JIDOKA_SKIP_BROWSER_TESTS=1'; return 0; fi
+  case "$(uname -r 2>/dev/null)" in
+    *[Mm]icrosoft*) printf 'WSL2'; return 0 ;;
+  esac
   return 1
 }
 
@@ -59,7 +69,13 @@ main() {
   cargo fmt --version >/dev/null 2>&1 || missing rustfmt
   cargo clippy --version >/dev/null 2>&1 || missing clippy
   browser_tests=1
-  if [ "$quick" = 1 ] && ! dashboard_changed; then browser_tests=0; fi
+  skip_reason=''
+  if skip_reason=$(browser_skip_reason); then
+    browser_tests=0
+  elif [ "$quick" = 1 ] && ! dashboard_changed; then
+    browser_tests=0
+    skip_reason='quick mode, no dashboard changes'
+  fi
   if [ "$browser_tests" = 1 ]; then
     command -v python3 >/dev/null 2>&1 || { printf 'python3 is not available. Install Python 3 to run the dashboard browser tests.\n' >&2; exit 1; }
     browser >/dev/null || { printf 'Chromium is not available. Install chromium or google-chrome (or set CHROMIUM to its path) to run the dashboard browser tests.\n' >&2; exit 1; }
@@ -80,7 +96,7 @@ main() {
       step python3 "$test"
     done
   else
-    printf '\n==> Skipped dashboard browser tests (quick mode, no dashboard changes)\n'
+    printf '\n==> Skipped dashboard browser tests (%s)\n' "$skip_reason"
   fi
   printf '\nAll checks passed.\n'
 }

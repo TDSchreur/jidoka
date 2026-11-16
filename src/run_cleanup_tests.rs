@@ -11,6 +11,9 @@ const PR: &str = "https://github.com/o/r/pull/7";
 fn isolated(command: &mut Command) -> &mut Command {
     command
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "safe.bareRepository")
+        .env("GIT_CONFIG_VALUE_0", "all")
         .env(
             "GIT_CONFIG_GLOBAL",
             std::env::temp_dir().join("jidoka-tests-no-such-gitconfig"),
