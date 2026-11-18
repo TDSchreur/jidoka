@@ -522,6 +522,66 @@ mod tests {
     }
 
     #[test]
+    fn group_dependency_commands_work_against_a_real_server() {
+        let dir = TestDir::new();
+        let server = TestServer::start(&dir.0.path().join("runs.json"));
+        let run = |title: &str| {
+            start_run(
+                &server.address,
+                &server.token_file,
+                title,
+                "/work",
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        let (module, api) = (run("module"), run("api"));
+        let group =
+            |words: &[&str]| crate::group_cli::run(words, &server.address, &server.token_file);
+        group(&[
+            "create",
+            "platform",
+            "--spec",
+            "https://example.com/spec",
+            "--run",
+            &module,
+            "--run",
+            &api,
+        ])
+        .unwrap();
+        let id = fetch_groups(&server.address).unwrap()[0].id.clone();
+        group(&["milestone", "add", &id, "published"]).unwrap();
+        let stored = || fetch_groups(&server.address).unwrap().remove(0);
+        let milestone = stored().milestones[0].id.clone();
+        group(&["depend", &id, &api, "--milestone", &milestone]).unwrap();
+        group(&["depend", &id, &api, "--on-pr", &module]).unwrap();
+        assert!(group(&["depend", &id, &module, "--on-pr", &api]).is_err());
+        assert!(group(&["depend", &id, &api, "--bogus", &module]).is_err());
+        assert!(group(&["remove", &id, &api]).is_err());
+        assert!(group(&["milestone", "remove", &id, &milestone]).is_err());
+        group(&[
+            "confirm",
+            &id,
+            &milestone,
+            "--evidence",
+            "https://example.com/e",
+        ])
+        .unwrap();
+        assert!(group(&["confirm", &id, &milestone]).is_err());
+        group(&["inspect", &id]).unwrap();
+        group(&["reopen", &id, &milestone]).unwrap();
+        assert!(stored().milestones[0].confirmed_at.is_none());
+        for dependency in stored().dependencies {
+            group(&["undepend", &id, &dependency.id]).unwrap();
+        }
+        group(&["milestone", "remove", &id, &milestone]).unwrap();
+        assert!(stored().milestones.is_empty());
+        group(&["remove", &id, &api]).unwrap();
+    }
+
+    #[test]
     fn cli_reports_rejections_and_unreachable_server() {
         let dir = TestDir::new();
         let server = TestServer::start(&dir.0.path().join("runs.json"));

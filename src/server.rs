@@ -1,7 +1,7 @@
 use crate::{
     current_build,
     document::{self, DocumentError},
-    groups::{Group, GroupError, GroupStore, GroupView, NewGroup, valid_group_id},
+    groups::{Group, GroupError, GroupStore, GroupView, NewGroup, Target, valid_group_id},
     pr_state,
     pr_wait::{self, RealGh},
     run::{NewRun, Run, RunStore, UpdateRun},
@@ -813,6 +813,175 @@ fn delete_group(
         .map_err(group_failure)
 }
 
+/// The id of something a group operation created.
+#[derive(serde::Serialize)]
+struct Created {
+    id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MilestoneText {
+    text: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MilestoneRef {
+    milestone: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DependencyRequest {
+    run: String,
+    #[serde(default)]
+    on_pr: Option<String>,
+    #[serde(default)]
+    milestone: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DependencyRef {
+    dependency: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Confirmation {
+    milestone: String,
+    #[serde(default)]
+    evidence: Option<String>,
+}
+
+/// Ids made of a letter and digits, such as `m1` and `d2`.
+fn check_key(prefix: char, key: &str) -> Result<(), (HttpStatus, String)> {
+    let valid = key
+        .strip_prefix(prefix)
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()));
+    if valid {
+        Ok(())
+    } else {
+        Err((HttpStatus::BadRequest, format!("Invalid id {key}")))
+    }
+}
+
+#[rocket::post("/api/groups/<id>/milestones", data = "<body>")]
+fn add_milestone(
+    _access: PostAccess,
+    id: &str,
+    body: Json<MilestoneText>,
+    store: &State<RunStore>,
+    groups: &State<GroupStore>,
+) -> Result<(HttpStatus, Json<Created>), (HttpStatus, String)> {
+    check_group_id(id)?;
+    groups
+        .add_milestone(store, id, &body.text)
+        .map(|id| (HttpStatus::Created, Json(Created { id })))
+        .map_err(group_failure)
+}
+
+#[rocket::post("/api/groups/<id>/milestones/remove", data = "<body>")]
+fn remove_milestone(
+    _access: PostAccess,
+    id: &str,
+    body: Json<MilestoneRef>,
+    store: &State<RunStore>,
+    groups: &State<GroupStore>,
+) -> Result<Json<serde_json::Value>, (HttpStatus, String)> {
+    check_group_id(id)?;
+    check_key('m', &body.milestone)?;
+    groups
+        .remove_milestone(store, id, &body.milestone)
+        .map(|()| Json(serde_json::json!({ "removed": body.milestone })))
+        .map_err(group_failure)
+}
+
+#[rocket::post("/api/groups/<id>/depend", data = "<body>")]
+fn add_dependency(
+    _access: PostAccess,
+    id: &str,
+    body: Json<DependencyRequest>,
+    store: &State<RunStore>,
+    groups: &State<GroupStore>,
+) -> Result<(HttpStatus, Json<Created>), (HttpStatus, String)> {
+    check_group_id(id)?;
+    check_run_ref(&body.run)?;
+    let target = match (&body.on_pr, &body.milestone) {
+        (Some(run), None) => {
+            check_run_ref(run)?;
+            Target::Pr(run.clone())
+        }
+        (None, Some(milestone)) => {
+            check_key('m', milestone)?;
+            Target::Milestone(milestone.clone())
+        }
+        _ => {
+            return Err((
+                HttpStatus::BadRequest,
+                "Give exactly one of on_pr and milestone".to_string(),
+            ));
+        }
+    };
+    groups
+        .add_dependency(store, id, &body.run, target)
+        .map(|id| (HttpStatus::Created, Json(Created { id })))
+        .map_err(group_failure)
+}
+
+#[rocket::post("/api/groups/<id>/undepend", data = "<body>")]
+fn remove_dependency(
+    _access: PostAccess,
+    id: &str,
+    body: Json<DependencyRef>,
+    store: &State<RunStore>,
+    groups: &State<GroupStore>,
+) -> Result<Json<serde_json::Value>, (HttpStatus, String)> {
+    check_group_id(id)?;
+    check_key('d', &body.dependency)?;
+    groups
+        .remove_dependency(store, id, &body.dependency)
+        .map(|()| Json(serde_json::json!({ "removed": body.dependency })))
+        .map_err(group_failure)
+}
+
+#[rocket::post("/api/groups/<id>/confirm", data = "<body>")]
+fn confirm_milestone(
+    _access: PostAccess,
+    id: &str,
+    body: Json<Confirmation>,
+    store: &State<RunStore>,
+    groups: &State<GroupStore>,
+) -> Result<Json<serde_json::Value>, (HttpStatus, String)> {
+    check_group_id(id)?;
+    check_key('m', &body.milestone)?;
+    let now = crate::run::updated_now().map_err(|error| {
+        eprintln!("Clock error: {error}");
+        (HttpStatus::InternalServerError, String::new())
+    })?;
+    groups
+        .confirm(store, id, &body.milestone, body.evidence.as_deref(), now)
+        .map(|()| Json(serde_json::json!({ "confirmed": body.milestone })))
+        .map_err(group_failure)
+}
+
+#[rocket::post("/api/groups/<id>/reopen", data = "<body>")]
+fn reopen_milestone(
+    _access: PostAccess,
+    id: &str,
+    body: Json<MilestoneRef>,
+    store: &State<RunStore>,
+    groups: &State<GroupStore>,
+) -> Result<Json<serde_json::Value>, (HttpStatus, String)> {
+    check_group_id(id)?;
+    check_key('m', &body.milestone)?;
+    groups
+        .reopen(store, id, &body.milestone)
+        .map(|()| Json(serde_json::json!({ "reopened": body.milestone })))
+        .map_err(group_failure)
+}
+
 /// How long a sync may wait for the host before the dashboard gives up on it.
 const SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -1102,7 +1271,13 @@ fn build_rocket_with_tokens(
                 create_group,
                 add_to_group,
                 remove_from_group,
-                delete_group
+                delete_group,
+                add_milestone,
+                remove_milestone,
+                add_dependency,
+                remove_dependency,
+                confirm_milestone,
+                reopen_milestone
             ],
         )
         .register(

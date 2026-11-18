@@ -126,6 +126,7 @@ There is one data folder and one dashboard per user. The dashboard owns `runs.js
 | [Installation](docs/installation.md) | Install options, updating, skills folders, building from source, Windows Defender |
 | [Workflows and skills](docs/workflows.md) | The three modes stage by stage, Reworks, the skills, agent differences |
 | [Runs and the dashboard](docs/runs.md) | The dashboard, `jidoka run` commands, run context, continuing a run |
+| [Changes across repositories](docs/multi-repo.md) | Change groups: one spec, several runs and pull requests, prerequisites and milestones |
 | [Pull requests and CI](docs/pull-requests.md) | `jidoka pr open`, `sync` and `wait` on GitHub and Azure Repos |
 | [Token usage](docs/usage-tracking.md) | Token counts, estimated cost, pauses, request analysis |
 | [Model routing](docs/model-routing.md) | Choosing the model and effort per Stage |

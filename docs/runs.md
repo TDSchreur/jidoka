@@ -136,12 +136,21 @@ A change can touch several repositories and need several pull requests. A **chan
 | `jidoka group add <group-id> <run-id>` | Attach an existing run. A run is in at most one group. |
 | `jidoka group remove <group-id> <run-id>` | Detach a run. This also detaches a member whose run record is gone, which `group inspect` shows as `run missing`. |
 | `jidoka group delete <group-id>` | Delete a group that has no runs. |
+| `jidoka group milestone add <group-id> "<text>"` | Create a pending milestone, a named condition such as "Bicep module v2.4.0 published", and print its ID (`m1`, ...). |
+| `jidoka group milestone remove <group-id> <milestone-id>` | Delete a milestone that no dependency refers to; otherwise list the dependencies to remove first. |
+| `jidoka group depend <group-id> <run-id> --on-pr <run-id>` | Make a run wait on another member's pull request being merged, and print the dependency ID (`d1`, ...). |
+| `jidoka group depend <group-id> <run-id> --milestone <milestone-id>` | Make a run wait on a milestone of the group. |
+| `jidoka group undepend <group-id> <dependency-id>` | Remove one run's dependency; other runs waiting on the same milestone keep theirs. |
+| `jidoka group confirm <group-id> <milestone-id> [--evidence <url>]` | Record that a milestone happened, for every run that waits on it. Stores the time and the optional `http(s)` evidence URL, not who confirmed. A confirmed milestone is refused until you reopen it. |
+| `jidoka group reopen <group-id> <milestone-id>` | Return a milestone to pending for every run and clear its time and evidence. |
 
 `jidoka run inspect` shows the group of a grouped run (`group` in `--json`); an ungrouped run's output is unchanged. A run that belongs to a group cannot be deleted from the dashboard: the server answers 409 and names the `jidoka group remove` command to run first. A cleaned-up run keeps its record, so it keeps its place and its recorded pull request state in the group.
 
 `group inspect` and the dashboard read the pull request state the dashboard server already stored. They neither ask the host nor touch a worktree. The state counts only while it belongs to the run's current pull request URL; otherwise the member shows as `unchecked`. The decisions behind groups are in [ADR-0012](adr/0012-change-groups-link-runs-through-a-server-owned-groups-file.md).
 
-The CLI changes groups through `GET /api/groups`, `GET /api/groups/<id>`, `POST /api/groups`, `POST /api/groups/<id>/add`, `POST /api/groups/<id>/remove` and `POST /api/groups/<id>/delete`. The POSTs need the CLI token like every other POST, and the delete is a POST because the dashboard's `DELETE` needs the page's session token.
+Dependencies are advisory: `group inspect` lists them under the run that waits, `jidoka run next` shows them in Finish, and nothing blocks on them. Both ends of a dependency must be members of the group, a run cannot wait on its own pull request, pull request dependencies cannot form a cycle, and `group remove` refuses a run that still waits or is waited on, listing the dependencies to remove first. A pull request dependency clears only when the upstream run has a current pull request URL and the stored state for that same URL is merged. Right after the URL changes, the dependency is pending and `unchecked` until the replacement has its own status. A merged pull request never confirms a publication or deployment milestone. `group inspect` summarizes `2 of 3 attached PRs merged, 1 milestone pending`, counting each pending milestone once; see [the multi-repo guide](multi-repo.md) for the whole workflow and [ADR-0013](adr/0013-group-dependencies-are-advisory-conditions-stored-in-the-group.md) for the rules.
+
+The CLI changes groups through `GET /api/groups`, `GET /api/groups/<id>`, `POST /api/groups`, `POST /api/groups/<id>/add`, `POST /api/groups/<id>/remove`, `POST /api/groups/<id>/delete`, `POST /api/groups/<id>/milestones`, `POST /api/groups/<id>/milestones/remove`, `POST /api/groups/<id>/depend`, `POST /api/groups/<id>/undepend`, `POST /api/groups/<id>/confirm` and `POST /api/groups/<id>/reopen`. The POSTs need the CLI token like every other POST, and the delete is a POST because the dashboard's `DELETE` needs the page's session token.
 
 ## Security
 
