@@ -674,8 +674,8 @@ async function syncRun(id) {
 const SYNC_RESULT = {
   open: 'Pull request is still open.',
   draft: 'Pull request is still a draft.',
-  merged: 'Pull request is merged; the run is finished.',
-  closed: 'Pull request was closed without merging; the run is blocked.',
+  merged: 'Pull request is merged.',
+  closed: 'Pull request was closed without merging.',
 };
 
 /** Reads the pull request now instead of waiting for the next automatic check, and says what it found. */
