@@ -11,9 +11,9 @@ The knowledge repo is optional and is not worked through Jidoka runs: pull with 
 
 ## 1. Find the knowledge repo
 
-Read `knowledge.md` in Jidoka's per-user config folder (`~/.config/jidoka/` on Linux, `%APPDATA%\jidoka\` on Windows). It holds a `Path:` line with the knowledge repo checkout and a two-column table (Repository, Checkout) of repository name to checkout path. If it is missing, offer `jidoka-setup-knowledge-repo`; if the user declines, continue with a spec in a place they name (a tracker issue or a document with a web link) and skip the knowledge steps.
+Read `knowledge.md` in Jidoka's per-user config folder (`~/.config/jidoka/`, or `$XDG_CONFIG_HOME/jidoka/` when set, on Linux, `%APPDATA%\jidoka\` on Windows). It holds a `Path:` line with the knowledge repo checkout and a two-column table (Repository, Checkout) of repository name to checkout path. If it is missing, offer `jidoka-setup-knowledge-repo`; if the user declines, continue with a spec in a place they name (a tracker issue or a document with a web link) and skip the knowledge steps.
 
-Pull with rebase, then read `platform/` (overview, repositories, environments) and search `recipes/` and `learnings/` for the topic (skip folders that do not exist). This tells you which repositories are likely touched, their order and conventions.
+Pull with rebase, then read `platform/` (overview, repositories, environments) and search `recipes/` and `learnings/` for the topic (skip folders that do not exist). This tells you which repositories are likely touched, their order and conventions. Whenever you learn a durable platform fact that is missing there while following the steps below, record it at once under the self-learning rules, not only at close-out.
 
 ## 2. Write the spec
 
@@ -22,7 +22,7 @@ Copy `changes/_template.md` from the knowledge repo to `changes/<name>.md` (shor
 Take its **web link** from the repository host, not a local path: reviewers open the URL. Build it from the remote, using the default branch:
 
 - GitHub: `https://github.com/<owner>/<repo>/blob/<branch>/changes/<name>.md`
-- Azure DevOps: `https://dev.azure.com/<org>/<project>/_git/<repo>?path=/changes/<name>.md&version=GB<branch>`
+- Azure DevOps: `https://dev.azure.com/<org>/<project>/_git/<repo>?path=/changes/<name>.md&version=GB<branch>`; an older `https://<org>.visualstudio.com/<project>/_git/<repo>` remote converts the same way with that host
 
 Read the remote with `git remote get-url origin`, strip a trailing `.git`, and convert an SSH remote (`git@github.com:<owner>/<repo>`, `git@ssh.dev.azure.com:v3/<org>/<project>/<repo>`) to the HTTPS form above. Use the repository's real default branch. Check the file is pushed (`git ls-remote origin <branch>` shows the pushed commit, and the file is in it) before using the link.
 

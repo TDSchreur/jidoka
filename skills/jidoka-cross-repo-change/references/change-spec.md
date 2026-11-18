@@ -27,4 +27,8 @@ Group: <Jidoka group id, once created>
 ## Decisions and open questions
 
 - <decision, with the reason>
+
+## Rollout notes
+
+<Order of deployment, rollback, who to tell.>
 ```
