@@ -2,7 +2,7 @@
 
 use crate::{
     client::{api_get, api_post},
-    groups::{Group, GroupView, Member},
+    groups::{DependencyView, Group, GroupView, Member, MilestoneView, Target},
     inspect::shown,
 };
 use std::path::Path;
@@ -62,9 +62,99 @@ pub(crate) fn run(words: &[&str], server: &str, token_file: &Path) -> Result<(),
             api_post(server, token_file, &format!("/api/groups/{id}/delete"), b"")?;
             println!("Deleted group {id}");
         }
+        _ => return run_conditions(words, server, token_file),
+    }
+    Ok(())
+}
+
+/// The milestone and dependency subcommands of `group`.
+fn run_conditions(words: &[&str], server: &str, token_file: &Path) -> Result<(), Failure> {
+    let usage = || "Invalid arguments; see `jidoka --help`".to_string();
+    match words {
+        ["milestone", "add", id, text] => {
+            let created = post_for_id(
+                server,
+                token_file,
+                &format!("/api/groups/{id}/milestones"),
+                &serde_json::json!({ "text": text }),
+            )?;
+            println!("Added milestone {created} to group {id}");
+        }
+        ["milestone", "remove", id, milestone] => {
+            api_post(
+                server,
+                token_file,
+                &format!("/api/groups/{id}/milestones/remove"),
+                &serde_json::to_vec(&serde_json::json!({ "milestone": milestone }))?,
+            )?;
+            println!("Removed milestone {milestone} from group {id}");
+        }
+        ["depend", id, run, option, value] => {
+            let body = match *option {
+                "--on-pr" => serde_json::json!({ "run": run, "on_pr": value }),
+                "--milestone" => serde_json::json!({ "run": run, "milestone": value }),
+                _ => return Err(usage().into()),
+            };
+            let created = post_for_id(
+                server,
+                token_file,
+                &format!("/api/groups/{id}/depend"),
+                &body,
+            )?;
+            println!("Added dependency {created}: run {run} waits on {value}");
+        }
+        ["undepend", id, dependency] => {
+            api_post(
+                server,
+                token_file,
+                &format!("/api/groups/{id}/undepend"),
+                &serde_json::to_vec(&serde_json::json!({ "dependency": dependency }))?,
+            )?;
+            println!("Removed dependency {dependency} from group {id}");
+        }
+        ["confirm", id, milestone, options @ ..] => {
+            let evidence = match options {
+                [] => None,
+                ["--evidence", url] => Some(*url),
+                _ => return Err(usage().into()),
+            };
+            api_post(
+                server,
+                token_file,
+                &format!("/api/groups/{id}/confirm"),
+                &serde_json::to_vec(
+                    &serde_json::json!({ "milestone": milestone, "evidence": evidence }),
+                )?,
+            )?;
+            println!("Confirmed milestone {milestone}");
+        }
+        ["reopen", id, milestone] => {
+            api_post(
+                server,
+                token_file,
+                &format!("/api/groups/{id}/reopen"),
+                &serde_json::to_vec(&serde_json::json!({ "milestone": milestone }))?,
+            )?;
+            println!("Reopened milestone {milestone}");
+        }
         _ => return Err(usage().into()),
     }
     Ok(())
+}
+
+/// Posts `body` to a route that answers with the id of what it created.
+fn post_for_id(
+    server: &str,
+    token_file: &Path,
+    route: &str,
+    body: &serde_json::Value,
+) -> Result<String, Failure> {
+    let response = api_post(server, token_file, route, &serde_json::to_vec(body)?)?;
+    let created: serde_json::Value = serde_json::from_slice(&response)?;
+    Ok(created["id"]
+        .as_str()
+        .ok_or("The dashboard answered without an id; restart it with the updated CLI")?
+        .to_string())
 }
 
 fn post(
@@ -144,15 +234,69 @@ fn render_view(view: &GroupView, now: u64) -> String {
     for member in &view.members {
         out.push_str(&render_member(member, now));
     }
+    if !view.milestones.is_empty() {
+        out.push_str("Milestones\n");
+        for milestone in &view.milestones {
+            out.push_str(&render_milestone(milestone, now));
+        }
+    }
     out
+}
+
+fn render_milestone(milestone: &MilestoneView, now: u64) -> String {
+    let state = match milestone.confirmed_at {
+        Some(at) => {
+            let evidence = milestone
+                .evidence
+                .as_deref()
+                .map_or(String::new(), |url| format!(", evidence {}", shown(url)));
+            format!("confirmed {}{evidence}", ago(now, at))
+        }
+        None => "pending".to_string(),
+    };
+    let waiting = if milestone.runs.is_empty() {
+        "no run waits on it".to_string()
+    } else {
+        format!("needed by {}", milestone.runs.join(", "))
+    };
+    format!(
+        "  {}  {}: {state} ({waiting})\n",
+        milestone.id,
+        shown(&milestone.text)
+    )
+}
+
+fn render_dependency(dependency: &DependencyView, now: u64) -> String {
+    let checked = dependency
+        .checked_at
+        .map_or(String::new(), |at| format!(", checked {}", ago(now, at)));
+    let kind = match dependency.target {
+        Target::Pr(_) => "pull request",
+        Target::Milestone(_) => "milestone",
+    };
+    format!(
+        "      {}  {}  waits on {kind}: {} - {}{checked}\n",
+        dependency.id,
+        if dependency.cleared {
+            "clear  "
+        } else {
+            "pending"
+        },
+        shown(&dependency.description),
+        shown(&dependency.status)
+    )
 }
 
 fn render_member(member: &Member, now: u64) -> String {
     if member.missing {
-        return format!(
+        let mut out = format!(
             "  {}  run missing; detach it with `jidoka group remove`\n",
             member.run
         );
+        for dependency in &member.dependencies {
+            out.push_str(&render_dependency(dependency, now));
+        }
+        return out;
     }
     let mut out = format!(
         "  {}  {}\n",
@@ -166,6 +310,9 @@ fn render_member(member: &Member, now: u64) -> String {
         "      Pull request  {}\n",
         pull_request(member, now)
     ));
+    for dependency in &member.dependencies {
+        out.push_str(&render_dependency(dependency, now));
+    }
     out
 }
 

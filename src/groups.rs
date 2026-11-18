@@ -22,6 +22,12 @@ const MAX_TITLE_BYTES: usize = 200;
 const MAX_SPEC_BYTES: usize = 4096;
 /// Runs one group can hold. A change touching more repositories than this is better split; see ADR-0012.
 pub(crate) const MAX_MEMBERS: usize = 50;
+/// Milestones and dependencies one group can hold, and the longest milestone text; see ADR-0013.
+const MAX_MILESTONES: usize = 50;
+const MAX_DEPENDENCIES: usize = 200;
+const MAX_MILESTONE_BYTES: usize = 200;
+/// Longest evidence URL, the same limit as a spec.
+const MAX_EVIDENCE_BYTES: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Group {
@@ -31,6 +37,49 @@ pub(crate) struct Group {
     pub(crate) spec: String,
     /// Run ids, in the order they were attached.
     pub(crate) runs: Vec<String>,
+    /// Conditions that happen outside the pull requests, created once and shared by the runs that wait on them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) milestones: Vec<Milestone>,
+    /// What each member waits on. Advisory: nothing blocks on it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) dependencies: Vec<Dependency>,
+    /// Numbers milestone and dependency ids (`m1`, `d2`); an id is never reused.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    next_id: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+/// A named condition, such as "Bicep module v2.4.0 published", confirmed by a person.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Milestone {
+    pub(crate) id: String,
+    pub(crate) text: String,
+    /// When a person confirmed it, in milliseconds since the Unix epoch; absent while pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) confirmed_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) evidence: Option<String>,
+}
+
+/// What a dependency waits for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Target {
+    /// The current pull request of this member run, merged.
+    Pr(String),
+    /// This milestone of the group, confirmed.
+    Milestone(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Dependency {
+    pub(crate) id: String,
+    /// The member run that waits.
+    pub(crate) run: String,
+    pub(crate) target: Target,
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,6 +186,9 @@ impl GroupStore {
                 title: new.title,
                 spec: new.spec,
                 runs: members,
+                milestones: Vec::new(),
+                dependencies: Vec::new(),
+                next_id: 0,
             };
             groups.push(group.clone());
             Ok(group)
@@ -171,8 +223,207 @@ impl GroupStore {
                     "Run {run} is not in group {group}"
                 )));
             };
+            let blocking: Vec<&str> = found
+                .dependencies
+                .iter()
+                .filter(|dependency| {
+                    dependency.run == run || dependency.target == Target::Pr(run.to_string())
+                })
+                .map(|dependency| dependency.id.as_str())
+                .collect();
+            if !blocking.is_empty() {
+                return Err(GroupError::Conflict(format!(
+                    "Run {run} still has dependencies: {}. Remove them with `jidoka group undepend {group} <dependency-id>` first",
+                    blocking.join(", ")
+                )));
+            }
             found.runs.remove(index);
             Ok(found.clone())
+        })
+    }
+
+    /// Creates a pending milestone and returns its id.
+    pub(crate) fn add_milestone(
+        &self,
+        runs: &RunStore,
+        group: &str,
+        text: &str,
+    ) -> Result<String, GroupError> {
+        check_text("Milestone", text, MAX_MILESTONE_BYTES).map_err(GroupError::Invalid)?;
+        self.change(runs, |groups, _| {
+            let found = find_mut(groups, group)?;
+            if found.milestones.len() >= MAX_MILESTONES {
+                return Err(GroupError::Conflict(format!(
+                    "Group {group} already holds {MAX_MILESTONES} milestones"
+                )));
+            }
+            let id = found.next_key('m');
+            found.milestones.push(Milestone {
+                id: id.clone(),
+                text: text.to_string(),
+                confirmed_at: None,
+                evidence: None,
+            });
+            Ok(id)
+        })
+    }
+
+    /// Deletes a milestone no dependency refers to.
+    pub(crate) fn remove_milestone(
+        &self,
+        runs: &RunStore,
+        group: &str,
+        milestone: &str,
+    ) -> Result<(), GroupError> {
+        self.change(runs, |groups, _| {
+            let found = find_mut(groups, group)?;
+            let index = milestone_index(found, milestone)?;
+            let users: Vec<&str> = found
+                .dependencies
+                .iter()
+                .filter(|dependency| dependency.target == Target::Milestone(milestone.to_string()))
+                .map(|dependency| dependency.id.as_str())
+                .collect();
+            if !users.is_empty() {
+                return Err(GroupError::Conflict(format!(
+                    "Milestone {milestone} is still needed by dependencies: {}. Remove them with `jidoka group undepend {group} <dependency-id>` first",
+                    users.join(", ")
+                )));
+            }
+            found.milestones.remove(index);
+            Ok(())
+        })
+    }
+
+    /// Makes member `run` wait on `target` and returns the dependency id. Both ends must be in the group, a
+    /// run cannot wait on its own pull request, and the pull request dependencies cannot form a cycle.
+    pub(crate) fn add_dependency(
+        &self,
+        runs: &RunStore,
+        group: &str,
+        run: &str,
+        target: Target,
+    ) -> Result<String, GroupError> {
+        self.change(runs, |groups, _| {
+            let found = find_mut(groups, group)?;
+            check_member(found, run)?;
+            match &target {
+                Target::Pr(upstream) => {
+                    check_member(found, upstream)?;
+                    if upstream == run {
+                        return Err(GroupError::Invalid(format!(
+                            "Run {run} cannot wait on its own pull request"
+                        )));
+                    }
+                    if waits_on(found, upstream, run) {
+                        return Err(GroupError::Invalid(format!(
+                            "Run {upstream} already waits on run {run}'s pull request, directly or through other runs; that would be a cycle"
+                        )));
+                    }
+                }
+                Target::Milestone(milestone) => {
+                    milestone_index(found, milestone)?;
+                }
+            }
+            if found
+                .dependencies
+                .iter()
+                .any(|dependency| dependency.run == run && dependency.target == target)
+            {
+                return Err(GroupError::Conflict(format!(
+                    "Run {run} already has that dependency"
+                )));
+            }
+            if found.dependencies.len() >= MAX_DEPENDENCIES {
+                return Err(GroupError::Conflict(format!(
+                    "Group {group} already holds {MAX_DEPENDENCIES} dependencies"
+                )));
+            }
+            let id = found.next_key('d');
+            found.dependencies.push(Dependency {
+                id: id.clone(),
+                run: run.to_string(),
+                target,
+            });
+            Ok(id)
+        })
+    }
+
+    /// Removes one run's dependency; other runs waiting on the same target keep theirs.
+    pub(crate) fn remove_dependency(
+        &self,
+        runs: &RunStore,
+        group: &str,
+        dependency: &str,
+    ) -> Result<(), GroupError> {
+        self.change(runs, |groups, _| {
+            let found = find_mut(groups, group)?;
+            let index = found
+                .dependencies
+                .iter()
+                .position(|candidate| candidate.id == dependency)
+                .ok_or_else(|| {
+                    GroupError::NotFound(format!("No dependency {dependency} in group {group}"))
+                })?;
+            found.dependencies.remove(index);
+            Ok(())
+        })
+    }
+
+    /// Records one confirmation, at `now` (milliseconds since the Unix epoch), for every run that waits on the
+    /// milestone. Who confirmed is not recorded: Jidoka has no user identity.
+    pub(crate) fn confirm(
+        &self,
+        runs: &RunStore,
+        group: &str,
+        milestone: &str,
+        evidence: Option<&str>,
+        now: u64,
+    ) -> Result<(), GroupError> {
+        if let Some(evidence) = evidence {
+            check_reference("Evidence", evidence, MAX_EVIDENCE_BYTES)
+                .map_err(GroupError::Invalid)?;
+            let lower = evidence.to_ascii_lowercase();
+            if !lower.starts_with("http://") && !lower.starts_with("https://") {
+                return Err(GroupError::Invalid(
+                    "Evidence must be an HTTP(S) URL".to_string(),
+                ));
+            }
+        }
+        self.change(runs, |groups, _| {
+            let found = find_mut(groups, group)?;
+            let index = milestone_index(found, milestone)?;
+            let target = &mut found.milestones[index];
+            if target.confirmed_at.is_some() {
+                return Err(GroupError::Conflict(format!(
+                    "Milestone {milestone} is already confirmed; reopen it with `jidoka group reopen {group} {milestone}` to confirm again"
+                )));
+            }
+            target.confirmed_at = Some(now);
+            target.evidence = evidence.map(str::to_string);
+            Ok(())
+        })
+    }
+
+    /// Returns a confirmed milestone to pending and clears its time and evidence.
+    pub(crate) fn reopen(
+        &self,
+        runs: &RunStore,
+        group: &str,
+        milestone: &str,
+    ) -> Result<(), GroupError> {
+        self.change(runs, |groups, _| {
+            let found = find_mut(groups, group)?;
+            let index = milestone_index(found, milestone)?;
+            let target = &mut found.milestones[index];
+            if target.confirmed_at.is_none() {
+                return Err(GroupError::Conflict(format!(
+                    "Milestone {milestone} is not confirmed"
+                )));
+            }
+            target.confirmed_at = None;
+            target.evidence = None;
+            Ok(())
         })
     }
 
@@ -229,6 +480,58 @@ fn find_mut<'a>(groups: &'a mut [Group], id: &str) -> Result<&'a mut Group, Grou
         .ok_or_else(|| GroupError::NotFound(format!("No group {id}")))
 }
 
+impl Group {
+    /// The next unused id, such as `m1` or `d2`.
+    fn next_key(&mut self, prefix: char) -> String {
+        self.next_id += 1;
+        format!("{prefix}{}", self.next_id)
+    }
+}
+
+fn check_member(group: &Group, run: &str) -> Result<(), GroupError> {
+    if group.runs.iter().any(|member| member == run) {
+        Ok(())
+    } else {
+        Err(GroupError::NotFound(format!(
+            "Run {run} is not in group {}",
+            group.id
+        )))
+    }
+}
+
+fn milestone_index(group: &Group, milestone: &str) -> Result<usize, GroupError> {
+    group
+        .milestones
+        .iter()
+        .position(|candidate| candidate.id == milestone)
+        .ok_or_else(|| {
+            GroupError::NotFound(format!("No milestone {milestone} in group {}", group.id))
+        })
+}
+
+/// Whether `from` waits on the pull request of `to`, directly or through other runs.
+fn waits_on(group: &Group, from: &str, to: &str) -> bool {
+    let mut seen = vec![from];
+    let mut index = 0;
+    while let Some(&current) = seen.get(index) {
+        index += 1;
+        for dependency in &group.dependencies {
+            if dependency.run != current {
+                continue;
+            }
+            if let Target::Pr(next) = &dependency.target {
+                if next == to {
+                    return true;
+                }
+                if !seen.contains(&next.as_str()) {
+                    seen.push(next);
+                }
+            }
+        }
+    }
+    false
+}
+
 /// The run exists and is in no group.
 fn check_attachable(groups: &[Group], runs: &RunStore, run: &str) -> Result<(), GroupError> {
     if let Some(group) = groups
@@ -252,6 +555,8 @@ pub(crate) struct GroupView {
     pub(crate) title: String,
     pub(crate) spec: String,
     pub(crate) members: Vec<Member>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) milestones: Vec<MilestoneView>,
     pub(crate) summary: String,
 }
 
@@ -269,6 +574,152 @@ pub(crate) struct Member {
     /// The stored state of `pr`; absent while the stored state belongs to another pull request or none was read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) pr_status: Option<PrStatus>,
+    /// What this run waits on, with whether each condition holds now.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) dependencies: Vec<DependencyView>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct DependencyView {
+    pub(crate) id: String,
+    pub(crate) target: Target,
+    /// What is waited for, in words: the upstream pull request, or the milestone text.
+    pub(crate) description: String,
+    /// Whether the condition holds now.
+    pub(crate) cleared: bool,
+    /// Where the condition stands, such as `merged`, `open`, `unchecked` or `pending`.
+    pub(crate) status: String,
+    /// When the upstream pull request's state was read, only while it belongs to its current URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) checked_at: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct MilestoneView {
+    pub(crate) id: String,
+    pub(crate) text: String,
+    pub(crate) confirmed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) confirmed_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) evidence: Option<String>,
+    /// The runs that wait on it; empty when nothing does.
+    pub(crate) runs: Vec<String>,
+}
+
+/// Where the pull request of `run` stands as a prerequisite. Only a state read for the run's current URL
+/// counts, so a previous pull request's merge never clears its replacement.
+fn pr_condition(run: Option<&Run>) -> (bool, String, Option<u64>) {
+    let Some(run) = run else {
+        return (false, "run missing".to_string(), None);
+    };
+    let Some(url) = &run.pr else {
+        return (false, "no pull request recorded".to_string(), None);
+    };
+    let Some(status) = run.pr_status.as_ref().filter(|status| &status.url == url) else {
+        return (false, "unchecked".to_string(), None);
+    };
+    let state = match status.state {
+        crate::pr_state::PrState::Merged => "merged".to_string(),
+        crate::pr_state::PrState::Open => "open".to_string(),
+        crate::pr_state::PrState::Draft => "a draft".to_string(),
+        crate::pr_state::PrState::Closed => "closed without merge".to_string(),
+        crate::pr_state::PrState::Unknown => "unknown".to_string(),
+    };
+    (
+        status.state == crate::pr_state::PrState::Merged,
+        state,
+        Some(status.checked_at),
+    )
+}
+
+/// What `dependency` waits for and whether that holds now.
+fn dependency_view(group: &Group, runs: &[Run], dependency: &Dependency) -> DependencyView {
+    let (description, cleared, status, checked_at) = match &dependency.target {
+        Target::Pr(upstream) => {
+            let run = runs.iter().find(|run| &run.id == upstream);
+            let (cleared, status, checked_at) = pr_condition(run);
+            let place = run
+                .and_then(|run| run.repository.as_deref())
+                .map_or(String::new(), |repository| format!(" ({repository})"));
+            (
+                format!("pull request of run {upstream}{place}"),
+                cleared,
+                status,
+                checked_at,
+            )
+        }
+        Target::Milestone(id) => {
+            let milestone = group.milestones.iter().find(|m| &m.id == id);
+            let cleared = milestone.is_some_and(|m| m.confirmed_at.is_some());
+            (
+                milestone.map_or_else(
+                    || format!("milestone {id}"),
+                    |m| format!("{id}: {}", m.text),
+                ),
+                cleared,
+                if cleared { "confirmed" } else { "pending" }.to_string(),
+                None,
+            )
+        }
+    };
+    DependencyView {
+        id: dependency.id.clone(),
+        target: dependency.target.clone(),
+        description,
+        cleared,
+        status,
+        checked_at,
+    }
+}
+
+/// One member: the run's repository and pull request as stored now, and what it waits on.
+fn member_view(group: &Group, runs: &[Run], id: &str) -> Member {
+    let dependencies = group
+        .dependencies
+        .iter()
+        .filter(|dependency| dependency.run == id)
+        .map(|dependency| dependency_view(group, runs, dependency))
+        .collect();
+    match runs.iter().find(|run| run.id == id) {
+        Some(run) => Member {
+            run: id.to_string(),
+            missing: false,
+            title: Some(run.title.clone()),
+            repository: run.repository.clone(),
+            pr: run.pr.clone(),
+            pr_status: run
+                .pr_status
+                .clone()
+                .filter(|status| run.pr.as_deref() == Some(status.url.as_str())),
+            dependencies,
+        },
+        None => Member {
+            run: id.to_string(),
+            missing: true,
+            title: None,
+            repository: None,
+            pr: None,
+            pr_status: None,
+            dependencies,
+        },
+    }
+}
+
+fn milestone_view(group: &Group, milestone: &Milestone) -> MilestoneView {
+    MilestoneView {
+        id: milestone.id.clone(),
+        text: milestone.text.clone(),
+        confirmed: milestone.confirmed_at.is_some(),
+        confirmed_at: milestone.confirmed_at,
+        evidence: milestone.evidence.clone(),
+        runs: group
+            .dependencies
+            .iter()
+            .filter(|dependency| dependency.target == Target::Milestone(milestone.id.clone()))
+            .map(|dependency| dependency.run.clone())
+            .collect(),
+    }
 }
 
 impl GroupView {
@@ -276,27 +727,7 @@ impl GroupView {
         let members: Vec<Member> = group
             .runs
             .iter()
-            .map(|id| match runs.iter().find(|run| &run.id == id) {
-                Some(run) => Member {
-                    run: id.clone(),
-                    missing: false,
-                    title: Some(run.title.clone()),
-                    repository: run.repository.clone(),
-                    pr: run.pr.clone(),
-                    pr_status: run
-                        .pr_status
-                        .clone()
-                        .filter(|status| run.pr.as_deref() == Some(status.url.as_str())),
-                },
-                None => Member {
-                    run: id.clone(),
-                    missing: true,
-                    title: None,
-                    repository: None,
-                    pr: None,
-                    pr_status: None,
-                },
-            })
+            .map(|id| member_view(group, runs, id))
             .collect();
         let attached = members.iter().filter(|member| member.pr.is_some()).count();
         let merged = members
@@ -308,12 +739,29 @@ impl GroupView {
                     .is_some_and(|status| status.state == crate::pr_state::PrState::Merged)
             })
             .count();
+        let milestones: Vec<MilestoneView> = group
+            .milestones
+            .iter()
+            .map(|milestone| milestone_view(group, milestone))
+            .collect();
+        let mut summary = format!("{merged} of {attached} attached PRs merged");
+        if !milestones.is_empty() {
+            // Each pending milestone counts once, however many runs wait on it.
+            let pending = milestones.iter().filter(|m| !m.confirmed).count();
+            let noun = if pending == 1 {
+                "milestone"
+            } else {
+                "milestones"
+            };
+            summary.push_str(&format!(", {pending} {noun} pending"));
+        }
         Self {
             id: group.id.clone(),
             title: group.title.clone(),
             spec: group.spec.clone(),
-            summary: format!("{merged} of {attached} attached PRs merged"),
+            summary,
             members,
+            milestones,
         }
     }
 }

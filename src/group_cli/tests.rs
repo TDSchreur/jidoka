@@ -9,6 +9,7 @@ fn member(pr: Option<&str>, status: Option<PrStatus>) -> Member {
         repository: Some("/work/api".into()),
         pr: pr.map(String::from),
         pr_status: status,
+        dependencies: Vec::new(),
     }
 }
 
@@ -67,6 +68,7 @@ fn a_missing_run_says_how_to_detach_it() {
         repository: None,
         pr: None,
         pr_status: None,
+        dependencies: Vec::new(),
     };
     assert!(render_member(&missing, 0).contains("run missing"));
 }

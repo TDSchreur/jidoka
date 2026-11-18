@@ -6,6 +6,10 @@ Jidoka's pull request commands work with two hosts, and each needs its own comma
 
 Once the project's verification has passed on the final commit, push the branch and create a pull request targeting the base branch chosen in Workspace. Write the title and the description first (the description in a file), then run `jidoka pr open <run-id> --title "<title>" --body-file <path> --base <base>`. It checks that the run's worktree is clean and on the recorded branch, that the branch is not the base and has commits beyond it, and that the host's tool is signed in; then it pushes the branch (never forced), opens the pull request, or finds the one that is already open for the branch, records its URL on the run, and prints it (`--json` prints data). If it stops with a message, fix what it says and run it again: a retry never makes a second pull request.
 
+### Pull requests in a change group
+
+When `jidoka run next` prints a Change group, write its facts into the pull request description so a reviewer can check them after you finish. For each prerequisite, say what must happen first in words a reviewer understands, naming repositories and pull requests as reviewers know them rather than by run IDs, dependency IDs or local paths, such as the upstream change that must merge or the version that must be published or deployed. Do not copy the status from `jidoka run next`; it goes stale. When the spec is a web link, link it and say that it holds the current status of each prerequisite and of the related pull requests. When the output says the spec is a local file, still describe the prerequisites but leave out the file's path and name, because reviewers cannot open it. Omit the section for a run with no group or no prerequisites. Jidoka does not check these prerequisites, so never say that Jidoka has verified them.
+
 ### Watching CI
 
 Watch the pull request's CI with `jidoka pr wait <run-id>`. It follows the checks of the pull request's current head commit until all of them have ended, sets the activity of a running run to "Waiting for CI" itself, and prints one outcome and a matching exit status:
