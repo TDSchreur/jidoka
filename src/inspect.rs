@@ -394,12 +394,12 @@ fn join_efforts<'a>(efforts: impl IntoIterator<Item = &'a str>) -> String {
     efforts.into_iter().map(shown).collect::<Vec<_>>().join("/")
 }
 
-/// Where this run's plan is saved, as the last line of the report.
 /// The change group a run is in, shown only for a grouped run.
 pub(crate) fn group_line(group: &str) -> String {
     field("Group", Some(group))
 }
 
+/// Where this run's plan is saved, as the last line of the report.
 pub(crate) fn plan_line(plan: &str) -> String {
     field("Plan", Some(plan))
 }

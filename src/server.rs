@@ -797,18 +797,19 @@ fn remove_from_group(
         .map_err(group_failure)
 }
 
-/// Deletes an empty group. A POST, because the CLI token covers POSTs only (DELETE needs the dashboard's session token).
+/// Deletes an empty group. A POST, because the CLI token covers POSTs only (DELETE needs the dashboard's session token);
+/// it answers 200, as the CLI client treats only 200 and 201 as success.
 #[rocket::post("/api/groups/<id>/delete")]
 fn delete_group(
     _access: PostAccess,
     id: &str,
     store: &State<RunStore>,
     groups: &State<GroupStore>,
-) -> Result<HttpStatus, (HttpStatus, String)> {
+) -> Result<Json<serde_json::Value>, (HttpStatus, String)> {
     check_group_id(id)?;
     groups
         .delete(store, id)
-        .map(|()| HttpStatus::NoContent)
+        .map(|()| Json(serde_json::json!({ "deleted": id })))
         .map_err(group_failure)
 }
 

@@ -12,7 +12,11 @@ A platform change can span several repositories and need several pull requests, 
 - **Lifecycle.** `group delete` removes only a group with no members. There is no archive in v1; add one if `group list` gets noisy.
 - **Deleting a grouped run.** The server refuses with 409 and tells the user to detach it first. Inspection still reports a member whose run is missing (for example after a hand edit of `runs.json`), and `group remove` detaches it.
 - **Dependencies are advisory.** Later steps add prerequisites between members (an upstream pull request merged, a named milestone confirmed). They are shown to the operator and in pull request text and never enforced.
-- **Specs.** A group needs a title and a spec: a durable web link, or a local file stored as an absolute path at creation.
+- **Pull request identity.** A merge dependency clears only when the upstream run has a current pull request URL, the stored status URL matches it, and the stored state is merged, so a previous pull request's merge cannot satisfy its replacement. Group inspection already shows a status that belongs to another URL as unchecked.
+- **Milestones.** A milestone is created once in its group, and each dependent run references its ID, so confirming or reopening it applies to every consumer. A changed requirement is a new pending milestone; an unreferenced one can be deleted. Jidoka has no user identity, so a confirmation stores its time and an optional evidence URL, not who confirmed.
+- **Out of scope.** CI and review details: only the pull request state Jidoka already records is shown.
+- **Limits.** A group holds at most 50 runs, a title is at most 200 bytes and a spec at most 4096 bytes, so a request body and a listing stay small. `create` rejects a run given twice.
+- **Specs.** A group needs a title and a spec: a durable web link, or a local file, which the CLI stores as an absolute path at creation and the server requires to be absolute.
 
 ## Considered Options
 
@@ -23,6 +27,6 @@ A platform change can span several repositories and need several pull requests, 
 
 ## Consequences
 
-- A new file in the data folder. Restart the dashboard after upgrading so it serves `/api/groups`; `jidoka run inspect` leaves out the group while the running dashboard is older.
+- A new file in the data folder. Restart the dashboard after upgrading so it serves `/api/groups`; `jidoka run inspect` fails against an older dashboard, since it reads the groups to show a run's.
 - The dashboard's delete of a grouped run now fails with a message until the run is detached.
 - Nothing migrates: runs without a group behave as before.

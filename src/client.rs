@@ -477,6 +477,51 @@ mod tests {
     }
 
     #[test]
+    fn group_commands_work_against_a_real_server_and_a_deleted_group_reports_success() {
+        let dir = TestDir::new();
+        let server = TestServer::start(&dir.0.path().join("runs.json"));
+        let run = |title: &str| {
+            start_run(
+                &server.address,
+                &server.token_file,
+                title,
+                "/work",
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        let (first, second) = (run("one"), run("two"));
+        let group =
+            |words: &[&str]| crate::group_cli::run(words, &server.address, &server.token_file);
+        group(&[
+            "create",
+            "platform",
+            "--spec",
+            "https://example.com/spec",
+            "--run",
+            &first,
+        ])
+        .unwrap();
+        let groups = fetch_groups(&server.address).unwrap();
+        assert_eq!(groups.len(), 1);
+        let id = groups[0].id.clone();
+        assert_eq!(groups[0].runs, [first.clone()]);
+
+        group(&["add", &id, &second]).unwrap();
+        group(&["inspect", &id]).unwrap();
+        group(&["inspect", &id, "--json"]).unwrap();
+        group(&["list", "--json"]).unwrap();
+        assert!(group(&["add", &id, &second]).is_err());
+        assert!(group(&["delete", &id]).is_err());
+        group(&["remove", &id, &first]).unwrap();
+        group(&["remove", &id, &second]).unwrap();
+        group(&["delete", &id]).unwrap();
+        assert!(fetch_groups(&server.address).unwrap().is_empty());
+    }
+
+    #[test]
     fn cli_reports_rejections_and_unreachable_server() {
         let dir = TestDir::new();
         let server = TestServer::start(&dir.0.path().join("runs.json"));

@@ -57,7 +57,7 @@ impl Fixture {
 fn a_group_keeps_its_members_across_a_restart() {
     let fx = fixture();
     let (a, b) = (fx.run(), fx.run());
-    let group = fx.group(&[&a, &b, &a]);
+    let group = fx.group(&[&a, &b]);
     assert!(valid_group_id(&group.id));
     assert_eq!(group.runs, [a.clone(), b.clone()]);
     assert_eq!(fx.stored(), [group]);
@@ -89,7 +89,12 @@ fn a_run_joins_only_one_group_and_must_exist() {
 #[test]
 fn a_title_and_a_spec_are_required() {
     let fx = fixture();
-    for (title, spec) in [(" ", "https://example.com"), ("t", ""), ("t", "ftp://x")] {
+    for (title, spec) in [
+        (" ", "https://example.com"),
+        ("t", ""),
+        ("t", "ftp://x"),
+        ("t", "relative/spec.md"),
+    ] {
         let result = fx.groups.create(
             &fx.runs,
             NewGroup {
@@ -275,4 +280,20 @@ fn a_summary_counts_attached_pull_requests_and_only_matching_statuses() {
     assert!(view.members[0].pr_status.is_some());
     assert!(view.members[1].pr_status.is_none());
     assert!(view.members[2].pr.is_none());
+}
+
+#[test]
+fn a_run_given_twice_is_refused_and_nothing_is_saved() {
+    let fx = fixture();
+    let run = fx.run();
+    let result = fx.groups.create(
+        &fx.runs,
+        NewGroup {
+            title: "t".into(),
+            spec: "https://example.com".into(),
+            runs: vec![run.clone(), run],
+        },
+    );
+    assert!(matches!(result, Err(GroupError::Invalid(_))));
+    assert!(fx.stored().is_empty());
 }

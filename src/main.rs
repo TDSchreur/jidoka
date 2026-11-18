@@ -228,7 +228,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             };
             let run = fetch_run_cli(id)?;
             let plan = plan_path(id)?.to_string_lossy().into_owned();
-            let group = group_of_run(id);
+            let group = group_of_run(id)?;
             if json {
                 let mut shown = serde_json::to_value(&run)?;
                 shown["plan"] = plan.into();
@@ -856,14 +856,14 @@ fn report_to_dashboard(id: &str, status: &str, options: &[&str]) -> Result<(), S
     client::send_update(&cli_address()?, &token_file, id, &update).map_err(|e| e.to_string())
 }
 
-/// The change group that holds run `id`. A dashboard that cannot list groups (an older build still running)
-/// leaves the run shown without one rather than failing the inspection.
-fn group_of_run(id: &str) -> Option<String> {
-    let groups = client::fetch_groups(&cli_address().ok()?).ok()?;
-    groups
+/// The change group that holds run `id`. A dashboard older than change groups cannot list them and fails here;
+/// restart it with the updated CLI, as for any new API.
+fn group_of_run(id: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let groups = client::fetch_groups(&cli_address()?)?;
+    Ok(groups
         .into_iter()
         .find(|group| group.runs.iter().any(|run| run == id))
-        .map(|group| group.id)
+        .map(|group| group.id))
 }
 
 /// Reads run `id` from the dashboard; a bad id is refused before the dashboard is looked for.

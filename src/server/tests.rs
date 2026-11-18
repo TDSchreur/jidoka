@@ -1338,7 +1338,7 @@ async fn groups_are_managed_through_the_api_and_a_grouped_run_cannot_be_deleted(
         serde_json::json!(null),
     )
     .await;
-    assert_eq!(status, HttpStatus::NoContent);
+    assert_eq!(status, HttpStatus::Ok);
 
     // Writes need the CLI token like every other POST.
     assert_eq!(

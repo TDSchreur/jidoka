@@ -16,9 +16,11 @@ use std::{
     sync::Mutex,
 };
 
+/// Longest group title; a title is one line in listings.
 const MAX_TITLE_BYTES: usize = 200;
+/// Longest spec reference, the same limit as a run's spec path.
 const MAX_SPEC_BYTES: usize = 4096;
-/// Runs one group can hold, so a request body stays small.
+/// Runs one group can hold. A change touching more repositories than this is better split; see ADR-0012.
 pub(crate) const MAX_MEMBERS: usize = 50;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,19 +107,26 @@ impl GroupStore {
     pub(crate) fn create(&self, runs: &RunStore, new: NewGroup) -> Result<Group, GroupError> {
         check_text("Title", &new.title, MAX_TITLE_BYTES).map_err(GroupError::Invalid)?;
         check_reference("Spec", &new.spec, MAX_SPEC_BYTES).map_err(GroupError::Invalid)?;
+        let lower = new.spec.to_ascii_lowercase();
+        let is_url = lower.starts_with("http://") || lower.starts_with("https://");
+        if !is_url && !Path::new(&new.spec).is_absolute() {
+            return Err(GroupError::Invalid(
+                "Spec must be an HTTP(S) URL or an absolute path".to_string(),
+            ));
+        }
         if new.runs.len() > MAX_MEMBERS {
             return Err(GroupError::Invalid(format!(
                 "A group holds at most {MAX_MEMBERS} runs"
             )));
         }
         self.change(runs, |groups, runs| {
-            let mut members: Vec<String> = Vec::new();
-            for id in new.runs {
-                if !members.contains(&id) {
-                    check_attachable(groups, runs, &id)?;
-                    members.push(id);
+            for (index, id) in new.runs.iter().enumerate() {
+                if new.runs[..index].contains(id) {
+                    return Err(GroupError::Invalid(format!("Run {id} is given twice")));
                 }
+                check_attachable(groups, runs, id)?;
             }
+            let members = new.runs;
             let id = new_id(|candidate| {
                 groups
                     .iter()
