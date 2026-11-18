@@ -76,25 +76,42 @@ fn requests_refuses_unknown_options_and_bad_ids() {
 
 #[cfg(debug_assertions)]
 fn inspect_with_fake_server(data: &std::path::Path, args: &[&str]) -> std::process::Output {
+    inspect_with_groups(data, args, "[]")
+}
+
+/// Serves the run, then the change groups (`groups` is their JSON), one request per connection.
+#[cfg(debug_assertions)]
+fn inspect_with_groups(
+    data: &std::path::Path,
+    args: &[&str],
+    groups: &str,
+) -> std::process::Output {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap().to_string();
+    let groups = groups.to_string();
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut request = Vec::new();
-        let mut chunk = [0u8; 1024];
-        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
-            let read = stream.read(&mut chunk).unwrap();
-            assert!(read > 0, "the client closed before sending a request");
-            request.extend_from_slice(&chunk[..read]);
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let read = stream.read(&mut chunk).unwrap();
+                assert!(read > 0, "the client closed before sending a request");
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let body = if request.starts_with(b"GET /api/groups ") {
+                groups.as_str()
+            } else {
+                r#"{"id":"7","title":"Plan run","gates":[],"project":"p","stage":"build","status":"running"}"#
+            };
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
         }
-        let body = r#"{"id":"7","title":"Plan run","gates":[],"project":"p","stage":"build","status":"running"}"#;
-        write!(
-            stream,
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
-        .unwrap();
     });
     let output = common::jidoka_in(data)
         .args(args)
@@ -142,4 +159,30 @@ fn inspect_shows_the_plan_path_in_json() {
             .as_ref()
     );
     assert_eq!(json["id"], "7");
+}
+
+#[cfg(debug_assertions)]
+const GROUPS: &str = r#"[{"id":"g9","title":"t","spec":"https://x.test/s","runs":["3","7"]}]"#;
+
+#[test]
+#[cfg(debug_assertions)]
+fn inspect_shows_the_group_of_a_grouped_run_in_text_and_json() {
+    let data = tempfile::tempdir().unwrap();
+    let output = inspect_with_groups(data.path(), &["run", "inspect", "7"], GROUPS);
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Group         g9\n"));
+    let output = inspect_with_groups(data.path(), &["run", "inspect", "7", "--json"], GROUPS);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["group"], "g9");
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn inspect_leaves_an_ungrouped_run_without_a_group() {
+    let data = tempfile::tempdir().unwrap();
+    let output = inspect_with_fake_server(data.path(), &["run", "inspect", "7", "--json"]);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json.get("group").is_none());
+    let output = inspect_with_fake_server(data.path(), &["run", "inspect", "7"]);
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("Group"));
 }
