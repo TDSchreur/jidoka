@@ -70,6 +70,10 @@ For each member: its repository, its pull request with the stored state and when
 
 A merge counts only for the pull request the run records now. If the run's pull request is replaced, the dependency is pending and `unchecked` until the replacement has its own state, so a previous pull request's merge cannot satisfy it.
 
+## The dashboard view
+
+The dashboard lists each group in a Change groups section below On the line. A row shows the title, the summary that `group inspect` prints and the spec. Expanding the row lists the member runs with their pull request and its state in the table's words (shown in words, not only colour), when the state was last checked, the dependencies with `cleared` or `pending`, and the milestones with their confirmation time, evidence link and waiting runs. The runs stay in their repository views and are not counted again. The view is read-only: use the `jidoka group` commands to change a group. See [Runs and the dashboard](runs.md#change-groups).
+
 ## How pull request states refresh
 
 Group inspection and Finish only read what the dashboard server stored; they never ask the host and never touch a worktree. The stored state is refreshed two ways:

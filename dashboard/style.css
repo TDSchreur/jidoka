@@ -453,6 +453,23 @@ a:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline
 .pr-state.draft { border-style: dashed; color: var(--color-muted); }
 .pr-state.merged { border-color: var(--color-blue); background: var(--color-blue); color: var(--color-on-blue); font-weight: var(--weight-strong); }
 .pr-state.closed { color: var(--color-muted); }
+/* Change groups: one row per group with an expandable list of its runs, pull request states, conditions and milestones. */
+.groups { margin: 0 0 var(--space-8); }
+.groups h2 { margin: 0 0 var(--space-4); font-size: var(--text-m); line-height: var(--leading-s); font-weight: var(--weight-strong); }
+.group-list, .group-members, .group-deps, .group-milestones { margin: 0; padding: 0; list-style: none; }
+.group-row { padding: var(--space-4) var(--space-5); border-bottom: var(--stroke-thin) solid var(--color-rule); background: var(--color-panel); }
+.group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2) var(--space-5); }
+.group-toggle { text-align: left; color: var(--color-slate); font-weight: var(--weight-strong); overflow-wrap: anywhere; }
+.group-toggle::before { content: "+ "; }
+.group-toggle[aria-expanded="true"]::before { content: "\2212 "; }
+.group-summary, .group-spec, .group-checked, .group-repo { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); }
+.group-spec, .group-member, .group-milestones li, .group-deps li { overflow-wrap: anywhere; }
+.group-panel { margin-top: var(--space-4); }
+.group-panel h3, .group-panel h4 { margin: var(--space-4) 0 var(--space-2); font-size: var(--text-s); line-height: var(--leading-s); }
+.group-member { padding: var(--space-3) 0; border-top: var(--stroke-thin) solid var(--color-rule); font-size: var(--text-s); line-height: var(--leading-s); }
+.group-member p { margin: 0; }
+.group-deps { margin-left: var(--space-5); font-size: var(--text-xs); line-height: var(--leading-xs); }
+.group-milestones li { padding: var(--space-2) 0; font-size: var(--text-s); line-height: var(--leading-s); }
 /* Projects: a menu in the toolbar with Hide or Restore and Delete for each Project. */
 .projects-menu { position: static; }
 /* A closed details element still lays out its content in current browsers; the panel would widen the page. */

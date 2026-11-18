@@ -1032,6 +1032,131 @@ function useRuns() {
   return { ...state, reload: () => reload.current() };
 }
 
+/** Polls the change groups with their members; `null` while unknown, and after any failure (an older server has no groups). */
+function useGroups() {
+  const [groups, setGroups] = useState(null);
+  useEffect(() => {
+    let active = true;
+    async function refresh() {
+      try {
+        const response = await fetch('/api/groups', { cache: 'no-store' });
+        if (!response.ok) throw new Error('Failed to load groups');
+        const list = await response.json();
+        if (!Array.isArray(list)) throw new Error('Unexpected response');
+        const views = await Promise.all(
+          list.map(async (group) => {
+            const detail = await fetch(`/api/groups/${encodeURIComponent(group.id)}`, { cache: 'no-store' });
+            if (!detail.ok) throw new Error('Failed to load group');
+            return detail.json();
+          }),
+        );
+        if (active) setGroups(views.filter((group) => group && Array.isArray(group.members)));
+      } catch {
+        if (active) setGroups(null);
+      }
+    }
+    refresh();
+    const timer = setInterval(refresh, POLL_MS);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, []);
+  return groups;
+}
+
+const MEMBER_PR_STATE = { open: 'open', draft: 'a draft', merged: 'merged', closed: 'closed without merge', unknown: 'unknown' };
+
+/** The pull request state of a group member in the server's words (see `group inspect`). */
+function memberPrState(member) {
+  if (member.missing) return 'run missing';
+  if (!member.pr) return 'no pull request recorded';
+  return MEMBER_PR_STATE[member.pr_status?.state] ?? 'unchecked';
+}
+
+const stateClass = (word) => (word === 'a draft' ? 'draft' : word === 'closed without merge' ? 'closed' : word);
+
+/** A link when the value is an http(s) URL, else the text itself (a local path). */
+function LinkOrText({ value, label }) {
+  const url = httpUrl(value);
+  return url ? html`<a href=${url.href} target="_blank" rel="noopener noreferrer">${label ?? value}</a>` : html`<span class="path">${value}</span>`;
+}
+
+function GroupMember({ member, now }) {
+  const state = memberPrState(member);
+  const checked = typeof member.pr_status?.checked_at === 'number' ? member.pr_status.checked_at : null;
+  return html`<li class="group-member">
+    <p class="group-member-head">
+      <strong>${member.missing ? `Run ${member.run}` : member.title}</strong>
+      ${member.repository ? html`${' '}<span class="group-repo"><${ProjectName} path=${member.repository} /></span>` : null}
+    </p>
+    <p>
+      ${member.pr ? html`<${LinkOrText} value=${member.pr} label="Pull request" />` : 'Pull request'}${' '}<span class=${`pr-state ${stateClass(state)}`}>${state}</span>
+      ${checked !== null ? html`${' '}<span class="group-checked">Last checked <${SheetTime} at=${checked} now=${now} /></span>` : null}
+    </p>
+    ${member.dependencies?.length
+      ? html`<ul class="group-deps" aria-label=${`Waiting on, for ${member.missing ? member.run : member.title}`}>
+          ${member.dependencies.map((dep) => {
+            const at = typeof dep.checked_at === 'number' ? dep.checked_at : null;
+            return html`<li key=${dep.id}>
+              Waits on ${dep.description}: ${dep.status}, <strong>${dep.cleared ? 'cleared' : 'pending'}</strong>${at !== null
+                ? html`${' '}(last checked <${SheetTime} at=${at} now=${now} />)`
+                : null}
+            </li>`;
+          })}
+        </ul>`
+      : null}
+  </li>`;
+}
+
+function GroupMilestones({ group, now }) {
+  const nameOf = (id) => group.members.find((member) => member.run === id)?.title ?? id;
+  return html`<h4>Milestones</h4>
+    <ul class="group-milestones">
+      ${group.milestones.map(
+        (milestone) => html`<li key=${milestone.id}>
+          <strong>${milestone.text}</strong>:${' '}
+          ${milestone.confirmed
+            ? html`confirmed${typeof milestone.confirmed_at === 'number' ? html`${' '}<${SheetTime} at=${milestone.confirmed_at} now=${now} />` : null}`
+            : 'pending'}${milestone.evidence ? html`${', '}<${LinkOrText} value=${milestone.evidence} label="Evidence" />` : null}.
+          ${milestone.runs?.length ? ` Waiting runs: ${milestone.runs.map(nameOf).join(', ')}.` : ' No run waits on it.'}
+        </li>`,
+      )}
+    </ul>`;
+}
+
+function GroupRow({ group, now }) {
+  const [expanded, setExpanded] = useState(false);
+  const panel = `group-panel-${group.id}`;
+  return html`<li class="group-row">
+    <div class="group-head">
+      <button type="button" class="link group-toggle" aria-expanded=${String(expanded)} aria-controls=${panel} onClick=${() => setExpanded(!expanded)}>
+        ${group.title}
+      </button>
+      <span class="group-summary">${group.summary}</span>
+      <span class="group-spec">Spec: <${LinkOrText} value=${group.spec} /></span>
+    </div>
+    ${expanded
+      ? html`<div class="group-panel" id=${panel}>
+          <h3>Runs in ${group.title}</h3>
+          ${group.members.length
+            ? html`<ul class="group-members">${group.members.map((member) => html`<${GroupMember} key=${member.run} member=${member} now=${now} />`)}</ul>`
+            : html`<p class="empty">No runs attached.</p>`}
+          ${group.milestones?.length ? html`<${GroupMilestones} group=${group} now=${now} />` : null}
+        </div>`
+      : null}
+  </li>`;
+}
+
+/** Change groups: a read-only view over runs that stay in their repository views; nothing here changes the run counts. */
+function GroupSection({ groups, now }) {
+  if (!groups?.length) return null;
+  return html`<section class="groups" aria-labelledby="groups-title">
+    <h2 id="groups-title">Change groups<span class="count">${` (${groups.length})`}</span></h2>
+    <ul class="group-list">${groups.map((group) => html`<${GroupRow} key=${group.id} group=${group} now=${now} />`)}</ul>
+  </section>`;
+}
+
 /** Whether the page can reach the server: a dot that pulses when the state changes, with the state in words. */
 function Connection({ failed, lastOk, now }) {
   const state = failed ? 'offline' : lastOk === null ? 'connecting' : 'connected';
@@ -1239,6 +1364,7 @@ function ProjectsMenu({ projects, hiddenProjects, counts, onHide, onDelete }) {
 
 function App() {
   const { runs, failed, lastOk, reload } = useRuns();
+  const groups = useGroups();
   useReloadOnNewServer();
   const now = useNow();
   const [onlyWaiting, setOnlyWaiting] = useState(false);
@@ -1415,6 +1541,7 @@ function App() {
             </section>`
           : null}
       </div>
+      <${GroupSection} groups=${groups} now=${now} />
       ${runs && !runs.length ? html`<${Welcome} onHelp=${() => setHelpOpen(true)} />` : null}
       ${shipped.length
         ? html`<${ShippedLog}
