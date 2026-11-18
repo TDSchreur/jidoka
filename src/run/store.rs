@@ -122,19 +122,13 @@ impl RunStore {
     pub(crate) fn create(&self, new: NewRun) -> io::Result<Run> {
         new.validate()?;
         let mut runs = self.shared.runs.lock().map_err(lock_error)?;
-        let mut id = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(io::Error::other)?
-            .as_nanos();
-        while runs.iter().any(|run| run.id == id.to_string()) {
-            id += 1;
-        }
+        let id = new_id(|candidate| runs.iter().any(|run| run.id == candidate))?;
         let created = updated_now()?;
         let run = Run {
             gate_generation: 0,
             gates: Vec::new(),
             check_history: Vec::new(),
-            id: id.to_string(),
+            id,
             title: new.title,
             project: new.project,
             stage: Stage::Define,
@@ -169,7 +163,7 @@ impl RunStore {
         let created = run.updated_at.unwrap_or(0);
         mark(&mut run, created, None);
         runs.push(run.clone());
-        if let Err(error) = save_runs(&self.shared.path, &runs) {
+        if let Err(error) = save_records(&self.shared.path, &runs) {
             runs.pop();
             return Err(error);
         }
@@ -232,7 +226,7 @@ impl RunStore {
             Stamp::Collector => {}
         }
         let old = std::mem::replace(&mut runs[index], next);
-        if let Err(error) = save_runs(&self.shared.path, &runs) {
+        if let Err(error) = save_records(&self.shared.path, &runs) {
             runs[index] = old;
             return Err(ChangeError::Save(error));
         }
@@ -616,7 +610,7 @@ impl RunStore {
             return Ok(false);
         };
         let removed = runs.remove(index);
-        if let Err(error) = save_runs(&self.shared.path, &runs) {
+        if let Err(error) = save_records(&self.shared.path, &runs) {
             runs.insert(index, removed);
             return Err(error);
         }
@@ -694,7 +688,7 @@ mod tests {
         let dir = TestDir::new();
         let (store, id) = store_with_run(&dir);
         let before = store.get(&id).unwrap().unwrap();
-        // A directory at the temp file name `save_runs` writes to makes the save fail.
+        // A directory at the temp file name `save_records` writes to makes the save fail.
         std::fs::create_dir(dir.0.path().join("runs.json.tmp")).unwrap();
         let result = store.change(&id, Stamp::Agent, |run, _| {
             run.title = "changed".into();

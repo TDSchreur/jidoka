@@ -124,6 +124,25 @@ Run responses and `runs.json` include these optional fields and `updated_at`, a 
 
 `POST /api/runs` and `POST /api/runs/<id>` need the CLI token, sent as `X-Jidoka-Token`. The dashboard page's session token is refused there, so reading the page grants no write access. A missing or wrong CLI token gets 401; a refused Host, Origin or content type gets 403. The dashboard writes a new CLI token on each start to `session-token` next to `runs.json` in the data folder above. On Linux and macOS the file is mode 0600, and the folder is made 0700 when the dashboard creates or owns it (a symlinked folder is left as it is, with a warning on stderr when its target is accessible to group or others; run `chmod 700` on it; a dangling symlink stops the dashboard from starting); if it cannot be made private the dashboard fails to start; on Windows the file relies on the per-user access rules of `%LOCALAPPDATA%`. The `jidoka` CLI reads the file on each request, so it keeps working across dashboard restarts. If the file is missing or the server answers 401, the CLI says to start or restart `jidoka dashboard`. If the dashboard cannot write the file, it prints the path and the error and exits with a failure. The token never appears in an error or a response. After upgrading, restart the dashboard with the updated CLI: an older dashboard or CLI on either side makes POSTs fail.
 
+## Change groups
+
+A change can touch several repositories and need several pull requests. A **change group** links ordinary runs to one shared spec, so the related runs can be found together. Group membership leaves each run's stages, gates, verification and cleanup as they are. Start a run as usual and attach it with `jidoka group add` once you know what else the change touches.
+
+| Command | Purpose |
+| --- | --- |
+| `jidoka group create "<title>" --spec <url\|path> [--run <id>]...` | Create a group and print its ID (`g` and digits). The spec is a durable web link, such as a tracker issue, or a local file, which is stored as its absolute path. Every `--run` is checked before anything is saved. |
+| `jidoka group list [--json]` | List the groups, across sessions and checkouts. |
+| `jidoka group inspect <group-id> [--json]` | Show the spec, the members with their repository, pull request and the stored pull request state with its last check time, and a summary such as `2 of 3 attached PRs merged`. |
+| `jidoka group add <group-id> <run-id>` | Attach an existing run. A run is in at most one group. |
+| `jidoka group remove <group-id> <run-id>` | Detach a run. This also detaches a member whose run record is gone, which `group inspect` shows as `run missing`. |
+| `jidoka group delete <group-id>` | Delete a group that has no runs. |
+
+`jidoka run inspect` shows the group of a grouped run (`group` in `--json`); an ungrouped run's output is unchanged. A run that belongs to a group cannot be deleted from the dashboard: the server answers 409 and names the `jidoka group remove` command to run first. A cleaned-up run keeps its record, so it keeps its place and its recorded pull request state in the group.
+
+`group inspect` and the dashboard read the pull request state the dashboard server already stored. They neither ask the host nor touch a worktree. The state counts only while it belongs to the run's current pull request URL; otherwise the member shows as `unchecked`. The decisions behind groups are in [ADR-0012](adr/0012-change-groups-link-runs-through-a-server-owned-groups-file.md).
+
+The CLI changes groups through `GET /api/groups`, `GET /api/groups/<id>`, `POST /api/groups`, `POST /api/groups/<id>/add`, `POST /api/groups/<id>/remove` and `POST /api/groups/<id>/delete`. The POSTs need the CLI token like every other POST, and the delete is a POST because the dashboard's `DELETE` needs the page's session token.
+
 ## Security
 
 The server listens only on localhost but has no user authentication. Other users on the same machine can read and change run titles and project paths; use it only on a trusted machine.

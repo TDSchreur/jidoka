@@ -155,6 +155,22 @@ pub(crate) fn fetch_runs(server: &str) -> Result<Vec<Run>, Box<dyn std::error::E
     )?)?)
 }
 
+/// Reads every change group from the Jidoka server at `server`.
+pub(crate) fn fetch_groups(
+    server: &str,
+) -> Result<Vec<crate::groups::Group>, Box<dyn std::error::Error>> {
+    Ok(serde_json::from_slice(&api_request(
+        server,
+        "/api/groups",
+        None,
+    )?)?)
+}
+
+/// A bodiless GET of `route`, for the routes that have no typed reader.
+pub(crate) fn api_get(server: &str, route: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    api_request(server, route, None)
+}
+
 pub(crate) fn api_post(
     server: &str,
     token_file: &Path,
