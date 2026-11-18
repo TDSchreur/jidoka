@@ -2,7 +2,7 @@
 
 A platform change can touch several repositories: a Bicep module, the infrastructure that uses it, an API. It can need several pull requests, and publication or deployment steps between them. Each Jidoka run keeps one repository, one worktree, one branch and one pull request. A **change group** links those ordinary runs to one shared spec and records what each run waits on. Groups are advisory: they never change a run's stages, gates, verification or cleanup, and nothing blocks on a prerequisite.
 
-This guide walks through one change. The command reference is in [Runs and the dashboard](runs.md#change-groups), and the rules are in [ADR-0012](adr/0012-change-groups-link-runs-through-a-server-owned-groups-file.md) and [ADR-0013](adr/0013-group-dependencies-are-advisory-conditions-stored-in-the-group.md).
+New to this? Start with [Getting started with several repositories](multi-repo-getting-started.md). This guide walks through one change. The command reference is in [Runs and the dashboard](runs.md#change-groups), and the rules are in [ADR-0012](adr/0012-change-groups-link-runs-through-a-server-owned-groups-file.md) and [ADR-0013](adr/0013-group-dependencies-are-advisory-conditions-stored-in-the-group.md).
 
 ## The shared spec
 
@@ -91,5 +91,7 @@ Without the host's tool signed in (`gh`, or `az` with its `azure-devops` extensi
 - A member whose run record is gone shows as `run missing`. Detach it with `jidoka group remove`.
 
 ## Optional: a platform documentation repository
+
+The [getting started guide](multi-repo-getting-started.md) sets this up as a knowledge repo with two skills.
 
 An ordinary checkout of a platform repository can hold an architecture overview, repository links and owners, platform ADRs, environment conventions and a `changes/<name>.md` spec per change. Link it by its web address so teammates can open it. Use ordinary checkouts, one per repository, so each keeps its normal worktree and pull request workflow. Jidoka refuses to create a worktree for a repository whose git folder lies inside another `.git` folder, so submodules do not work for day-to-day runs; use them only for a tested release snapshot.
