@@ -11,7 +11,7 @@ The knowledge repo is optional and is not worked through Jidoka runs: pull with 
 
 ## 1. Find the knowledge repo
 
-Read `knowledge.md` in Jidoka's per-user config folder (`~/.config/jidoka/`, or `$XDG_CONFIG_HOME/jidoka/` when set, on Linux, `%APPDATA%\jidoka\` on Windows). It holds a `Path:` line with the knowledge repo checkout and a two-column table (Repository, Checkout) of repository name to checkout path. If it is missing, offer `jidoka-setup-knowledge-repo`; if the user declines, continue with a spec in a place they name (a tracker issue or a document with a web link) and skip the knowledge steps.
+Run `jidoka knowledge show`. It prints the knowledge repo checkout and the repository checkouts recorded on this machine (a per-user setting, never in the knowledge repo). If no knowledge repo is set, offer `jidoka-setup-knowledge-repo`; if the user declines, continue with a spec in a place they name (a tracker issue or a document with a web link) and skip the knowledge steps.
 
 Pull with rebase, then read `platform/` (overview, repositories, environments) and search `recipes/` and `learnings/` for the topic (skip folders that do not exist). This tells you which repositories are likely touched, their order and conventions. Whenever you learn a durable platform fact that is missing there while following the steps below, record it at once under the self-learning rules, not only at close-out.
 
@@ -19,32 +19,32 @@ Pull with rebase, then read `platform/` (overview, repositories, environments) a
 
 Copy `changes/_template.md` from the knowledge repo to `changes/<name>.md` (short kebab-case name; if the repo has no template, use [references/change-spec.md](references/change-spec.md)). Fill in the goal and, with the user, the repositories, expected pull requests and milestones. A milestone is something merging does not prove, such as "module v2.4.0 published" or "pipeline deployed to test". Commit and push it alone.
 
-Take its **web link** from the repository host, not a local path: reviewers open the URL. Build it from the remote, using the default branch:
+Then create the group from the spec file; Jidoka turns it into a **web link** from the knowledge repo's `origin` and default branch (GitHub and Azure DevOps, any usual remote form), because reviewers open a URL, not a local path. It refuses a file that is not committed and pushed, so push first.
 
-- GitHub: `https://github.com/<owner>/<repo>/blob/<branch>/changes/<name>.md`
-- Azure DevOps: `https://dev.azure.com/<org>/<project>/_git/<repo>?path=/changes/<name>.md&version=GB<branch>`; an older `https://<org>.visualstudio.com/<project>/_git/<repo>` remote converts the same way with that host
+```bash
+jidoka group create "<change title>" --spec changes/<name>.md
+```
 
-Read the remote with `git remote get-url origin`, strip a trailing `.git`, and convert an SSH remote (`git@github.com:<owner>/<repo>`, `git@ssh.dev.azure.com:v3/<org>/<project>/<repo>`) to the HTTPS form above. Use the repository's real default branch. Check the file is pushed (`git ls-remote origin <branch>` shows the pushed commit, and the file is in it) before using the link.
+It prints the group ID and the spec link. Group commands need a running dashboard; if one says none is running, start `jidoka dashboard` in the background and retry once.
 
 ## 3. Find the touched repositories
 
-Agree the list with the user, starting from `platform/repos.md`. For each, find its checkout in `knowledge.md`; ask when it is unknown or is not a git checkout of that repository, and add or correct the row there. Say which repositories you could not place, and do not guess a path.
+Agree the list with the user, starting from `platform/repos.md`. For each, find its checkout in `jidoka knowledge show`; ask when it is unknown or is not a git checkout of that repository, and record it with `jidoka knowledge checkout <name> <path>`. Say which repositories you could not place, and do not guess a path.
 
 ## 4. Start one run per repository
 
-For each repository, tell the user to start a run in a fresh agent session inside that checkout, through the `jidoka` skill, with a prompt that names the spec link and that repository's part of the change. The spec link must exist before the runs start, so they can name it. Do not run several repositories from this session. Keep the run IDs the user reports back. A run can also be attached later, once you learn the change touches another repository.
+For each repository, tell the user to start a run in a fresh agent session inside that checkout, through the `jidoka` skill, with a prompt that names the spec link and that repository's part of the change. The spec link was printed when the group was created, so the prompts can name it. Do not run several repositories from this session. Keep the run IDs the user reports back. A run can also be attached later, once you learn the change touches another repository.
 
-## 5. Create the group
+## 5. Link the runs
 
 ```bash
-jidoka group create "<change title>" --spec <spec web link>
 jidoka group add <group-id> <run-id>
 jidoka group milestone add <group-id> "<milestone text>"
 jidoka group depend <group-id> <run-id> --milestone <milestone-id>
 jidoka group depend <group-id> <run-id> --on-pr <upstream-run-id>
 ```
 
-`create` and `milestone add` print the group and milestone IDs; keep them for the later commands. Use `--run <id>` on `create` for the first run. Dependencies are advisory: nothing blocks, and each run's agent describes its prerequisites in the pull request. Afterwards add the group ID to the spec's `Group:` line and its milestone IDs next to the milestones, as a second small commit. The spec is the team's view; the group is only the local record, so keep both in step. If a group command says no dashboard is running, start `jidoka dashboard` in the background and retry once.
+`milestone add` prints the milestone ID; keep it for the later commands. Dependencies are advisory: nothing blocks, and each run's agent describes its prerequisites in the pull request. Afterwards add the group ID to the spec's `Group:` line and its milestone IDs next to the milestones, as a second small commit. The spec is the team's view; the group is only the local record, so keep both in step.
 
 ## 6. Keep the spec current
 
@@ -56,7 +56,7 @@ Run `jidoka group inspect <group-id>` and report the members, pull request state
 
 ## Self-learning rules
 
-Record durable platform facts you discover while coordinating, in the knowledge repo.
+Record durable platform facts you discover, in the knowledge repo. Jidoka also gives every run these rules (in Define and Finish of `jidoka run next`) once a knowledge repo is set.
 
 - Record a **durable fact about the platform** that was not already in the knowledge repo: how repositories relate, deployment order, naming, conventions, gotchas, ownership. Do not record task status, speculation, or facts about one repository that its own docs already hold.
 - Read first. Search the knowledge repo before writing. Update an existing note instead of adding a duplicate, and correct a note that turned out wrong.
@@ -64,5 +64,3 @@ Record durable platform facts you discover while coordinating, in the knowledge 
 - Never record secrets, tokens, credentials, personal data or private customer data.
 - Commit and push as described at the top.
 - When unsure that a fact is durable, put it in `learnings/` marked `unverified`. A later review promotes it to `platform/` or `recipes/`, or deletes it.
-
-Until Jidoka itself tells agents about the knowledge repo, this applies only while this skill or `jidoka-setup-knowledge-repo` is in use.

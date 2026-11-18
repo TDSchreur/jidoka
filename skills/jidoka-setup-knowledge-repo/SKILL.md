@@ -11,7 +11,7 @@ The knowledge repo is **not** worked through Jidoka runs. Updates are small and 
 
 ## Interview
 
-Ask one group of questions at a time and wait for the answers. Read what the user already has first: an existing knowledge repo checkout, `knowledge.md` (see Local file), and the remotes of repositories they name (`git remote get-url origin`). Do not ask what you can read.
+Ask one group of questions at a time and wait for the answers. Read what the user already has first: an existing knowledge repo checkout, `jidoka knowledge show` (see Local setting), and the remotes of repositories they name (`git remote get-url origin`). Do not ask what you can read.
 
 1. **The knowledge repo itself.** What is the platform called (used in the README)? Does the repo exist? If yes, where is it checked out? If not, where should the new checkout go, and what is the remote (an empty repository the user has created on GitHub or Azure DevOps)? Never create a hosted repository for them.
 2. **The repositories.** Which repositories make up the platform? For each: a short name, where it is hosted (GitHub or Azure DevOps), its remote URL, its role (module, infrastructure, API, pipeline and so on), its owner (a team or person) and its default branch. Take host and remote from the URL when the user gives one: `github.com` is GitHub, `dev.azure.com` or `visualstudio.com` is Azure DevOps.
@@ -36,27 +36,17 @@ Git does not track empty folders: put a short `README.md` in `learnings/` and `r
 
 **Never put local checkout paths, secrets, tokens or personal data in the repo.** `platform/repos.md` lists name, host, remote, role, owner and default branch only. Paths differ per person and machine, and committing them breaks teammates.
 
-## Local file
+## Local setting
 
-Record the machine-local facts in `knowledge.md` in Jidoka's per-user config folder, outside any repository:
+Record the machine-local facts with Jidoka, never in the repository. They live in a per-user setting that Jidoka keeps in its config folder; do not edit the file by hand.
 
-- Linux: `~/.config/jidoka/` (or `$XDG_CONFIG_HOME/jidoka/` when set)
-- Windows: `%APPDATA%\jidoka\`
-
-Create the folder if needed. Format:
-
-```markdown
-# Knowledge repo
-
-Path: /home/me/work/platform-knowledge
-
-| Repository | Checkout |
-| --- | --- |
-| bicep-modules | /home/me/work/bicep-modules |
-| infra | /home/me/work/infra |
+```bash
+jidoka knowledge set <path of the knowledge repo checkout>
+jidoka knowledge checkout <repository name> <path of its checkout>
+jidoka knowledge show
 ```
 
-Use absolute paths in the user's native form. The knowledge repo's own remote is not recorded here; it is in the checkout's `origin`. This file is interim: a later Jidoka release replaces it with a real setting. If it exists, update the rows instead of replacing the file, and keep rows for repositories the user did not mention.
+Use one `checkout` call per repository, and run `show` at the end to confirm. The knowledge repo's own remote is not recorded; it is in the checkout's `origin`. Setting the knowledge repo is also what makes `jidoka run next` tell agents in every run to read it in Define and record learnings in Finish.
 
 ## Writing to the knowledge repo
 
@@ -80,8 +70,6 @@ Apply these whenever you work with a knowledge repo, including during this setup
 - Commit and push as described above.
 - When unsure that a fact is durable, put it in `learnings/` marked `unverified`. A later review promotes it to `platform/` or `recipes/`, or deletes it.
 
-Until Jidoka itself tells agents about the knowledge repo, this applies only while this skill or `jidoka-cross-repo-change` is in use.
-
 ## Finish
 
-Commit and push the layout (one commit per file is fine), then tell the user: the knowledge repo's path and remote, the repositories recorded, the path of `knowledge.md`, and what is still a TODO. Point them to `jidoka-cross-repo-change` for the first change that spans repositories.
+Commit and push the layout (one commit per file is fine), then tell the user: the knowledge repo's path and remote, the repositories recorded, the output of `jidoka knowledge show`, and what is still a TODO. Point them to `jidoka-cross-repo-change` for the first change that spans repositories.

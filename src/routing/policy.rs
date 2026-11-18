@@ -360,6 +360,14 @@ impl Agents {
 /// Where the user-level policy lives: `$XDG_CONFIG_HOME/jidoka/` or `~/.config/jidoka/`,
 /// and `%APPDATA%\jidoka\` on Windows.
 pub(crate) fn policy_path_in(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    Some(config_folder_in(var, cfg!(windows))?.join("model-routing.json"))
+}
+
+/// Jidoka's per-user configuration folder, for `windows` or for Linux.
+pub(crate) fn config_folder_in(
+    var: impl Fn(&str) -> Option<OsString>,
+    windows: bool,
+) -> Option<PathBuf> {
     // A relative folder would put the file wherever the command happens to run, so, as the XDG spec says,
     // it is ignored.
     let set = |name: &str| {
@@ -368,12 +376,12 @@ pub(crate) fn policy_path_in(var: impl Fn(&str) -> Option<OsString>) -> Option<P
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
     };
-    let base = if cfg!(windows) {
+    let base = if windows {
         set("APPDATA")?
     } else {
         set("XDG_CONFIG_HOME").or_else(|| set("HOME").map(|home| home.join(".config")))?
     };
-    Some(base.join("jidoka").join("model-routing.json"))
+    Some(base.join("jidoka"))
 }
 
 /// Reads and checks the policy. No file is `Policy::Off`. A file that cannot be read or is wrong is an

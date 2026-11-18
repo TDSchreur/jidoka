@@ -395,7 +395,7 @@ pub(crate) struct AzureRepo {
 }
 
 impl AzureRepo {
-    fn from_remote(remote: &str) -> Result<Option<Self>, ToolProblem> {
+    pub(crate) fn from_remote(remote: &str) -> Result<Option<Self>, ToolProblem> {
         let remote = remote.trim_end_matches('/');
         // Azure HTTPS remotes commonly include a username; it never belongs in output or API calls.
         let normalized = if let Some(rest) = remote.strip_prefix("https://") {

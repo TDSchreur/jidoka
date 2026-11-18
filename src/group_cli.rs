@@ -18,7 +18,7 @@ pub(crate) fn run(words: &[&str], server: &str, token_file: &Path) -> Result<(),
             let body =
                 serde_json::json!({ "title": title, "spec": spec_reference(&spec)?, "runs": runs });
             let group: Group = post(server, token_file, "/api/groups", &body)?;
-            println!("Created group {}", group.id);
+            println!("Created group {}\nSpec {}", group.id, shown(&group.spec));
         }
         ["list", options @ ..] => {
             let json = json_flag(options).ok_or_else(usage)?;
@@ -197,6 +197,10 @@ fn spec_reference(spec: &str) -> Result<String, Failure> {
     let lower = spec.to_ascii_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") {
         return Ok(spec.to_string());
+    }
+    // A file of the knowledge repo becomes its web link, so reviewers can open it.
+    if let Some(link) = crate::knowledge::spec_link(spec, &crate::knowledge::load()?)? {
+        return Ok(link);
     }
     let absolute = std::path::absolute(spec)?;
     if !absolute.is_file() {
