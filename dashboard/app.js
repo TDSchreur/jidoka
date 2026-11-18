@@ -418,7 +418,7 @@ function Updated({ run, now }) {
  * One active Run on the line: its title (opens the detail), a rail of the four stations with a marker at the
  * current one, the position in words, and a meta line. A blocked Run is marked amber, with a word, not only a colour.
  */
-function LineRow({ run, now, onOpen }) {
+function LineRow({ run, now, onOpen, group }) {
   const index = STATIONS.indexOf(run.stage);
   const blocked = needsYou(run);
   const station = index === -1 ? String(run.stage) : GROUPS[index][1];
@@ -440,6 +440,7 @@ function LineRow({ run, now, onOpen }) {
     <div class="meta">
       <span class="meta-project"><${ProjectName} path=${projectOf(run)} /></span>
       <${ContextChips} run=${run} />
+      ${group ? html`<span class="chip">Group: ${group}</span>` : null}
       ${rework !== null ? html`<span class="chip">Rework${' '}${reworkLabel(rework)}${findingCount(run, 'open') ? ` · ${findingCount(run, 'open')} open` : ''}</span>` : null}
       <${ContextLinks} run=${run} /><${PrStateLabel} run=${run} />
       <${Updated} run=${run} now=${now} />
@@ -703,7 +704,7 @@ function CheckPrButton({ run, onSynced }) {
 }
 
 /** The Run's route card in a native modal dialog on the right. The browser handles focus containment and Escape. */
-function Detail({ run, now, onClose, onDelete, onSynced }) {
+function Detail({ run, now, onClose, onDelete, onSynced, group }) {
   const [gateData, setGateData] = useState(null);
   useEffect(() => {
     let active = true;
@@ -778,6 +779,7 @@ function Detail({ run, now, onClose, onDelete, onSynced }) {
       <p class="detail-sub">
         <span><${ProjectName} path=${projectOf(run)} /></span>
         ${run.mode ? html`<span>${run.mode}</span>` : null}
+        ${group ? html`<span>Group: ${group}</span>` : null}
         ${run.branch ? html`<span class="branch"><code>${run.branch}</code><${CopyButton} value=${run.branch} what="branch" /></span>` : null}
       </p>
       ${active && run.activity ? html`<p class="detail-activity">${run.activity}</p>` : null}
@@ -1045,9 +1047,13 @@ function useGroups() {
         if (!Array.isArray(list)) throw new Error('Unexpected response');
         const views = await Promise.all(
           list.map(async (group) => {
-            const detail = await fetch(`/api/groups/${encodeURIComponent(group.id)}`, { cache: 'no-store' });
-            if (!detail.ok) throw new Error('Failed to load group');
-            return detail.json();
+            // A group deleted since the list was read, or unreadable, is left out; the others still show.
+            try {
+              const detail = await fetch(`/api/groups/${encodeURIComponent(group.id)}`, { cache: 'no-store' });
+              return detail.ok ? await detail.json() : null;
+            } catch {
+              return null;
+            }
           }),
         );
         if (active) setGroups(views.filter((group) => group && Array.isArray(group.members)));
@@ -1065,16 +1071,21 @@ function useGroups() {
   return groups;
 }
 
-const MEMBER_PR_STATE = { open: 'open', draft: 'a draft', merged: 'merged', closed: 'closed without merge', unknown: 'unknown' };
+// Each stored state with its words (as `group inspect` prints them) and its style.
+const MEMBER_PR_STATE = {
+  open: ['open', 'open'],
+  draft: ['a draft', 'draft'],
+  merged: ['merged', 'merged'],
+  closed: ['closed without merge', 'closed'],
+  unknown: ['unknown', 'unknown'],
+};
 
-/** The pull request state of a group member in the server's words (see `group inspect`). */
+/** The pull request state of a group member as [words, style]. */
 function memberPrState(member) {
-  if (member.missing) return 'run missing';
-  if (!member.pr) return 'no pull request recorded';
-  return MEMBER_PR_STATE[member.pr_status?.state] ?? 'unchecked';
+  if (member.missing) return ['run missing', 'missing'];
+  if (!member.pr) return ['no pull request recorded', 'none'];
+  return MEMBER_PR_STATE[member.pr_status?.state] ?? ['unchecked', 'unchecked'];
 }
-
-const stateClass = (word) => (word === 'a draft' ? 'draft' : word === 'closed without merge' ? 'closed' : word);
 
 /** A link when the value is an http(s) URL, else the text itself (a local path). */
 function LinkOrText({ value, label }) {
@@ -1083,7 +1094,7 @@ function LinkOrText({ value, label }) {
 }
 
 function GroupMember({ member, now }) {
-  const state = memberPrState(member);
+  const [state, style] = memberPrState(member);
   const checked = typeof member.pr_status?.checked_at === 'number' ? member.pr_status.checked_at : null;
   return html`<li class="group-member">
     <p class="group-member-head">
@@ -1091,7 +1102,7 @@ function GroupMember({ member, now }) {
       ${member.repository ? html`${' '}<span class="group-repo"><${ProjectName} path=${member.repository} /></span>` : null}
     </p>
     <p>
-      ${member.pr ? html`<${LinkOrText} value=${member.pr} label="Pull request" />` : 'Pull request'}${' '}<span class=${`pr-state ${stateClass(state)}`}>${state}</span>
+      ${member.pr ? html`<${LinkOrText} value=${member.pr} label="Pull request" />` : 'Pull request'}${' '}<span class=${`pr-state ${style}`}>${state}</span>
       ${checked !== null ? html`${' '}<span class="group-checked">Last checked <${SheetTime} at=${checked} now=${now} /></span>` : null}
     </p>
     ${member.dependencies?.length
@@ -1365,6 +1376,8 @@ function ProjectsMenu({ projects, hiddenProjects, counts, onHide, onDelete }) {
 function App() {
   const { runs, failed, lastOk, reload } = useRuns();
   const groups = useGroups();
+  // Which group each run is in, to name it on the run's row and detail.
+  const groupOf = new Map((groups ?? []).flatMap((group) => group.members.map((member) => [member.run, group.title])));
   useReloadOnNewServer();
   const now = useNow();
   const [onlyWaiting, setOnlyWaiting] = useState(false);
@@ -1535,7 +1548,7 @@ function App() {
               </div>
               ${line.length
                 ? html`<ul class="line-rows">
-                    ${line.map((entry) => html`<${LineRow} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${open} />`)}
+                    ${line.map((entry) => html`<${LineRow} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${open} group=${groupOf.get(entry.run.id)} />`)}
                   </ul>`
                 : html`<p class="empty">${onlyWaiting ? 'Nothing needs you right now.' : 'Nothing on the line.'}</p>`}
             </section>`
@@ -1581,6 +1594,7 @@ function App() {
             onClose=${close}
             onDelete=${(run) => setPending({ runs: [run] })}
             onSynced=${reload}
+            group=${groupOf.get(openRun.id)}
           />`
         : null}
     </main>

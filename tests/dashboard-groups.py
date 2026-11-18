@@ -91,6 +91,9 @@ ADO_GROUP = {
 }
 EMPTY_GROUP = {"id": "g3", "title": "Nobody yet", "spec": "https://example.com/spec", "summary": "0 of 0 attached PRs merged", "members": []}
 
+# Listed, but its own read fails (for example deleted since the list was read): the other groups still show.
+UNREADABLE_GROUP = {"id": "g4", "title": "Gone", "spec": "https://example.com/spec", "members": [], "unreadable": True}
+
 HELPERS = """
 const wait = (ok, what) => new Promise((resolve, reject) => {
   const started = Date.now();
@@ -116,7 +119,7 @@ class GroupHandler(Handler):
                 body = [{"id": g["id"], "title": g["title"], "spec": g["spec"], "runs": [m["run"] for m in g["members"]]} for g in self.groups]
             else:
                 body = next((g for g in self.groups if g["id"] == route.removeprefix("/api/groups/")), None)
-                if body is None:
+                if body is None or body.get("unreadable"):
                     self.send_error(404)
                     return
             data = json.dumps(body).encode()
@@ -166,12 +169,18 @@ const links = [...panel.querySelectorAll('a')].map((a) => a.getAttribute('href')
 first.click();
 await wait(() => !document.querySelector('.group-panel'), 'the group to collapse');
 const again = first.getAttribute('aria-expanded');
+// A run in a group names it on its row and in its detail; one outside every group does not.
+const chips = [...document.querySelectorAll('.line-row')].map((row) => [text(row.querySelector('.line-open')), [...row.querySelectorAll('.chip')].map(text).filter((t) => t.startsWith('Group:'))]);
+document.querySelector('[data-run-key$="r-module"]').click();
+const detail = await wait(() => text(document.querySelector('.detail-sub')), 'the run detail');
+document.querySelector('.detail-close').click();
+await wait(() => !document.querySelector('dialog[open]'), 'the detail to close');
 // Group two, with the local spec, the replaced PR and the missing member.
 toggles[1].click();
 const second = await wait(() => document.querySelector('.group-panel'), 'the second group');
 const specLink = document.querySelector('#groups-title').closest('section').querySelectorAll('.group-spec a');
 return {counts, rows, collapsed, keyboard, expanded, links, again, second: text(second), secondLinks: [...second.querySelectorAll('a')].map((a) => a.getAttribute('href')),
-  specLinks: [...specLink].map((a) => a.getAttribute('href')), heading: text(document.querySelector('#groups-title')),
+  specLinks: [...specLink].map((a) => a.getAttribute('href')), chips, detail, heading: text(document.querySelector('#groups-title')),
   headings: [...document.querySelectorAll('.groups h2, .groups h3, .groups h4')].map((h) => h.tagName)};
 """
 
@@ -179,7 +188,7 @@ return {counts, rows, collapsed, keyboard, expanded, links, again, second: text(
 class GroupsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.data = drive(SNAPSHOT, [GITHUB_GROUP, ADO_GROUP, EMPTY_GROUP])
+        cls.data = drive(SNAPSHOT, [GITHUB_GROUP, ADO_GROUP, EMPTY_GROUP, UNREADABLE_GROUP])
 
     def test_group_rows_show_title_summary_and_spec(self):
         data = self.data
@@ -188,6 +197,14 @@ class GroupsTest(unittest.TestCase):
         self.assertIn("ADO rollout 0 of 2 attached PRs merged, 0 milestones pending Spec: /home/me/specs/rollout.md", data["rows"][1])
         # A web spec is a link; a local path is plain text.
         self.assertEqual(data["specLinks"], ["https://example.com/platform/changes/module-2-4", "https://example.com/spec"])
+
+    def test_runs_name_their_group_and_an_unreadable_group_is_left_out(self):
+        chips = dict((title, groups) for title, groups in self.data["chips"])
+        self.assertEqual(chips["Publish module"], ["Group: Bicep module v2.4.0"])
+        self.assertEqual(chips["Use ADO module"], ["Group: ADO rollout"])
+        self.assertEqual(chips["Shipped ADO API"] if "Shipped ADO API" in chips else [], [])
+        self.assertIn("Group: Bicep module v2.4.0", self.data["detail"])
+        self.assertEqual(self.data["heading"], "Change groups (3)")
 
     def test_keyboard_expand_and_collapse(self):
         data = self.data
