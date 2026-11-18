@@ -10,7 +10,7 @@ A **knowledge repo** is an ordinary repository, one per user, that holds:
 - `changes/<name>.md`: one spec per cross-repo change.
 - `learnings/` and `recipes/`: facts agents discovered, and how to do common changes.
 
-It is optional; change groups work without it. It keeps no local checkout paths, because those differ per person and machine. They go in `knowledge.md` in Jidoka's config folder (`~/.config/jidoka/`, or `$XDG_CONFIG_HOME/jidoka/` when set, on Linux, `%APPDATA%\jidoka\` on Windows). This file is interim: a later release replaces it with a setting.
+It is optional; change groups work without it. It keeps no local checkout paths, because those differ per person and machine. They go in a per-user setting, `knowledge.json` in Jidoka's config folder (`~/.config/jidoka/`, or `$XDG_CONFIG_HOME/jidoka/` when set, on Linux, `%APPDATA%\jidoka\` on Windows), managed with `jidoka knowledge set <path>`, `jidoka knowledge checkout <name> <path>` and `jidoka knowledge show`. The setup skill runs them for you. [ADR-0015](adr/0015-knowledge-repo-is-a-per-user-setting-and-not-a-run.md) records why.
 
 The knowledge repo is not worked through Jidoka runs. Agents pull with rebase, commit one note, and push directly to its default branch, because the updates are small and frequent.
 
@@ -23,4 +23,8 @@ The knowledge repo is not worked through Jidoka runs. Agents pull with rebase, c
 
 ## Self-learning
 
-Agents record durable platform facts they discover in the knowledge repo: facts not already there, one per note, with date and source, never secrets or personal data. Unsure facts go in `learnings/` marked unverified. **For now this only happens while one of the two skills is in use**, because nothing else tells agents about the knowledge repo yet.
+Agents record durable platform facts they discover in the knowledge repo: facts not already there, one per note, with date and source, never secrets or personal data. Unsure facts go in `learnings/` marked unverified. Once the knowledge repo is set, this applies to every run in any repository: `jidoka run next` shows a **Knowledge repo** section in Define (read the relevant knowledge first) and in Finish (record what the change taught you), with these rules. Without the setting, nothing changes.
+
+## Spec links
+
+`jidoka group create "<title>" --spec changes/<name>.md` turns a file of the knowledge repo into a web link from its `origin` and default branch (GitHub, and Azure DevOps including `visualstudio.com` and SSH remotes), so reviewers can open it. It refuses a file that is not committed and pushed. Any other `--spec` value (a URL or another local file) behaves as before.

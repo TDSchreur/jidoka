@@ -561,3 +561,27 @@ fn an_ungrouped_run_or_a_non_member_gets_no_group_section() {
     assert!(!render(&next).contains("\nChange group g"));
     assert!(serde_json::to_value(&next).unwrap().get("group").is_none());
 }
+
+#[test]
+fn knowledge_guidance_appears_only_when_configured() {
+    let plain = build(&run(Mode::Full, Stage::Define, None), &[]).unwrap();
+    let before = render(&plain);
+    assert!(!before.contains("Knowledge repo"));
+    let json = serde_json::to_string(&plain).unwrap();
+    assert!(!json.contains("knowledge"));
+
+    let setting = crate::knowledge::Knowledge {
+        path: Some("/work/knowledge".into()),
+        ..Default::default()
+    };
+    let guidance = crate::knowledge::Guidance::for_setting(&setting);
+    let next = build(&run(Mode::Full, Stage::Define, None), &[])
+        .unwrap()
+        .with_knowledge(guidance);
+    let text = render(&next);
+    // Everything the unconfigured output says is still there.
+    assert!(before.lines().all(|line| text.contains(line)));
+    assert!(text.contains("Knowledge repo  Path: /work/knowledge"));
+    assert!(text.contains("**Define.**") && text.contains("**Finish.**"));
+    assert!(text.contains("Never record secrets"));
+}

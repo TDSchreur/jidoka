@@ -92,6 +92,6 @@ Without the host's tool signed in (`gh`, or `az` with its `azure-devops` extensi
 
 ## Optional: a platform documentation repository
 
-The [getting started guide](multi-repo-getting-started.md) sets this up as a knowledge repo with two skills.
+The [getting started guide](multi-repo-getting-started.md) sets this up as a knowledge repo with two skills. With the knowledge repo set (`jidoka knowledge set <path>`), `jidoka group create --spec changes/<name>.md` resolves the file to its web link and refuses an unpushed file.
 
 An ordinary checkout of a platform repository can hold an architecture overview, repository links and owners, platform ADRs, environment conventions and a `changes/<name>.md` spec per change. Link it by its web address so teammates can open it. Use ordinary checkouts, one per repository, so each keeps its normal worktree and pull request workflow. Jidoka refuses to create a worktree for a repository whose git folder lies inside another `.git` folder, so submodules do not work for day-to-day runs; use them only for a tested release snapshot.

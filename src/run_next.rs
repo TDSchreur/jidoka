@@ -117,9 +117,18 @@ pub(crate) struct Next {
     /// Only in Finish, and only for a run in a change group.
     #[serde(skip_serializing_if = "Option::is_none")]
     group: Option<GroupGuidance>,
+    /// Only in Define and Finish, and only when a knowledge repo is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    knowledge: Option<crate::knowledge::Guidance>,
 }
 
 impl Next {
+    /// Adds the knowledge repo guidance.
+    pub(crate) fn with_knowledge(mut self, knowledge: Option<crate::knowledge::Guidance>) -> Self {
+        self.knowledge = knowledge;
+        self
+    }
+
     /// Adds the run's change group guidance.
     pub(crate) fn with_group(mut self, group: Option<GroupGuidance>) -> Self {
         self.group = group;
@@ -504,6 +513,7 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
         .then_some("Build rework; known lower effort raised to high"),
         note,
         group: None,
+        knowledge: None,
     })
 }
 
@@ -568,6 +578,13 @@ pub(crate) fn render(next: &Next) -> String {
         out.push_str(&format!("\nInstructions\n  {}\n", next.instructions));
     }
     out.extend(next.group.as_ref().map(render_group));
+    out.extend(next.knowledge.as_ref().map(|knowledge| {
+        format!(
+            "\nKnowledge repo  Path: {}\n\n{}\n",
+            shown(&knowledge.path),
+            knowledge.instructions.trim_end()
+        )
+    }));
     if let Some(checks) = &next.checks {
         out.push_str("\nChecks\n");
         for entry in &checks.applicable {
