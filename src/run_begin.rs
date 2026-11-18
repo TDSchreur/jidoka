@@ -351,6 +351,8 @@ pub(crate) fn begin(
         ));
     }
     let session_warning = session_warning(api, session.as_ref(), options.run.as_deref());
+    // A warned session is told to stop, so the run must not claim its usage; the fresh session records itself.
+    let session = session.filter(|_| session_warning.is_none());
     let (run, title) = match &options.run {
         Some(id) => {
             let known = api.get(id).map_err(BeginError::NoRun)?;
