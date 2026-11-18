@@ -496,6 +496,12 @@ function Dashboard({ reworkCap }) {
         that led to a Rework is marked sent back.
       </p>
       <p>
+        When you have change groups (<${Code}>jidoka group create<//>), a Change groups section below the line lists
+        each group with its spec and a summary. Select a group's title to list its Runs with their pull request state,
+        what each waits on and the group's milestones. The Runs stay on the line and in the Shipped list, and the
+        section does not change any count. It is hidden when there are no groups.
+      </p>
+      <p>
         Projects in the toolbar lists every project. Hide removes a project's Runs from the board in this browser, and
         Restore brings them back. Hidden projects do not count towards the waiting count or notifications, and their
         Runs are kept. Delete removes the project's Run records after you confirm; repository files, worktrees,
