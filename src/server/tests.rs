@@ -1346,3 +1346,33 @@ async fn groups_are_managed_through_the_api_and_a_grouped_run_cannot_be_deleted(
         HttpStatus::Unauthorized
     );
 }
+
+#[rocket::async_test]
+async fn cli_pr_result_updates_the_cache_and_the_run_together() {
+    let dir = TestDir::new();
+    let api = client(&dir).await;
+    let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
+    let pr = "https://github.com/o/r/pull/7";
+    report(
+        &api,
+        &run.id,
+        &format!(r#"{{"status":"running","pr":"{pr}"}}"#),
+    )
+    .await;
+    let response = api
+        .post(format!("/api/runs/{}/pr-status", run.id))
+        .header(cli_token_header(&api))
+        .header(Header::new("Host", "127.0.0.1:4311"))
+        .header(ContentType::JSON)
+        .body(format!(
+            r#"{{"url":"{pr}","state":"closed","checked_at":123}}"#
+        ))
+        .dispatch()
+        .await;
+    assert_eq!(response.status(), HttpStatus::Ok);
+    let saved = fetch(&api, &run.id).await.1.unwrap();
+    assert_eq!(saved.status, crate::run::RunStatus::Blocked);
+    let status = saved.pr_status.unwrap();
+    assert_eq!(status.state, crate::pr_state::PrState::Closed);
+    assert_eq!(status.checked_at, 123);
+}

@@ -982,6 +982,27 @@ fn reopen_milestone(
         .map_err(group_failure)
 }
 
+/// Stores a CLI host result and its transition, if the pull request still matches.
+#[rocket::post("/api/runs/<id>/pr-status", data = "<status>")]
+fn record_pr_status(
+    request: Security,
+    id: &str,
+    status: Json<pr_state::PrStatus>,
+    store: &State<RunStore>,
+    collector: &State<Collector>,
+) -> Result<Json<bool>, HttpStatus> {
+    if let Some(refusal) = request.post_refusal() {
+        return Err(refusal);
+    }
+    let changed = store
+        .record_pr_result(id, status.into_inner())
+        .map_err(|_| HttpStatus::InternalServerError)?;
+    if changed {
+        collector.after_update(store, id);
+    }
+    Ok(Json(changed))
+}
+
 /// How long a sync may wait for the host before the dashboard gives up on it.
 const SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -1265,6 +1286,7 @@ fn build_rocket_with_tokens(
                 record_gate,
                 advance_run,
                 sync_run,
+                record_pr_status,
                 delete_run,
                 list_groups,
                 get_group,

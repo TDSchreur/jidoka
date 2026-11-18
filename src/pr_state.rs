@@ -254,15 +254,7 @@ fn sync(store: &RunStore, tool: &dyn Gh, run: &Run, url: &str, now: u64) -> io::
         reason,
         checked_at: now,
     };
-    store.set_pr_status(&run.id, status.clone())?;
-    // The host answer may take seconds; decide from the run as it is now, not as it was when asked.
-    let current = store
-        .list()?
-        .into_iter()
-        .find(|current| current.id == run.id);
-    if let Some(update) = current.as_ref().and_then(|run| follow_up(run, state)) {
-        store.update(&run.id, update)?;
-    }
+    store.record_pr_result(&run.id, status.clone())?;
     Ok(status)
 }
 

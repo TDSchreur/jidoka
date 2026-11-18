@@ -259,6 +259,52 @@ fn syncing_one_run_reads_the_host_now_even_when_the_state_is_recent() {
     refresh(&store, &gh, 0).unwrap();
     let status = sync_run(&store, &gh, &id, 1).unwrap().unwrap();
     assert_eq!(status.state, PrState::Merged);
+    assert_eq!(stored(&store, &id).unwrap().checked_at, 1);
+    assert_eq!(stored(&store, &id).unwrap().state, PrState::Merged);
     assert_eq!(the_run(&store, &id).status, RunStatus::Done);
     assert_eq!(gh.calls().len(), 2);
+}
+
+/// Replaces the PR while the host request is in flight.
+struct ReplacingGh<'a> {
+    store: &'a RunStore,
+    id: &'a str,
+    answer: Result<GhOutput, GhError>,
+}
+
+impl Gh for ReplacingGh<'_> {
+    fn run(&self, _args: &[&str]) -> Result<GhOutput, GhError> {
+        let update: UpdateRun =
+            serde_json::from_str(r#"{"status":"running","pr":"https://github.com/o/r/pull/8"}"#)
+                .unwrap();
+        self.store.update(self.id, update).unwrap();
+        match &self.answer {
+            Ok(output) => Ok(output.clone()),
+            Err(_) => panic!("the scripted host must succeed"),
+        }
+    }
+    fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+        self.run(args)
+    }
+}
+
+#[test]
+fn superseded_host_results_do_not_change_the_run_or_its_cached_status() {
+    for (url, answer) in [
+        (PR, view("MERGED", false)),
+        (AZURE_PR, azure("abandoned", false)),
+    ] {
+        let (_dir, store) = store();
+        let id = run_with_pr(&store, url);
+        let gh = ReplacingGh {
+            store: &store,
+            id: &id,
+            answer,
+        };
+        refresh(&store, &gh, 123).unwrap();
+        let run = the_run(&store, &id);
+        assert_eq!(run.pr.as_deref(), Some("https://github.com/o/r/pull/8"));
+        assert_eq!(run.status, RunStatus::Running);
+        assert_eq!(run.pr_status, None);
+    }
 }

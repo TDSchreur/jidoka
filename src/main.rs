@@ -378,7 +378,7 @@ fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Erro
     };
     let state =
         pr_state::read(&pr_wait::RealGh, url).map_err(|problem| inspect::shown(&problem.0))?;
-    let changed = apply_pr_state(id, state)?;
+    let changed = apply_pr_state(id, url, state)?;
     if json {
         println!(
             "{}",
@@ -397,13 +397,24 @@ fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Erro
 
 /// Applies what the state of the run's pull request means for the run (see `pr_state::follow_up`), deciding
 /// from the run as it is now: the host may have taken seconds to answer. Returns whether the run was changed.
-fn apply_pr_state(id: &str, state: pr_state::PrState) -> Result<bool, Box<dyn std::error::Error>> {
-    let run = fetch_run_cli(id)?;
-    let Some(update) = pr_state::follow_up(&run, state) else {
-        return Ok(false);
+fn apply_pr_state(
+    id: &str,
+    url: &str,
+    state: pr_state::PrState,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let status = pr_state::PrStatus {
+        url: url.to_owned(),
+        state,
+        reason: None,
+        checked_at: run::updated_now()?,
     };
-    client::send_update(&cli_address()?, &cli_token_file()?, id, &update)?;
-    Ok(true)
+    let response = client::api_post(
+        &cli_address()?,
+        &cli_token_file()?,
+        &format!("/api/runs/{id}/pr-status"),
+        &serde_json::to_vec(&status)?,
+    )?;
+    Ok(serde_json::from_slice(&response)?)
 }
 
 /// `jidoka run cleanup <run-id>`: removes the worktree and local branch of a run whose pull request merged,
@@ -516,7 +527,7 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     {
         // The wait only reports that the pull request is gone; the run follows what happened to it.
         match pr_state::read(&gh, url) {
-            Ok(state) => match apply_pr_state(id, state) {
+            Ok(state) => match apply_pr_state(id, url, state) {
                 Ok(changed) => eprint!("{}", pr_state::describe(state, changed)),
                 Err(error) => eprintln!("The run could not be updated: {error}"),
             },

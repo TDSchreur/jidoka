@@ -592,6 +592,7 @@ impl RunStore {
 
     /// Stores the state of a Run's pull request, only while the Run still records that pull request: an update
     /// that changed it in the meantime wins. A failed save leaves the stored state as it was.
+    #[cfg(test)]
     pub(crate) fn set_pr_status(&self, id: &str, status: PrStatus) -> io::Result<()> {
         self.change(id, Stamp::Collector, |run, _| {
             if run.pr.as_deref() != Some(status.url.as_str()) {
@@ -601,6 +602,37 @@ impl RunStore {
             Ok(Edit::Save)
         })
         .map(|_| ())
+    }
+
+    /// Records a host result and its run transition together, only for the current pull request.
+    pub(crate) fn record_pr_result(&self, id: &str, status: PrStatus) -> io::Result<bool> {
+        let mut changed = false;
+        self.change(id, Stamp::Collector, |run, _| {
+            if run.pr.as_deref() != Some(status.url.as_str()) {
+                return Ok(Edit::Skip);
+            }
+            if let Some(update) = crate::pr_state::follow_up(run, status.state) {
+                let now = updated_now()?;
+                run.updated_at = Some(now);
+                run.gate_generation = run.gate_generation.wrapping_add(1);
+                let was_blocked = run.status == RunStatus::Blocked;
+                run.status = update.status;
+                update.activity.apply(&mut run.activity);
+                update.blocking_reason.apply(&mut run.blocking_reason);
+                update.summaries.apply(run);
+                record_block_change(run, was_blocked, now);
+                mark(run, now, None);
+                run.finished_at = if run.status == RunStatus::Done {
+                    Some(now)
+                } else {
+                    None
+                };
+                changed = true;
+            }
+            run.pr_status = Some(status);
+            Ok(Edit::Save)
+        })?;
+        Ok(changed)
     }
 
     /// Removes only the Run record. Returns whether a Run with this id existed.
