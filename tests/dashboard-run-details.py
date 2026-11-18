@@ -142,6 +142,42 @@ def drive(body, runs=RUNS, **options):
     return result
 
 
+class SyncHandler(Handler):
+    def do_POST(self):
+        if self.path.startswith("/api/runs/") and self.path.endswith("/sync"):
+            state = "merged" if "run-merged" in self.path else "closed"
+            data = json.dumps({"state": state}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(data)
+        else:
+            super().do_POST()
+
+
+class CheckPrTest(unittest.TestCase):
+    def test_terminal_pr_observations_do_not_claim_a_run_transition(self):
+        runs = [{**ACTIVE, "id": f"run-{state}", "title": state, "pr": PR} for state in ("merged", "closed")]
+        result = drive("""
+const results = {};
+for (const state of ['merged', 'closed']) {
+  const dialog = await openRun('run-' + state);
+  [...dialog.querySelectorAll('button')].find((button) => text(button).startsWith('Check PR')).click();
+  const message = await wait(() => {
+    const value = text(dialog.querySelector('.pr-reason[role="status"]'));
+    return value && value !== 'Checking the pull request…' && value;
+  }, state + ' PR result');
+  results[state] = {message, status: text(dialog.querySelector('.status-row'))};
+  await closeRun();
+}
+return results;
+""", runs=runs, handler=SyncHandler)
+        self.assertEqual(result["merged"]["message"], "Pull request is merged.")
+        self.assertEqual(result["closed"]["message"], "Pull request was closed without merging.")
+        for state in ("merged", "closed"):
+            self.assertIn("Running", result[state]["status"])
+
+
 class RunDetailsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
