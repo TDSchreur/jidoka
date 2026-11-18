@@ -88,6 +88,8 @@ Run `jidoka --help` for every command.
 | Skill | What it does |
 | --- | --- |
 | [`/jidoka-setup`](skills/jidoka-setup/SKILL.md) | Prepares a repository once: issue tracker, triage labels, domain docs and verification commands. |
+| [`/jidoka-setup-knowledge-repo`](skills/jidoka-setup-knowledge-repo/SKILL.md) | Creates or fills a knowledge repo: your repositories, hosts, checkouts and shared platform notes. |
+| [`/jidoka-cross-repo-change`](skills/jidoka-cross-repo-change/SKILL.md) | Guides one change across several repositories: shared spec, one run per repository, a change group. |
 | [`/jidoka-awesome-copilot`](skills/jidoka-awesome-copilot/SKILL.md) | Adds skills and instructions from [github/awesome-copilot](https://github.com/github/awesome-copilot) to a project, adapted to its layout, for Codex, Claude and Copilot. Also updates or removes them. |
 | [`/jidoka-run-report <run-id>`](skills/jidoka-run-report/SKILL.md) | Checks a run for Jidoka bugs and token waste and files an issue in the Jidoka repository after you approve it. |
 | [`/jidoka-code-review <ref>`](skills/jidoka-code-review/SKILL.md) | Reviews changes since a commit or branch against the project's standards and the originating spec. |
@@ -127,6 +129,7 @@ There is one data folder and one dashboard per user. The dashboard owns `runs.js
 | [Workflows and skills](docs/workflows.md) | The three modes stage by stage, Reworks, the skills, agent differences |
 | [Runs and the dashboard](docs/runs.md) | The dashboard, `jidoka run` commands, run context, continuing a run |
 | [Changes across repositories](docs/multi-repo.md) | Change groups: one spec, several runs and pull requests, prerequisites and milestones |
+| [Getting started with several repositories](docs/multi-repo-getting-started.md) | The knowledge repo and the two skills that guide a first cross-repo change |
 | [Pull requests and CI](docs/pull-requests.md) | `jidoka pr open`, `sync` and `wait` on GitHub and Azure Repos |
 | [Token usage](docs/usage-tracking.md) | Token counts, estimated cost, pauses, request analysis |
 | [Model routing](docs/model-routing.md) | Choosing the model and effort per Stage |
