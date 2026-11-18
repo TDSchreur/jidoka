@@ -1245,3 +1245,104 @@ fn a_second_dashboard_in_the_same_data_folder_reports_already_running() {
     shutdown.notify();
     assert!(thread.join().unwrap());
 }
+
+async fn post_json(api: &Client, route: &str, body: serde_json::Value) -> (HttpStatus, String) {
+    let response = api
+        .post(route.to_string())
+        .header(Header::new("Host", "127.0.0.1:4311"))
+        .header(ContentType::JSON)
+        .header(cli_token_header(api))
+        .body(body.to_string())
+        .dispatch()
+        .await;
+    let status = response.status();
+    (status, response.into_string().await.unwrap_or_default())
+}
+
+#[rocket::async_test]
+async fn groups_are_managed_through_the_api_and_a_grouped_run_cannot_be_deleted() {
+    let dir = TestDir::new();
+    let api = client(&dir).await;
+    let run = api
+        .rocket()
+        .state::<RunStore>()
+        .unwrap()
+        .create(NewRun {
+            title: "t".into(),
+            project: "/work".into(),
+            repository: None,
+            session: None,
+            model_routing: None,
+        })
+        .unwrap();
+    let (status, body) = post_json(
+        &api,
+        "/api/groups",
+        serde_json::json!({"title": "g", "spec": "https://example.com/spec", "runs": [run.id]}),
+    )
+    .await;
+    assert_eq!(status, HttpStatus::Created);
+    let group: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let id = group["id"].as_str().unwrap().to_string();
+    assert!(id.starts_with('g'));
+
+    // The session token deletes runs, and a group member is refused with the way out.
+    let token = session_token(&api).await;
+    let headers = [
+        ("Host", "127.0.0.1:4311".to_string()),
+        (TOKEN_HEADER, token),
+    ];
+    let response = delete(&api, &run.id, &headers).await;
+    assert_eq!(response.status(), HttpStatus::Conflict);
+    let message = response.into_string().await.unwrap();
+    assert!(message.contains(&format!("jidoka group remove {id} {}", run.id)));
+
+    // A second group cannot take the run, and a nonempty group cannot be deleted.
+    let (_, other) = post_json(
+        &api,
+        "/api/groups",
+        serde_json::json!({"title": "h", "spec": "https://example.com/other"}),
+    )
+    .await;
+    let other: serde_json::Value = serde_json::from_str(&other).unwrap();
+    let other = other["id"].as_str().unwrap();
+    let (status, _) = post_json(
+        &api,
+        &format!("/api/groups/{other}/add"),
+        serde_json::json!({"run": run.id}),
+    )
+    .await;
+    assert_eq!(status, HttpStatus::Conflict);
+    let (status, _) = post_json(
+        &api,
+        &format!("/api/groups/{id}/delete"),
+        serde_json::json!(null),
+    )
+    .await;
+    assert_eq!(status, HttpStatus::Conflict);
+
+    let (status, _) = post_json(
+        &api,
+        &format!("/api/groups/{id}/remove"),
+        serde_json::json!({"run": run.id}),
+    )
+    .await;
+    assert_eq!(status, HttpStatus::Ok);
+    assert_eq!(
+        delete(&api, &run.id, &headers).await.status(),
+        HttpStatus::NoContent
+    );
+    let (status, _) = post_json(
+        &api,
+        &format!("/api/groups/{id}/delete"),
+        serde_json::json!(null),
+    )
+    .await;
+    assert_eq!(status, HttpStatus::Ok);
+
+    // Writes need the CLI token like every other POST.
+    assert_eq!(
+        post_status(&api, "/api/groups", None).await,
+        HttpStatus::Unauthorized
+    );
+}

@@ -492,7 +492,7 @@ fn has_scheme(value: &str) -> bool {
 }
 
 /// A reference to a document: an `http(s)` URL, or a local path or identifier without a scheme.
-fn check_reference(name: &str, value: &str, limit: usize) -> Result<(), String> {
+pub(crate) fn check_reference(name: &str, value: &str, limit: usize) -> Result<(), String> {
     if value.trim().is_empty() || value.len() > limit {
         return Err(format!("{name} must be nonblank and at most {limit} bytes"));
     }
@@ -514,7 +514,7 @@ fn check_reference(name: &str, value: &str, limit: usize) -> Result<(), String> 
     Ok(())
 }
 
-fn check_text(name: &str, value: &str, limit: usize) -> Result<(), String> {
+pub(crate) fn check_text(name: &str, value: &str, limit: usize) -> Result<(), String> {
     if value.trim().is_empty() || value.len() > limit {
         return Err(format!("{name} must be nonblank and at most {limit} bytes"));
     }
@@ -835,6 +835,18 @@ fn mark(run: &mut Run, at: u64, activity: Option<String>) {
     }
 }
 
+/// A new record id: the current time in nanoseconds, moved up while `taken` says it is in use.
+pub(crate) fn new_id(taken: impl Fn(&str) -> bool) -> io::Result<String> {
+    let mut id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_nanos();
+    while taken(&id.to_string()) {
+        id += 1;
+    }
+    Ok(id.to_string())
+}
+
 pub(crate) fn lock_error<T>(_: std::sync::PoisonError<T>) -> io::Error {
     io::Error::other("run storage lock was poisoned")
 }
@@ -848,7 +860,7 @@ pub(crate) fn load_runs(path: &Path) -> io::Result<Vec<Run>> {
     }
 }
 
-pub(crate) fn save_runs(path: &Path, runs: &[Run]) -> io::Result<()> {
+pub(crate) fn save_records<T: Serialize>(path: &Path, records: &[T]) -> io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("run storage has no parent directory"))?;
@@ -858,7 +870,7 @@ pub(crate) fn save_runs(path: &Path, runs: &[Run]) -> io::Result<()> {
         use std::io::Write;
         // Flushed to disk before the rename, so a crash leaves the old or the new file, never a torn one.
         let mut file = fs::File::create(&temp)?;
-        file.write_all(&serde_json::to_vec(runs)?)?;
+        file.write_all(&serde_json::to_vec(records)?)?;
         file.sync_all()?;
     }
     fs::rename(temp, path)

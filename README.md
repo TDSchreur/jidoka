@@ -112,6 +112,7 @@ Jidoka keeps its data in one folder per user:
 | File | What it holds |
 | --- | --- |
 | `runs.json` | Every run: stage, status, gates, Findings, timeline, reports, summaries and token usage. |
+| `groups.json` | Change groups: title, spec and member run ids. Owned by the dashboard like `runs.json`; change it with `jidoka group`. |
 | `plans/<run-id>.md` | A run's saved plan, kept after its worktree is cleaned up. |
 | `session-token` | The token the CLI sends to the dashboard, replaced on each dashboard start and readable only by you. |
 | `dashboard.json` | The port, pid and build of the running dashboard, written when it starts and removed when it stops. The CLI reads it to find the dashboard. |

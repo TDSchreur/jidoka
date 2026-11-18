@@ -1,6 +1,7 @@
 use crate::{
     current_build,
     document::{self, DocumentError},
+    groups::{Group, GroupError, GroupStore, GroupView, NewGroup, valid_group_id},
     pr_state,
     pr_wait::{self, RealGh},
     run::{NewRun, Run, RunStore, UpdateRun},
@@ -673,21 +674,143 @@ fn delete_run(
     request: Security,
     id: &str,
     store: &State<RunStore>,
-) -> Result<HttpStatus, HttpStatus> {
+    groups: &State<GroupStore>,
+) -> Result<HttpStatus, (HttpStatus, String)> {
     if !request.delete_allowed {
-        return Err(HttpStatus::Forbidden);
+        return Err((HttpStatus::Forbidden, String::new()));
     }
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(HttpStatus::BadRequest);
+        return Err((HttpStatus::BadRequest, String::new()));
     }
-    match store.delete(id) {
+    match groups.delete_run(store, id) {
         Ok(true) => Ok(HttpStatus::NoContent),
-        Ok(false) => Err(HttpStatus::NotFound),
-        Err(error) => {
-            eprintln!("Run storage error: {error}");
-            Err(HttpStatus::InternalServerError)
+        Ok(false) => Err((HttpStatus::NotFound, String::new())),
+        Err(error) => Err(group_failure(error)),
+    }
+}
+
+/// The status and message for a failed group operation.
+fn group_failure(error: GroupError) -> (HttpStatus, String) {
+    match error {
+        GroupError::Invalid(message) => (HttpStatus::BadRequest, message),
+        GroupError::NotFound(message) => (HttpStatus::NotFound, message),
+        GroupError::Conflict(message) => (HttpStatus::Conflict, message),
+        GroupError::Storage(error) => {
+            eprintln!("Group storage error: {error}");
+            (HttpStatus::InternalServerError, String::new())
         }
     }
+}
+
+fn check_group_id(id: &str) -> Result<(), (HttpStatus, String)> {
+    if valid_group_id(id) {
+        Ok(())
+    } else {
+        Err((HttpStatus::BadRequest, "Invalid group id".to_string()))
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunRef {
+    run: String,
+}
+
+fn check_run_ref(run: &str) -> Result<(), (HttpStatus, String)> {
+    if run.is_empty() || !run.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err((HttpStatus::BadRequest, "Invalid run id".to_string()));
+    }
+    Ok(())
+}
+
+#[rocket::get("/api/groups")]
+fn list_groups(
+    request: Security,
+    groups: &State<GroupStore>,
+) -> Result<Json<Vec<Group>>, (HttpStatus, String)> {
+    if !request.local {
+        return Err((HttpStatus::BadRequest, String::new()));
+    }
+    groups.list().map(Json).map_err(group_failure)
+}
+
+#[rocket::get("/api/groups/<id>")]
+fn get_group(
+    request: Security,
+    id: &str,
+    store: &State<RunStore>,
+    groups: &State<GroupStore>,
+) -> Result<Json<GroupView>, (HttpStatus, String)> {
+    if !request.local {
+        return Err((HttpStatus::BadRequest, String::new()));
+    }
+    check_group_id(id)?;
+    groups.view(store, id).map(Json).map_err(group_failure)
+}
+
+#[rocket::post("/api/groups", data = "<new>")]
+fn create_group(
+    _access: PostAccess,
+    new: Json<NewGroup>,
+    store: &State<RunStore>,
+    groups: &State<GroupStore>,
+) -> Result<(HttpStatus, Json<Group>), (HttpStatus, String)> {
+    let new = new.into_inner();
+    for run in &new.runs {
+        check_run_ref(run)?;
+    }
+    groups
+        .create(store, new)
+        .map(|group| (HttpStatus::Created, Json(group)))
+        .map_err(group_failure)
+}
+
+#[rocket::post("/api/groups/<id>/add", data = "<body>")]
+fn add_to_group(
+    _access: PostAccess,
+    id: &str,
+    body: Json<RunRef>,
+    store: &State<RunStore>,
+    groups: &State<GroupStore>,
+) -> Result<Json<Group>, (HttpStatus, String)> {
+    check_group_id(id)?;
+    check_run_ref(&body.run)?;
+    groups
+        .add(store, id, &body.run)
+        .map(Json)
+        .map_err(group_failure)
+}
+
+#[rocket::post("/api/groups/<id>/remove", data = "<body>")]
+fn remove_from_group(
+    _access: PostAccess,
+    id: &str,
+    body: Json<RunRef>,
+    store: &State<RunStore>,
+    groups: &State<GroupStore>,
+) -> Result<Json<Group>, (HttpStatus, String)> {
+    check_group_id(id)?;
+    check_run_ref(&body.run)?;
+    groups
+        .remove(store, id, &body.run)
+        .map(Json)
+        .map_err(group_failure)
+}
+
+/// Deletes an empty group. A POST, because the CLI token covers POSTs only (DELETE needs the dashboard's session token);
+/// it answers 200, as the CLI client treats only 200 and 201 as success.
+#[rocket::post("/api/groups/<id>/delete")]
+fn delete_group(
+    _access: PostAccess,
+    id: &str,
+    store: &State<RunStore>,
+    groups: &State<GroupStore>,
+) -> Result<Json<serde_json::Value>, (HttpStatus, String)> {
+    check_group_id(id)?;
+    groups
+        .delete(store, id)
+        .map(|()| Json(serde_json::json!({ "deleted": id })))
+        .map_err(group_failure)
 }
 
 /// How long a sync may wait for the host before the dashboard gives up on it.
@@ -928,6 +1051,7 @@ fn build_rocket_with_tokens(
     }
     Ok(rocket::custom(config)
         .manage(RunStore::open(path)?)
+        .manage(GroupStore::open(path)?)
         .manage(collector)
         .manage(PrTool(tool))
         .manage(session_token)
@@ -972,7 +1096,13 @@ fn build_rocket_with_tokens(
                 record_gate,
                 advance_run,
                 sync_run,
-                delete_run
+                delete_run,
+                list_groups,
+                get_group,
+                create_group,
+                add_to_group,
+                remove_from_group,
+                delete_group
             ],
         )
         .register(

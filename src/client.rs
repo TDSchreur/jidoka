@@ -155,6 +155,22 @@ pub(crate) fn fetch_runs(server: &str) -> Result<Vec<Run>, Box<dyn std::error::E
     )?)?)
 }
 
+/// Reads every change group from the Jidoka server at `server`.
+pub(crate) fn fetch_groups(
+    server: &str,
+) -> Result<Vec<crate::groups::Group>, Box<dyn std::error::Error>> {
+    Ok(serde_json::from_slice(&api_request(
+        server,
+        "/api/groups",
+        None,
+    )?)?)
+}
+
+/// A bodiless GET of `route`, for the routes that have no typed reader.
+pub(crate) fn api_get(server: &str, route: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    api_request(server, route, None)
+}
+
 pub(crate) fn api_post(
     server: &str,
     token_file: &Path,
@@ -458,6 +474,51 @@ mod tests {
         assert_eq!(runs[0]["stage"], "define");
         assert_eq!(runs[0]["blocking_reason"], "Legacy run");
         assert!(runs[0]["updated_at"].is_u64());
+    }
+
+    #[test]
+    fn group_commands_work_against_a_real_server_and_a_deleted_group_reports_success() {
+        let dir = TestDir::new();
+        let server = TestServer::start(&dir.0.path().join("runs.json"));
+        let run = |title: &str| {
+            start_run(
+                &server.address,
+                &server.token_file,
+                title,
+                "/work",
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        let (first, second) = (run("one"), run("two"));
+        let group =
+            |words: &[&str]| crate::group_cli::run(words, &server.address, &server.token_file);
+        group(&[
+            "create",
+            "platform",
+            "--spec",
+            "https://example.com/spec",
+            "--run",
+            &first,
+        ])
+        .unwrap();
+        let groups = fetch_groups(&server.address).unwrap();
+        assert_eq!(groups.len(), 1);
+        let id = groups[0].id.clone();
+        assert_eq!(groups[0].runs, std::slice::from_ref(&first));
+
+        group(&["add", &id, &second]).unwrap();
+        group(&["inspect", &id]).unwrap();
+        group(&["inspect", &id, "--json"]).unwrap();
+        group(&["list", "--json"]).unwrap();
+        assert!(group(&["add", &id, &second]).is_err());
+        assert!(group(&["delete", &id]).is_err());
+        group(&["remove", &id, &first]).unwrap();
+        group(&["remove", &id, &second]).unwrap();
+        group(&["delete", &id]).unwrap();
+        assert!(fetch_groups(&server.address).unwrap().is_empty());
     }
 
     #[test]

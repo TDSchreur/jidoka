@@ -69,3 +69,5 @@
 **Pass**: One pass through a Stage on a run's Timeline, from its first mark to the next Stage's mark. Consecutive Build marks of the same Rework form one Pass, which lists the tickets worked on in it. A Rework adds a Build Pass and a Check Pass.
 
 **Station**: One of the route's stops in the dashboard's run sheet. A run with a Timeline shows one Pass per stop; a run with no Timeline shows one Station per Stage, with its reports placed by Stage.
+
+**Change group**: A set of ordinary runs, in one or more repositories, linked to one shared spec for a change that needs several pull requests. A group has an ID (`g` and digits), a title and a spec, owns its membership, and never changes a member run's stages, gates or cleanup. A run is in at most one group. The dashboard server stores groups in `groups.json`.
