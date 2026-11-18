@@ -507,7 +507,7 @@ mod tests {
         let groups = fetch_groups(&server.address).unwrap();
         assert_eq!(groups.len(), 1);
         let id = groups[0].id.clone();
-        assert_eq!(groups[0].runs, [first.clone()]);
+        assert_eq!(groups[0].runs, std::slice::from_ref(&first));
 
         group(&["add", &id, &second]).unwrap();
         group(&["inspect", &id]).unwrap();
