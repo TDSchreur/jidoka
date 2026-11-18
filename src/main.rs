@@ -8,9 +8,12 @@ mod discovery;
 mod doctor;
 mod document;
 mod gitignore;
+mod group_cli;
+mod groups;
 mod inspect;
 mod install;
 mod install_record;
+mod knowledge;
 mod plans;
 mod pr_open;
 mod pr_state;
@@ -40,7 +43,7 @@ use run::UPDATE_HELP;
 use server::{DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...   (asks which agents when none are given on a terminal; else JIDOKA_AGENT, JIDOKA_CLAUDE_CONFIG_DIRS)\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]   (also prints the Define stage's `run next`; --json adds it as `next`)\n  jidoka run inspect <id> [--json]\n  jidoka run check <run-id> [--json]\n  jidoka run next <id> [--json]   (current stage, instructions, open gates, allowed moves, summaries, tickets and routed model)\n  jidoka run gate <id> <gate> <pass|fail> [--check <name>] [--evidence <text>]\n  jidoka run advance <id> [--summary <stage>=<text>] [--activity <text>] [--clear-current-ticket] [--json] [--force --reason <text>]   (records the summary and activity first, then prints the new stage's `run next`; --force skips the gates, still follows the stage graph and records the reason)\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <running|blocked|done> [options]   (never changes the stage; --rework <n> from Check returns to Build)\n  jidoka --help | --version\n\nSetup:\n  `jidoka install` writes an install record (agents and Claude config dirs) next to the model routing policy. A command run before Setup prints a hint to run `jidoka install`; after an upgrade, the first command refreshes the installed skills automatically.";
+const HELP: &str = "Jidoka\n\nUsage:\n  jidoka install [--agent <codex|claude|copilot>[,...]] [--config-dir <path>]...   (asks which agents when none are given on a terminal; else JIDOKA_AGENT, JIDOKA_CLAUDE_CONFIG_DIRS)\n  jidoka dashboard [--port <port>] [--no-usage]\n  jidoka run stats <id> | --all\n  jidoka pr open <run-id> --title <title> --body-file <path> [--base <branch>] [--json]\n  jidoka pr sync <run-id> [--base <branch>] [--json]\n  jidoka pr wait <run-id> [--timeout <duration>] [--fail-fast] [--json]\n  jidoka run requests <id> | --all [--include-partial] [--exclude <id>]... [--json]\n  jidoka doctor [--agent <codex|claude|copilot>] [--json] [--create-model-routing] [--config-dir <path>]...\n  jidoka run start <title> [--agent <codex|claude|copilot>]\n  jidoka run begin <title> | --run <id> [--agent <codex|claude|copilot>] [--mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast>] [--base <branch>] [--branch <name>] [--json]   (also prints the Define stage's `run next`; --json adds it as `next`)\n  jidoka run inspect <id> [--json]   (shows the change group the run is in, if any)\n  jidoka run check <run-id> [--json]\n  jidoka run next <id> [--json]   (current stage, instructions, open gates, allowed moves, summaries, tickets and routed model)\n  jidoka run gate <id> <gate> <pass|fail> [--check <name>] [--evidence <text>]\n  jidoka run advance <id> [--summary <stage>=<text>] [--activity <text>] [--clear-current-ticket] [--json] [--force --reason <text>]   (records the summary and activity first, then prints the new stage's `run next`; --force skips the gates, still follows the stage graph and records the reason)\n  jidoka run sync <run-id> [--json]\n  jidoka run cleanup <run-id>\n  jidoka run update <id> <running|blocked|done> [options]   (never changes the stage; --rework <n> from Check returns to Build)\n  jidoka knowledge [show]\n  jidoka knowledge set <path>   (the knowledge repo checkout; per user)\n  jidoka knowledge checkout <name> <path>   (a repository's checkout on this machine)\n  jidoka group create <title> --spec <url|path> [--run <id>]...   (change groups link runs to one shared spec; a file of the knowledge repo becomes its web link)\n  jidoka group list [--json]\n  jidoka group inspect <group-id> [--json]\n  jidoka group add <group-id> <run-id>\n  jidoka group remove <group-id> <run-id>\n  jidoka group delete <group-id>   (only a group with no runs)\n  jidoka group milestone add <group-id> <text>\n  jidoka group milestone remove <group-id> <milestone-id>\n  jidoka group depend <group-id> <run-id> --on-pr <run-id> | --milestone <milestone-id>\n  jidoka group undepend <group-id> <dependency-id>\n  jidoka group confirm <group-id> <milestone-id> [--evidence <url>]\n  jidoka group reopen <group-id> <milestone-id>   (dependencies are advisory: they are shown, never enforced)\n  jidoka --help | --version\n\nSetup:\n  `jidoka install` writes an install record (agents and Claude config dirs) next to the model routing policy. A command run before Setup prints a hint to run `jidoka install`; after an upgrade, the first command refreshes the installed skills automatically.";
 
 /// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
 const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
@@ -215,6 +218,10 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 print_next(id, false)?;
             }
         }
+        ["knowledge", words @ ..] => knowledge::run(words)?,
+        ["group", words @ ..] => {
+            group_cli::run(words, &cli_address()?, &cli_token_file()?)?;
+        }
         ["run", "inspect", id, options @ ..] => {
             let json = match options {
                 [] => false,
@@ -223,12 +230,19 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             };
             let run = fetch_run_cli(id)?;
             let plan = plan_path(id)?.to_string_lossy().into_owned();
+            let group = group_of_run(id)?;
             if json {
                 let mut shown = serde_json::to_value(&run)?;
                 shown["plan"] = plan.into();
+                if let Some(group) = &group {
+                    shown["group"] = group.as_str().into();
+                }
                 println!("{}", serde_json::to_string_pretty(&shown)?);
             } else {
                 print!("{}", inspect::render(&run));
+                if let Some(group) = &group {
+                    print!("{}", inspect::group_line(group));
+                }
                 print!("{}", inspect::plan_line(&plan));
             }
         }
@@ -364,9 +378,10 @@ fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Erro
     let Some(url) = run.pr.as_deref() else {
         return Err("The run has no pull request recorded. Record it with `jidoka run update <id> running --pr <url>`.".into());
     };
+    let checked_at = run::updated_now()?;
     let state =
         pr_state::read(&pr_wait::RealGh, url).map_err(|problem| inspect::shown(&problem.0))?;
-    let changed = apply_pr_state(id, state)?;
+    let changed = apply_pr_state(id, url, state, checked_at)?;
     if json {
         println!(
             "{}",
@@ -385,13 +400,25 @@ fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Erro
 
 /// Applies what the state of the run's pull request means for the run (see `pr_state::follow_up`), deciding
 /// from the run as it is now: the host may have taken seconds to answer. Returns whether the run was changed.
-fn apply_pr_state(id: &str, state: pr_state::PrState) -> Result<bool, Box<dyn std::error::Error>> {
-    let run = fetch_run_cli(id)?;
-    let Some(update) = pr_state::follow_up(&run, state) else {
-        return Ok(false);
+fn apply_pr_state(
+    id: &str,
+    url: &str,
+    state: pr_state::PrState,
+    checked_at: u64,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let status = pr_state::PrStatus {
+        url: url.to_owned(),
+        state,
+        reason: None,
+        checked_at,
     };
-    client::send_update(&cli_address()?, &cli_token_file()?, id, &update)?;
-    Ok(true)
+    let response = client::api_post(
+        &cli_address()?,
+        &cli_token_file()?,
+        &format!("/api/runs/{id}/pr-status"),
+        &serde_json::to_vec(&status)?,
+    )?;
+    Ok(serde_json::from_slice(&response)?)
 }
 
 /// `jidoka run cleanup <run-id>`: removes the worktree and local branch of a run whose pull request merged,
@@ -503,8 +530,9 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
         && let Some(url) = run.pr.as_deref()
     {
         // The wait only reports that the pull request is gone; the run follows what happened to it.
+        let checked_at = run::updated_now()?;
         match pr_state::read(&gh, url) {
-            Ok(state) => match apply_pr_state(id, state) {
+            Ok(state) => match apply_pr_state(id, url, state, checked_at) {
                 Ok(changed) => eprint!("{}", pr_state::describe(state, changed)),
                 Err(error) => eprintln!("The run could not be updated: {error}"),
             },
@@ -681,7 +709,39 @@ fn next_for(id: &str) -> Result<run_next::Next, Box<dyn std::error::Error>> {
     } else {
         Vec::new()
     };
-    Ok(run_next::build(&run, &paths)?)
+    let next = run_next::build(&run, &paths)?;
+    // Only Finish uses the group, so other stages never ask the dashboard for it.
+    let group = if run.stage == run::Stage::Finish && run.status != run::RunStatus::Done {
+        group_guidance(id)?
+    } else {
+        None
+    };
+    // Define and Finish carry the knowledge repo guidance, only when one is configured.
+    let knowledge = if matches!(run.stage, run::Stage::Define | run::Stage::Finish)
+        && run.status != run::RunStatus::Done
+    {
+        match knowledge::load() {
+            Ok(setting) => knowledge::Guidance::for_setting(&setting),
+            // A stale setting must not stop run work; `jidoka knowledge show` reports the same problem.
+            Err(problem) => {
+                eprintln!("Knowledge repo guidance skipped: {problem}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    Ok(next.with_group(group).with_knowledge(knowledge))
+}
+
+/// The change group guidance for run `id`, read from the dashboard; none for an ungrouped run.
+fn group_guidance(id: &str) -> Result<Option<run_next::GroupGuidance>, Box<dyn std::error::Error>> {
+    let Some(group) = group_of_run(id)? else {
+        return Ok(None);
+    };
+    let bytes = client::api_get(&cli_address()?, &format!("/api/groups/{group}"))?;
+    let view: groups::GroupView = serde_json::from_slice(&bytes)?;
+    Ok(run_next::GroupGuidance::from_view(&view, id))
 }
 
 /// The ids of the agent sessions this command runs in, when the agent exposes them: Claude Code sets
@@ -842,6 +902,16 @@ fn report_to_dashboard(id: &str, status: &str, options: &[&str]) -> Result<(), S
     let update = client::prepare_update(id, status, options).map_err(|e| e.to_string())?;
     let token_file = cli_token_file().map_err(|e| e.to_string())?;
     client::send_update(&cli_address()?, &token_file, id, &update).map_err(|e| e.to_string())
+}
+
+/// The change group that holds run `id`. A dashboard older than change groups cannot list them and fails here;
+/// restart it with the updated CLI, as for any new API.
+fn group_of_run(id: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let groups = client::fetch_groups(&cli_address()?)?;
+    Ok(groups
+        .into_iter()
+        .find(|group| group.runs.iter().any(|run| run == id))
+        .map(|group| group.id))
 }
 
 /// Reads run `id` from the dashboard; a bad id is refused before the dashboard is looked for.

@@ -122,19 +122,13 @@ impl RunStore {
     pub(crate) fn create(&self, new: NewRun) -> io::Result<Run> {
         new.validate()?;
         let mut runs = self.shared.runs.lock().map_err(lock_error)?;
-        let mut id = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(io::Error::other)?
-            .as_nanos();
-        while runs.iter().any(|run| run.id == id.to_string()) {
-            id += 1;
-        }
+        let id = new_id(|candidate| runs.iter().any(|run| run.id == candidate))?;
         let created = updated_now()?;
         let run = Run {
             gate_generation: 0,
             gates: Vec::new(),
             check_history: Vec::new(),
-            id: id.to_string(),
+            id,
             title: new.title,
             project: new.project,
             stage: Stage::Define,
@@ -169,7 +163,7 @@ impl RunStore {
         let created = run.updated_at.unwrap_or(0);
         mark(&mut run, created, None);
         runs.push(run.clone());
-        if let Err(error) = save_runs(&self.shared.path, &runs) {
+        if let Err(error) = save_records(&self.shared.path, &runs) {
             runs.pop();
             return Err(error);
         }
@@ -232,7 +226,7 @@ impl RunStore {
             Stamp::Collector => {}
         }
         let old = std::mem::replace(&mut runs[index], next);
-        if let Err(error) = save_runs(&self.shared.path, &runs) {
+        if let Err(error) = save_records(&self.shared.path, &runs) {
             runs[index] = old;
             return Err(ChangeError::Save(error));
         }
@@ -598,6 +592,7 @@ impl RunStore {
 
     /// Stores the state of a Run's pull request, only while the Run still records that pull request: an update
     /// that changed it in the meantime wins. A failed save leaves the stored state as it was.
+    #[cfg(test)]
     pub(crate) fn set_pr_status(&self, id: &str, status: PrStatus) -> io::Result<()> {
         self.change(id, Stamp::Collector, |run, _| {
             if run.pr.as_deref() != Some(status.url.as_str()) {
@@ -609,6 +604,62 @@ impl RunStore {
         .map(|_| ())
     }
 
+    /// Records a host result and its run transition together, only for the current pull request.
+    pub(crate) fn record_pr_result(&self, id: &str, status: PrStatus) -> io::Result<PrResult> {
+        let mut result = PrResult::Discarded;
+        let found = self.change(id, Stamp::Collector, |run, _| {
+            if run.pr.as_deref() != Some(status.url.as_str()) {
+                return Ok(Edit::Skip);
+            }
+            if let Some(previous) = run
+                .pr_status
+                .as_ref()
+                .filter(|previous| previous.url == status.url)
+            {
+                use crate::pr_state::PrState;
+                let rank = |state| match state {
+                    PrState::Merged => 2,
+                    PrState::Closed => 1,
+                    PrState::Open | PrState::Draft | PrState::Unknown => 0,
+                };
+                if (previous.state == PrState::Merged && status.state != PrState::Merged)
+                    || status.checked_at < previous.checked_at
+                    || (status.checked_at == previous.checked_at
+                        && status.state != previous.state
+                        && rank(status.state) <= rank(previous.state))
+                {
+                    return Ok(Edit::Skip);
+                }
+            }
+            result = PrResult::Accepted { changed: false };
+            if let Some(update) = crate::pr_state::follow_up(run, status.state) {
+                let now = updated_now()?;
+                run.updated_at = Some(now);
+                run.gate_generation = run.gate_generation.wrapping_add(1);
+                let was_blocked = run.status == RunStatus::Blocked;
+                run.status = update.status;
+                update.activity.apply(&mut run.activity);
+                update.blocking_reason.apply(&mut run.blocking_reason);
+                update.summaries.apply(run);
+                record_block_change(run, was_blocked, now);
+                mark(run, now, None);
+                run.finished_at = if run.status == RunStatus::Done {
+                    Some(now)
+                } else {
+                    None
+                };
+                result = PrResult::Accepted { changed: true };
+            }
+            run.pr_status = Some(status);
+            Ok(Edit::Save)
+        })?;
+        Ok(if found.is_some() {
+            result
+        } else {
+            PrResult::Missing
+        })
+    }
+
     /// Removes only the Run record. Returns whether a Run with this id existed.
     pub(crate) fn delete(&self, id: &str) -> io::Result<bool> {
         let mut runs = self.shared.runs.lock().map_err(lock_error)?;
@@ -616,7 +667,7 @@ impl RunStore {
             return Ok(false);
         };
         let removed = runs.remove(index);
-        if let Err(error) = save_runs(&self.shared.path, &runs) {
+        if let Err(error) = save_records(&self.shared.path, &runs) {
             runs.insert(index, removed);
             return Err(error);
         }
@@ -694,7 +745,7 @@ mod tests {
         let dir = TestDir::new();
         let (store, id) = store_with_run(&dir);
         let before = store.get(&id).unwrap().unwrap();
-        // A directory at the temp file name `save_runs` writes to makes the save fail.
+        // A directory at the temp file name `save_records` writes to makes the save fail.
         std::fs::create_dir(dir.0.path().join("runs.json.tmp")).unwrap();
         let result = store.change(&id, Stamp::Agent, |run, _| {
             run.title = "changed".into();
@@ -795,4 +846,11 @@ mod tests {
         );
         assert_eq!(store.get(&id).unwrap().unwrap().gates.len(), 3);
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrResult {
+    Accepted { changed: bool },
+    Discarded,
+    Missing,
 }

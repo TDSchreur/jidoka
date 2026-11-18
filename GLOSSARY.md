@@ -69,3 +69,9 @@
 **Pass**: One pass through a Stage on a run's Timeline, from its first mark to the next Stage's mark. Consecutive Build marks of the same Rework form one Pass, which lists the tickets worked on in it. A Rework adds a Build Pass and a Check Pass.
 
 **Station**: One of the route's stops in the dashboard's run sheet. A run with a Timeline shows one Pass per stop; a run with no Timeline shows one Station per Stage, with its reports placed by Stage.
+
+**Change group**: A set of ordinary runs, in one or more repositories, linked to one shared spec for a change that needs several pull requests. A group has an ID (`g` and digits), a title and a spec, owns its membership, and never changes a member run's stages, gates or cleanup. A run is in at most one group. The dashboard server stores groups in `groups.json`.
+
+**Milestone**: A named condition in a change group that a person confirms, such as "Bicep module v2.4.0 published". It is created once in its group (`m` and digits), referenced by every run that waits on it, and confirmed or reopened for all of them at once. A confirmation stores its time and an optional evidence URL, not who confirmed it.
+
+**Dependency**: An advisory prerequisite in a change group (`d` and digits): a member run waits on another member's pull request being merged, or on a milestone being confirmed. Jidoka shows outstanding dependencies in group inspection and in Finish and never enforces them.

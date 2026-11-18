@@ -44,6 +44,51 @@ pub(crate) struct Checks {
     skipped: Vec<CheckEntry>,
 }
 
+/// What the run's change group asks of its Finish: the shared spec and the conditions the run waits on.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub(crate) struct GroupGuidance {
+    group: String,
+    title: String,
+    /// The shared spec's web link; absent for a local file, whose path stays out of pull requests.
+    spec: Option<String>,
+    prerequisites: Vec<Prerequisite>,
+    outstanding: usize,
+}
+
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub(crate) struct Prerequisite {
+    id: String,
+    description: String,
+    status: String,
+    cleared: bool,
+}
+
+impl GroupGuidance {
+    /// The guidance for member `run` of the group in `view`; none when it is not a member.
+    pub(crate) fn from_view(view: &crate::groups::GroupView, run: &str) -> Option<Self> {
+        let member = view.members.iter().find(|member| member.run == run)?;
+        let lower = view.spec.to_ascii_lowercase();
+        let web = lower.starts_with("http://") || lower.starts_with("https://");
+        let prerequisites: Vec<Prerequisite> = member
+            .dependencies
+            .iter()
+            .map(|dependency| Prerequisite {
+                id: dependency.id.clone(),
+                description: dependency.description.clone(),
+                status: dependency.status.clone(),
+                cleared: dependency.cleared,
+            })
+            .collect();
+        Some(Self {
+            group: view.id.clone(),
+            title: view.title.clone(),
+            spec: web.then(|| view.spec.clone()),
+            outstanding: prerequisites.iter().filter(|p| !p.cleared).count(),
+            prerequisites,
+        })
+    }
+}
+
 #[derive(Serialize, Debug)]
 pub(crate) struct Next {
     run: String,
@@ -69,6 +114,26 @@ pub(crate) struct Next {
     model_reason: Option<&'static str>,
     /// Why there is no move, when the run is blocked or done.
     note: Option<String>,
+    /// Only in Finish, and only for a run in a change group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group: Option<GroupGuidance>,
+    /// Only in Define and Finish, and only when a knowledge repo is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    knowledge: Option<crate::knowledge::Guidance>,
+}
+
+impl Next {
+    /// Adds the knowledge repo guidance.
+    pub(crate) fn with_knowledge(mut self, knowledge: Option<crate::knowledge::Guidance>) -> Self {
+        self.knowledge = knowledge;
+        self
+    }
+
+    /// Adds the run's change group guidance.
+    pub(crate) fn with_group(mut self, group: Option<GroupGuidance>) -> Self {
+        self.group = group;
+        self
+    }
 }
 
 fn describe(gate: Gate) -> &'static str {
@@ -447,6 +512,8 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
                 .is_some_and(|r| r.choice_for(Stage::Build).is_some()))
         .then_some("Build rework; known lower effort raised to high"),
         note,
+        group: None,
+        knowledge: None,
     })
 }
 
@@ -510,6 +577,14 @@ pub(crate) fn render(next: &Next) -> String {
     if !next.instructions.is_empty() {
         out.push_str(&format!("\nInstructions\n  {}\n", next.instructions));
     }
+    out.extend(next.group.as_ref().map(render_group));
+    out.extend(next.knowledge.as_ref().map(|knowledge| {
+        format!(
+            "\nKnowledge repo checkout: {}\n\n{}\n",
+            shown(&knowledge.path),
+            knowledge.instructions.trim_end()
+        )
+    }));
     if let Some(checks) = &next.checks {
         out.push_str("\nChecks\n");
         for entry in &checks.applicable {
@@ -606,6 +681,41 @@ pub(crate) fn render(next: &Next) -> String {
         out.push_str("\nSummaries\n");
         for (stage, text) in &next.summaries {
             out.push_str(&format!("  {}: {}\n", stage.name(), shown(text)));
+        }
+    }
+    out
+}
+
+/// The change group section of `run next`.
+fn render_group(group: &GroupGuidance) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "\nChange group {}: {}\n",
+        group.group,
+        shown(&group.title)
+    ));
+    match &group.spec {
+            Some(spec) => out.push_str(&format!("  Spec  {}\n", shown(spec))),
+            None => out.push_str(
+                "  Spec  a local file: describe the prerequisites in the pull request and leave its path out\n",
+            ),
+        }
+    if group.prerequisites.is_empty() {
+        out.push_str("  Prerequisites  none\n");
+    } else {
+        out.push_str(&format!(
+            "  Prerequisites  {} outstanding of {}\n",
+            group.outstanding,
+            group.prerequisites.len()
+        ));
+        for item in &group.prerequisites {
+            out.push_str(&format!(
+                "    {}  {}  {} - {}\n",
+                item.id,
+                if item.cleared { "clear  " } else { "pending" },
+                shown(&item.description),
+                shown(&item.status)
+            ));
         }
     }
     out

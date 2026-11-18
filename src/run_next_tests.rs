@@ -504,3 +504,84 @@ fn complex_policy_option_is_shown_and_override_wins() {
     current.rework = Some(1);
     assert_eq!(build(&current, &[]).unwrap().model.unwrap().model, "custom");
 }
+
+fn group_view(spec: &str) -> crate::groups::GroupView {
+    serde_json::from_value(serde_json::json!({
+        "id": "g1",
+        "title": "Bicep v2.4.0",
+        "spec": spec,
+        "summary": "1 of 2 attached PRs merged, 1 milestone pending",
+        "members": [
+            {"run": "1", "missing": false, "dependencies": [
+                {"id": "d2", "target": {"pr": "7"}, "description": "pull request of run 7", "cleared": true, "status": "merged"},
+                {"id": "d3", "target": {"milestone": "m1"}, "description": "m1: v2.4.0 published", "cleared": false, "status": "pending"}
+            ]},
+            {"run": "7", "missing": false}
+        ]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn finish_shows_the_group_spec_and_the_outstanding_prerequisites() {
+    let guidance = GroupGuidance::from_view(&group_view("https://example.com/spec"), "1");
+    let next = build(&run(Mode::Full, Stage::Finish, None), &[])
+        .unwrap()
+        .with_group(guidance);
+    let text = render(&next);
+    assert!(text.contains("Change group g1: Bicep v2.4.0"), "{text}");
+    assert!(text.contains("Spec  https://example.com/spec"), "{text}");
+    assert!(text.contains("1 outstanding of 2"), "{text}");
+    assert!(text.contains("d2  clear"), "{text}");
+    assert!(
+        text.contains("d3  pending  m1: v2.4.0 published - pending"),
+        "{text}"
+    );
+    let json = serde_json::to_value(&next).unwrap();
+    assert_eq!(json["group"]["outstanding"], 1);
+}
+
+#[test]
+fn a_local_spec_path_is_kept_out_of_the_guidance() {
+    let guidance = GroupGuidance::from_view(&group_view("/home/me/plan.md"), "1").unwrap();
+    assert_eq!(guidance.spec, None);
+    let next = build(&run(Mode::Full, Stage::Finish, None), &[])
+        .unwrap()
+        .with_group(Some(guidance));
+    let text = render(&next);
+    assert!(text.contains("a local file"), "{text}");
+    assert!(!text.contains("/home/me/plan.md"), "{text}");
+    assert!(!serde_json::to_string(&next).unwrap().contains("plan.md"));
+}
+
+#[test]
+fn an_ungrouped_run_or_a_non_member_gets_no_group_section() {
+    assert!(GroupGuidance::from_view(&group_view("https://example.com"), "99").is_none());
+    let next = build(&run(Mode::Full, Stage::Finish, None), &[]).unwrap();
+    assert!(!render(&next).contains("\nChange group g"));
+    assert!(serde_json::to_value(&next).unwrap().get("group").is_none());
+}
+
+#[test]
+fn knowledge_guidance_appears_only_when_configured() {
+    let plain = build(&run(Mode::Full, Stage::Define, None), &[]).unwrap();
+    let before = render(&plain);
+    assert!(!before.contains("Knowledge repo"));
+    let json = serde_json::to_string(&plain).unwrap();
+    assert!(!json.contains("knowledge"));
+
+    let setting = crate::knowledge::Knowledge {
+        path: Some("/work/knowledge".into()),
+        ..Default::default()
+    };
+    let guidance = crate::knowledge::Guidance::for_setting(&setting);
+    let next = build(&run(Mode::Full, Stage::Define, None), &[])
+        .unwrap()
+        .with_knowledge(guidance);
+    let text = render(&next);
+    // Everything the unconfigured output says is still there.
+    assert!(before.lines().all(|line| text.contains(line)));
+    assert!(text.contains("Knowledge repo checkout: /work/knowledge"));
+    assert!(text.contains("**Define.**") && text.contains("**Finish.**"));
+    assert!(text.contains("Never record secrets"));
+}
