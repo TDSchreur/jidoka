@@ -720,7 +720,14 @@ fn next_for(id: &str) -> Result<run_next::Next, Box<dyn std::error::Error>> {
     let knowledge = if matches!(run.stage, run::Stage::Define | run::Stage::Finish)
         && run.status != run::RunStatus::Done
     {
-        knowledge::Guidance::for_setting(&knowledge::load()?)
+        match knowledge::load() {
+            Ok(setting) => knowledge::Guidance::for_setting(&setting),
+            // A stale setting must not stop run work; `jidoka knowledge show` reports the same problem.
+            Err(problem) => {
+                eprintln!("Knowledge repo guidance skipped: {problem}");
+                None
+            }
+        }
     } else {
         None
     };

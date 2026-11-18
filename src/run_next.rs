@@ -580,7 +580,7 @@ pub(crate) fn render(next: &Next) -> String {
     out.extend(next.group.as_ref().map(render_group));
     out.extend(next.knowledge.as_ref().map(|knowledge| {
         format!(
-            "\nKnowledge repo  Path: {}\n\n{}\n",
+            "\nKnowledge repo checkout: {}\n\n{}\n",
             shown(&knowledge.path),
             knowledge.instructions.trim_end()
         )

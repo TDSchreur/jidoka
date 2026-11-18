@@ -1,6 +1,6 @@
 ## Knowledge repo
 
-The user keeps a knowledge repo: an ordinary repository with the platform's shared knowledge (`platform/`), recipes (`recipes/`), learnings (`learnings/`) and cross-repo change specs (`changes/`). It is **not** worked through Jidoka runs: it needs no run, worktree or pull request. Its checkout is the Path above. This applies to every repository the run touches.
+The user keeps a knowledge repo: an ordinary repository with the platform's shared knowledge (`platform/`), recipes (`recipes/`), learnings (`learnings/`) and cross-repo change specs (`changes/`). It is **not** worked through Jidoka runs: it needs no run, worktree or pull request. Its checkout is printed above. This applies to every repository the run touches.
 
 **Define.** Before the spec, run `git pull --rebase` in the knowledge repo, read `platform/` and search `recipes/` and `learnings/` for the topic. Use what is relevant for the spec and mention it in the spec; skip folders that do not exist.
 
