@@ -12,31 +12,33 @@ fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString>
 
 #[test]
 fn the_setting_lives_in_the_config_folder_of_each_platform() {
+    // Absolute on the platform the test runs on; the Linux rules are checked everywhere, as they only read variables.
+    let root = if cfg!(windows) { r"C:\base" } else { "/base" };
+    let xdg = format!("{root}{}xdg", std::path::MAIN_SEPARATOR);
+    let home = format!("{root}{}home", std::path::MAIN_SEPARATOR);
     let linux = |pairs: &[(&str, &str)]| file_in(env(pairs), false);
+    let json = |base: &str, folder: &[&str]| {
+        let mut path = PathBuf::from(base);
+        path.extend(folder);
+        Some(path.join("jidoka").join("knowledge.json"))
+    };
     assert_eq!(
-        linux(&[("XDG_CONFIG_HOME", "/xdg"), ("HOME", "/home/me")]),
-        Some(PathBuf::from("/xdg/jidoka/knowledge.json"))
+        linux(&[("XDG_CONFIG_HOME", &xdg), ("HOME", &home)]),
+        json(&xdg, &[])
     );
-    assert_eq!(
-        linux(&[("HOME", "/home/me")]),
-        Some(PathBuf::from("/home/me/.config/jidoka/knowledge.json"))
-    );
+    assert_eq!(linux(&[("HOME", &home)]), json(&home, &[".config"]));
     // A relative folder is ignored, as for the model-routing policy.
     assert_eq!(
-        linux(&[("XDG_CONFIG_HOME", "rel"), ("HOME", "/home/me")]),
-        Some(PathBuf::from("/home/me/.config/jidoka/knowledge.json"))
+        linux(&[("XDG_CONFIG_HOME", "rel"), ("HOME", &home)]),
+        json(&home, &[".config"])
     );
     assert_eq!(linux(&[]), None);
-    // Windows reads APPDATA, never HOME. The path is only absolute on Windows itself.
-    if cfg!(windows) {
-        assert_eq!(
-            file_in(env(&[("APPDATA", r"C:\Users\me\AppData\Roaming")]), true),
-            Some(PathBuf::from(
-                r"C:\Users\me\AppData\Roaming\jidoka\knowledge.json"
-            ))
-        );
-    }
-    assert_eq!(file_in(env(&[("HOME", "/home/me")]), true), None);
+    // Windows reads APPDATA, never HOME.
+    assert_eq!(
+        file_in(env(&[("APPDATA", &xdg), ("HOME", &home)]), true),
+        json(&xdg, &[])
+    );
+    assert_eq!(file_in(env(&[("HOME", &home)]), true), None);
 }
 
 #[test]
