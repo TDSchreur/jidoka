@@ -257,7 +257,7 @@ fn syncing_one_run_reads_the_host_now_even_when_the_state_is_recent() {
     let id = run_waiting_for_ci(&store);
     let gh = ScriptedGh::new(vec![view("OPEN", false), view("MERGED", false)]);
     refresh(&store, &gh, 0).unwrap();
-    let status = sync_run(&store, &gh, &id, 1).unwrap().unwrap();
+    let (status, _) = sync_run(&store, &gh, &id, 1).unwrap().unwrap();
     assert_eq!(status.state, PrState::Merged);
     assert_eq!(stored(&store, &id).unwrap().checked_at, 1);
     assert_eq!(stored(&store, &id).unwrap().state, PrState::Merged);
@@ -307,4 +307,60 @@ fn superseded_host_results_do_not_change_the_run_or_its_cached_status() {
         assert_eq!(run.status, RunStatus::Running);
         assert_eq!(run.pr_status, None);
     }
+}
+
+#[test]
+fn older_and_tied_results_cannot_overwrite_newer_or_terminal_results() {
+    use crate::run::PrResult;
+    let (_dir, store) = store();
+    let id = run_with_pr(&store, PR);
+    let status = |state, checked_at| PrStatus {
+        url: PR.into(),
+        state,
+        reason: None,
+        checked_at,
+    };
+    assert_eq!(
+        store
+            .record_pr_result(&id, status(PrState::Open, 20))
+            .unwrap(),
+        PrResult::Accepted { changed: false }
+    );
+    assert_eq!(
+        store
+            .record_pr_result(&id, status(PrState::Closed, 19))
+            .unwrap(),
+        PrResult::Discarded
+    );
+    assert_eq!(
+        store
+            .record_pr_result(&id, status(PrState::Closed, 20))
+            .unwrap(),
+        PrResult::Accepted { changed: true }
+    );
+    assert_eq!(
+        store
+            .record_pr_result(&id, status(PrState::Open, 20))
+            .unwrap(),
+        PrResult::Discarded
+    );
+    assert_eq!(
+        store
+            .record_pr_result(&id, status(PrState::Merged, 20))
+            .unwrap(),
+        PrResult::Accepted { changed: true }
+    );
+    assert_eq!(
+        store
+            .record_pr_result(&id, status(PrState::Open, 21))
+            .unwrap(),
+        PrResult::Discarded
+    );
+    assert_eq!(stored(&store, &id).unwrap().state, PrState::Merged);
+    assert_eq!(
+        store
+            .record_pr_result("999999999", status(PrState::Open, 22))
+            .unwrap(),
+        PrResult::Missing
+    );
 }

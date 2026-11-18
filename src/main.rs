@@ -376,9 +376,10 @@ fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Erro
     let Some(url) = run.pr.as_deref() else {
         return Err("The run has no pull request recorded. Record it with `jidoka run update <id> running --pr <url>`.".into());
     };
+    let checked_at = run::updated_now()?;
     let state =
         pr_state::read(&pr_wait::RealGh, url).map_err(|problem| inspect::shown(&problem.0))?;
-    let changed = apply_pr_state(id, url, state)?;
+    let changed = apply_pr_state(id, url, state, checked_at)?;
     if json {
         println!(
             "{}",
@@ -401,12 +402,13 @@ fn apply_pr_state(
     id: &str,
     url: &str,
     state: pr_state::PrState,
+    checked_at: u64,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let status = pr_state::PrStatus {
         url: url.to_owned(),
         state,
         reason: None,
-        checked_at: run::updated_now()?,
+        checked_at,
     };
     let response = client::api_post(
         &cli_address()?,
@@ -526,8 +528,9 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
         && let Some(url) = run.pr.as_deref()
     {
         // The wait only reports that the pull request is gone; the run follows what happened to it.
+        let checked_at = run::updated_now()?;
         match pr_state::read(&gh, url) {
-            Ok(state) => match apply_pr_state(id, url, state) {
+            Ok(state) => match apply_pr_state(id, url, state, checked_at) {
                 Ok(changed) => eprint!("{}", pr_state::describe(state, changed)),
                 Err(error) => eprintln!("The run could not be updated: {error}"),
             },

@@ -997,10 +997,16 @@ fn record_pr_status(
     let changed = store
         .record_pr_result(id, status.into_inner())
         .map_err(|_| HttpStatus::InternalServerError)?;
-    if changed {
-        collector.after_update(store, id);
+    match changed {
+        crate::run::PrResult::Accepted { changed } => {
+            if changed {
+                collector.after_update(store, id);
+            }
+            Ok(Json(changed))
+        }
+        crate::run::PrResult::Discarded => Err(HttpStatus::Conflict),
+        crate::run::PrResult::Missing => Err(HttpStatus::NotFound),
     }
-    Ok(Json(changed))
 }
 
 /// How long a sync may wait for the host before the dashboard gives up on it.
@@ -1028,7 +1034,9 @@ async fn sync_run(
         pr_state::sync_run(&read_store, read_tool.as_ref(), &read_id, now)
     });
     let status = match rocket::tokio::time::timeout(SYNC_TIMEOUT, read).await {
-        Ok(Ok(Ok(Some(status)))) => status,
+        Ok(Ok(Ok(Some((status, crate::run::PrResult::Accepted { changed }))))) => (status, changed),
+        Ok(Ok(Ok(Some((_, crate::run::PrResult::Discarded))))) => return Err(HttpStatus::Conflict),
+        Ok(Ok(Ok(Some((_, crate::run::PrResult::Missing))))) => return Err(HttpStatus::NotFound),
         Ok(Ok(Ok(None))) => return Err(HttpStatus::NotFound),
         Ok(Ok(Err(error))) => {
             eprintln!("Run storage error: {error}");
@@ -1040,13 +1048,10 @@ async fn sync_run(
         }
         Err(_) => return Err(HttpStatus::GatewayTimeout),
     };
-    if matches!(
-        status.state,
-        pr_state::PrState::Merged | pr_state::PrState::Closed
-    ) {
+    if status.1 {
         collector.after_update(store, id);
     }
-    Ok(Json(status))
+    Ok(Json(status.0))
 }
 
 #[rocket::catch(413)]
@@ -1359,11 +1364,7 @@ fn watch_pr_states(
         loop {
             let (store, tool) = (store.clone(), tool.clone());
             let joined = rocket::tokio::task::spawn_blocking(move || {
-                let now = match crate::run::updated_now() {
-                    Ok(now) => now,
-                    Err(error) => return eprintln!("Pull request states were not read: {error}"),
-                };
-                if let Err(error) = pr_state::refresh(&store, tool.as_ref(), now) {
+                if let Err(error) = pr_state::refresh_live(&store, tool.as_ref()) {
                     eprintln!("Pull request states were not stored: {error}");
                 }
             })

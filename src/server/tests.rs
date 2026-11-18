@@ -1376,3 +1376,40 @@ async fn cli_pr_result_updates_the_cache_and_the_run_together() {
     assert_eq!(status.state, crate::pr_state::PrState::Closed);
     assert_eq!(status.checked_at, 123);
 }
+
+#[rocket::async_test]
+async fn cli_pr_result_distinguishes_discarded_and_missing_runs() {
+    let dir = TestDir::new();
+    let api = client(&dir).await;
+    let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
+    let pr = "https://github.com/o/r/pull/7";
+    report(
+        &api,
+        &run.id,
+        &format!(r#"{{"status":"running","pr":"{pr}"}}"#),
+    )
+    .await;
+    for (id, url, expected) in [
+        (
+            &*run.id,
+            "https://github.com/o/r/pull/8",
+            HttpStatus::Conflict,
+        ),
+        ("999999999", pr, HttpStatus::NotFound),
+    ] {
+        let response = api
+            .post(format!("/api/runs/{id}/pr-status"))
+            .header(cli_token_header(&api))
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .header(ContentType::JSON)
+            .body(format!(
+                r#"{{"url":"{url}","state":"merged","checked_at":123}}"#
+            ))
+            .dispatch()
+            .await;
+        assert_eq!(response.status(), expected);
+    }
+    let saved = fetch(&api, &run.id).await.1.unwrap();
+    assert_eq!(saved.status, crate::run::RunStatus::Running);
+    assert!(saved.pr_status.is_none());
+}

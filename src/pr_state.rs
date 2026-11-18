@@ -4,7 +4,7 @@
 use crate::pr_wait::{
     Gh, ToolProblem, azure_pr_head, azure_pr_status, is_azure_pr_url, problem, run_gh,
 };
-use crate::run::{FieldUpdate, Run, RunStatus, RunStore, Stage, UpdateRun};
+use crate::run::{FieldUpdate, PrResult, Run, RunStatus, RunStore, Stage, UpdateRun};
 use serde::{Deserialize, Serialize};
 use std::io;
 
@@ -243,7 +243,13 @@ pub(crate) fn describe(state: PrState, changed: bool) -> String {
 }
 
 /// Reads the pull request of `run` from its host, stores the state and applies what it means for the run.
-fn sync(store: &RunStore, tool: &dyn Gh, run: &Run, url: &str, now: u64) -> io::Result<PrStatus> {
+fn sync(
+    store: &RunStore,
+    tool: &dyn Gh,
+    run: &Run,
+    url: &str,
+    now: u64,
+) -> io::Result<(PrStatus, PrResult)> {
     let (state, reason) = match read(tool, url) {
         Ok(state) => (state, None),
         Err(ToolProblem(reason)) => (PrState::Unknown, Some(reason)),
@@ -254,8 +260,8 @@ fn sync(store: &RunStore, tool: &dyn Gh, run: &Run, url: &str, now: u64) -> io::
         reason,
         checked_at: now,
     };
-    store.record_pr_result(&run.id, status.clone())?;
-    Ok(status)
+    let result = store.record_pr_result(&run.id, status.clone())?;
+    Ok((status, result))
 }
 
 /// Syncs one run now, whatever its stored state says. `None` when the run does not exist or records no pull request.
@@ -264,7 +270,7 @@ pub(crate) fn sync_run(
     tool: &dyn Gh,
     id: &str,
     now: u64,
-) -> io::Result<Option<PrStatus>> {
+) -> io::Result<Option<(PrStatus, PrResult)>> {
     let Some(run) = store.list()?.into_iter().find(|run| run.id == id) else {
         return Ok(None);
     };
@@ -276,12 +282,26 @@ pub(crate) fn sync_run(
 
 /// One pass: syncs every Run whose pull request state is due. A problem is stored as unknown with its reason
 /// and tried again on a later pass. Returns how many pull requests were read.
+#[cfg(test)]
 pub(crate) fn refresh(store: &RunStore, tool: &dyn Gh, now: u64) -> io::Result<usize> {
+    refresh_with_clock(store, tool, || Ok(now))
+}
+
+pub(crate) fn refresh_live(store: &RunStore, tool: &dyn Gh) -> io::Result<usize> {
+    refresh_with_clock(store, tool, crate::run::updated_now)
+}
+
+fn refresh_with_clock(
+    store: &RunStore,
+    tool: &dyn Gh,
+    clock: impl Fn() -> io::Result<u64>,
+) -> io::Result<usize> {
     let mut checked = 0;
     for run in store.list()? {
         let Some(url) = run.pr.as_deref() else {
             continue;
         };
+        let now = clock()?;
         if !due(run.pr_status.as_ref(), url, now) {
             continue;
         }

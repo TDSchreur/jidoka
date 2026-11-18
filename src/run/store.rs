@@ -605,12 +605,32 @@ impl RunStore {
     }
 
     /// Records a host result and its run transition together, only for the current pull request.
-    pub(crate) fn record_pr_result(&self, id: &str, status: PrStatus) -> io::Result<bool> {
-        let mut changed = false;
-        self.change(id, Stamp::Collector, |run, _| {
+    pub(crate) fn record_pr_result(&self, id: &str, status: PrStatus) -> io::Result<PrResult> {
+        let mut result = PrResult::Discarded;
+        let found = self.change(id, Stamp::Collector, |run, _| {
             if run.pr.as_deref() != Some(status.url.as_str()) {
                 return Ok(Edit::Skip);
             }
+            if let Some(previous) = run
+                .pr_status
+                .as_ref()
+                .filter(|previous| previous.url == status.url)
+            {
+                use crate::pr_state::PrState;
+                let rank = |state| match state {
+                    PrState::Merged => 2,
+                    PrState::Closed => 1,
+                    PrState::Open | PrState::Draft | PrState::Unknown => 0,
+                };
+                if previous.state == PrState::Merged
+                    || status.checked_at < previous.checked_at
+                    || (status.checked_at == previous.checked_at
+                        && rank(status.state) <= rank(previous.state))
+                {
+                    return Ok(Edit::Skip);
+                }
+            }
+            result = PrResult::Accepted { changed: false };
             if let Some(update) = crate::pr_state::follow_up(run, status.state) {
                 let now = updated_now()?;
                 run.updated_at = Some(now);
@@ -627,12 +647,16 @@ impl RunStore {
                 } else {
                     None
                 };
-                changed = true;
+                result = PrResult::Accepted { changed: true };
             }
             run.pr_status = Some(status);
             Ok(Edit::Save)
         })?;
-        Ok(changed)
+        Ok(if found.is_some() {
+            result
+        } else {
+            PrResult::Missing
+        })
     }
 
     /// Removes only the Run record. Returns whether a Run with this id existed.
@@ -821,4 +845,11 @@ mod tests {
         );
         assert_eq!(store.get(&id).unwrap().unwrap().gates.len(), 3);
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrResult {
+    Accepted { changed: bool },
+    Discarded,
+    Missing,
 }

@@ -21,6 +21,7 @@ mod findings;
 mod model_routing;
 mod reports;
 mod store;
+pub(crate) use store::PrResult;
 mod summaries;
 mod tickets;
 
