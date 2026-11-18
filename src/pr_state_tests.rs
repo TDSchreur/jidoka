@@ -364,3 +364,31 @@ fn older_and_tied_results_cannot_overwrite_newer_or_terminal_results() {
         PrResult::Missing
     );
 }
+
+#[test]
+fn repeated_merged_observation_reconciles_after_entering_finish() {
+    use crate::run::PrResult;
+    let (_dir, store) = store();
+    let id = run_with_pr(&store, PR);
+    store.set_stage(&id, Stage::Build);
+    let status = PrStatus {
+        url: PR.into(),
+        state: PrState::Merged,
+        reason: None,
+        checked_at: 20,
+    };
+    assert_eq!(
+        store.record_pr_result(&id, status.clone()).unwrap(),
+        PrResult::Accepted { changed: false }
+    );
+    store.set_stage(&id, Stage::Finish);
+    assert_eq!(
+        store.record_pr_result(&id, status.clone()).unwrap(),
+        PrResult::Accepted { changed: true }
+    );
+    assert_eq!(
+        store.record_pr_result(&id, status).unwrap(),
+        PrResult::Accepted { changed: false }
+    );
+    assert_eq!(the_run(&store, &id).status, RunStatus::Done);
+}

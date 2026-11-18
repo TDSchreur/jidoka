@@ -622,9 +622,10 @@ impl RunStore {
                     PrState::Closed => 1,
                     PrState::Open | PrState::Draft | PrState::Unknown => 0,
                 };
-                if previous.state == PrState::Merged
+                if (previous.state == PrState::Merged && status.state != PrState::Merged)
                     || status.checked_at < previous.checked_at
                     || (status.checked_at == previous.checked_at
+                        && status.state != previous.state
                         && rank(status.state) <= rank(previous.state))
                 {
                     return Ok(Edit::Skip);

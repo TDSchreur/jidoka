@@ -35,7 +35,8 @@ impl PrState {
     }
 }
 
-/// The state of the pull request at `url`, as last read. The dashboard server owns it: callers cannot set it.
+/// The state of the pull request at `url`, as last read. The dashboard records host results, including
+/// results supplied by authenticated CLI clients, together with any resulting run transition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PrStatus {
     /// The pull request this state belongs to. A Run that records another pull request is read again.
