@@ -194,7 +194,7 @@ pub(crate) fn pool(
                 .iter()
                 .any(|note| note.starts_with(crate::requests::RECORDED_NOT_FOUND));
             out.left_out.push(left_out(if missing {
-                "its recorded session logs were not found in the scanned folders (see JIDOKA_CLAUDE_CONFIG_DIRS)".into()
+                "its recorded session logs were not found in the scanned folders (see CLAUDE_CONFIG_DIR)".into()
             } else {
                 "no requests were found for it".into()
             }));

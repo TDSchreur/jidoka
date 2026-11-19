@@ -111,18 +111,14 @@ pub(crate) const RECORDED_NOT_FOUND: &str =
 
 /// The note for a run whose recorded sessions no scanned log claims: names the sessions and the scanned folders.
 fn recorded_not_found_note(target: &Run, roots: &Roots) -> String {
-    // `JIDOKA_CLAUDE_CONFIG_DIRS` takes the Claude folder that holds `projects`, so show that one.
-    let mut folders: Vec<String> = roots
-        .claude
-        .iter()
-        .map(|root| root.parent().unwrap_or(root).display().to_string())
-        .collect();
-    folders.push(roots.codex.display().to_string());
-    folders.push(roots.copilot.display().to_string());
+    // CLAUDE_CONFIG_DIR points to the directory that contains projects.
+    let claude = roots.claude.parent().unwrap_or(&roots.claude);
     format!(
-        "{RECORDED_NOT_FOUND}: {} (scanned folders: {}); for Claude Code, set JIDOKA_CLAUDE_CONFIG_DIRS to the Claude folder that holds the sessions",
+        "{RECORDED_NOT_FOUND}: {} (scanned folders: {}, {}, {}); for Claude Code, set CLAUDE_CONFIG_DIR to the Claude folder that holds the sessions",
         target.sessions.join(", "),
-        folders.join(", ")
+        claude.display(),
+        roots.codex.display(),
+        roots.copilot.display()
     )
 }
 
