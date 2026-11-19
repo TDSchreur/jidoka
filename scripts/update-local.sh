@@ -1,8 +1,7 @@
 #!/bin/sh
 # Update this checkout to the latest develop, rebuild jidoka, reinstall the `jidoka`
 # command and its skills, and restart the dashboard. Set JIDOKA_AGENT (names, numbers or `all`,
-# for example `all` or `codex,claude`) to skip the question about which agents to install for;
-# JIDOKA_CLAUDE_CONFIG_DIRS (separated by colons) selects the Claude configuration directories.
+# for example `all` or `codex,claude`) to skip the question about which agents to install for.
 set -eu
 
 # Stops any running `jidoka dashboard`; run data lives on disk, so nothing is lost.
@@ -37,7 +36,7 @@ restore_changes() {
   fi
 }
 
-# Installs the skills with the built binary, which reads JIDOKA_AGENT and JIDOKA_CLAUDE_CONFIG_DIRS
+# Installs the skills with the built binary, which reads JIDOKA_AGENT
 # itself and asks on the terminal when JIDOKA_AGENT is unset. The script may be piped into sh, so
 # the question is read from /dev/tty instead of stdin.
 install_skills() {

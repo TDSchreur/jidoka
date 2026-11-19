@@ -5,7 +5,7 @@
 //! installs anything or needs the dashboard. The one thing it writes is a starter model-routing policy, and
 //! only when `--create-model-routing` asks for it.
 
-use crate::install::{bundled_skill_files, claude_config_dirs, skills_root};
+use crate::install::{bundled_skill_files, skills_root};
 use crate::routing::{RoutingAgent, create_starter, created_message, policy_path_in};
 use serde::Serialize;
 use std::{
@@ -163,8 +163,6 @@ pub(crate) struct Machine<'a> {
     pub(crate) home: PathBuf,
     pub(crate) path: OsString,
     pub(crate) var: &'a dyn Fn(&str) -> Option<OsString>,
-    /// The `--config-dir` values: they replace the Claude config directory.
-    pub(crate) config_dirs: Vec<String>,
     /// What an agent's program prints for `--version`, if it can be asked.
     pub(crate) version: &'a dyn Fn(&Path) -> Option<String>,
     /// What `rustup target list --installed` prints, if rustup can be asked.
@@ -186,14 +184,6 @@ pub(crate) fn diagnose(
             )
         })?],
     };
-    if !machine.config_dirs.is_empty() && agent.is_some_and(|name| name != "claude") {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--config-dir applies to the claude agent; use --agent claude or leave --agent out",
-        ));
-    }
-    // Resolved before any check runs, so a relative path fails the whole command.
-    claude_config_dirs(&machine.config_dirs, &machine.home, machine.var)?;
     let git = git_checks(project);
     // Later checks read from the work tree root, so they work from a subfolder or a linked worktree.
     let root = git_output(project, &["rev-parse", "--show-toplevel"])
@@ -208,7 +198,7 @@ pub(crate) fn diagnose(
         .into_iter()
         .map(|id| {
             let mut checks = vec![executable_check(id, &machine.path)];
-            checks.extend(skills_checks(id, machine));
+            checks.push(skills_check(id, machine));
             AgentReport {
                 id,
                 usable: checks.iter().all(Check::passed),
@@ -568,28 +558,17 @@ fn executable_check(agent: &'static str, path: &OsString) -> Check {
     }
 }
 
-/// One skills check per skills folder: each Claude config directory has its own.
-fn skills_checks(agent: &'static str, machine: &Machine) -> Vec<Check> {
-    let roots = if agent == "claude" {
-        claude_config_dirs(&machine.config_dirs, &machine.home, machine.var)
-            .map(|dirs| dirs.into_iter().map(|dir| dir.join("skills")).collect())
-    } else {
-        skills_root(agent, &machine.home, machine.var).map(|root| vec![root])
+fn skills_check(agent: &'static str, machine: &Machine) -> Check {
+    let root = match skills_root(agent, &machine.home, machine.var) {
+        Ok(root) => root,
+        Err(error) => {
+            return Check::fail(
+                "skills",
+                error.to_string(),
+                format!("Use {}.", agent_list()),
+            );
+        }
     };
-    match roots {
-        Ok(roots) => roots
-            .iter()
-            .map(|root| skills_check(agent, root, !machine.config_dirs.is_empty()))
-            .collect(),
-        Err(error) => vec![Check::fail(
-            "skills",
-            error.to_string(),
-            format!("Use {}.", agent_list()),
-        )],
-    }
-}
-
-fn skills_check(agent: &'static str, root: &Path, explicit_dir: bool) -> Check {
     // A skill counts as installed only when every file `install` writes for it is there, so an
     // install from an older release that lacks newer files is reported too.
     let mut absent: Vec<&str> = bundled_skill_files()
@@ -610,15 +589,7 @@ fn skills_check(agent: &'static str, root: &Path, explicit_dir: bool) -> Check {
                 root.display(),
                 absent.join(", ")
             ),
-            if explicit_dir && agent == "claude" {
-                let dir = root.parent().unwrap_or(root);
-                format!(
-                    "Run `jidoka install --agent claude --config-dir {}`.",
-                    dir.display()
-                )
-            } else {
-                format!("Run `jidoka install --agent {agent}`.")
-            },
+            format!("Run `jidoka install --agent {agent}`."),
         )
     }
 }
@@ -738,14 +709,12 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
         home: crate::install::home_dir()?,
         path: std::env::var_os("PATH").unwrap_or_default(),
         var: &|name| std::env::var_os(name),
-        config_dirs: args.config_dirs.iter().map(|dir| dir.to_string()).collect(),
         version: &agent_version,
         rustup_targets: &rustup_targets,
     };
     let Args {
         agent,
         json,
-        config_dirs: _,
         create_model_routing: create,
     } = args;
     if let Some(create_for) = create {
@@ -771,8 +740,6 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
 pub(crate) struct Args<'a> {
     pub(crate) agent: Option<&'a str>,
     pub(crate) json: bool,
-    /// The `--config-dir` values, in the order given.
-    pub(crate) config_dirs: Vec<&'a str>,
     /// Write a starter model-routing policy first, when none exists, with an entry for each of these agents.
     pub(crate) create_model_routing: Option<Vec<RoutingAgent>>,
 }
@@ -811,19 +778,14 @@ fn create_model_routing(agents: &[RoutingAgent], machine: &Machine) -> Result<St
     }
 }
 
-/// Reads `[--agent <name>] [--config-dir <path>]... [--json] [--create-model-routing]` in any order.
+/// Reads `[--agent <name>] [--json] [--create-model-routing]` in any order.
 pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
     let (mut agent, mut json, mut create) = (None, false, false);
-    let mut config_dirs = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match *arg {
             "--json" => json = true,
             "--create-model-routing" => create = true,
-            "--config-dir" => match args.next() {
-                Some(dir) => config_dirs.push(*dir),
-                None => return Err("--config-dir needs a path.".into()),
-            },
             "--agent" => match args.next() {
                 Some(name) if AGENTS.contains(name) && agent.is_none() => agent = Some(*name),
                 Some(name) if AGENTS.contains(name) => {
@@ -853,7 +815,6 @@ pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
     Ok(Args {
         agent,
         json,
-        config_dirs,
         create_model_routing,
     })
 }

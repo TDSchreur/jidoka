@@ -37,7 +37,7 @@ impl World {
     fn roots(&self) -> Roots {
         let home = self.dir.path();
         Roots {
-            claude: vec![home.join("claude/projects")],
+            claude: home.join("claude/projects"),
             codex: home.join("codex/sessions"),
             copilot: home.join("copilot/session-state"),
         }
@@ -785,7 +785,7 @@ fn recorded_sessions_in_an_unscanned_folder_get_their_own_note() {
     assert_eq!(result.total.requests, 0);
     let note = result.notes.join("\n");
     assert!(note.starts_with(RECORDED_NOT_FOUND), "{note}");
-    assert!(note.contains("JIDOKA_CLAUDE_CONFIG_DIRS"), "{note}");
+    assert!(note.contains("CLAUDE_CONFIG_DIR"), "{note}");
     assert!(note.contains("elsewhere"), "{note}");
     // The folder to set is the one that holds `projects`, not `projects` itself.
     assert!(!note.contains("claude/projects"), "{note}");

@@ -6,22 +6,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// What `jidoka install` did: the skills version (the binary version), the agents, and the Claude
-/// config directories exactly as entered. Codex and Copilot roots are resolved again when needed.
+/// The installed skills version and selected agents.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct InstallRecord {
     pub version: String,
     pub agents: Vec<String>,
-    pub claude_config_dirs: Vec<String>,
 }
 
 impl InstallRecord {
     /// A record for this binary's version.
-    pub(crate) fn current(agents: Vec<String>, claude_config_dirs: Vec<String>) -> Self {
+    pub(crate) fn current(agents: Vec<String>) -> Self {
         Self {
             version: env!("CARGO_PKG_VERSION").to_string(),
             agents,
-            claude_config_dirs,
         }
     }
 }
@@ -78,7 +75,7 @@ mod tests {
         let path = path_in(var).unwrap();
         assert_eq!(path, base.join("jidoka").join("install.json"));
         assert_eq!(read(&path).unwrap(), None);
-        let record = InstallRecord::current(vec!["claude".into()], vec!["/a b".into()]);
+        let record = InstallRecord::current(vec!["claude".into()]);
         write(&path, &record).unwrap();
         assert_eq!(read(&path).unwrap(), Some(record.clone()));
         assert_eq!(record.version, env!("CARGO_PKG_VERSION"));

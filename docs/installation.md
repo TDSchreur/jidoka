@@ -24,7 +24,7 @@ Windows x86-64 (PowerShell):
 irm https://github.com/TDSchreur/jidoka/releases/latest/download/install.ps1 | iex
 ```
 
-Both installers download the prebuilt CLI, verify its release checksum, put it in place, and run `jidoka install`. That command asks which agents to install the Jidoka skills for (Codex, Claude Code, GitHub Copilot, one or more). Answer with numbers or names, such as `1,3` or `claude copilot`, or `all`. When the installer is piped into the shell, the question is read from the terminal. To skip the question, set `JIDOKA_AGENT` (or pass `--agent`) to the same kind of answer, such as `all`, `1,3` or a comma-separated list of names, before running the installer, for example `JIDOKA_AGENT=codex,claude` (`$env:JIDOKA_AGENT = 'codex,claude'` in PowerShell); `JIDOKA_CLAUDE_CONFIG_DIRS` is passed on the same way. Without `JIDOKA_AGENT` and without a terminal to ask on, `jidoka install` stops before installing anything. Each install replaces the bundled skill directories with the versions shipped in the CLI, so local edits to those skills are lost; other skills in the same folder are left alone. `jidoka install` records the agents, the Claude configuration directories and the version in `install.json` next to the model routing policy. To install skills for other agents later, run `jidoka install` again, or `jidoka install --agent claude` (or `codex` / `copilot`, or a comma-separated list such as `codex,claude`). After the binary is upgraded (by the one-line installer, `winget` or Cargo), the first command you run refreshes the installed skills for the recorded agents without asking. When no skills are set up yet, commands print one hint to run `jidoka install`; `jidoka doctor` reports skills that are behind the binary.
+Both installers download the prebuilt CLI, verify its release checksum, put it in place, and run `jidoka install`. That command asks which agents to install the Jidoka skills for (Codex, Claude Code, GitHub Copilot, one or more). Answer with numbers or names, such as `1,3` or `claude copilot`, or `all`. When the installer is piped into the shell, the question is read from the terminal. To skip the question, set `JIDOKA_AGENT` (or pass `--agent`) to the same kind of answer, such as `all`, `1,3` or a comma-separated list of names, before running the installer, for example `JIDOKA_AGENT=codex,claude` (`$env:JIDOKA_AGENT = 'codex,claude'` in PowerShell). Without `JIDOKA_AGENT` and without a terminal to ask on, `jidoka install` stops before installing anything. Each install replaces the bundled skill directories with the versions shipped in the CLI, so local edits to those skills are lost; other skills in the same folder are left alone. `jidoka install` records the agents and the version in `install.json` next to the model routing policy. To install skills for other agents later, run `jidoka install` again, or `jidoka install --agent claude` (or `codex` / `copilot`, or a comma-separated list such as `codex,claude`). After the binary is upgraded (by the one-line installer, `winget` or Cargo), the first command you run refreshes the installed skills for the recorded agents without asking. When no skills are set up yet, commands print one hint to run `jidoka install`; `jidoka doctor` reports skills that are behind the binary.
 
 ## Update
 
@@ -36,23 +36,7 @@ Stop the dashboard before upgrading when you can; the dashboard keeps running th
 
 Claude Code skills go to `$CLAUDE_CONFIG_DIR/skills` when `CLAUDE_CONFIG_DIR` is set (for example `~/.claude-work`), otherwise `~/.claude/skills`. Codex skills likewise honor `CODEX_HOME`, and Copilot skills honor `COPILOT_HOME` (otherwise `~/.copilot/skills`).
 
-To serve more than one Claude Code config folder, such as a personal `~/.claude` and a work `~/.claude-work`, repeat `--config-dir <path>` on `jidoka install` and `jidoka doctor`:
-
-```sh
-jidoka install --agent claude --config-dir ~/.claude --config-dir ~/.claude-work
-```
-
-The flag applies to the `claude` agent only, and is an error when `--agent` leaves Claude out. Claude's folder is chosen in this order:
-
-1. `--config-dir`, once or several times.
-2. `CLAUDE_CONFIG_DIR`, when it is not empty.
-3. `~/.claude`.
-
-A leading `~` means your home folder. A relative path is rejected before anything is written, and a folder named twice is used once. `jidoka install` installs the skills into each folder given, and `jidoka doctor` reports each folder by path.
-
-The installers and `scripts/update-local.sh` read an optional `JIDOKA_CLAUDE_CONFIG_DIRS` and pass each entry as `--config-dir`. Separate entries with `:` on Linux and `;` in PowerShell. Empty entries are skipped.
-
-The dashboard and `jidoka run requests` read the same variable, with your system's path separator. They read Claude Code session logs from `projects` in the resolved folder and in every listed folder. Project-level `.claude/` folders are not affected.
+The dashboard and `jidoka run requests` use the same home directories to find session logs. Skill refresh also resolves these directories from the current environment.
 
 ## Automatic skills setup and refresh
 
@@ -81,7 +65,7 @@ scripts/switch-jidoka.sh local      # remove the official release, install this 
 scripts/switch-jidoka.sh status     # show which installs exist
 ```
 
-Each switch stops a running dashboard, removes the other install first, installs the chosen one and runs `jidoka install` to refresh the skills (`JIDOKA_AGENT` and `JIDOKA_CLAUDE_CONFIG_DIRS` skip its questions). Start the dashboard again afterwards with `jidoka dashboard`. The script is Linux only, like `scripts/update-local.sh`.
+Each switch stops a running dashboard, removes the other install first, installs the chosen one and runs `jidoka install` to refresh the skills (`JIDOKA_AGENT` skips its question). Start the dashboard again afterwards with `jidoka dashboard`. The script is Linux only, like `scripts/update-local.sh`.
 
 ## Which build is running
 

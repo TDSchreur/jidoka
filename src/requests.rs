@@ -4,7 +4,7 @@ use crate::{
     codex_requests::read_codex_requests,
     copilot_requests::read_copilot_requests,
     inspect::shown,
-    request_logs::{Category, Request, RequestRead, SessionRequests, read_requests},
+    request_logs::{Category, Request, SessionRequests, read_requests},
     run::Run,
     stats::{number, table_with},
     usage::{FUTURE_SLACK_MS, Tokens, mark_at, overlaps},
@@ -111,18 +111,14 @@ pub(crate) const RECORDED_NOT_FOUND: &str =
 
 /// The note for a run whose recorded sessions no scanned log claims: names the sessions and the scanned folders.
 fn recorded_not_found_note(target: &Run, roots: &Roots) -> String {
-    // `JIDOKA_CLAUDE_CONFIG_DIRS` takes the Claude folder that holds `projects`, so show that one.
-    let mut folders: Vec<String> = roots
-        .claude
-        .iter()
-        .map(|root| root.parent().unwrap_or(root).display().to_string())
-        .collect();
-    folders.push(roots.codex.display().to_string());
-    folders.push(roots.copilot.display().to_string());
+    // CLAUDE_CONFIG_DIR points to the directory that contains projects.
+    let claude = roots.claude.parent().unwrap_or(&roots.claude);
     format!(
-        "{RECORDED_NOT_FOUND}: {} (scanned folders: {}); for Claude Code, set JIDOKA_CLAUDE_CONFIG_DIRS to the Claude folder that holds the sessions",
+        "{RECORDED_NOT_FOUND}: {} (scanned folders: {}, {}, {}); for Claude Code, set CLAUDE_CONFIG_DIR to the Claude folder that holds the sessions",
         target.sessions.join(", "),
-        folders.join(", ")
+        claude.display(),
+        roots.codex.display(),
+        roots.copilot.display()
     )
 }
 
@@ -176,13 +172,7 @@ pub(crate) fn analyze(
         .min()
         .unwrap_or(first.at);
     let limits = ReadLimits::default();
-    let mut read = RequestRead::default();
-    for root in &roots.claude {
-        let one = read_requests(root, &ids, &recorded, from, deadline, limits);
-        if read.absorb(one) {
-            break;
-        }
-    }
+    let read = read_requests(&roots.claude, &ids, &recorded, from, deadline, limits);
     let codex = read_codex_requests(&roots.codex, &ids, &recorded, from, deadline, limits);
     let copilot = read_copilot_requests(&roots.copilot, &ids, &recorded, from, deadline, limits);
     let (timed_out, truncated) = (

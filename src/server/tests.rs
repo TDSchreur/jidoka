@@ -318,7 +318,7 @@ async fn fetch(api: &Client, id: &str) -> (HttpStatus, Option<Run>) {
 /// A dashboard whose usage collection reads fixture logs under `home` instead of a user's own.
 async fn client_collecting(dir: &TestDir, home: &Path, enabled: bool) -> Client {
     let roots = crate::usage_logs::Roots {
-        claude: vec![home.join("claude/projects")],
+        claude: home.join("claude/projects"),
         codex: home.join("codex/sessions"),
         copilot: home.join("copilot/session-state"),
     };

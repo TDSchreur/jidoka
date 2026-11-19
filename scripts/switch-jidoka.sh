@@ -6,8 +6,8 @@
 #   scripts/switch-jidoka.sh status     show which installs exist
 #
 # The other install is always removed first, so only one `jidoka` is on PATH. Both installs refresh
-# the skills with `jidoka install`; set JIDOKA_AGENT (names, numbers or `all`) and
-# JIDOKA_CLAUDE_CONFIG_DIRS (separated by colons) to skip its questions. A running dashboard is
+# the skills with `jidoka install`; set JIDOKA_AGENT (names, numbers or `all`) to skip its question.
+# A running dashboard is
 # stopped, not restarted: start it again with `jidoka dashboard`.
 set -eu
 

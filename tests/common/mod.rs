@@ -16,8 +16,7 @@ pub fn isolate(command: &mut Command, home: &Path) {
         .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
         .env("CODEX_HOME", home.join(".codex"))
         .env("COPILOT_HOME", home.join(".copilot"))
-        .env_remove("JIDOKA_AGENT")
-        .env_remove("JIDOKA_CLAUDE_CONFIG_DIRS");
+        .env_remove("JIDOKA_AGENT");
 }
 
 /// The `jidoka` binary isolated inside `home`.
