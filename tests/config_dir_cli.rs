@@ -49,7 +49,9 @@ fn install_and_doctor_use_each_agents_native_home() {
             skills[0]["message"]
                 .as_str()
                 .unwrap()
-                .contains(path.to_str().unwrap())
+                .contains(path.to_str().unwrap()),
+            "expected skills check for {path:?}, got {}",
+            skills[0]
         );
     }
 }
@@ -70,6 +72,10 @@ fn install_and_doctor_reject_the_removed_config_dir_flag() {
             "{command}: {output:?}"
         );
     }
-    assert!(!extra.exists());
-    assert!(!home.path().join(".claude/skills").exists());
+    assert!(!extra.exists(), "unexpected directory written at {extra:?}");
+    let default = home.path().join(".claude/skills");
+    assert!(
+        !default.exists(),
+        "unexpected skills written at {default:?}"
+    );
 }
