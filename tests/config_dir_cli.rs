@@ -1,142 +1,81 @@
-//! `--config-dir` installs the Claude skills into each named folder and leaves `~/.claude` alone.
+//! Install and doctor resolve one agent home through its native override.
 #![allow(
     clippy::unwrap_used,
     reason = "integration test helpers fail the test by panicking"
 )]
 mod common;
 
-use std::{path::Path, process::Output};
-
-fn jidoka(home: &Path, args: &[&str]) -> Output {
-    common::jidoka_in(home)
-        .args(args)
-        .current_dir(home)
-        .env("HOME", home)
-        .env("USERPROFILE", home)
-        .env("XDG_CONFIG_HOME", home.join("config"))
-        .env("APPDATA", home.join("config"))
-        .env_remove("CLAUDE_CONFIG_DIR")
-        .env_remove("CODEX_HOME")
-        .env_remove("COPILOT_HOME")
-        .env_remove("JIDOKA_CLAUDE_CONFIG_DIRS")
+#[test]
+fn install_and_doctor_use_each_agents_native_home() {
+    let home = tempfile::tempdir().unwrap();
+    let overrides = [
+        ("codex", "CODEX_HOME", home.path().join("codex-work")),
+        (
+            "claude",
+            "CLAUDE_CONFIG_DIR",
+            home.path().join("claude-work"),
+        ),
+        ("copilot", "COPILOT_HOME", home.path().join("copilot-work")),
+    ];
+    let mut install = common::jidoka_in(home.path());
+    let output = install
+        .envs(overrides.iter().map(|(_, name, path)| (name, path)))
+        .args(["install", "--agent", "all"])
         .output()
-        .unwrap()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-#[test]
-fn install_writes_every_config_dir_once_and_not_the_default() {
-    let home = tempfile::tempdir().unwrap();
-    let (a, b) = (home.path().join("a"), home.path().join("b"));
-    let (a_arg, b_arg) = (a.to_str().unwrap(), b.to_str().unwrap());
-    let output = jidoka(
-        home.path(),
-        &[
-            "install",
-            "--agent",
-            "claude",
-            "--config-dir",
-            a_arg,
-            "--config-dir",
-            b_arg,
-            "--config-dir",
-            a_arg,
-        ],
-    );
-    assert!(output.status.success(), "{}", stderr(&output));
-    for dir in [&a, &b] {
-        assert!(dir.join("skills/jidoka/SKILL.md").is_file(), "{dir:?}");
-    }
-    assert!(!home.path().join(".claude").exists());
-}
-
-#[test]
-fn a_relative_config_dir_fails_before_anything_is_written() {
-    let home = tempfile::tempdir().unwrap();
-    let good = home.path().join("good");
-    let output = jidoka(
-        home.path(),
-        &[
-            "install",
-            "--agent",
-            "claude",
-            "--config-dir",
-            good.to_str().unwrap(),
-            "--config-dir",
-            "relative/dir",
-        ],
-    );
-    assert!(!output.status.success());
-    assert!(stderr(&output).contains("absolute"), "{}", stderr(&output));
-    assert!(!good.exists());
-    assert!(!home.path().join("relative").exists());
-    assert!(!home.path().join(".claude").exists());
-}
-
-#[test]
-fn doctor_reports_each_config_dir_by_path() {
-    let home = tempfile::tempdir().unwrap();
-    let (a, b) = (home.path().join("a"), home.path().join("b"));
-    let install = jidoka(
-        home.path(),
-        &[
-            "install",
-            "--agent",
-            "claude",
-            "--config-dir",
-            a.to_str().unwrap(),
-        ],
-    );
-    assert!(install.status.success(), "{}", stderr(&install));
-    let output = jidoka(
-        home.path(),
-        &[
-            "doctor",
-            "--agent",
-            "claude",
-            "--json",
-            "--config-dir",
-            a.to_str().unwrap(),
-            "--config-dir",
-            b.to_str().unwrap(),
-        ],
-    );
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let mut doctor = common::jidoka_in(home.path());
+    doctor.env("PATH", home.path());
+    let output = doctor
+        .envs(overrides.iter().map(|(_, name, path)| (name, path)))
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let checks = report["agents"][0]["checks"].as_array().unwrap();
-    let skills: Vec<_> = checks.iter().filter(|c| c["id"] == "skills").collect();
-    assert_eq!(skills.len(), 2, "{report}");
-    assert_eq!(skills[0]["status"], "pass");
-    assert!(
-        skills[0]["message"]
-            .as_str()
+    let agents = report["agents"].as_array().unwrap();
+    assert_eq!(agents.len(), overrides.len(), "{report}");
+    for (name, _, path) in overrides {
+        assert!(path.join("skills/jidoka/SKILL.md").is_file(), "{path:?}");
+        let agent = agents.iter().find(|agent| agent["id"] == name).unwrap();
+        let skills: Vec<_> = agent["checks"]
+            .as_array()
             .unwrap()
-            .contains(a.to_str().unwrap())
-    );
-    assert_eq!(skills[1]["status"], "missing");
-    assert!(
-        skills[1]["message"]
-            .as_str()
-            .unwrap()
-            .contains(b.to_str().unwrap())
-    );
-}
-
-fn record(home: &Path) -> serde_json::Value {
-    let text = std::fs::read(home.join("config/jidoka/install.json")).unwrap();
-    serde_json::from_slice(&text).unwrap()
+            .iter()
+            .filter(|check| check["id"] == "skills")
+            .collect();
+        assert_eq!(skills.len(), 1, "{agent}");
+        assert_eq!(skills[0]["status"], "pass");
+        assert!(
+            skills[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains(path.to_str().unwrap()),
+            "expected skills check for {path:?}, got {}",
+            skills[0]
+        );
+    }
 }
 
 #[test]
-fn install_with_an_agent_writes_the_skills_and_the_record() {
+fn install_and_doctor_reject_the_removed_config_dir_flag() {
     let home = tempfile::tempdir().unwrap();
-    let output = jidoka(home.path(), &["install", "--agent", "claude"]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert!(home.path().join(".claude/skills/jidoka/SKILL.md").is_file());
-    let record = record(home.path());
-    assert_eq!(record["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(record["agents"], serde_json::json!(["claude"]));
-    assert_eq!(record["claude_config_dirs"], serde_json::json!([]));
+    let extra = home.path().join("extra");
+    for command in ["install", "doctor"] {
+        let output = common::jidoka_in(home.path())
+            .args([command, "--agent", "claude", "--config-dir"])
+            .arg(&extra)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{command}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("--config-dir"),
+            "{command}: {output:?}"
+        );
+    }
+    assert!(!extra.exists(), "unexpected directory written at {extra:?}");
+    let default = home.path().join(".claude/skills");
+    assert!(
+        !default.exists(),
+        "unexpected skills written at {default:?}"
+    );
 }

@@ -148,6 +148,8 @@ type Update = (String, String, Vec<String>);
 #[derive(Default)]
 struct FakeApi {
     created: RefCell<Vec<(String, String, Option<String>)>>,
+    /// The session `create` was given.
+    created_session: RefCell<Option<String>>,
     updates: RefCell<Vec<Update>>,
     /// What `get` answers; `None` means the run is unknown.
     existing: RefCell<Option<RunSummary>>,
@@ -165,12 +167,13 @@ impl RunApi for FakeApi {
         title: &str,
         project: &str,
         repository: Option<String>,
-        _session: Option<String>,
+        session: Option<String>,
         _routing: Option<ModelRouting>,
     ) -> Result<String, String> {
         self.created
             .borrow_mut()
             .push((title.to_string(), project.to_string(), repository));
+        *self.created_session.borrow_mut() = session;
         Ok("100".into())
     }
 
@@ -729,4 +732,22 @@ fn a_session_already_on_another_run_gives_a_warning_naming_the_agents_command() 
         let json = serde_json::to_value(&begun).unwrap();
         assert_eq!(json["session_warning"], warning);
     }
+}
+
+#[test]
+fn a_warned_session_is_not_recorded_on_the_new_run() {
+    let project = Project::new();
+    let api = api_with_session_run("7", "Earlier work");
+    let begun = begin(
+        &project.repo,
+        &options("New"),
+        &api,
+        Some(session("s", None)),
+        None,
+    )
+    .unwrap();
+    assert!(begun.session_warning.is_some());
+    assert_eq!(*api.created_session.borrow(), None);
+    let updates = api.updates.borrow();
+    assert!(!updates[0].2.iter().any(|a| a == "--session"));
 }

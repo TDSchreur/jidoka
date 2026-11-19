@@ -91,22 +91,18 @@ impl World {
     }
 
     fn report(&self, agent: Option<&str>) -> Report {
-        self.report_in(agent, &[]).unwrap()
-    }
-
-    fn report_in(&self, agent: Option<&str>, config_dirs: &[&str]) -> io::Result<Report> {
         let machine = Machine {
             home: self.home.path().to_path_buf(),
             path: self.bin.path().into(),
             var: &|name| self.vars.get(name).cloned(),
-            config_dirs: config_dirs.iter().map(|dir| dir.to_string()).collect(),
+
             version: &|program| {
                 let name = program.file_stem()?.to_str()?;
                 self.versions.get(name).cloned()
             },
             rustup_targets: &|_, _| self.rustup_targets.clone(),
         };
-        diagnose(self.project.path(), agent, &machine)
+        diagnose(self.project.path(), agent, &machine).unwrap()
     }
 }
 
@@ -234,7 +230,7 @@ fn project_problems_are_named_with_a_fix_and_make_the_report_not_ok() {
         home: world.home.path().into(),
         path: world.bin.path().into(),
         var: &|_| None,
-        config_dirs: Vec::new(),
+
         version: &|_| None,
         rustup_targets: &|_, _| None,
     };
@@ -338,7 +334,6 @@ fn write_record(world: &mut World, version: &str) {
     let record = crate::install_record::InstallRecord {
         version: version.into(),
         agents: vec![],
-        claude_config_dirs: vec![],
     };
     crate::install_record::write(&path, &record).unwrap();
 }
@@ -404,7 +399,7 @@ impl World {
             home: self.home.path().to_path_buf(),
             path: self.bin.path().into(),
             var: &|name| self.vars.get(name).cloned(),
-            config_dirs: Vec::new(),
+
             version: &|_| None,
             rustup_targets: &|_, _| None,
         };

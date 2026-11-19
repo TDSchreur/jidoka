@@ -4,7 +4,7 @@ use crate::{
     codex_requests::read_codex_requests,
     copilot_requests::read_copilot_requests,
     inspect::shown,
-    request_logs::{Category, Request, RequestRead, SessionRequests, read_requests},
+    request_logs::{Category, Request, SessionRequests, read_requests},
     run::Run,
     stats::{number, table_with},
     usage::{FUTURE_SLACK_MS, Tokens, mark_at, overlaps},
@@ -105,6 +105,23 @@ fn claims(run: &Run, session: &SessionRequests) -> bool {
     session.claims.contains(&run.id) || run.sessions.contains(&session.id)
 }
 
+/// Start of the note for a run whose recorded sessions no scanned log claims.
+pub(crate) const RECORDED_NOT_FOUND: &str =
+    "the run has recorded sessions, but none of their logs were found";
+
+/// The note for a run whose recorded sessions no scanned log claims: names the sessions and the scanned folders.
+fn recorded_not_found_note(target: &Run, roots: &Roots) -> String {
+    // CLAUDE_CONFIG_DIR points to the directory that contains projects.
+    let claude = roots.claude.parent().unwrap_or(&roots.claude);
+    format!(
+        "{RECORDED_NOT_FOUND}: {} (scanned folders: {}, {}, {}); for Claude Code, set CLAUDE_CONFIG_DIR to the Claude folder that holds the sessions",
+        target.sessions.join(", "),
+        claude.display(),
+        roots.codex.display(),
+        roots.copilot.display()
+    )
+}
+
 /// The requests of `target` from the Claude Code logs. `runs` holds every run, so a request that two runs
 /// working at the same time could both claim is in neither. Never fails: whatever cannot be read becomes a
 /// note.
@@ -155,13 +172,7 @@ pub(crate) fn analyze(
         .min()
         .unwrap_or(first.at);
     let limits = ReadLimits::default();
-    let mut read = RequestRead::default();
-    for root in &roots.claude {
-        let one = read_requests(root, &ids, &recorded, from, deadline, limits);
-        if read.absorb(one) {
-            break;
-        }
-    }
+    let read = read_requests(&roots.claude, &ids, &recorded, from, deadline, limits);
     let codex = read_codex_requests(&roots.codex, &ids, &recorded, from, deadline, limits);
     let copilot = read_copilot_requests(&roots.copilot, &ids, &recorded, from, deadline, limits);
     let (timed_out, truncated) = (
@@ -193,7 +204,9 @@ pub(crate) fn analyze(
         .filter(|session| claims(target, session))
         .collect();
     if claimed.is_empty() {
-        result.notes.push(if !read.root_found && !codex.root_found && !copilot.root_found {
+        result.notes.push(if !target.sessions.is_empty() {
+            recorded_not_found_note(target, roots)
+        } else if !read.root_found && !codex.root_found && !copilot.root_found {
             "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()
         } else {
             "no session log executed a jidoka run update for this run and none was recorded for it"

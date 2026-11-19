@@ -65,7 +65,7 @@ impl World {
     fn roots(&self) -> Roots {
         let home = self.dir.path();
         Roots {
-            claude: vec![home.join("claude/projects")],
+            claude: home.join("claude/projects"),
             codex: home.join("codex/sessions"),
             copilot: home.join("copilot/session-state"),
         }
