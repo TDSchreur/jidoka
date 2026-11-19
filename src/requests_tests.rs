@@ -786,8 +786,20 @@ fn recorded_sessions_in_an_unscanned_folder_get_their_own_note() {
     let note = result.notes.join("\n");
     assert!(note.starts_with(RECORDED_NOT_FOUND), "{note}");
     assert!(note.contains("JIDOKA_CLAUDE_CONFIG_DIRS"), "{note}");
+    assert!(note.contains("elsewhere"), "{note}");
+    // The folder to set is the one that holds `projects`, not `projects` itself.
+    assert!(!note.contains("claude/projects"), "{note}");
 
     let unrecorded = run(RUN_A, 0, Some(100), &[]);
     let result = world.analyze(&unrecorded, std::slice::from_ref(&unrecorded));
     assert!(result.notes.join("\n").contains("none was recorded for it"));
+}
+
+#[test]
+fn recorded_sessions_get_their_note_even_when_no_log_folder_exists() {
+    let world = World::new();
+    let target = run(RUN_A, 0, Some(100), &["elsewhere"]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    let note = result.notes.join("\n");
+    assert!(note.starts_with(RECORDED_NOT_FOUND), "{note}");
 }
