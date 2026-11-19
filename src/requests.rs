@@ -105,6 +105,27 @@ fn claims(run: &Run, session: &SessionRequests) -> bool {
     session.claims.contains(&run.id) || run.sessions.contains(&session.id)
 }
 
+/// Start of the note for a run whose recorded sessions no scanned log claims.
+pub(crate) const RECORDED_NOT_FOUND: &str =
+    "the run has recorded sessions, but none of their logs were found";
+
+/// The note for a run whose recorded sessions no scanned log claims: names the sessions and the scanned folders.
+fn recorded_not_found_note(target: &Run, roots: &Roots) -> String {
+    // `JIDOKA_CLAUDE_CONFIG_DIRS` takes the Claude folder that holds `projects`, so show that one.
+    let mut folders: Vec<String> = roots
+        .claude
+        .iter()
+        .map(|root| root.parent().unwrap_or(root).display().to_string())
+        .collect();
+    folders.push(roots.codex.display().to_string());
+    folders.push(roots.copilot.display().to_string());
+    format!(
+        "{RECORDED_NOT_FOUND}: {} (scanned folders: {}); for Claude Code, set JIDOKA_CLAUDE_CONFIG_DIRS to the Claude folder that holds the sessions",
+        target.sessions.join(", "),
+        folders.join(", ")
+    )
+}
+
 /// The requests of `target` from the Claude Code logs. `runs` holds every run, so a request that two runs
 /// working at the same time could both claim is in neither. Never fails: whatever cannot be read becomes a
 /// note.
@@ -193,7 +214,9 @@ pub(crate) fn analyze(
         .filter(|session| claims(target, session))
         .collect();
     if claimed.is_empty() {
-        result.notes.push(if !read.root_found && !codex.root_found && !copilot.root_found {
+        result.notes.push(if !target.sessions.is_empty() {
+            recorded_not_found_note(target, roots)
+        } else if !read.root_found && !codex.root_found && !copilot.root_found {
             "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()
         } else {
             "no session log executed a jidoka run update for this run and none was recorded for it"
