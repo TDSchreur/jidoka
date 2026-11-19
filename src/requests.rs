@@ -4,7 +4,7 @@ use crate::{
     codex_requests::read_codex_requests,
     copilot_requests::read_copilot_requests,
     inspect::shown,
-    request_logs::{Category, Request, RequestRead, SessionRequests, read_requests},
+    request_logs::{Category, Request, SessionRequests, read_requests},
     run::Run,
     stats::{number, table_with},
     usage::{FUTURE_SLACK_MS, Tokens, mark_at, overlaps},
@@ -155,13 +155,7 @@ pub(crate) fn analyze(
         .min()
         .unwrap_or(first.at);
     let limits = ReadLimits::default();
-    let mut read = RequestRead::default();
-    for root in &roots.claude {
-        let one = read_requests(root, &ids, &recorded, from, deadline, limits);
-        if read.absorb(one) {
-            break;
-        }
-    }
+    let read = read_requests(&roots.claude, &ids, &recorded, from, deadline, limits);
     let codex = read_codex_requests(&roots.codex, &ids, &recorded, from, deadline, limits);
     let copilot = read_copilot_requests(&roots.copilot, &ids, &recorded, from, deadline, limits);
     let (timed_out, truncated) = (

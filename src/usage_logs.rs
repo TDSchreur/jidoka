@@ -7,7 +7,7 @@
 //! Codex rollout files, and Copilot `events.jsonl` files.
 
 use crate::{
-    install::{agent_home, expand_config_dir},
+    install::agent_home,
     usage::{Entry, PauseKind, Tokens, parse_timestamp},
 };
 use serde_json::Value;
@@ -44,35 +44,19 @@ impl Default for ReadLimits {
 /// Where each agent keeps its session logs.
 #[derive(Clone, Debug)]
 pub(crate) struct Roots {
-    /// Every Claude config directory's `projects` folder: the resolved one and the ones named in
-    /// `JIDOKA_CLAUDE_CONFIG_DIRS`.
-    pub(crate) claude: Vec<PathBuf>,
+    pub(crate) claude: PathBuf,
     pub(crate) codex: PathBuf,
     pub(crate) copilot: PathBuf,
 }
 
 impl Roots {
     /// The agents' usual folders under `home`, honoring `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `COPILOT_HOME` as install does.
-    /// `JIDOKA_CLAUDE_CONFIG_DIRS` (the platform's path-list separator) adds Claude config directories.
-    /// Empty and relative entries are ignored, and a folder named twice is read once.
     pub(crate) fn from_home(
         home: &Path,
         var: &dyn Fn(&str) -> Option<OsString>,
     ) -> io::Result<Self> {
-        let mut claude = vec![agent_home("claude", home, var)?.join("projects")];
-        if let Some(extra) = var("JIDOKA_CLAUDE_CONFIG_DIRS") {
-            for dir in std::env::split_paths(&extra) {
-                let Ok(dir) = expand_config_dir(&dir.to_string_lossy(), home) else {
-                    continue;
-                };
-                let projects = dir.join("projects");
-                if !claude.contains(&projects) {
-                    claude.push(projects);
-                }
-            }
-        }
         Ok(Self {
-            claude,
+            claude: agent_home("claude", home, var)?.join("projects"),
             codex: agent_home("codex", home, var)?.join("sessions"),
             copilot: agent_home("copilot", home, var)?.join("session-state"),
         })
@@ -1074,22 +1058,14 @@ pub(crate) fn read_sessions(
         attention: BTreeMap::new(),
         skills: BTreeMap::new(),
     };
-    let sources = roots
-        .claude
-        .iter()
-        .map(|root| {
-            (
-                root,
-                read_claude as fn(&Path, &mut ReadPass, &mut ReadResult),
-            )
-        })
-        .chain([
-            (
-                &roots.codex,
-                read_codex as fn(&Path, &mut ReadPass, &mut ReadResult),
-            ),
-            (&roots.copilot, read_copilot),
-        ]);
+    let sources = [
+        (
+            &roots.claude,
+            read_claude as fn(&Path, &mut ReadPass, &mut ReadResult),
+        ),
+        (&roots.codex, read_codex),
+        (&roots.copilot, read_copilot),
+    ];
     for (root, read) in sources {
         // The log folder itself may be a link (a dotfiles setup); what is inside it is not followed.
         if !root.is_dir() {

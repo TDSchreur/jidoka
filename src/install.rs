@@ -22,29 +22,6 @@ const LOCAL_SKILLS: [&str; 11] = [
     "jidoka-cross-repo-change",
 ];
 
-/// Reads `[--agent <list>] [--config-dir <path>]...` in any order. `--agent` can be given once.
-pub(crate) fn parse_options<'a>(
-    options: &[&'a str],
-) -> Result<(Option<&'a str>, Vec<String>), String> {
-    let (mut agent, mut dirs) = (None, Vec::new());
-    let mut options = options.iter();
-    while let Some(option) = options.next() {
-        match (*option, options.next()) {
-            ("--agent", Some(value)) if agent.is_none() => agent = Some(*value),
-            ("--config-dir", Some(value)) => dirs.push(value.to_string()),
-            (other, _) => return Err(format!("Invalid option {other:?}.")),
-        }
-    }
-    Ok((agent, dirs))
-}
-
-/// The agents and Claude config directories a `jidoka install` should use.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Selection {
-    pub agents: Vec<String>,
-    pub config_dirs: Vec<String>,
-}
-
 /// The agents Jidoka installs skills for, in the order the install menu lists them.
 pub(crate) const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
 
@@ -95,45 +72,27 @@ pub(crate) fn parse_agent_choice(answer: &str) -> io::Result<Vec<String>> {
     Ok(agents)
 }
 
-/// Decides the agents and Claude config directories. `--agent` and `--config-dir` win over
-/// `JIDOKA_AGENT` and `JIDOKA_CLAUDE_CONFIG_DIRS` (the platform path-list separator). With neither
+/// Selects agents from `--agent` or `JIDOKA_AGENT`. With neither
 /// agents source, asks on `output`/`input` when `terminal` is true and otherwise fails.
 pub(crate) fn select(
     agent_flag: Option<&str>,
-    dir_flags: &[String],
     var: impl Fn(&str) -> Option<OsString>,
     terminal: bool,
     input: &mut impl io::BufRead,
     output: &mut impl io::Write,
-) -> io::Result<Selection> {
+) -> io::Result<Vec<String>> {
     let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let env_agent = var("JIDOKA_AGENT")
         .map(|value| value.to_string_lossy().into_owned())
         .filter(|value| !value.trim().is_empty());
-    let agents = match agent_flag.map(str::to_string).or(env_agent) {
-        Some(list) => parse_agent_choice(&list)?,
-        None if terminal => ask_agents(input, output)?,
-        None => {
-            return Err(invalid(
-                "No terminal to ask which agents to install for. Use --agent or set JIDOKA_AGENT, for example --agent codex,claude."
-                    .to_string(),
-            ));
-        }
-    };
-    let mut config_dirs = dir_flags.to_vec();
-    if config_dirs.is_empty()
-        && agents.iter().any(|agent| agent == "claude")
-        && let Some(list) = var("JIDOKA_CLAUDE_CONFIG_DIRS")
-    {
-        config_dirs = env::split_paths(&list)
-            .map(|path| path.to_string_lossy().into_owned())
-            .filter(|path| !path.is_empty())
-            .collect();
+    match agent_flag.map(str::to_string).or(env_agent) {
+        Some(list) => parse_agent_choice(&list),
+        None if terminal => ask_agents(input, output),
+        None => Err(invalid(
+            "No terminal to ask which agents to install for. Use --agent or set JIDOKA_AGENT, for example --agent codex,claude."
+                .to_string(),
+        )),
     }
-    Ok(Selection {
-        agents,
-        config_dirs,
-    })
 }
 
 fn ask_agents(
@@ -164,15 +123,20 @@ fn ask_agents(
     }
 }
 
-/// `jidoka install [--agent <list>] [--config-dir <path>]...`: installs the skills and the default
+/// `jidoka install [--agent <list>]`: installs the skills and the default
 /// routing policy, then writes the install record.
 pub(crate) fn run(options: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
     use io::IsTerminal;
-    let (agent, dirs) = parse_options(options)?;
+    let agent = match options {
+        [] => None,
+        ["--agent", agent] => Some(*agent),
+        ["--agent", _, invalid, ..] | [invalid, ..] => {
+            return Err(format!("Invalid option {invalid:?}.").into());
+        }
+    };
     let stdin = io::stdin();
     let selection = select(
         agent,
-        &dirs,
         |name| env::var_os(name),
         stdin.is_terminal(),
         &mut stdin.lock(),
@@ -183,10 +147,9 @@ pub(crate) fn run(options: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Installs the bundled skills for the selected agents, the default policy and the install record.
-/// The config dirs need `claude` among the agents.
-pub(crate) fn install(selection: &Selection) -> io::Result<()> {
+pub(crate) fn install(agents: &[String]) -> io::Result<()> {
     let var = |name: &str| env::var_os(name);
-    install_skills(selection, &home_dir()?, &var, &mut io::stdout())?;
+    install_skills(agents, &home_dir()?, &var, &mut io::stdout())?;
     let path = crate::install_record::path_in(var).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -195,32 +158,29 @@ pub(crate) fn install(selection: &Selection) -> io::Result<()> {
     })?;
     crate::install_record::write(
         &path,
-        &crate::install_record::InstallRecord::current(
-            selection.agents.clone(),
-            selection.config_dirs.clone(),
-        ),
+        &crate::install_record::InstallRecord::current(agents.to_vec()),
     )
 }
 
 /// The skills and the default policy of an install, without the install record; policy messages go to `out`.
 pub(crate) fn install_skills(
-    selection: &Selection,
+    agents: &[String],
     home: &Path,
     var: &impl Fn(&str) -> Option<OsString>,
     out: &mut impl io::Write,
 ) -> io::Result<()> {
-    install_skill_files(selection, home, var, out)?;
+    install_skill_files(agents, home, var, out)?;
     ensure_default_policy(var, out)
 }
 
 /// Only the skills of an install: no policy, no record.
 pub(crate) fn install_skill_files(
-    selection: &Selection,
+    agents: &[String],
     home: &Path,
     var: &impl Fn(&str) -> Option<OsString>,
     out: &mut impl io::Write,
 ) -> io::Result<()> {
-    let roots = skills_roots(&selection.agents, &selection.config_dirs, home, var)?;
+    let roots = skills_roots(agents, home, var)?;
     for root in roots {
         install_to_reporting(&root, out)?;
     }
@@ -270,85 +230,13 @@ pub(crate) fn create_default_policy(
 /// Resolves the skills folder of every listed agent before anything is installed.
 pub(crate) fn skills_roots(
     agents: &[impl AsRef<str>],
-    config_dirs: &[String],
     home: &Path,
     var: impl Fn(&str) -> Option<OsString>,
 ) -> io::Result<Vec<PathBuf>> {
-    let names: Vec<&str> = agents.iter().map(AsRef::as_ref).collect();
-    if !config_dirs.is_empty() && !names.contains(&"claude") {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--config-dir applies to the claude agent; add claude to --agent",
-        ));
-    }
-    let mut roots = Vec::new();
-    for name in names {
-        if name == "claude" {
-            roots.extend(
-                claude_config_dirs(config_dirs, home, &var)?
-                    .into_iter()
-                    .map(|dir| dir.join("skills")),
-            );
-        } else {
-            roots.push(skills_root(name, home, &var)?);
-        }
-    }
-    Ok(roots)
-}
-
-/// The Claude config directories to use. The source of truth for the precedence: the `--config-dir`
-/// values, else `CLAUDE_CONFIG_DIR` (empty counts as unset), else `~/.claude`. A leading `~` expands to
-/// `home`, a relative path is an error, and a directory named twice appears once.
-pub(crate) fn claude_config_dirs(
-    flags: &[String],
-    home: &Path,
-    var: impl Fn(&str) -> Option<OsString>,
-) -> io::Result<Vec<PathBuf>> {
-    if flags.is_empty() {
-        return Ok(vec![agent_home("claude", home, var)?]);
-    }
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    for flag in flags {
-        let dir = expand_config_dir(flag, home)?;
-        if !dirs.contains(&dir) {
-            dirs.push(dir);
-        }
-    }
-    Ok(dirs)
-}
-
-/// What can follow a leading `~`: `/`, and also `\` on Windows.
-#[cfg(windows)]
-const SEPARATORS: [char; 2] = ['/', '\\'];
-#[cfg(not(windows))]
-const SEPARATORS: [char; 1] = ['/'];
-
-/// An absolute path for tests on any system: `/name` on Unix, `C:\name` on Windows.
-#[cfg(test)]
-pub(crate) fn test_abs(name: &str) -> PathBuf {
-    if cfg!(windows) {
-        PathBuf::from(format!("C:\\{}", name.replace('/', "\\")))
-    } else {
-        PathBuf::from(format!("/{name}"))
-    }
-}
-
-/// An absolute config directory from a user-given path, expanding a leading `~`.
-pub(crate) fn expand_config_dir(value: &str, home: &Path) -> io::Result<PathBuf> {
-    let expanded = match value.strip_prefix('~') {
-        Some("") => home.to_path_buf(),
-        Some(rest) if rest.starts_with(SEPARATORS) => {
-            home.join(rest.trim_start_matches(SEPARATORS))
-        }
-        _ => PathBuf::from(value),
-    };
-    if value.is_empty() || !expanded.is_absolute() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("--config-dir {value:?} must be an absolute path (or start with ~)"),
-        ));
-    }
-    Ok(expanded)
+    agents
+        .iter()
+        .map(|agent| skills_root(agent.as_ref(), home, &var))
+        .collect()
 }
 
 /// Resolves an agent's skills folder, honoring its config directory variable.
@@ -509,30 +397,22 @@ mod tests {
 
     fn selected(
         agent: Option<&str>,
-        dirs: &[String],
         env: &[(&str, &str)],
         terminal: bool,
         answers: &str,
-    ) -> (io::Result<Selection>, String) {
+    ) -> (io::Result<Vec<String>>, String) {
         let var = |name: &str| {
             env.iter()
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| OsString::from(value))
         };
         let mut out = Vec::new();
-        let result = select(
-            agent,
-            dirs,
-            var,
-            terminal,
-            &mut answers.as_bytes(),
-            &mut out,
-        );
+        let result = select(agent, var, terminal, &mut answers.as_bytes(), &mut out);
         (result, String::from_utf8(out).unwrap())
     }
 
-    fn names(selection: io::Result<Selection>) -> Vec<String> {
-        selection.unwrap().agents
+    fn names(selection: io::Result<Vec<String>>) -> Vec<String> {
+        selection.unwrap()
     }
 
     #[test]
@@ -545,14 +425,14 @@ mod tests {
             ("all\n", vec!["codex", "claude", "copilot"]),
             ("2,claude\n", vec!["claude"]),
         ] {
-            let (selection, _) = selected(None, &[], &[], true, answer);
+            let (selection, _) = selected(None, &[], true, answer);
             assert_eq!(names(selection), expected, "{answer:?}");
         }
     }
 
     #[test]
     fn without_a_terminal_and_agents_the_error_names_the_flag_and_the_variable() {
-        let (selection, shown) = selected(None, &[], &[], false, "all\n");
+        let (selection, shown) = selected(None, &[], false, "all\n");
         let message = selection.unwrap_err().to_string();
         assert!(message.contains("--agent") && message.contains("JIDOKA_AGENT"));
         assert!(shown.is_empty());
@@ -561,19 +441,19 @@ mod tests {
     #[test]
     fn the_flag_wins_over_the_variable_and_neither_prompts() {
         let env = [("JIDOKA_AGENT", "codex")];
-        let (selection, shown) = selected(Some("claude"), &[], &env, true, "");
+        let (selection, shown) = selected(Some("claude"), &env, true, "");
         assert_eq!(names(selection), ["claude"]);
-        let (selection, shown_env) = selected(None, &[], &env, false, "");
+        let (selection, shown_env) = selected(None, &env, false, "");
         assert_eq!(names(selection), ["codex"]);
         assert!(shown.is_empty() && shown_env.is_empty());
-        let (selection, _) = selected(Some("nope"), &[], &[], true, "");
+        let (selection, _) = selected(Some("nope"), &[], true, "");
         assert!(selection.is_err());
     }
 
     #[test]
     fn an_invalid_flag_or_variable_entry_names_the_token_and_the_valid_agents() {
         for value in ["codex,nope", "9", "0", "claude,,x1"] {
-            let (selection, _) = selected(Some(value), &[], &[], true, "");
+            let (selection, _) = selected(Some(value), &[], true, "");
             let message = selection.unwrap_err().to_string();
             let bad = value.rsplit(',').next().unwrap();
             assert!(
@@ -582,25 +462,8 @@ mod tests {
                 "{value}: {message}"
             );
         }
-        let (selection, _) = selected(None, &[], &[("JIDOKA_AGENT", "1,zzz")], false, "");
+        let (selection, _) = selected(None, &[("JIDOKA_AGENT", "1,zzz")], false, "");
         assert!(selection.unwrap_err().to_string().contains("\"zzz\""));
-    }
-
-    #[test]
-    fn config_dirs_come_from_flags_else_the_path_list_variable() {
-        let list = env::join_paths([test_abs("a"), test_abs("b c")]).unwrap();
-        let list = list.to_str().unwrap();
-        let env = [("JIDOKA_CLAUDE_CONFIG_DIRS", list)];
-        let (selection, _) = selected(Some("claude"), &[], &env, false, "");
-        assert_eq!(
-            selection.unwrap().config_dirs,
-            [test_abs("a"), test_abs("b c")].map(|p| p.to_string_lossy().into_owned())
-        );
-        let flag = vec![test_abs("flag").to_string_lossy().into_owned()];
-        let (selection, _) = selected(Some("claude"), &flag, &env, false, "");
-        assert_eq!(selection.unwrap().config_dirs, flag);
-        let (selection, _) = selected(Some("codex"), &[], &env, false, "");
-        assert!(selection.unwrap().config_dirs.is_empty());
     }
 
     #[test]
@@ -919,7 +782,6 @@ mod tests {
         assert_eq!(
             skills_roots(
                 &parse_agent_choice("codex, claude,codex").unwrap(),
-                &[],
                 home,
                 unset
             )
@@ -927,71 +789,17 @@ mod tests {
             [home.join(".codex/skills"), home.join(".claude/skills")]
         );
         assert_eq!(
-            skills_roots(&["copilot"], &[], home, unset).unwrap(),
+            skills_roots(&["copilot"], home, unset).unwrap(),
             [home.join(".copilot/skills")]
         );
-        let error = skills_roots(&["codex", "vscode"], &[], home, unset).unwrap_err();
+        let error = skills_roots(&["codex", "vscode"], home, unset).unwrap_err();
         assert!(error.to_string().contains("vscode"));
     }
-    fn dirs(flags: &[&str], var: Option<&str>, home: &Path) -> io::Result<Vec<PathBuf>> {
-        let flags: Vec<String> = flags.iter().map(|flag| flag.to_string()).collect();
-        claude_config_dirs(&flags, home, |name| {
-            (name == "CLAUDE_CONFIG_DIR")
-                .then(|| var.map(OsString::from))
-                .flatten()
-        })
-    }
-
-    fn text(path: PathBuf) -> String {
-        path.display().to_string()
-    }
-
-    #[test]
-    fn config_dir_flags_win_over_the_variable_and_the_default() {
-        let home = test_abs("home/user");
-        let env = text(test_abs("env"));
-        assert_eq!(dirs(&[], None, &home).unwrap(), [home.join(".claude")]);
-        assert_eq!(dirs(&[], Some(""), &home).unwrap(), [home.join(".claude")]);
-        assert_eq!(dirs(&[], Some(&env), &home).unwrap(), [test_abs("env")]);
-        let (a, b) = (text(test_abs("a")), text(test_abs("b")));
-        assert_eq!(
-            dirs(&[&a, &b], Some(&env), &home).unwrap(),
-            [test_abs("a"), test_abs("b")]
-        );
-    }
-
-    #[test]
-    fn config_dirs_expand_the_tilde_and_drop_duplicates() {
-        let home = test_abs("home/user");
-        let same = text(home.join("x"));
-        assert_eq!(
-            dirs(&["~/x", "~", &same, "~/x/"], None, &home).unwrap(),
-            [home.join("x"), home.clone()]
-        );
-        // Only a leading `~` of its own is the home folder.
-        assert!(dirs(&["~other/x"], None, &home).is_err());
-    }
-
-    #[test]
-    fn relative_config_dirs_are_rejected() {
-        let home = test_abs("home/user");
-        let ok = text(test_abs("ok"));
-        for bad in ["rel", "./rel", "", "../x"] {
-            let error = dirs(&[&ok, bad], None, &home).unwrap_err();
-            assert!(error.to_string().contains("absolute"), "{bad:?}");
-        }
-    }
-
     #[test]
     fn selector_replaces_full_and_all_entry_points_survive_reinstall_for_each_agent() {
         let home = tempfile::tempdir().unwrap();
-        let roots = skills_roots(
-            &["codex", "claude", "copilot"],
-            &[],
-            home.path(),
-            |_: &str| None,
-        )
-        .unwrap();
+        let roots =
+            skills_roots(&["codex", "claude", "copilot"], home.path(), |_: &str| None).unwrap();
         for root in roots {
             fs::create_dir_all(root.join("jidoka")).unwrap();
             fs::write(

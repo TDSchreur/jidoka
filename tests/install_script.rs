@@ -42,7 +42,7 @@ fn executable(path: &Path, content: &str) {
 }
 
 /// Runs the installer with a `curl` that serves a fake `jidoka` recording how `install` was called.
-fn run(home: &Path, agent: Option<&str>, dirs: Option<&str>) -> Output {
+fn run(home: &Path, agent: Option<&str>) -> Output {
     let bin = home.join("fakebin");
     fs::create_dir_all(&bin).unwrap();
     let served = home.join("served-jidoka");
@@ -50,7 +50,7 @@ fn run(home: &Path, agent: Option<&str>, dirs: Option<&str>) -> Output {
     executable(
         &served,
         &format!(
-            "#!/bin/sh\n{{ echo \"args: $*\"; echo \"agent: ${{JIDOKA_AGENT:-}}\"; echo \"dirs: ${{JIDOKA_CLAUDE_CONFIG_DIRS:-}}\"; if [ -t 0 ]; then echo stdin: terminal; else echo stdin: other; fi; }} >> '{}'\n",
+            "#!/bin/sh\n{{ echo \"args: $*\"; echo \"agent: ${{JIDOKA_AGENT:-}}\"; if [ -t 0 ]; then echo stdin: terminal; else echo stdin: other; fi; }} >> '{}'\n",
             log.display()
         ),
     );
@@ -73,9 +73,6 @@ fn run(home: &Path, agent: Option<&str>, dirs: Option<&str>) -> Output {
     if let Some(agent) = agent {
         command.env("JIDOKA_AGENT", agent);
     }
-    if let Some(dirs) = dirs {
-        command.env("JIDOKA_CLAUDE_CONFIG_DIRS", dirs);
-    }
     command.output().unwrap()
 }
 
@@ -85,7 +82,7 @@ fn installer_runs_the_binary_install_without_prompting_itself() {
         return;
     }
     let home = tempfile::tempdir().unwrap();
-    let output = run(home.path(), None, None);
+    let output = run(home.path(), None);
     assert!(output.status.success(), "{output:?}");
     let log = fs::read_to_string(home.path().join("install.log")).unwrap();
     assert!(log.contains("args: install\n"), "{log}");

@@ -1,10 +1,9 @@
 #!/bin/sh
 # Install the latest public Jidoka release on Linux x86-64.
-# `jidoka install` asks which agents to install skills for; JIDOKA_AGENT (for example codex,claude) and
-# JIDOKA_CLAUDE_CONFIG_DIRS (colon-separated) skip the questions.
+# `jidoka install` asks which agents to install skills for; JIDOKA_AGENT (for example codex,claude) skips the question.
 set -eu
 
-# Runs `jidoka install`, which asks for the agents itself. JIDOKA_AGENT and JIDOKA_CLAUDE_CONFIG_DIRS reach it
+# Runs `jidoka install`, which asks for the agents itself. JIDOKA_AGENT reaches it
 # through the environment. When the script is piped into sh, stdin is not a terminal, so the shell redirects
 # the binary's stdin from /dev/tty when a terminal can be opened; otherwise stdin stays as it is and the binary
 # reports that it has no terminal to ask on.

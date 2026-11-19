@@ -1,6 +1,5 @@
 # Install the latest public Jidoka release on Windows x86-64.
-# `jidoka.exe install` asks which agents to install skills for; $env:JIDOKA_AGENT (for example codex,claude) and
-# $env:JIDOKA_CLAUDE_CONFIG_DIRS (separated by semicolons) skip the questions.
+# `jidoka.exe install` asks which agents to install skills for; $env:JIDOKA_AGENT (for example codex,claude) skips the question.
 $ErrorActionPreference = 'Stop'
 
 # Report the native code in both decimal and its Windows hexadecimal form.

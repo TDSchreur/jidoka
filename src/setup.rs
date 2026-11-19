@@ -1,5 +1,4 @@
 //! Startup check: adopts skills installed before the install record existed, or hints at `jidoka install`.
-use crate::install::Selection;
 use crate::install_record::{self, InstallRecord};
 use std::{
     ffi::OsString,
@@ -60,7 +59,6 @@ pub(crate) fn check(
     let record = InstallRecord {
         version: String::new(),
         agents: adopted,
-        claude_config_dirs: Vec::new(),
     };
     if !record.agents.is_empty() && install_record::write(&path, &record).is_ok() {
         refresh(&path, record, &var, home, err);
@@ -168,15 +166,11 @@ fn refresh(
     let Some(_lock) = Lock::take(path.with_file_name("install.lock")) else {
         return;
     };
-    let selection = Selection {
-        agents: record.agents.clone(),
-        config_dirs: record.claude_config_dirs.clone(),
-    };
-    let result = crate::install::install_skill_files(&selection, home, var, &mut io::sink())
+    let result = crate::install::install_skill_files(&record.agents, home, var, &mut io::sink())
         .and_then(|()| crate::install::create_default_policy(var))
         .map(|_| ())
         .and_then(|()| {
-            let current = InstallRecord::current(record.agents.clone(), record.claude_config_dirs);
+            let current = InstallRecord::current(record.agents.clone());
             install_record::write(path, &current)
         });
     match result {
@@ -281,7 +275,6 @@ mod tests {
         let record = install_record::read(&env.record_path()).unwrap().unwrap();
         assert_eq!(record.agents, ["codex", "claude"]);
         assert_eq!(record.version, env!("CARGO_PKG_VERSION"));
-        assert!(record.claude_config_dirs.is_empty());
         assert_eq!(env.run(&["check"]), "");
         assert!(!lock_path(&env).exists());
     }
@@ -308,7 +301,7 @@ mod tests {
     #[test]
     fn an_existing_record_is_left_alone_silently() {
         let env = Env::new();
-        let record = InstallRecord::current(vec!["copilot".into()], vec![]);
+        let record = InstallRecord::current(vec!["copilot".into()]);
         install_record::write(&env.record_path(), &record).unwrap();
         assert_eq!(env.run(&["check"]), "");
         assert_eq!(
@@ -321,7 +314,6 @@ mod tests {
         let record = InstallRecord {
             version: version.into(),
             agents: agents.iter().map(|a| (*a).into()).collect(),
-            claude_config_dirs: vec![],
         };
         install_record::write(&env.record_path(), &record).unwrap();
     }
