@@ -775,3 +775,19 @@ fn a_codex_subagent_rollout_is_categorized_and_shown_on_its_own_lines() {
     assert_eq!(result.subagents.requests, 2);
     assert!(result.coordinator_only_sessions.is_empty());
 }
+
+#[test]
+fn recorded_sessions_in_an_unscanned_folder_get_their_own_note() {
+    let world = World::new();
+    let target = run(RUN_A, 0, Some(100), &["elsewhere"]);
+    world.session("other", &[one(10, "m1", bash("ls"))]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    assert_eq!(result.total.requests, 0);
+    let note = result.notes.join("\n");
+    assert!(note.starts_with(RECORDED_NOT_FOUND), "{note}");
+    assert!(note.contains("JIDOKA_CLAUDE_CONFIG_DIRS"), "{note}");
+
+    let unrecorded = run(RUN_A, 0, Some(100), &[]);
+    let result = world.analyze(&unrecorded, std::slice::from_ref(&unrecorded));
+    assert!(result.notes.join("\n").contains("none was recorded for it"));
+}
