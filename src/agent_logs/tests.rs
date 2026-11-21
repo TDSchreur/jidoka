@@ -139,3 +139,26 @@ fn copilot_claims_a_run_through_a_shell_variable_but_not_through_a_prompt() {
         json!({"type": "user.message", "data": {"content": format!("Run: {RUN}")}}).to_string();
     assert!(copilot::copilot_claims(&prompt_only, &ids).is_empty());
 }
+
+#[test]
+fn copilot_claims_a_run_through_the_coordinator_but_not_through_a_subagent() {
+    let ids = HashSet::from([RUN]);
+    let message = |call: &str| {
+        json!({"type": "assistant.message", "timestamp": iso(1), "data": {"apiCallId": call, "content": "",
+            "toolRequests": [{"toolCallId": format!("t-{call}"), "name": "bash",
+                "arguments": {"command": format!("jidoka run stats {RUN}")}}]}})
+        .to_string()
+    };
+    let record = |call: &str, initiator: &str| {
+        json!({"type": "session.usage_record", "timestamp": iso(2), "data": {"usage": {"apiCallId": call,
+            "model": "gpt-5", "inputTokens": 10, "outputTokens": 1, "initiator": initiator}}})
+        .to_string()
+    };
+    let subagent = [message("c1"), record("c1", "sub-agent")].join("\n");
+    assert!(copilot::copilot_claims(&subagent, &ids).is_empty());
+    let coordinator = [message("c1"), record("c1", "user")].join("\n");
+    assert_eq!(
+        copilot::copilot_claims(&coordinator, &ids),
+        HashSet::from([RUN.to_string()])
+    );
+}

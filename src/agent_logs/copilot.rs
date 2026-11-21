@@ -1,5 +1,6 @@
 //! The Copilot CLI adapter: `session-state/<session>/events.jsonl`. Subagents write into the same file, and
-//! their usage records carry the `sub-agent` initiator.
+//! their usage records carry the `sub-agent` initiator. Only the session's own commands claim a run: a
+//! command whose call has a `sub-agent` usage record does not.
 
 use super::*;
 
@@ -9,6 +10,8 @@ struct Calls {
     commands: Vec<String>,
     other_tool: bool,
     ids: Vec<String>,
+    /// The run ids its commands name, kept until the usage record says who made the call.
+    claims: HashSet<String>,
 }
 
 /// The tokens of a Copilot `usage` object, or `None` when it reports neither input nor output. Copilot
@@ -66,9 +69,9 @@ fn copilot_skills(text: &str) -> Vec<(u64, String)> {
 struct CopilotLog {
     /// The responses and their keys.
     responses: Vec<(String, Response)>,
-    /// The run ids an executed Jidoka command in this log names. A bash command can reach the id through a
-    /// shell variable set to a literal (`id=<id> && jidoka run update $id`), with variables carried across
-    /// the commands in order.
+    /// The run ids that an executed Jidoka command of the session's own, not a subagent's, names. A bash
+    /// command can reach the id through a shell variable set to a literal (`id=<id> && jidoka run update $id`),
+    /// with variables carried across the commands in order.
     claims: HashSet<String>,
     skipped: Skipped,
 }
@@ -145,6 +148,7 @@ fn parse_copilot(text: &str, session: &str, ids: &HashSet<&str>) -> CopilotLog {
         match data["type"].as_str() {
             Some("assistant.message") => {
                 let mut message = Calls::default();
+                let call = body["apiCallId"].as_str();
                 for request in body["toolRequests"].as_array().into_iter().flatten() {
                     if let Some(id) = request["toolCallId"].as_str() {
                         message.ids.push(id.to_string());
@@ -155,17 +159,22 @@ fn parse_copilot(text: &str, session: &str, ids: &HashSet<&str>) -> CopilotLog {
                     {
                         Some(command) => {
                             let command = truncate(command);
-                            log.claims.extend(run_claims(command, ids, &mut variables));
+                            let claims = run_claims(command, ids, &mut variables);
+                            match call {
+                                Some(_) => message.claims.extend(claims),
+                                None => log.claims.extend(claims),
+                            }
                             message.commands.push(command.to_string());
                         }
                         None => message.other_tool = true,
                     }
                 }
-                if let Some(call) = body["apiCallId"].as_str() {
+                if let Some(call) = call {
                     let entry = calls.entry(call.to_string()).or_default();
                     entry.commands.extend(message.commands);
                     entry.other_tool |= message.other_tool;
                     entry.ids.extend(message.ids);
+                    entry.claims.extend(message.claims);
                 }
             }
             Some("tool.execution_complete") => {
@@ -205,6 +214,18 @@ fn parse_copilot(text: &str, session: &str, ids: &HashSet<&str>) -> CopilotLog {
                 });
             }
             _ => {}
+        }
+    }
+    // A subagent's commands never claim; only a call whose usage record says `sub-agent` is left out, so a
+    // call without a record still claims.
+    let subagent_calls: HashSet<&str> = records
+        .iter()
+        .filter(|record| record.subagent)
+        .filter_map(|record| record.call.as_deref())
+        .collect();
+    for (call, entry) in &calls {
+        if !subagent_calls.contains(call.as_str()) {
+            log.claims.extend(entry.claims.iter().cloned());
         }
     }
     log.responses = join_calls(records, &calls, &results, session);
