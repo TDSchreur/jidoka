@@ -764,46 +764,74 @@ fn group_guidance(id: &str) -> Result<Option<run_next::GroupGuidance>, Box<dyn s
 
 /// The agent sessions this command runs in, when the agent exposes them, with the agent each belongs to and
 /// that agent's home folder: Claude Code sets `CLAUDE_CODE_SESSION_ID`; Codex sets `CODEX_SESSION_ID` (the
-/// root session) and `CODEX_THREAD_ID`; Copilot CLI sets `COPILOT_AGENT_SESSION_ID`.
+/// root session) and `CODEX_THREAD_ID`; Copilot CLI sets `COPILOT_AGENT_SESSION_ID`. A warning is printed
+/// for a home that is not recorded because the dashboard would refuse it.
 fn current_agent_sessions() -> Vec<run_begin::AgentSession> {
-    agent_sessions_from(
+    let (sessions, warnings) = agent_sessions_from(
         &|name| env::var_os(name),
         install::home_dir().ok().as_deref(),
-    )
+    );
+    for warning in warnings {
+        eprintln!("{warning}");
+    }
+    sessions
 }
 
 /// The agent sessions `var` names, each with the home folder `jidoka install` would use for its agent
-/// (honoring `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `COPILOT_HOME`). A home the dashboard would refuse is
-/// left out, so it cannot fail the command; a relative one, because the dashboard cannot tell what it is
-/// relative to.
+/// (honoring `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `COPILOT_HOME`), and a warning for each agent home the
+/// dashboard would refuse. Such a home is left out, so it cannot fail the command; a relative one, because
+/// the dashboard cannot tell what it is relative to.
 fn agent_sessions_from(
     var: &dyn Fn(&str) -> Option<std::ffi::OsString>,
-    home: Option<&std::path::Path>,
-) -> Vec<run_begin::AgentSession> {
+    user_home: Option<&std::path::Path>,
+) -> (Vec<run_begin::AgentSession>, Vec<String>) {
     let mut sessions: Vec<run_begin::AgentSession> = Vec::new();
-    for (name, agent) in [
-        ("CLAUDE_CODE_SESSION_ID", "claude"),
-        ("CODEX_SESSION_ID", "codex"),
-        ("CODEX_THREAD_ID", "codex"),
-        ("COPILOT_AGENT_SESSION_ID", "copilot"),
+    let mut warnings: Vec<String> = Vec::new();
+    for (name, agent, home_var) in [
+        ("CLAUDE_CODE_SESSION_ID", "claude", "CLAUDE_CONFIG_DIR"),
+        ("CODEX_SESSION_ID", "codex", "CODEX_HOME"),
+        ("CODEX_THREAD_ID", "codex", "CODEX_HOME"),
+        ("COPILOT_AGENT_SESSION_ID", "copilot", "COPILOT_HOME"),
     ] {
         let Some(id) = var(name).and_then(|value| value.into_string().ok()) else {
             continue;
         };
-        if run::check_session_id(&id).is_ok() && !sessions.iter().any(|known| known.id == id) {
-            // Without a home directory only an agent's own home variable can give an absolute path.
-            let home = install::agent_home(agent, home.unwrap_or(std::path::Path::new("")), var)
-                .ok()
-                .and_then(|path| path.into_os_string().into_string().ok())
-                .filter(|path| run::is_valid_agent_home(path));
-            sessions.push(run_begin::AgentSession {
-                id,
-                agent: Some(agent),
-                home,
-            });
+        if run::check_session_id(&id).is_err() || sessions.iter().any(|known| known.id == id) {
+            continue;
         }
+        let home_var_value = var(home_var).filter(|value| !value.is_empty());
+        let agent_home = match user_home {
+            Some(user_home) => install::agent_home(agent, user_home, var).ok(),
+            // Without a home directory, only the agent's own variable can name its home.
+            None => home_var_value.clone().map(std::path::PathBuf::from),
+        };
+        let mut home = None;
+        if let Some(agent_home) = agent_home {
+            match agent_home.into_os_string().into_string() {
+                Ok(path) if run::is_valid_agent_home(&path) => home = Some(path),
+                _ => {
+                    let source = if home_var_value.is_some() {
+                        home_var
+                    } else {
+                        "the home directory"
+                    };
+                    let warning = format!(
+                        "Warning: the {agent} home from {source} is not an absolute path the dashboard accepts, \
+                         so this run's {agent} usage is read from the dashboard's own {agent} home."
+                    );
+                    if !warnings.contains(&warning) {
+                        warnings.push(warning);
+                    }
+                }
+            }
+        }
+        sessions.push(run_begin::AgentSession {
+            id,
+            agent: Some(agent),
+            home,
+        });
     }
-    sessions
+    (sessions, warnings)
 }
 
 /// `[--port <port>] [--no-usage]` in any order. Usage collection is on unless `--no-usage` or `JIDOKA_USAGE=off`.
@@ -1104,6 +1132,7 @@ mod tests {
 
     fn sessions_from(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<String> {
         agent_sessions_from(var, None)
+            .0
             .into_iter()
             .map(|session| session.id)
             .collect()
@@ -1117,6 +1146,7 @@ mod tests {
         let profile_text = profile.to_str().unwrap();
         let options = |pairs: &[(&str, &str)]| -> Vec<String> {
             agent_sessions_from(&lookup(pairs), Some(&user))
+                .0
                 .iter()
                 .flat_map(run_begin::AgentSession::update_options)
                 .collect()
@@ -1149,13 +1179,27 @@ mod tests {
             options(&[("CLAUDE_CODE_SESSION_ID", id), ("CLAUDE_CONFIG_DIR", "rel")]),
             ["--session", id]
         );
-        let homes = run_begin::agent_homes(&agent_sessions_from(
+        // It is named in one warning, even when two sessions of the agent share it.
+        let (_, warnings) = agent_sessions_from(
             &lookup(&[
-                ("CLAUDE_CODE_SESSION_ID", id),
-                ("CLAUDE_CONFIG_DIR", profile_text),
+                ("CODEX_SESSION_ID", id),
+                ("CODEX_THREAD_ID", "019e1f00-aaaa-7bbb-8ccc-000000000002"),
+                ("CODEX_HOME", "rel"),
             ]),
-            None,
-        ));
+            Some(&user),
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("CODEX_HOME"), "{warnings:?}");
+        let homes = run_begin::agent_homes(
+            &agent_sessions_from(
+                &lookup(&[
+                    ("CLAUDE_CODE_SESSION_ID", id),
+                    ("CLAUDE_CONFIG_DIR", profile_text),
+                ]),
+                None,
+            )
+            .0,
+        );
         assert_eq!(homes.get("claude").map(String::as_str), Some(profile_text));
     }
 
@@ -1163,6 +1207,7 @@ mod tests {
     fn each_session_variable_names_its_agent() {
         let agents = |pairs: &[(&str, &str)]| -> Vec<Option<&'static str>> {
             agent_sessions_from(&lookup(pairs), None)
+                .0
                 .into_iter()
                 .map(|session| session.agent)
                 .collect()

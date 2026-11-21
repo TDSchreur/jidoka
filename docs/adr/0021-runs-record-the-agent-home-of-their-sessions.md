@@ -20,4 +20,5 @@ When the dashboard starts, it collects once each finished run updated within the
 
 - Runs recorded before this change have no `agent_homes` and are read from the dashboard's own homes, as before. No migration.
 - A run update or advance from the new CLI carries `agent_homes`, which an older dashboard refuses as an unknown field, so the dashboard must be restarted with the new version.
-- An agent home that is relative, such as `CLAUDE_CONFIG_DIR=claude-work`, is not recorded, because the dashboard cannot tell what it is relative to.
+- The latest home recorded for an agent replaces the earlier one. Sessions of that agent recorded under an earlier home are then no longer read for the run, so a run whose agent moves to another home mid-run loses the usage of its earlier sessions.
+- An agent home that is relative, such as `CLAUDE_CONFIG_DIR=claude-work`, is not recorded, because the dashboard cannot tell what it is relative to. The CLI prints a warning instead, and that agent's logs are read from the dashboard's own home.
