@@ -785,8 +785,38 @@ fn codex_checks_are_skipped_without_a_readable_catalog() {
                 check.message
             );
         }
-        assert_eq!(routing_check(&report, "overrides").status, Status::Skipped);
     }
+}
+
+#[test]
+fn codex_effort_is_not_judged_when_the_catalog_lists_no_levels() {
+    let catalog =
+        r#"{"models":[{"slug":"gpt-6.2-sol"},{"slug":"gpt-9","supported_reasoning_levels":[]}]}"#;
+    let report = codex_world(Some(catalog)).report(None);
+    assert_eq!(routing_check(&report, "model").status, Status::Pass);
+    assert_eq!(routing_check(&report, "effort").status, Status::Pass);
+}
+
+#[test]
+fn complex_choices_are_labelled_apart_from_the_stage() {
+    let policy = r#"{"agents":{"codex":{
+        "stages":{"build":{"model":"gpt-6.2-sol","effort":"low"}},
+        "complex":{"build":{"model":"gpt-9","effort":"high"}}}}}"#;
+    let world = World::ready()
+        .with_agent("codex")
+        .with_version("codex", "codex-cli 0.99.1")
+        .with_policy(policy);
+    let dir = world.home.path().join(".codex");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("models_cache.json"), CODEX_CATALOG).unwrap();
+    let report = world.report(None);
+    let model = routing_check(&report, "model");
+    assert!(
+        model.message.contains("build (complex): gpt-9"),
+        "{}",
+        model.message
+    );
+    assert!(!model.message.contains("build: gpt"), "{}", model.message);
 }
 
 #[test]

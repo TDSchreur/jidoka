@@ -5,7 +5,8 @@
 
 use super::{Check, Machine, find_program, read_doc};
 use crate::routing::{
-    COPILOT_EFFORTS, Coverage, Host, ModelRouting, Policy, RoutingAgent, policy_path_in, read,
+    COPILOT_EFFORTS, Coverage, Host, ModelChoice, ModelRouting, Policy, RoutingAgent,
+    policy_path_in, read,
 };
 use std::path::Path;
 
@@ -134,18 +135,26 @@ fn codex_checks(selection: &ModelRouting, machine: &Machine) -> Vec<Check> {
         codex_effort_check(selection, &catalog),
         Check::skipped(
             "overrides",
-            "Codex has no known setting that replaces the model or effort passed to a subagent, so there is nothing to check (see ADR-0020)",
+            "Codex has no known setting that replaces the model or effort passed to a subagent, so there is nothing to check",
         ),
     ]
 }
 
-/// The models Codex lists in its own cache, each with the efforts it supports, or why they are unknown.
+/// A model in the Codex catalog. An empty `efforts` means the catalog does not say which efforts it supports.
+struct CodexModel {
+    slug: String,
+    efforts: Vec<String>,
+}
+
+/// The models Codex lists in its own cache, or why they are unknown.
 /// The cache is an internal file of Codex, not a stable interface, so any surprise means "unknown".
-type CodexCatalog = Result<Vec<(String, Vec<String>)>, String>;
+type CodexCatalog = Result<Vec<CodexModel>, String>;
 
 fn codex_catalog(machine: &Machine) -> CodexCatalog {
-    let home = crate::install::agent_home("codex", &machine.home, machine.var)
-        .map_err(|error| format!("could not find the Codex folder: {error}"))?;
+    let home =
+        crate::install::agent_home("codex", &machine.home, machine.var).map_err(|error| {
+            format!("could not find the Codex folder, so models_cache.json was not read: {error}")
+        })?;
     let path = home.join("models_cache.json");
     let shown = path.display();
     let text = read_doc(&path).map_err(|error| format!("could not read {shown}: {error}"))?;
@@ -165,9 +174,25 @@ fn codex_catalog(machine: &Machine) -> CodexCatalog {
                         .collect()
                 })
                 .unwrap_or_default();
-            Ok((slug.to_string(), efforts))
+            Ok(CodexModel {
+                slug: slug.to_string(),
+                efforts,
+            })
         })
         .collect()
+}
+
+/// The routed choices, labelled by Stage name; a complex choice is "build (complex)".
+fn routed_choices(selection: &ModelRouting) -> Vec<(String, &ModelChoice)> {
+    let stages = selection
+        .stages
+        .iter()
+        .map(|(stage, choice)| (stage.name().to_string(), choice));
+    let complex = selection
+        .complex
+        .iter()
+        .map(|(stage, choice)| (format!("{} (complex)", stage.name()), choice));
+    stages.chain(complex).collect()
 }
 
 fn codex_model_check(selection: &ModelRouting, catalog: &CodexCatalog) -> Check {
@@ -177,12 +202,10 @@ fn codex_model_check(selection: &ModelRouting, catalog: &CodexCatalog) -> Check 
             return Check::skipped("model", format!("{reason}, so the models were not checked"));
         }
     };
-    let unknown: Vec<String> = selection
-        .stages
-        .iter()
-        .chain(selection.complex.iter())
-        .filter(|(_, choice)| !models.iter().any(|(slug, _)| *slug == choice.model))
-        .map(|(stage, choice)| format!("{}: {}", stage.name(), choice.model))
+    let unknown: Vec<String> = routed_choices(selection)
+        .into_iter()
+        .filter(|(_, choice)| !models.iter().any(|model| model.slug == choice.model))
+        .map(|(label, choice)| format!("{label}: {}", choice.model))
         .collect();
     if unknown.is_empty() {
         return Check::pass(
@@ -211,19 +234,22 @@ fn codex_effort_check(selection: &ModelRouting, catalog: &CodexCatalog) -> Check
         }
     };
     let (mut unsupported, mut unset) = (Vec::new(), Vec::new());
-    for (stage, choice) in selection.stages.iter().chain(selection.complex.iter()) {
+    for (label, choice) in routed_choices(selection) {
         // A model missing from the catalog is reported by the model check only.
-        let Some((_, supported)) = models.iter().find(|(slug, _)| *slug == choice.model) else {
+        let Some(model) = models.iter().find(|model| model.slug == choice.model) else {
             continue;
         };
+        let supported = &model.efforts;
         match choice.effort.as_deref() {
-            None => unset.push(stage.name().to_string()),
-            Some(effort) if !supported.iter().any(|s| s == effort) => unsupported.push(format!(
-                "{}: {effort} ({} supports {})",
-                stage.name(),
-                choice.model,
-                supported.join(", ")
-            )),
+            None => unset.push(label),
+            // An empty list means the catalog does not say, so there is nothing to compare with.
+            Some(effort) if !supported.is_empty() && !supported.iter().any(|s| s == effort) => {
+                unsupported.push(format!(
+                    "{label}: {effort} ({} supports {})",
+                    choice.model,
+                    supported.join(", ")
+                ));
+            }
             Some(_) => {}
         }
     }
@@ -284,13 +310,11 @@ fn claude_checks(selection: &ModelRouting, root: &Path, machine: &Machine) -> Ve
 }
 
 fn claude_model_check(selection: &ModelRouting) -> Check {
-    let wrong: Vec<String> = selection
-        .stages
-        .iter()
-        .chain(selection.complex.iter())
-        .filter_map(|(stage, choice)| {
+    let wrong: Vec<String> = routed_choices(selection)
+        .into_iter()
+        .filter_map(|(label, choice)| {
             let model = &choice.model;
-            (!CLAUDE_MODELS.contains(&model.as_str())).then(|| format!("{}: {model}", stage.name()))
+            (!CLAUDE_MODELS.contains(&model.as_str())).then(|| format!("{label}: {model}"))
         })
         .collect();
     if wrong.is_empty() {
@@ -312,11 +336,11 @@ fn claude_model_check(selection: &ModelRouting) -> Check {
 
 fn effort_check(selection: &ModelRouting, host: &str, accepted: &[&str]) -> Check {
     let (mut unsupported, mut unset) = (Vec::new(), Vec::new());
-    for (stage, choice) in selection.stages.iter().chain(selection.complex.iter()) {
+    for (label, choice) in routed_choices(selection) {
         match choice.effort.as_deref() {
-            None => unset.push(stage.name().to_string()),
+            None => unset.push(label),
             Some(effort) if !accepted.contains(&effort) => {
-                unsupported.push(format!("{}: {effort}", stage.name()));
+                unsupported.push(format!("{label}: {effort}"));
             }
             Some(_) => {}
         }
