@@ -13,7 +13,7 @@ macro_rules! help {
 pub(super) use help;
 
 /// What an update does to the run's stage summaries.
-#[derive(Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct SummariesUpdate {
     /// Stage summaries to set; null removes that stage's summary. Other stages keep theirs.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

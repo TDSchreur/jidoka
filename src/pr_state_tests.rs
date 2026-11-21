@@ -311,6 +311,29 @@ fn superseded_host_results_do_not_change_the_run_or_its_cached_status() {
 }
 
 #[test]
+fn one_rule_decides_which_pull_request_state_wins() {
+    let status = |state, checked_at| PrStatus {
+        url: PR.into(),
+        state,
+        reason: None,
+        checked_at,
+    };
+    let merged = status(PrState::Merged, 20);
+    assert!(!status(PrState::Open, 21).supersedes(&merged));
+    assert!(status(PrState::Merged, 21).supersedes(&merged));
+    assert!(!status(PrState::Closed, 19).supersedes(&status(PrState::Open, 20)));
+    assert!(status(PrState::Open, 21).supersedes(&status(PrState::Closed, 20)));
+    assert!(status(PrState::Closed, 20).supersedes(&status(PrState::Open, 20)));
+    assert!(!status(PrState::Open, 20).supersedes(&status(PrState::Closed, 20)));
+    assert!(!status(PrState::Draft, 20).supersedes(&status(PrState::Open, 20)));
+    let other = PrStatus {
+        url: "https://github.com/o/r/pull/8".into(),
+        ..status(PrState::Open, 1)
+    };
+    assert!(other.supersedes(&merged));
+}
+
+#[test]
 fn older_and_tied_results_cannot_overwrite_newer_or_terminal_results() {
     use crate::run::PrResult;
     let (_dir, store) = store();

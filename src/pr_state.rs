@@ -23,6 +23,15 @@ pub(crate) enum PrState {
 }
 
 impl PrState {
+    /// How final the state is: on an equal check time only a higher rank replaces a recorded state.
+    fn rank(self) -> u8 {
+        match self {
+            PrState::Merged => 2,
+            PrState::Closed => 1,
+            PrState::Open | PrState::Draft | PrState::Unknown => 0,
+        }
+    }
+
     /// How the state reads in a message.
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -46,6 +55,27 @@ pub(crate) struct PrStatus {
     pub(crate) reason: Option<String>,
     /// When the host was asked, in milliseconds since the Unix epoch.
     pub(crate) checked_at: u64,
+}
+
+impl PrStatus {
+    /// Whether this state may replace `previous`, the one Pull request state rule: a state of another pull
+    /// request always does; a merged state is never overwritten; an older check loses; on an equal check
+    /// time only the same or a higher-ranked state (merged, then closed, then the rest) replaces.
+    pub(crate) fn supersedes(&self, previous: &PrStatus) -> bool {
+        if self.url != previous.url {
+            return true;
+        }
+        if previous.state == PrState::Merged && self.state != PrState::Merged {
+            return false;
+        }
+        match self.checked_at.cmp(&previous.checked_at) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Equal => {
+                self.state == previous.state || self.state.rank() > previous.state.rank()
+            }
+        }
+    }
 }
 
 /// Reads the state of the pull request at `url` from its host.

@@ -28,7 +28,7 @@ pub(crate) use stage_exit::{
     ReworkRecord, SkippedCheck, StageExit, next_rework,
 };
 mod store;
-pub(crate) use store::PrResult;
+pub(crate) use store::{AdvanceMetadata, PrResult};
 mod summaries;
 mod tickets;
 

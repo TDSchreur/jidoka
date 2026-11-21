@@ -280,7 +280,13 @@ impl Run {
         gate.status = GateStatus::Passed;
         gate.results.push(result.clone());
         self.gates.push(result);
-        self.pr_status = Some(ci.pr_status);
+        if self
+            .pr_status
+            .as_ref()
+            .is_none_or(|previous| ci.pr_status.supersedes(previous))
+        {
+            self.pr_status = Some(ci.pr_status);
+        }
         Ok(())
     }
 
@@ -509,6 +515,41 @@ mod tests {
             run.gates[0].evidence.as_deref(),
             Some("CI passed on abc1234")
         );
+    }
+
+    #[test]
+    fn an_accepted_exit_from_finish_keeps_a_merged_state_recorded_meanwhile() {
+        let mut run = run_in(Stage::Finish);
+        let observed = PrStatus {
+            url: "https://example.test/pr/1".into(),
+            state: PrState::Open,
+            reason: None,
+            checked_at: 5,
+        };
+        let merged = PrStatus {
+            state: PrState::Merged,
+            checked_at: 4,
+            ..observed.clone()
+        };
+        run.pr_status = Some(merged.clone());
+        run.leave(
+            Exit::Accepted {
+                gates: vec![Evaluation::with_status(
+                    Gate::CiPassed,
+                    GateStatus::AwaitingLiveCheck,
+                )],
+                skipped_checks: Vec::new(),
+                ci: Some(CiEvidence {
+                    head: "abc1234".into(),
+                    outcome: CiOutcome::Passed,
+                    pr_status: observed,
+                }),
+            },
+            AT,
+        )
+        .unwrap();
+        assert_eq!(run.status, RunStatus::Done);
+        assert_eq!(run.pr_status, Some(merged));
     }
 
     #[test]

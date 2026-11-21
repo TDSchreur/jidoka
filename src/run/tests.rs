@@ -748,13 +748,10 @@ fn finishing_a_run_closes_its_window_and_an_update_cannot_reopen_it() {
         )
         .unwrap();
     store
-        .change_gate(&run.id, |run| {
-            run.leave(
-                Exit::Override {
-                    reason: "CI service unavailable".into(),
-                },
-                updated_now().unwrap(),
-            )
+        .advance(&run.id, AdvanceMetadata::default(), |_| {
+            Ok(Exit::Override {
+                reason: "CI service unavailable".into(),
+            })
         })
         .unwrap();
     let done = store.get(&run.id).unwrap().unwrap();
@@ -1062,36 +1059,15 @@ fn blocking_and_resuming_record_events_without_touching_the_timeline() {
 }
 
 #[test]
-fn gate_change_preserves_concurrent_pr_refresh_and_rejects_run_updates() {
+fn an_advance_is_refused_when_the_agent_changes_the_run_during_its_check() {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     let run = new_run(&store, "task");
-    let url = "https://github.com/owner/repo/pull/1";
     store
-        .update(&run.id, parse_update(&["--pr", url]).unwrap())
+        .update(&run.id, parse_update(&["--mode", "fast"]).unwrap())
         .unwrap();
-    store
-        .change_gate(&run.id, |next| {
-            store
-                .set_pr_status(
-                    &run.id,
-                    PrStatus {
-                        url: url.into(),
-                        state: crate::pr_state::PrState::Open,
-                        reason: None,
-                        checked_at: 42,
-                    },
-                )
-                .unwrap();
-            next.stage = Stage::Build;
-            Ok(())
-        })
-        .unwrap();
-    let current = store.get(&run.id).unwrap().unwrap();
-    assert_eq!(current.stage, Stage::Build);
-    assert_eq!(current.pr_status.unwrap().checked_at, 42);
     let error = store
-        .change_gate(&run.id, |next| {
+        .advance(&run.id, AdvanceMetadata::default(), |_| {
             store
                 .transition(
                     &run.id,
@@ -1100,8 +1076,9 @@ fn gate_change_preserves_concurrent_pr_refresh_and_rejects_run_updates() {
                     },
                 )
                 .unwrap();
-            next.stage = Stage::Check;
-            Ok(())
+            Ok(Exit::Override {
+                reason: "Spec agreed by hand".into(),
+            })
         })
         .unwrap_err();
     assert!(
@@ -1109,7 +1086,7 @@ fn gate_change_preserves_concurrent_pr_refresh_and_rejects_run_updates() {
         "unexpected error: {error}"
     );
     let current = store.get(&run.id).unwrap().unwrap();
-    assert_eq!(current.stage, Stage::Build);
+    assert_eq!(current.stage, Stage::Define);
     assert_eq!(current.status, RunStatus::Blocked);
 }
 

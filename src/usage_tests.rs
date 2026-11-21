@@ -1169,13 +1169,10 @@ mod auto_block {
             )
             .unwrap();
         done.store
-            .change_gate(&done.id, |run| {
-                run.leave(
-                    crate::run::Exit::Override {
-                        reason: "CI service unavailable".into(),
-                    },
-                    crate::run::updated_now().unwrap(),
-                )
+            .advance(&done.id, crate::run::AdvanceMetadata::default(), |_| {
+                Ok(crate::run::Exit::Override {
+                    reason: "CI service unavailable".into(),
+                })
             })
             .unwrap();
         collect_active(&done.store, &done.settings, now).unwrap();

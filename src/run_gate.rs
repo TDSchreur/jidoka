@@ -4,9 +4,9 @@ use crate::{
     pr_sync::Git,
     pr_wait,
     run::{
-        CiEvidence, CiOutcome, Evaluation, Exit, GateResult, GateStatus, MAX_GATE_RESULTS,
-        MAX_NOTE_BYTES, Mode, Run, RunStatus, SkippedCheck, Stage, SummariesUpdate, Ticket,
-        TicketStatus, check_text, updated_now, validate_sessions,
+        AdvanceMetadata, CiEvidence, CiOutcome, Evaluation, Exit, GateResult, GateStatus,
+        MAX_GATE_RESULTS, MAX_NOTE_BYTES, Mode, Run, RunStatus, RunStore, SkippedCheck, Stage,
+        SummariesUpdate, Ticket, TicketStatus, check_text, updated_now, validate_sessions,
     },
     stages::{self, Destination, Gate},
 };
@@ -470,22 +470,16 @@ impl Gate {
     }
 }
 
-pub(crate) fn advance(run: &mut Run, git: &dyn Git, tool: &dyn pr_wait::Gh) -> Result<(), String> {
-    advance_with_clock(run, git, tool, &pr_wait::RealClock(Instant::now()))
-}
-
-fn advance_with_clock(
-    run: &mut Run,
+/// Checks the exit gates of the current Stage, and CI when leaving Finish, and returns the accepted exit.
+pub(crate) fn accepted_exit(
+    run: &Run,
     git: &dyn Git,
     tool: &dyn pr_wait::Gh,
-    clock: &dyn pr_wait::Clock,
-) -> Result<(), String> {
-    let exit = accepted_exit(run, git, tool, clock)?;
-    run.leave(exit, now()?)
+) -> Result<Exit, String> {
+    accepted_exit_with_clock(run, git, tool, &pr_wait::RealClock(Instant::now()))
 }
 
-/// Checks the exit gates of the current Stage, and CI when leaving Finish, and returns the accepted exit.
-fn accepted_exit(
+fn accepted_exit_with_clock(
     run: &Run,
     git: &dyn Git,
     tool: &dyn pr_wait::Gh,
@@ -580,27 +574,26 @@ impl AdvanceRequest {
         validate_sessions(&self.sessions)
     }
 
-    pub(crate) fn apply(
-        mut self,
-        run: &mut Run,
+    /// Advances run `id` in `store` with this request's metadata: forced, or once the exit gates (and CI
+    /// out of Finish) pass.
+    pub(crate) fn advance(
+        self,
+        store: &RunStore,
+        id: &str,
         git: &dyn Git,
         host: &dyn pr_wait::Gh,
     ) -> Result<(), String> {
         self.validate()?;
-        if let Some(activity) = self.activity.take() {
-            run.activity = Some(activity);
-        }
-        std::mem::take(&mut self.summaries).apply(run);
-        run.record_sessions(std::mem::take(&mut self.sessions));
-        match self.forced_reason()? {
-            Some(reason) => run.leave(
-                Exit::Override {
-                    reason: reason.into(),
-                },
-                now()?,
-            ),
-            None => advance(run, git, host),
-        }
+        let forced = self.forced_reason()?.map(str::to_owned);
+        let metadata = AdvanceMetadata {
+            activity: self.activity,
+            summaries: self.summaries,
+            sessions: self.sessions,
+        };
+        store.advance(id, metadata, |run| match forced {
+            Some(reason) => Ok(Exit::Override { reason }),
+            None => accepted_exit(run, git, host),
+        })
     }
 
     /// The reason for a forced advance, or `None` for a normal one.
@@ -746,6 +739,33 @@ mod tests {
         Ok(())
     }
 
+    /// Leaves the Stage of a run value once its exit gates pass, as the store does with the exit.
+    fn advance(run: &mut Run, git: &dyn Git, tool: &dyn pr_wait::Gh) -> Result<(), String> {
+        let exit = accepted_exit(run, git, tool)?;
+        run.leave(exit, 1)
+    }
+
+    fn advance_with_clock(
+        run: &mut Run,
+        git: &dyn Git,
+        tool: &dyn pr_wait::Gh,
+        clock: &dyn pr_wait::Clock,
+    ) -> Result<(), String> {
+        let exit = accepted_exit_with_clock(run, git, tool, clock)?;
+        run.leave(exit, 1)
+    }
+
+    /// Advances run 1 through the store once its exit gates pass.
+    fn advance_stored(
+        store: &crate::run::RunStore,
+        git: &dyn Git,
+        tool: &dyn pr_wait::Gh,
+    ) -> Result<(), String> {
+        store.advance("1", AdvanceMetadata::default(), |run| {
+            accepted_exit(run, git, tool)
+        })
+    }
+
     fn force(run: &mut Run, reason: &str) -> Result<(), String> {
         run.leave(
             Exit::Override {
@@ -817,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn change_gate_keeps_usage_collected_meanwhile_but_refuses_other_changes() {
+    fn advance_keeps_usage_collected_meanwhile_but_refuses_other_changes() {
         use crate::run::RunStore;
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("runs.json");
@@ -826,10 +846,13 @@ mod tests {
         let usage: crate::usage::Usage =
             serde_json::from_value(serde_json::json!({"status":"tracked","collected_at":7}))
                 .unwrap();
+        let forced = || Exit::Override {
+            reason: "Tickets done by hand".into(),
+        };
         store
-            .change_gate("1", |run| {
+            .advance("1", AdvanceMetadata::default(), |_| {
                 store.set_usage("1", usage.clone()).unwrap();
-                force(run, "Tickets done by hand")
+                Ok(forced())
             })
             .unwrap();
         let saved = store.get("1").unwrap().unwrap();
@@ -837,9 +860,9 @@ mod tests {
         assert_eq!(saved.usage, Some(usage));
         assert!(!saved.run_reports.is_empty());
 
-        let refused = store.change_gate("1", |run| {
+        let refused = store.advance("1", AdvanceMetadata::default(), |_| {
             store.set_stage("1", Stage::Build);
-            force(run, "Again")
+            Ok(forced())
         });
         assert_eq!(
             refused.unwrap_err(),
@@ -991,7 +1014,7 @@ mod tests {
             head: "def5678",
             ..host()
         };
-        let advance = || store.change_gate("1", |run| super::advance(run, &git, &gh));
+        let advance = || advance_stored(&store, &git, &gh);
         update(&[
             "--ticket",
             "https://example.com/1 One",
@@ -1103,9 +1126,7 @@ mod tests {
         let dashboard =
             serde_json::to_value(crate::run_next::stage_gates(&run, Ok(&[]), &git)).unwrap();
         assert!(dashboard.to_string().contains("Findings F1 are open"));
-        let error = store
-            .change_gate("1", |run| advance(run, &git, &host()))
-            .unwrap_err();
+        let error = advance_stored(&store, &git, &host()).unwrap_err();
         assert!(error.contains("Findings F1 are open"));
         assert!(store.get("1").unwrap().unwrap().stage_exits.is_empty());
     }
@@ -1180,10 +1201,10 @@ mod tests {
                 .update_with("1", parse_update(options).unwrap(), &git)
                 .unwrap();
         };
-        let advance = || store.change_gate("1", |run| super::advance(run, &git, &host()));
+        let advance = || advance_stored(&store, &git, &host());
         let pass = || {
-            store.change_gate("1", |run| {
-                record(run, result(Gate::TicketsVerified, true), &git)
+            store.record_gate("1", |run| {
+                super::record(run, result(Gate::TicketsVerified, true), &git)
             })
         };
 
@@ -1394,9 +1415,7 @@ mod tests {
         let initial = run(Stage::Finish);
         std::fs::write(&path, serde_json::to_vec(&vec![initial]).unwrap()).unwrap();
         let store = crate::run::RunStore::open(&path).unwrap();
-        store
-            .change_gate("1", |run| advance(run, &git, &host()))
-            .unwrap();
+        advance_stored(&store, &git, &host()).unwrap();
         let run = store.get("1").unwrap().unwrap();
         let stored = run.gates.iter().find(|r| r.gate == Gate::CiPassed).unwrap();
         assert!(stored.passed);
