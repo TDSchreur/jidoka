@@ -6,12 +6,12 @@
 //! never shown as zero: a field a log does not report is absent.
 
 use crate::{
+    agent_logs::{LogSession, ReadLimits, Roots, RunWindow, read_sessions},
     run::{Run, Stage},
-    usage_logs::{ReadLimits, Roots, RunSession, read_sessions},
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet},
     time::Instant,
 };
 
@@ -370,20 +370,6 @@ pub(crate) fn iso_timestamp(millis: u64) -> String {
 
 // --- attribution ------------------------------------------------------------------------------------
 
-/// One response of a session log, reduced to what attribution needs.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Entry {
-    pub(crate) session: String,
-    /// Milliseconds since the Unix epoch.
-    pub(crate) ts: u64,
-    pub(crate) model: String,
-    pub(crate) tokens: Tokens,
-    /// Whether a subagent made the call.
-    pub(crate) subagent: bool,
-    /// The reasoning effort the log recorded for the call, when it recorded one.
-    pub(crate) effort: Option<String>,
-}
-
 /// How far ahead of this machine's clock a log entry may be.
 pub(crate) const FUTURE_SLACK_MS: u64 = 60_000;
 
@@ -407,10 +393,6 @@ pub(crate) fn overlaps(a: &Run, b: &Run) -> bool {
     a_start <= b_end && b_start <= a_end
 }
 
-fn claims(run: &Run, session: &RunSession) -> bool {
-    session.mentions.contains(&run.id) || run.sessions.contains(&session.id)
-}
-
 /// How long before a run's first stage a skill still counts for it: the workflow skill is loaded just
 /// before `jidoka run begin` creates the run.
 const SKILL_LEAD_MS: u64 = 5 * 60 * 1000;
@@ -428,7 +410,7 @@ fn skill_window(run: &Run, at: u64) -> bool {
 /// The skills the sessions that `target` claims used, in time order, each with the stage it fell in.
 /// A skill used while another run claiming the same session was active is left out: it cannot be
 /// told apart. `tracked` holds the runs that overlap `target`.
-fn used_skills(target: &Run, tracked: &[&Run], sessions: &[&RunSession]) -> Vec<UsedSkill> {
+fn used_skills(target: &Run, tracked: &[&Run], sessions: &[&LogSession]) -> Vec<UsedSkill> {
     let Some(first) = target.timeline.first() else {
         return Vec::new();
     };
@@ -441,7 +423,7 @@ fn used_skills(target: &Run, tracked: &[&Run], sessions: &[&RunSession]) -> Vec<
                 mark_at(target, *at).map(|mark| mark.stage)
             };
             let shared = tracked.iter().any(|other| {
-                other.id != target.id && claims(other, session) && skill_window(other, *at)
+                other.id != target.id && session.belongs_to(other) && skill_window(other, *at)
             });
             if let (Some(stage), false) = (stage, shared) {
                 used.push(UsedSkill {
@@ -472,17 +454,17 @@ fn bucket(mark: &Mark) -> (Option<String>, bool) {
 pub(crate) fn attribute(
     target: &Run,
     runs: &[Run],
-    sessions: &[RunSession],
+    sessions: &[LogSession],
     now: u64,
 ) -> (Vec<UsageRow>, Tokens, Vec<String>) {
     type Key = (Stage, String, Option<String>, bool);
     let mut rows: BTreeMap<Key, UsageRow> = BTreeMap::new();
     let mut unattributed = Tokens::default();
     let mut counted: Vec<String> = Vec::new();
-    for session in sessions.iter().filter(|session| claims(target, session)) {
-        let claimants: Vec<&Run> = runs.iter().filter(|run| claims(run, session)).collect();
+    for session in sessions.iter().filter(|session| session.belongs_to(target)) {
+        let claimants: Vec<&Run> = runs.iter().filter(|run| session.belongs_to(run)).collect();
         let mut used = false;
-        for entry in &session.entries {
+        for entry in &session.responses {
             // An entry from the future cannot be the run's work: a clock is wrong or the log is made up.
             if entry.ts > now.saturating_add(FUTURE_SLACK_MS) {
                 continue;
@@ -557,7 +539,7 @@ pub(crate) fn attribute(
 /// pause explains is not also an idle gap.
 pub(crate) fn derive_pauses(
     target: &Run,
-    sessions: &[RunSession],
+    sessions: &[LogSession],
     now: u64,
 ) -> (Vec<Pause>, Vec<IdleGap>) {
     let Some(first) = target.timeline.first() else {
@@ -570,7 +552,7 @@ pub(crate) fn derive_pauses(
             .unwrap_or(now.saturating_add(FUTURE_SLACK_MS)),
     );
     let inside = |at: &u64| (start..=end).contains(at);
-    let claimed = sessions.iter().filter(|session| claims(target, session));
+    let claimed = sessions.iter().filter(|session| session.belongs_to(target));
     let mut markers: Vec<(PauseKind, u64)> = Vec::new();
     let mut activity: Vec<u64> = Vec::new();
     for session in claimed {
@@ -647,23 +629,14 @@ fn collect_limited(
     };
     // Only runs whose time overlaps the target's can contest its entries, so only they are looked for;
     // this also keeps the scan from reaching back to the oldest run there is.
-    let tracked: Vec<&Run> = runs
+    let window = RunWindow::new(target, runs, first.at);
+    let tracked = &window.tracked;
+    let read = read_sessions(roots, &window, deadline, limits);
+    let claimed: Vec<&LogSession> = read
+        .sessions
         .iter()
-        .filter(|run| run.id == target.id || (!run.timeline.is_empty() && overlaps(target, run)))
+        .filter(|s| s.belongs_to(target))
         .collect();
-    let ids: HashSet<&str> = tracked.iter().map(|run| run.id.as_str()).collect();
-    let recorded: HashSet<&str> = tracked
-        .iter()
-        .flat_map(|run| run.sessions.iter().map(String::as_str))
-        .collect();
-    let from = tracked
-        .iter()
-        .filter_map(|run| run.timeline.first())
-        .map(|mark| mark.at)
-        .min()
-        .unwrap_or(first.at);
-    let read = read_sessions(roots, &ids, &recorded, from, deadline, limits);
-    let claimed: Vec<&RunSession> = read.sessions.iter().filter(|s| claims(target, s)).collect();
     if claimed.is_empty() {
         let reason = if read.roots_found == 0 {
             "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()
@@ -674,15 +647,26 @@ fn collect_limited(
         } else {
             "no session log names this run and none was recorded for it; its agent may not write logs this tool reads, or its session id was never recorded".to_string()
         };
-        return Usage::not_tracked(reason, now);
+        // A log recorded for the run that could not be read is why nothing was found: say so.
+        let mut usage = Usage::not_tracked(reason, now);
+        for note in &read.notes {
+            let recorded = note
+                .session
+                .as_ref()
+                .is_some_and(|id| target.sessions.contains(id));
+            if recorded && !usage.notes.contains(&note.text) {
+                usage.notes.push(note.text.clone());
+            }
+        }
+        return usage;
     }
-    let skills = used_skills(target, &tracked, &claimed);
+    let skills = used_skills(target, tracked, &claimed);
     let (rows, unattributed, counted) = attribute(target, runs, &read.sessions, now);
     let (pauses, idle) = derive_pauses(target, &read.sessions, now);
     // Each session is evaluated on its own signals: another session cannot answer its request.
     // A request left unanswered by a session that a later session has overtaken can no longer be
     // answered, so it must not keep blocking the run.
-    let newest_signal_at = |session: &RunSession| session.attention.iter().map(|(at, _)| *at).max();
+    let newest_signal_at = |session: &LogSession| session.attention.iter().map(|(at, _)| *at).max();
     let attention = claimed
         .iter()
         .filter_map(|session| {
@@ -708,7 +692,7 @@ fn collect_limited(
                     && tracked
                         .iter()
                         .filter(|run| {
-                            claims(run, session)
+                            session.belongs_to(run)
                                 && run.timeline.first().is_some_and(|mark| mark.at <= *at)
                                 && run.finished_at.is_none_or(|end| *at <= end)
                         })

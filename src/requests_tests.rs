@@ -2,7 +2,7 @@
 //! analysis. Nothing here reads a real user's logs.
 
 use super::*;
-use crate::{request_logs::Category, run::Run, usage_logs::Roots};
+use crate::{agent_logs::Roots, request_logs::Category, run::Run};
 use serde_json::{Value, json};
 use std::{fs, time::Duration};
 use tempfile::TempDir;
@@ -256,7 +256,7 @@ fn a_session_claims_a_run_only_through_an_executed_update_command() {
             one(20, "e2", text()),
         ],
     );
-    // The id appears only in a tool result, a prompt and an inspect command: no claim.
+    // The id appears only in a tool result, a prompt and commands that do not run jidoka: no claim.
     world.session(
         "mentioned",
         &[
@@ -264,14 +264,59 @@ fn a_session_claims_a_run_only_through_an_executed_update_command() {
                 {"type": "tool_result", "content": format!("jidoka run update {RUN_A} build running")}]}})
             .to_string(),
             json!({"type": "user", "timestamp": iso(6), "message": {"content": format!("jidoka run update {RUN_A}")}}).to_string(),
-            one(10, "n1", bash(&format!("jidoka run inspect {RUN_A}"))),
+            one(10, "n1", bash(&format!("echo jidoka run inspect {RUN_A}"))),
             one(20, "n2", bash(&format!("cat notes.md # jidoka run stats {RUN_A}"))),
         ],
     );
+    // Any executed command that names the run claims it, not only an update.
+    world.session(
+        "inspector",
+        &[one(
+            30,
+            "i1",
+            bash(&format!("jidoka run inspect {RUN_A} --json")),
+        )],
+    );
     let target = run(RUN_A, 0, Some(100), &[]);
     let result = world.analyze(&target, std::slice::from_ref(&target));
-    assert_eq!(result.sessions, ["executed"]);
-    assert_eq!(result.total.requests, 2);
+    assert_eq!(result.sessions, ["executed", "inspector"]);
+    assert_eq!(result.total.requests, 3);
+}
+
+#[test]
+fn a_command_run_from_inside_a_script_tool_claims_the_run_without_being_a_request() {
+    let world = World::new();
+    let script_call = json!({"type": "assistant", "isVirtual": true, "timestamp": iso(10),
+        "message": {"model": "<synthetic>", "content": [bash(&format!("jidoka run update {RUN_A} build running"))],
+            "usage": {"input_tokens": 0, "output_tokens": 0}}})
+    .to_string();
+    world.session("scripted", &[script_call, one(20, "r1", text())]);
+    let target = run(RUN_A, 0, Some(100), &[]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    assert_eq!(result.sessions, ["scripted"]);
+    assert_eq!(result.total.requests, 1);
+}
+
+#[test]
+fn a_recorded_codex_log_that_is_too_large_gets_a_note() {
+    let world = World::new();
+    let path = world.dir.path().join(CODEX_FILE);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // A sparse file: larger than the reader's limit without writing it.
+    fs::File::create(path)
+        .unwrap()
+        .set_len(65 * 1024 * 1024)
+        .unwrap();
+    let target = run(RUN_A, 0, Some(100), &["abc"]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    assert!(
+        result
+            .notes
+            .iter()
+            .any(|note| note.contains("larger than 64 MiB")),
+        "{:?}",
+        result.notes
+    );
 }
 
 #[test]
@@ -393,27 +438,6 @@ fn copilot_result(at: u64, id: &str, content: &str) -> String {
     json!({"type": "tool.execution_complete", "timestamp": iso(at), "data": {"toolCallId": id, "success": true,
         "result": {"content": content, "detailedContent": "not counted, the model never sees it"}}})
     .to_string()
-}
-
-#[test]
-fn copilot_logs_claim_a_run_through_a_shell_variable_but_not_through_a_prompt() {
-    let ids = HashSet::from([RUN_A]);
-    let via_variable = copilot_message(
-        1,
-        "c1",
-        &[copilot_call(
-            "t1",
-            "bash",
-            json!({"command": format!("id={RUN_A} && jidoka run update $id define running")}),
-        )],
-    );
-    assert_eq!(
-        crate::copilot_requests::copilot_claims(&via_variable, &ids),
-        HashSet::from([RUN_A.to_string()])
-    );
-    let prompt_only =
-        json!({"type": "user.message", "data": {"content": format!("Run: {RUN_A}")}}).to_string();
-    assert!(crate::copilot_requests::copilot_claims(&prompt_only, &ids).is_empty());
 }
 
 #[test]
@@ -672,6 +696,11 @@ fn codex_meta(id: &str, root: Option<&str>) -> String {
     json!({"type": "session_meta", "timestamp": iso(0), "payload": payload}).to_string()
 }
 
+/// The `turn_context` that gives a Codex response its model: a response without one is not counted.
+fn codex_context() -> String {
+    json!({"type": "turn_context", "timestamp": iso(0), "payload": {"model": "gpt-test", "turn_id": "turn-1"}}).to_string()
+}
+
 /// A `custom_tool_call` whose JavaScript snippet is `snippet`.
 fn codex_exec(call: &str, snippet: &str) -> String {
     json!({"type": "response_item", "timestamp": iso(5), "payload": {
@@ -712,6 +741,7 @@ fn codex_responses_get_the_category_of_their_commands_and_other_tool_calls() {
         CODEX_FILE,
         &[
             codex_meta("abc", None),
+            codex_context(),
             codex_exec_commands("a1", &["git commit -m x"]),
             codex_usage(10, "r1"),
             // Two commands in one snippet: a verification and a push; the push wins by priority.
@@ -749,6 +779,7 @@ fn a_codex_subagent_rollout_is_categorized_and_shown_on_its_own_lines() {
         CODEX_FILE,
         &[
             codex_meta("abc", None),
+            codex_context(),
             codex_exec_commands("a1", &["cargo test"]),
             codex_usage(10, "r1"),
         ],
@@ -757,6 +788,7 @@ fn a_codex_subagent_rollout_is_categorized_and_shown_on_its_own_lines() {
         "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-30-sub1.jsonl",
         &[
             codex_meta("sub1", Some("abc")),
+            codex_context(),
             codex_exec_commands("s1", &["git log -1"]),
             codex_usage(20, "s-r1"),
             codex_usage(30, "s-r2"),

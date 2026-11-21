@@ -111,8 +111,19 @@ fn claude_line(
     .to_string()
 }
 
+/// A Copilot message whose bash call runs a command that names the run.
+fn copilot_mention(run_id: &str) -> String {
+    json!({"type": "assistant.message", "timestamp": iso(0), "data": {"apiCallId": "m", "content": "", "toolRequests": [
+        {"toolCallId": "t", "name": "bash", "arguments": {"command": format!("jidoka run update {run_id} build running")}}]}})
+    .to_string()
+}
+
+/// A virtual line, a command run from inside a script tool: it claims the run and is no response.
 fn mention(run_id: &str) -> String {
-    json!({"type": "user", "message": {"content": format!("jidoka run update {run_id} build running --activity SECRET prompt")}}).to_string()
+    json!({"type": "assistant", "isVirtual": true, "timestamp": iso(0), "message": {"model": "<synthetic>",
+        "content": [{"type": "tool_use", "name": "Bash", "input": {"command": format!("jidoka run update {run_id} build running --activity SECRET prompt")}}],
+        "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}})
+    .to_string()
 }
 
 /// A Claude Code response line that also records the reasoning effort of its turn.
@@ -445,7 +456,7 @@ fn copilot_cache_reads_and_writes_are_taken_out_of_input() {
     world.write(
         "copilot/session-state/cop-session-1/events.jsonl",
         &[
-            mention(RUN_A),
+            copilot_mention(RUN_A),
             copilot_usage(10, "call-1", "gpt-copilot", 1000, 700, 100, 40, false),
             copilot_usage(10, "call-1", "gpt-copilot", 1000, 700, 100, 40, false),
             copilot_usage(20, "call-2", "gpt-copilot", 50, 0, 0, 5, true),
@@ -738,6 +749,31 @@ fn a_usage_limit_with_no_later_activity_is_an_unresumed_pause_and_is_not_a_model
             .notes
             .iter()
             .any(|note| note.contains("no usable model"))
+    );
+}
+
+#[test]
+fn a_recorded_codex_log_that_is_too_large_gets_a_note() {
+    let world = World::new();
+    let path = world
+        .dir
+        .path()
+        .join("codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-cdx1.jsonl");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // A sparse file: larger than the reader's limit without writing it.
+    fs::File::create(path)
+        .unwrap()
+        .set_len(65 * 1024 * 1024)
+        .unwrap();
+    let target = run(RUN_A, &[(0, "build", None, None)], None, &["cdx1"]);
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert!(
+        usage
+            .notes
+            .iter()
+            .any(|note| note.contains("larger than 64 MiB")),
+        "{:?}",
+        usage.notes
     );
 }
 
