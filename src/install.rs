@@ -187,23 +187,20 @@ pub(crate) fn install_skill_files(
     Ok(())
 }
 
-/// Create the initial routing policy and report what happened on `out`.
+/// Replace the routing policy and report what happened on `out`.
 fn ensure_default_policy(
     var: impl Fn(&str) -> Option<OsString>,
     out: &mut impl io::Write,
 ) -> io::Result<()> {
-    let (path, created) = create_default_policy(var)?;
-    if created {
-        let shown = path.display().to_string();
-        writeln!(out, "{}", crate::routing::created_message(&shown, None))?;
-    }
+    let path = replace_default_policy(var)?;
+    writeln!(out, "Updated model routing policy {}.", path.display())?;
     Ok(())
 }
 
-/// Create the initial routing policy unless a file is already there.
-pub(crate) fn create_default_policy(
+/// Replace the routing policy with defaults for all agents.
+pub(crate) fn replace_default_policy(
     var: impl Fn(&str) -> Option<OsString>,
-) -> io::Result<(PathBuf, bool)> {
+) -> io::Result<PathBuf> {
     let path = crate::routing::policy_path_in(var).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -215,16 +212,16 @@ pub(crate) fn create_default_policy(
         crate::routing::RoutingAgent::Codex,
         crate::routing::RoutingAgent::Copilot,
     ];
-    let created = crate::routing::create_starter(&path, &agents).map_err(|error| {
+    crate::routing::replace_starter(&path, &agents).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!(
-                "cannot create model routing policy {}: {error}",
+                "cannot replace model routing policy {}: {error}",
                 path.display()
             ),
         )
     })?;
-    Ok((path, created))
+    Ok(path)
 }
 
 /// Resolves the skills folder of every listed agent before anything is installed.

@@ -492,9 +492,9 @@ fn starter_stages(agent: RoutingAgent) -> StarterStages {
             finish: choice("haiku", "low"),
         },
         RoutingAgent::Codex => StarterStages {
-            define: choice("gpt-6.1-terra", "medium"),
-            build: choice("gpt-6.1-terra", "medium"),
-            check: choice("gpt-6.1-terra", "medium"),
+            define: choice("gpt-6.2-sol", "medium"),
+            build: choice("gpt-6.2-sol", "medium"),
+            check: choice("gpt-6.2-astra", "medium"),
             finish: choice("gpt-6-luna", "low"),
         },
         RoutingAgent::Copilot => StarterStages {
@@ -538,6 +538,16 @@ pub(crate) fn created_message(shown: &str, about: Option<&str>) -> String {
     }
     message.push_str(" Edit the models and efforts, or set \"enabled\": false to switch it off.");
     message
+}
+
+/// Atomically replaces the policy with the starter for `agents`.
+pub(crate) fn replace_starter(path: &Path, agents: &[RoutingAgent]) -> io::Result<()> {
+    let folder = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(folder)?;
+    let mut temp = tempfile::NamedTempFile::new_in(folder)?;
+    temp.write_all(starter(agents).as_bytes())?;
+    temp.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 /// Writes the starter for `agents` to `path`, creating its folder. Whatever is already at `path`, even a

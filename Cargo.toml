@@ -17,8 +17,6 @@ percent-encoding = "2"
 getrandom = "0.4.3"
 time = { version = "0.3", features = ["parsing"] }
 pulldown-cmark = { version = "0.13.6", default-features = false, features = ["html"] }
-
-[dev-dependencies]
 tempfile = "3"
 
 [lints.rust]

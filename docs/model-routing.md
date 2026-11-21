@@ -18,9 +18,9 @@ Write one policy file, `model-routing.json`, in Jidoka's config folder: `$XDG_CO
     },
     "codex": {
       "stages": {
-        "define": { "model": "gpt-6.1-terra", "effort": "medium" },
-        "build": { "model": "gpt-6.1-terra", "effort": "medium" },
-        "check": { "model": "gpt-6.1-terra", "effort": "medium" },
+        "define": { "model": "gpt-6.2-sol", "effort": "medium" },
+        "build": { "model": "gpt-6.2-sol", "effort": "medium" },
+        "check": { "model": "gpt-6.2-astra", "effort": "medium" },
         "finish": { "model": "gpt-6-luna", "effort": "low" }
       }
     },
@@ -36,7 +36,7 @@ Write one policy file, `model-routing.json`, in Jidoka's config folder: `$XDG_CO
 }
 ```
 
-`jidoka install` creates this policy when no file exists, printing the path. It preserves any existing file, including an invalid policy and a symbolic link. `jidoka doctor --create-model-routing` can also create it explicitly, with all three agents or just the one named by `--agent`; see [Checking readiness](doctor.md).
+`jidoka install` replaces this policy with the defaults, printing the path. Automatic version refresh also replaces it. Custom settings are lost, so save a copy before installing or upgrading. A symbolic link is replaced rather than followed. `jidoka doctor --create-model-routing` can also create it explicitly, with all three agents or just the one named by `--agent`; see [Checking readiness](doctor.md).
 
 - Each entry under `agents` is `claude`, `codex` or `copilot` and has `stages`, and optionally `enabled`. `stages` maps `define`, `build`, `check` and `finish` to a `model` and an optional `effort`; a Stage you leave out is not routed and keeps the session's model. `enabled` defaults to `true`; set it to `false` at the top to switch routing off for every agent, or inside an entry to switch off that agent only, without deleting anything. The defaults above favour cheap models to keep token use down. They use medium effort for Define, Build and Check because a Rework loop costs more than the extra reasoning, and low effort for Finish.
 - Models and efforts are plain text of up to 64 letters, digits and `. _ : / -`. Jidoka keeps no list of valid models, so a new model works without a Jidoka release, and checking that your agent accepts a value is up to you. Copilot CLI entries are checked a little further, because it quietly ignores what it does not know: the model must not be a Claude Code alias (`opus`, `sonnet`, `haiku`, `fable`; Copilot needs exact IDs such as `claude-sonnet-5.5`), and the effort must be one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`.
