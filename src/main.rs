@@ -128,7 +128,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                     title,
                     &dir.display().to_string(),
                     repository,
-                    current_sessions().into_iter().next(),
+                    current_agent_sessions().first(),
                     resolution.selection
                 )?
             );
@@ -194,7 +194,9 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             }
             let mut parsed = run_gate::parse_advance_options(options)
                 .map_err(|error| format!("{error}\n{HELP}"))?;
-            parsed.request.sessions = current_sessions();
+            let sessions = current_agent_sessions();
+            parsed.request.sessions = sessions.iter().map(|session| session.id.clone()).collect();
+            parsed.request.agent_homes = run_begin::agent_homes(&sessions);
             client::api_post(
                 &cli_address()?,
                 &cli_token_file()?,
@@ -562,7 +564,7 @@ impl run_begin::RunApi for ServerApi {
         title: &str,
         project: &str,
         repository: Option<String>,
-        session: Option<String>,
+        session: Option<&run_begin::AgentSession>,
         routing: Option<routing::ModelRouting>,
     ) -> Result<String, String> {
         let token = cli_token_file().map_err(|e| e.to_string())?;
@@ -688,12 +690,13 @@ fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::erro
     }
 }
 
-/// `options` followed by `--session <id>` for each agent session this command runs in, so the update
-/// records the session and its token usage can be attributed to the run.
+/// `options` followed by `--session <id>` for each agent session this command runs in, and
+/// `--agent-home <agent>=<path>` for its agent, so the update records the session and its token usage can
+/// be read from the agent's own logs and attributed to the run.
 fn with_sessions(options: &[impl AsRef<str>]) -> Vec<String> {
     let mut all: Vec<String> = options.iter().map(|o| o.as_ref().to_owned()).collect();
-    for session in current_sessions() {
-        all.extend(["--session".to_owned(), session]);
+    for session in current_agent_sessions() {
+        all.extend(session.update_options());
     }
     all
 }
@@ -759,26 +762,23 @@ fn group_guidance(id: &str) -> Result<Option<run_next::GroupGuidance>, Box<dyn s
     Ok(run_next::GroupGuidance::from_view(&view, id))
 }
 
-/// The ids of the agent sessions this command runs in, when the agent exposes them: Claude Code sets
-/// `CLAUDE_CODE_SESSION_ID`; Codex sets `CODEX_SESSION_ID` (the root session) and `CODEX_THREAD_ID`; Copilot CLI sets `COPILOT_AGENT_SESSION_ID`.
-fn current_sessions() -> Vec<String> {
-    sessions_from(&|name| env::var_os(name))
-}
-
-fn sessions_from(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<String> {
-    agent_sessions_from(var)
-        .into_iter()
-        .map(|session| session.id)
-        .collect()
-}
-
-/// Like `current_sessions`, with the agent each session id belongs to.
+/// The agent sessions this command runs in, when the agent exposes them, with the agent each belongs to and
+/// that agent's home folder: Claude Code sets `CLAUDE_CODE_SESSION_ID`; Codex sets `CODEX_SESSION_ID` (the
+/// root session) and `CODEX_THREAD_ID`; Copilot CLI sets `COPILOT_AGENT_SESSION_ID`.
 fn current_agent_sessions() -> Vec<run_begin::AgentSession> {
-    agent_sessions_from(&|name| env::var_os(name))
+    agent_sessions_from(
+        &|name| env::var_os(name),
+        install::home_dir().ok().as_deref(),
+    )
 }
 
+/// The agent sessions `var` names, each with the home folder `jidoka install` would use for its agent
+/// (honoring `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `COPILOT_HOME`). A home the dashboard would refuse is
+/// left out, so it cannot fail the command; a relative one, because the dashboard cannot tell what it is
+/// relative to.
 fn agent_sessions_from(
     var: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+    home: Option<&std::path::Path>,
 ) -> Vec<run_begin::AgentSession> {
     let mut sessions: Vec<run_begin::AgentSession> = Vec::new();
     for (name, agent) in [
@@ -791,9 +791,15 @@ fn agent_sessions_from(
             continue;
         };
         if run::check_session_id(&id).is_ok() && !sessions.iter().any(|known| known.id == id) {
+            // Without a home directory only an agent's own home variable can give an absolute path.
+            let home = install::agent_home(agent, home.unwrap_or(std::path::Path::new("")), var)
+                .ok()
+                .and_then(|path| path.into_os_string().into_string().ok())
+                .filter(|path| run::is_valid_agent_home(path));
             sessions.push(run_begin::AgentSession {
                 id,
                 agent: Some(agent),
+                home,
             });
         }
     }
@@ -1017,6 +1023,7 @@ mod test_support {
                 project: "/work/repo.worktrees/feature".into(),
                 repository: Some("/work/repo".into()),
                 session: None,
+                agent_homes: Default::default(),
                 model_routing: None,
             })
             .unwrap()
@@ -1095,10 +1102,67 @@ mod tests {
         }
     }
 
+    fn sessions_from(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<String> {
+        agent_sessions_from(var, None)
+            .into_iter()
+            .map(|session| session.id)
+            .collect()
+    }
+
+    #[test]
+    fn each_session_is_sent_with_its_agent_home() {
+        let id = "019e1f00-aaaa-7bbb-8ccc-000000000001";
+        let user = std::env::temp_dir().join("user");
+        let profile = std::env::temp_dir().join("claude-work");
+        let profile_text = profile.to_str().unwrap();
+        let options = |pairs: &[(&str, &str)]| -> Vec<String> {
+            agent_sessions_from(&lookup(pairs), Some(&user))
+                .iter()
+                .flat_map(run_begin::AgentSession::update_options)
+                .collect()
+        };
+        // CLAUDE_CONFIG_DIR wins over the home directory, as it does for install.
+        assert_eq!(
+            options(&[
+                ("CLAUDE_CODE_SESSION_ID", id),
+                ("CLAUDE_CONFIG_DIR", profile_text)
+            ]),
+            [
+                "--session".to_owned(),
+                id.to_owned(),
+                "--agent-home".to_owned(),
+                format!("claude={profile_text}")
+            ]
+        );
+        let codex = user.join(".codex");
+        assert_eq!(
+            options(&[("CODEX_THREAD_ID", id)])[3],
+            format!("codex={}", codex.display())
+        );
+        let copilot = user.join(".copilot");
+        assert_eq!(
+            options(&[("COPILOT_AGENT_SESSION_ID", id)])[3],
+            format!("copilot={}", copilot.display())
+        );
+        // A relative home is not sent: the dashboard could not tell what it is relative to.
+        assert_eq!(
+            options(&[("CLAUDE_CODE_SESSION_ID", id), ("CLAUDE_CONFIG_DIR", "rel")]),
+            ["--session", id]
+        );
+        let homes = run_begin::agent_homes(&agent_sessions_from(
+            &lookup(&[
+                ("CLAUDE_CODE_SESSION_ID", id),
+                ("CLAUDE_CONFIG_DIR", profile_text),
+            ]),
+            None,
+        ));
+        assert_eq!(homes.get("claude").map(String::as_str), Some(profile_text));
+    }
+
     #[test]
     fn each_session_variable_names_its_agent() {
         let agents = |pairs: &[(&str, &str)]| -> Vec<Option<&'static str>> {
-            agent_sessions_from(&lookup(pairs))
+            agent_sessions_from(&lookup(pairs), None)
                 .into_iter()
                 .map(|session| session.agent)
                 .collect()

@@ -1,6 +1,7 @@
 use crate::{
     routing::ModelRouting,
     run::{NewRun, Run, UpdateRun, parse_update},
+    run_begin::{AgentSession, agent_homes},
     server::{CLI_TOKEN_HEADER, DashboardIdentity},
 };
 use std::{
@@ -21,14 +22,17 @@ pub(crate) fn start_run(
     title: &str,
     project: &str,
     repository: Option<String>,
-    session: Option<String>,
+    session: Option<&AgentSession>,
     model_routing: Option<ModelRouting>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let body = serde_json::to_vec(&NewRun {
         title: title.to_string(),
         project: project.to_string(),
         repository,
-        session,
+        session: session.map(|session| session.id.clone()),
+        agent_homes: session
+            .map(|session| agent_homes(std::slice::from_ref(session)))
+            .unwrap_or_default(),
         model_routing,
     })?;
     let run: Run = serde_json::from_slice(&api_post(server, token_file, "/api/runs", &body)?)?;

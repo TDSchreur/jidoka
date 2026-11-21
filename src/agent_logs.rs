@@ -74,12 +74,37 @@ impl Roots {
         var: &dyn Fn(&str) -> Option<OsString>,
     ) -> io::Result<Self> {
         Ok(Self {
-            claude: agent_home("claude", home, var)?.join("projects"),
-            codex: agent_home("codex", home, var)?.join("sessions"),
-            copilot: agent_home("copilot", home, var)?.join("session-state"),
+            claude: agent_home("claude", home, var)?.join(CLAUDE_LOGS),
+            codex: agent_home("codex", home, var)?.join(CODEX_LOGS),
+            copilot: agent_home("copilot", home, var)?.join(COPILOT_LOGS),
         })
     }
+
+    /// These roots with the log folder of each agent home `run` recorded in place of this environment's, so
+    /// a run is read from the home its agent ran in. A recorded home that is not absolute is ignored.
+    pub(crate) fn for_run(&self, run: &Run) -> Self {
+        let mut roots = self.clone();
+        for (agent, home) in &run.agent_homes {
+            let home = Path::new(home);
+            if !home.is_absolute() {
+                continue;
+            }
+            match agent.as_str() {
+                "claude" => roots.claude = home.join(CLAUDE_LOGS),
+                "codex" => roots.codex = home.join(CODEX_LOGS),
+                "copilot" => roots.copilot = home.join(COPILOT_LOGS),
+                // The server accepts only these agents; an unknown one in an edited record is ignored.
+                _ => {}
+            }
+        }
+        roots
+    }
 }
+
+/// The log folder inside each agent's home.
+const CLAUDE_LOGS: &str = "projects";
+const CODEX_LOGS: &str = "sessions";
+const COPILOT_LOGS: &str = "session-state";
 
 /// Something that limits what a session's usage covers.
 #[derive(Debug)]

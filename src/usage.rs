@@ -631,6 +631,8 @@ fn collect_limited(
     // this also keeps the scan from reaching back to the oldest run there is.
     let window = RunWindow::new(target, runs, first.at);
     let tracked = &window.tracked;
+    // The run's own agent homes, when it recorded them, so the reason below names the folders scanned.
+    let roots = &roots.for_run(target);
     let read = read_sessions(roots, &window, deadline, limits);
     let claimed: Vec<&LogSession> = read
         .sessions
@@ -1048,15 +1050,47 @@ pub(crate) fn collect_active(
     for run in store.list()? {
         let automatic = run.automatically_blocked();
         let watched = run.status == crate::run::RunStatus::Running || automatic;
-        let recent = run
-            .updated_at
-            .is_some_and(|at| at.saturating_add(WATCH_WINDOW_MS) >= now);
-        if watched && recent {
+        if watched && updated_recently(&run, now) {
             // One failing run must not stop the others from being checked.
             if let Err(error) = collect_and_store(store, &run.id, settings) {
                 eprintln!("Run {} was not checked for pauses: {error}", run.id);
                 first_error.get_or_insert(error);
             }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+/// Whether `run` was updated within the watch window before `now`.
+fn updated_recently(run: &Run, now: u64) -> bool {
+    run.updated_at
+        .is_some_and(|at| at.saturating_add(WATCH_WINDOW_MS) >= now)
+}
+
+/// Collects once each done run updated within the watch window that recorded sessions but whose usage
+/// is not tracked, so a dashboard started where the run's logs can be read recovers what an earlier one
+/// missed. Meant for dashboard startup only: done runs are never watched.
+pub(crate) fn collect_missed(
+    store: &crate::run::RunStore,
+    settings: &UsageSettings,
+    now: u64,
+) -> std::io::Result<()> {
+    if !settings.enabled {
+        return Ok(());
+    }
+    let mut first_error = None;
+    for run in store.list()? {
+        let missed = run.status == crate::run::RunStatus::Done
+            && !run.sessions.is_empty()
+            && run
+                .usage
+                .as_ref()
+                .is_some_and(|usage| usage.status == UsageStatus::NotTracked)
+            && updated_recently(&run, now);
+        if missed && let Err(error) = collect_and_store(store, &run.id, settings) {
+            // One failing run must not stop the others from being collected.
+            eprintln!("Usage of run {} was not collected: {error}", run.id);
+            first_error.get_or_insert(error);
         }
     }
     first_error.map_or(Ok(()), Err)

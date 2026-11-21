@@ -15,6 +15,80 @@ fn generic_updates_cannot_complete_finish_with_or_without_a_summary() {
 }
 
 #[test]
+fn agent_homes_are_recorded_per_agent_and_the_latest_wins() {
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    let home = |name: &str| dir.0.path().join(name).to_str().unwrap().to_owned();
+    let created = store
+        .create(NewRun {
+            title: "task".into(),
+            project: "/work".into(),
+            repository: None,
+            session: Some("11111111-aaaa".into()),
+            agent_homes: BTreeMap::from([("claude".into(), home(".claude"))]),
+            model_routing: None,
+        })
+        .unwrap();
+    assert_eq!(created.agent_homes["claude"], home(".claude"));
+
+    let codex = format!("codex={}", home(".codex"));
+    let work = format!("claude={}", home(".claude-work"));
+    let updated = store
+        .update(
+            &created.id,
+            parse_update(&["--agent-home", &codex, "--agent-home", &work]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        updated.agent_homes,
+        BTreeMap::from([
+            ("claude".into(), home(".claude-work")),
+            ("codex".into(), home(".codex")),
+        ])
+    );
+    // A record without agent homes leaves the field out.
+    let plain = new_run(&store, "plain");
+    assert!(
+        serde_json::to_value(&plain)
+            .unwrap()
+            .get("agent_homes")
+            .is_none()
+    );
+}
+
+#[test]
+fn an_agent_home_must_be_a_known_agent_and_an_absolute_path_without_control_characters() {
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    let run = new_run(&store, "task");
+    let absolute = dir.0.path().to_str().unwrap().to_owned();
+    // As the server receives it.
+    let update = |agent: &str, home: String| -> UpdateRun {
+        serde_json::from_value(serde_json::json!({"agent_homes": {agent: home}})).unwrap()
+    };
+    let rejected = [
+        ("gemini", absolute.clone()),
+        ("claude", "relative/home".to_owned()),
+        (
+            "claude",
+            format!("{absolute}/{}", "a".repeat(MAX_PATH_BYTES)),
+        ),
+        ("claude", format!("{absolute}/a\u{7}b")),
+    ];
+    for (agent, home) in rejected {
+        let error = store.update(&run.id, update(agent, home)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{agent}");
+    }
+    // The CLI refuses the same before sending.
+    assert!(parse_update(&["--agent-home", "claude=relative/home"]).is_err());
+    assert!(parse_update(&["--agent-home", "claude"]).is_err());
+    let stored = store.get(&run.id).unwrap().unwrap();
+    assert!(stored.agent_homes.is_empty());
+    assert!(store.update(&run.id, update("copilot", absolute)).is_ok());
+}
+
+#[test]
 fn update_never_changes_the_stage_and_rejects_a_stage_field() {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
@@ -167,6 +241,7 @@ fn failed_updates_leave_the_store_unchanged() {
             project: "/work".into(),
             repository: None,
             session: None,
+            agent_homes: Default::default(),
             model_routing: None,
         })
         .unwrap();
@@ -215,6 +290,7 @@ fn concurrent_creates_keep_all_records_and_unique_ids() {
                         project: "/work".into(),
                         repository: None,
                         session: None,
+                        agent_homes: Default::default(),
                         model_routing: None,
                     })
                     .unwrap()
@@ -339,6 +415,7 @@ fn routed_store(dir: &TestDir) -> (RunStore, Run) {
             project: "/work/repo".into(),
             repository: None,
             session: None,
+            agent_homes: Default::default(),
             model_routing: Some(selection()),
         })
         .unwrap();
@@ -473,6 +550,7 @@ fn a_model_routing_selection_recorded_at_start_survives_updates_and_a_restart() 
             project: "/work/repo".into(),
             repository: None,
             session: None,
+            agent_homes: Default::default(),
             model_routing: Some(selection()),
         })
         .unwrap();
@@ -848,6 +926,7 @@ fn sessions_are_recorded_once_validated_and_kept_across_updates() {
             project: "/p".into(),
             repository: None,
             session: Some("11111111-aaaa".into()),
+            agent_homes: Default::default(),
             model_routing: None,
         })
         .unwrap();
@@ -986,6 +1065,7 @@ fn event_store() -> (TestDir, RunStore, String) {
             project: "/work".into(),
             repository: None,
             session: None,
+            agent_homes: Default::default(),
             model_routing: None,
         })
         .unwrap();

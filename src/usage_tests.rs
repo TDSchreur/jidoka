@@ -706,6 +706,78 @@ fn recorded_sessions_in_an_unscanned_folder_get_their_own_reason() {
 }
 
 #[test]
+fn a_run_is_read_from_the_agent_home_it_recorded_instead_of_the_dashboards() {
+    let world = World::new();
+    let cases = [
+        (
+            "claude",
+            "projects/-w/S1.jsonl",
+            vec![
+                mention(RUN_A),
+                claude_line("S1", 10, "m", "r", "m-1", (3, 0, 0, 1), 0, false),
+            ],
+        ),
+        (
+            "codex",
+            "sessions/2026/11/05/rollout-2026-11-05T10-00-00-abc.jsonl",
+            vec![
+                codex_meta_line("root-1", None),
+                codex_context("gpt-test"),
+                codex_command(RUN_A),
+                codex_usage(10, "resp-1", 100, 0, 0, 5, 0),
+            ],
+        ),
+        (
+            "copilot",
+            "session-state/cop-1/events.jsonl",
+            vec![
+                copilot_mention(RUN_A),
+                copilot_usage(10, "call-1", "gpt-copilot", 100, 0, 0, 5, false),
+            ],
+        ),
+    ];
+    for (agent, log, lines) in cases {
+        // The agent ran with another home than the dashboard's, such as CLAUDE_CONFIG_DIR=~/.claude-work.
+        let home = world.dir.path().join(format!("profile-{agent}"));
+        world.write(&format!("profile-{agent}/{log}"), &lines);
+        let mut target = run(RUN_A, &[(0, "build", None, None)], Some(100), &[]);
+        let unrecorded = world.collect(&target, std::slice::from_ref(&target));
+        assert_eq!(unrecorded.status, UsageStatus::NotTracked, "{agent}");
+
+        target
+            .agent_homes
+            .insert(agent.into(), home.to_str().unwrap().into());
+        let usage = world.collect(&target, std::slice::from_ref(&target));
+        assert_ne!(usage.status, UsageStatus::NotTracked, "{agent}: {usage:?}");
+        assert_eq!(usage.sessions.len(), 1, "{agent}");
+        fs::remove_dir_all(&home).unwrap();
+    }
+}
+
+#[test]
+fn recorded_sessions_missing_from_the_recorded_home_name_that_home() {
+    let world = World::new();
+    let home = world.dir.path().join("claude-work");
+    let mut target = run(
+        RUN_A,
+        &[(0, "build", None, None)],
+        Some(100),
+        &["elsewhere"],
+    );
+    target
+        .agent_homes
+        .insert("claude".into(), home.to_str().unwrap().into());
+    let reason = world
+        .collect(&target, std::slice::from_ref(&target))
+        .reason
+        .unwrap();
+    assert!(
+        reason.contains(&format!("scanned folders: {},", home.display())),
+        "{reason}"
+    );
+}
+
+#[test]
 fn a_run_from_before_usage_tracking_is_not_tracked_and_a_late_timeline_is_partial() {
     let world = World::new();
     world.write(
@@ -1250,6 +1322,60 @@ mod auto_block {
         crate::test_support::force_advance(&done.store, &done.id, None);
         collect_active(&done.store, &done.settings, now).unwrap();
         assert!(done.run().usage.is_none());
+    }
+
+    #[test]
+    fn startup_collects_a_recent_done_run_whose_recorded_sessions_were_not_found() {
+        let f = Fixture::new();
+        let session = "0a1b2c3d-session";
+        f.store
+            .update(
+                &f.id,
+                crate::run::parse_update(&[
+                    "--mode",
+                    "fast",
+                    "--summary",
+                    "finish=Completed",
+                    "--session",
+                    session,
+                ])
+                .unwrap(),
+            )
+            .unwrap();
+        crate::test_support::advance_to(&f.store, &f.id, Stage::Finish);
+        crate::test_support::force_advance(&f.store, &f.id, None);
+        // The dashboard that saw the run finish could not find its log.
+        collect_and_store(&f.store, &f.id, &f.settings).unwrap();
+        assert_eq!(f.run().usage.unwrap().status, UsageStatus::NotTracked);
+
+        // A dashboard started where the log can be read collects the run once more.
+        let mut line: serde_json::Value = serde_json::from_str(&claude_line(
+            session,
+            0,
+            "m",
+            "r",
+            "m-1",
+            (3, 0, 0, 1),
+            0,
+            false,
+        ))
+        .unwrap();
+        line["timestamp"] = json!(iso_timestamp(f.began + 1_000));
+        f.world.write(
+            &format!("claude/projects/-w/{session}.jsonl"),
+            &[line.to_string()],
+        );
+        let now = crate::run::updated_now().unwrap();
+        // The watching pass leaves done runs alone.
+        collect_active(&f.store, &f.settings, now).unwrap();
+        assert_eq!(f.run().usage.unwrap().status, UsageStatus::NotTracked);
+        // So does a startup long after the run was last updated.
+        collect_missed(&f.store, &f.settings, now + 8 * 24 * 60 * 60 * 1000).unwrap();
+        assert_eq!(f.run().usage.unwrap().status, UsageStatus::NotTracked);
+        collect_missed(&f.store, &f.settings, now).unwrap();
+        let usage = f.run().usage.unwrap();
+        assert_ne!(usage.status, UsageStatus::NotTracked, "{usage:?}");
+        assert_eq!(usage.sessions, [session]);
     }
 }
 

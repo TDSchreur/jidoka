@@ -24,6 +24,7 @@ fn run_with_pr_in(store: &RunStore, pr: &str, stage: Stage) -> String {
             project: "/work".into(),
             repository: None,
             session: None,
+            agent_homes: Default::default(),
             model_routing: None,
         })
         .unwrap();
@@ -89,6 +90,7 @@ fn a_new_pull_request_url_is_checked_at_once_and_runs_without_one_are_left_alone
             project: "/work".into(),
             repository: None,
             session: None,
+            agent_homes: Default::default(),
             model_routing: None,
         })
         .unwrap();
