@@ -436,12 +436,13 @@ fn rework_and_finish_use_effective_build_for_each_host() {
             let mut routes = routing();
             routes.agent = agent;
             routes.stages.get_mut(&Stage::Build).unwrap().effort = effort.map(str::to_string);
-            let mut current = run(Mode::Balanced, Stage::Build, Some(routes));
-            current.rework = Some(1);
-            let next = build(&current, &[]).unwrap();
+            let mut building = run(Mode::Balanced, Stage::Build, Some(routes.clone()));
+            building.rework = Some(1);
+            let next = build(&building, &[]).unwrap();
             assert_eq!(next.model.unwrap().effort.as_deref(), Some(expected));
-            current.stage = Stage::Finish;
-            let next = build(&current, &[]).unwrap();
+            let mut finishing = run(Mode::Balanced, Stage::Finish, Some(routes));
+            finishing.rework = Some(1);
+            let next = build(&finishing, &[]).unwrap();
             assert!(next.model.is_none());
             assert_eq!(next.ci_model.unwrap().effort.as_deref(), Some(expected));
             assert!(next.instructions.contains("CI diagnosis"));

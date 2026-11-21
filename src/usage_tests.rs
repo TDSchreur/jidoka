@@ -1160,7 +1160,6 @@ mod auto_block {
 
         // Done runs are not collected at all.
         let done = Fixture::new();
-        done.store.set_stage(&done.id, Stage::Finish);
         done.store
             .update(
                 &done.id,
@@ -1168,6 +1167,7 @@ mod auto_block {
                     .unwrap(),
             )
             .unwrap();
+        crate::test_support::advance_to(&done.store, &done.id, Stage::Finish);
         done.store
             .advance(&done.id, crate::run::AdvanceMetadata::default(), |_| {
                 Ok(crate::run::Exit::Override {
@@ -1295,10 +1295,9 @@ fn completed_routed_stage_with_only_coordinator_usage_adds_no_model_warning() {
     };
     collect_and_store(&store, RUN_A, &settings).unwrap();
     assert!(store.get(RUN_A).unwrap().unwrap().run_reports.is_empty());
-    store.set_stage(RUN_A, Stage::Check);
-    store
-        .update(RUN_A, crate::run::UpdateRun::default())
-        .unwrap();
+    crate::test_support::advance_to(&store, RUN_A, Stage::Check);
+    // Moving on records the mode and the forced advance; collecting adds nothing to them.
+    let advanced = store.get(RUN_A).unwrap().unwrap().run_reports;
     collect_and_store(&store, RUN_A, &settings).unwrap();
     collect_and_store(&store, RUN_A, &settings).unwrap();
     let reopened = crate::run::RunStore::open(&path)
@@ -1306,7 +1305,10 @@ fn completed_routed_stage_with_only_coordinator_usage_adds_no_model_warning() {
         .get(RUN_A)
         .unwrap()
         .unwrap();
-    assert!(reopened.run_reports.is_empty());
+    assert_eq!(
+        serde_json::to_value(&reopened.run_reports).unwrap(),
+        serde_json::to_value(&advanced).unwrap()
+    );
 }
 
 // --- skills ------------------------------------------------------------------------------------------

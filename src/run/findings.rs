@@ -249,8 +249,7 @@ impl FindingsUpdate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run::{NewRun, RunStore, parse_update};
-    use crate::test_support::TestDir;
+    use crate::run::{parse_update, tests::sample_run};
     use std::path::Path;
 
     struct FixedGit;
@@ -261,17 +260,7 @@ mod tests {
     }
 
     fn run_in(stage: Stage) -> Run {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let mut run = store
-            .create(NewRun {
-                title: "task".into(),
-                project: "/work/repo".into(),
-                repository: None,
-                session: None,
-                model_routing: None,
-            })
-            .unwrap();
+        let mut run = sample_run();
         run.stage = stage;
         run.worktree = Some("/work/wt".into());
         run

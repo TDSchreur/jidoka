@@ -995,10 +995,37 @@ fn runs_path_in(var: &impl Fn(&str) -> Option<std::ffi::OsString>) -> io::Result
 
 #[cfg(test)]
 mod test_support {
+    use crate::run::{AdvanceMetadata, Exit, RunStore, Stage, parse_update};
+
     pub(crate) struct TestDir(pub(crate) tempfile::TempDir);
     impl TestDir {
         pub(crate) fn new() -> Self {
             Self(tempfile::tempdir().unwrap())
+        }
+    }
+
+    /// Moves a stored run forward to `stage` the way production does: through `RunStore::advance` with
+    /// Override exits, one Stage at a time. A run without a mode gets the balanced mode first, as an
+    /// Override needs one; record another mode before calling this when the test needs it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the run does not exist or cannot reach `stage`, for example because it is already past it.
+    pub(crate) fn advance_to(store: &RunStore, id: &str, stage: Stage) {
+        let run = store.get(id).unwrap().expect("test run exists");
+        if run.mode.is_none() {
+            store
+                .update(id, parse_update(&["--mode", "balanced"]).unwrap())
+                .unwrap();
+        }
+        while store.get(id).unwrap().unwrap().stage != stage {
+            store
+                .advance(id, AdvanceMetadata::default(), |_| {
+                    Ok(Exit::Override {
+                        reason: "Test moves the run on".into(),
+                    })
+                })
+                .unwrap_or_else(|error| panic!("cannot advance run {id} to {stage:?}: {error}"));
         }
     }
 }

@@ -861,14 +861,20 @@ mod tests {
         assert!(!saved.run_reports.is_empty());
 
         let refused = store.advance("1", AdvanceMetadata::default(), |_| {
-            store.set_stage("1", Stage::Build);
+            let update = crate::run::parse_update(&["--activity", "Fixing CI"]).unwrap();
+            store.update("1", update).unwrap();
             Ok(forced())
         });
         assert_eq!(
             refused.unwrap_err(),
             "The run changed while checking gates; try again"
         );
-        assert_eq!(store.get("1").unwrap().unwrap().stage, Stage::Build);
+        let kept = store.get("1").unwrap().unwrap();
+        assert_eq!(
+            (kept.stage, kept.status),
+            (Stage::Finish, RunStatus::Running)
+        );
+        assert_eq!(kept.activity.as_deref(), Some("Fixing CI"));
     }
 
     #[test]

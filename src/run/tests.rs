@@ -1,12 +1,12 @@
 use super::*;
-use crate::test_support::TestDir;
+use crate::test_support::{TestDir, advance_to};
 
 #[test]
 fn generic_updates_cannot_complete_finish_with_or_without_a_summary() {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     let run = new_run(&store, "task");
-    store.set_stage(&run.id, Stage::Finish);
+    advance_to(&store, &run.id, Stage::Finish);
     assert!(parse_update(&["done", "--summary", "finish=Completed"]).is_err());
     assert!(serde_json::from_str::<UpdateRun>(r#"{"status":"done"}"#).is_err());
     let after = store.get(&run.id).unwrap().unwrap();
@@ -87,7 +87,7 @@ fn findings_are_recorded_resolved_and_gate_the_rework() {
         store.update_with(id, parsed, &FixedGit)
     };
     update(&["--mode", "jidoka-balanced", "--worktree", "/work/wt"]).unwrap();
-    store.set_stage(id, Stage::Check);
+    advance_to(&store, id, Stage::Check);
 
     update(&["--finding", "code-review", "-", "Bug"]).unwrap();
     let rework = |finding, classification, decision: Option<&str>| LifecycleRequest::Rework {
@@ -120,7 +120,7 @@ fn findings_are_recorded_resolved_and_gate_the_rework() {
         (3, "F3", Some("User approved the behavior fix")),
         (4, "F4", Some("User approved one more Rework")),
     ] {
-        store.set_stage(id, Stage::Check);
+        advance_to(&store, id, Stage::Check);
         update(&["--finding", "code-review", "-", "Another bug"]).unwrap();
         if decision.is_some() {
             let saved = std::fs::read(dir.0.path().join("runs.json")).unwrap();
@@ -171,7 +171,7 @@ fn failed_updates_leave_the_store_unchanged() {
         })
         .unwrap();
     let apply = |stage, args: &[&str]| {
-        store.set_stage(&run.id, stage);
+        advance_to(&store, &run.id, stage);
         store
             .update(&run.id, parse_update(args).unwrap())
             .unwrap()
@@ -696,28 +696,46 @@ fn a_mark_records_the_activity_of_the_update_that_created_it() {
     let path = dir.0.path().join("runs.json");
     let store = RunStore::open(&path).unwrap();
     let run = new_run(&store, "task");
-    let after = |options: &[&str], stage: Stage| {
-        store.set_stage(&run.id, stage);
+    store
+        .update(&run.id, parse_update(&["--mode", "balanced"]).unwrap())
+        .unwrap();
+    // Moves the run to its next Stage, with the activity given along with the advance.
+    let advance = |activity: Option<&str>| {
+        let metadata = AdvanceMetadata {
+            activity: activity.map(str::to_owned),
+            ..AdvanceMetadata::default()
+        };
         store
-            .update(&run.id, parse_update(options).unwrap())
-            .unwrap()
-            .unwrap()
+            .advance(&run.id, metadata, |_| {
+                Ok(Exit::Override {
+                    reason: "Test moves the run on".into(),
+                })
+            })
+            .unwrap();
+        store.get(&run.id).unwrap().unwrap()
     };
     assert_eq!(run.timeline[0].activity, None);
-    let building = after(&["--activity", "Writing the code"], Stage::Build);
+    let building = advance(Some("Writing the code"));
     assert_eq!(
         building.timeline[1].activity.as_deref(),
         Some("Writing the code")
     );
     // An update that adds no mark leaves the pass's activity alone.
-    let same = after(&["--activity", "Still going"], Stage::Build);
+    let same = store
+        .update(
+            &run.id,
+            parse_update(&["--activity", "Still going"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
     assert_eq!(same.timeline.len(), 2);
     assert_eq!(
         same.timeline[1].activity.as_deref(),
         Some("Writing the code")
     );
-    // A mark made by an update without an activity does not borrow the previous one.
-    let checking = after(&[], Stage::Check);
+    // A mark made by an advance without an activity does not borrow the previous one.
+    let checking = advance(None);
+    assert_eq!(checking.stage, Stage::Check);
     assert_eq!(checking.timeline[2].activity, None);
 
     // The activity survives a reload from disk, and shows in the serialised run.
@@ -740,13 +758,13 @@ fn finishing_a_run_closes_its_window_and_an_update_cannot_reopen_it() {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     let run = new_run(&store, "task");
-    store.set_stage(&run.id, Stage::Finish);
     store
         .update(
             &run.id,
             parse_update(&["--mode", "fast", "--summary", "finish=Completed"]).unwrap(),
         )
         .unwrap();
+    advance_to(&store, &run.id, Stage::Finish);
     store
         .advance(&run.id, AdvanceMetadata::default(), |_| {
             Ok(Exit::Override {
@@ -1021,7 +1039,7 @@ fn blocking_and_resuming_record_events_without_touching_the_timeline() {
     let resume = || LifecycleRequest::Resume {
         source: "User supplied credentials".into(),
     };
-    store.set_stage(&id, Stage::Build);
+    advance_to(&store, &id, Stage::Build);
     assert!(store.transition(&id, resume()).is_err());
     let blocked = store.transition(&id, block()).unwrap().unwrap();
     assert_eq!(blocked.events.len(), 1);
@@ -1040,17 +1058,19 @@ fn blocking_and_resuming_record_events_without_touching_the_timeline() {
     assert_eq!(again.status, RunStatus::Blocked);
     assert_eq!(again.blocking_reason, blocked.blocking_reason);
     assert_eq!(again.events, blocked.events);
-    store.set_stage(&id, Stage::Check);
     let resumed = store.transition(&id, resume()).unwrap().unwrap();
     assert_eq!(resumed.events.len(), 2);
     assert_eq!(resumed.events[1].kind, RunEventKind::Resumed);
-    assert_eq!(resumed.events[1].stage, Stage::Check);
+    assert_eq!(resumed.events[1].stage, Stage::Build);
     assert_eq!(
         resumed.events[1].reason.as_deref(),
         Some("User supplied credentials")
     );
     assert!(resumed.events[0].at <= resumed.events[1].at);
     // Events are not marks: only the stage changes make marks.
+    advance_to(&store, &id, Stage::Check);
+    let resumed = store.get(&id).unwrap().unwrap();
+    assert_eq!(resumed.events.len(), 2);
     let stages: Vec<_> = resumed.timeline.iter().map(|m| m.stage).collect();
     assert_eq!(stages, [Stage::Define, Stage::Build, Stage::Check]);
     let json = serde_json::to_value(&resumed).unwrap();

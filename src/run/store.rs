@@ -434,16 +434,6 @@ impl RunStore {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_stage(&self, id: &str, stage: Stage) {
-        self.change(id, Stamp::Agent, |run, _| {
-            run.stage = stage;
-            Ok(Edit::Save)
-        })
-        .unwrap()
-        .expect("test run exists");
-    }
-
     /// Records the gate result `check` returns for a snapshot, merging independent concurrent gate results.
     pub(crate) fn record_gate(
         &self,
@@ -778,7 +768,10 @@ mod tests {
             &id,
             Stamp::Agent,
             |_| {
-                store.set_stage(&id, Stage::Build);
+                // An agent change bumps the generation, even one that changes nothing a gate reads.
+                store
+                    .change(&id, Stamp::Agent, |_, _| Ok(Edit::Save))
+                    .unwrap();
                 Ok((Gates::Unchanged, ()))
             },
             |_, (), _| Ok(()),
