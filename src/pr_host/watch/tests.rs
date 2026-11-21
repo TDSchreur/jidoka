@@ -28,6 +28,26 @@ impl Adapter for Snapshots {
         panic!("the watch reads snapshots only")
     }
 
+    fn find_open(
+        &self,
+        _: &dyn Tools,
+        _: &std::path::Path,
+        _: &crate::pr_host::Origin,
+        _: &str,
+    ) -> Result<Option<crate::pr_host::OpenPr>, ToolProblem> {
+        panic!("the watch reads snapshots only")
+    }
+
+    fn create(
+        &self,
+        _: &dyn Tools,
+        _: &std::path::Path,
+        _: &crate::pr_host::Origin,
+        _: &crate::pr_host::NewPr,
+    ) -> Result<String, ToolProblem> {
+        panic!("the watch reads snapshots only")
+    }
+
     fn snapshot(&self, _: &dyn Tools, _: &str) -> Result<Snapshot, ToolProblem> {
         let mut list = self.0.borrow_mut();
         Ok(if list.len() > 1 {

@@ -1,7 +1,7 @@
 //! The GitHub adapter: reads pull requests on GitHub and GitHub Enterprise with `gh`.
 
 use super::{
-    Adapter, Head, NewPr, OpenPr, ToolError, ToolOutput, ToolProblem, Tools, unsupported,
+    Adapter, Head, NewPr, OpenPr, Origin, ToolError, ToolOutput, ToolProblem, Tools, unsupported,
     watch::Snapshot,
 };
 use crate::{
@@ -89,6 +89,26 @@ impl Adapter for GitHub {
             });
         }
         out
+    }
+
+    fn find_open(
+        &self,
+        tools: &dyn Tools,
+        dir: &Path,
+        _origin: &Origin,
+        branch: &str,
+    ) -> Result<Option<OpenPr>, ToolProblem> {
+        find_open(tools, dir, branch)
+    }
+
+    fn create(
+        &self,
+        tools: &dyn Tools,
+        dir: &Path,
+        _origin: &Origin,
+        pr: &NewPr,
+    ) -> Result<String, ToolProblem> {
+        create(tools, dir, pr)
     }
 }
 
@@ -223,11 +243,7 @@ fn view(tools: &dyn Tools, url: &str, fields: &str) -> Result<serde_json::Value,
 ///
 /// `gh pr list --head` matches by branch name only, so a pull request from a fork that happens to use the
 /// same name is skipped.
-pub(super) fn find_open(
-    tools: &dyn Tools,
-    dir: &Path,
-    branch: &str,
-) -> Result<Option<OpenPr>, ToolProblem> {
+fn find_open(tools: &dyn Tools, dir: &Path, branch: &str) -> Result<Option<OpenPr>, ToolProblem> {
     let args = [
         "pr",
         "list",
@@ -269,7 +285,7 @@ pub(super) fn find_open(
 }
 
 /// Opens `pr` with `gh pr create` in the repository of `dir` and returns its URL.
-pub(super) fn create(tools: &dyn Tools, dir: &Path, pr: &NewPr) -> Result<String, ToolProblem> {
+fn create(tools: &dyn Tools, dir: &Path, pr: &NewPr) -> Result<String, ToolProblem> {
     let body = pr.body_file.display().to_string();
     let output = run_gh(
         tools,

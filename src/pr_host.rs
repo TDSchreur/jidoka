@@ -1,6 +1,7 @@
-//! Pull request host: reads, opens and watches pull requests on GitHub (with `gh`) and Azure Repos (with
-//! `az`) behind one interface, so callers never ask which host a pull request lives on. It also works out which host a
-//! repository uses from its origin remote.
+//! Pull request host: reads, opens and watches pull requests on GitHub and Azure Repos.
+//!
+//! GitHub is reached with `gh` and Azure Repos with `az`, behind one interface, so callers never ask which
+//! host a pull request lives on. It also works out which host a repository uses from its origin remote.
 
 mod azure;
 mod github;
@@ -100,15 +101,29 @@ fn output(command: &mut Command) -> Result<ToolOutput, ToolError> {
 /// Reads and opens pull requests on their host, whichever host that is.
 pub(crate) trait PrHost {
     /// The state of the pull request at `url`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a problem that says what to do when `url` is not a supported pull request URL or the host
+    /// cannot be read.
     fn state(&self, url: &str) -> Result<PrState, ToolProblem>;
 
     /// The head of the pull request at `url` and its state, read in one call to the host.
+    ///
+    /// # Errors
+    ///
+    /// Returns a problem when `url` is not a supported pull request URL, the host cannot be read, or it
+    /// reports no branch or no valid commit.
     fn head(&self, url: &str) -> Result<Head, ToolProblem>;
 
     /// The open pull request from `branch` in origin's repository, if there is one.
     ///
     /// A pull request from a fork that happens to use the same branch name is skipped. `dir` is the
     /// worktree, where `gh` finds the repository from the git remotes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a problem when origin's host is unknown or the host cannot list its pull requests.
     fn find_open(
         &self,
         dir: &Path,
@@ -117,15 +132,28 @@ pub(crate) trait PrHost {
     ) -> Result<Option<OpenPr>, ToolProblem>;
 
     /// Checks that the host will take `pr`, so that a refusal comes before anything is pushed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a problem when origin's host is unknown or will not take the title or the description.
     fn check_new(&self, origin: &Origin, pr: &NewPr) -> Result<(), ToolProblem>;
 
     /// Opens `pr` in origin's repository and returns its URL. `dir` is the worktree.
+    ///
+    /// # Errors
+    ///
+    /// Returns a problem when origin's host is unknown or the host does not open the pull request.
     fn create(&self, dir: &Path, origin: &Origin, pr: &NewPr) -> Result<String, ToolProblem>;
 
-    /// Watches the checks of the pull request at `url` for its current head commit until they have ended,
-    /// and returns the CI outcome with the state the pull request had then. `activity` is told what the
-    /// run is doing, and `progress` how far the checks are. It only reads: it never merges, pushes or
-    /// updates the branch.
+    /// Watches the checks of the pull request at `url` until they have ended.
+    ///
+    /// The checks are those of its current head commit. Returns the CI outcome with the state the pull
+    /// request had then. `activity` is told what the run is doing, and `progress` how far the checks are.
+    /// It only reads: it never merges, pushes or updates the branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a problem when `url` is not a supported pull request URL or the host cannot be read.
     fn watch(
         &self,
         url: &str,
@@ -169,6 +197,29 @@ trait Adapter {
     /// One consistent look at the pull request for a watch of its checks.
     fn snapshot(&self, tools: &dyn Tools, url: &str) -> Result<watch::Snapshot, ToolProblem>;
 
+    /// The open pull request from `branch` in the repository of `origin`; `dir` is the worktree.
+    fn find_open(
+        &self,
+        tools: &dyn Tools,
+        dir: &Path,
+        origin: &Origin,
+        branch: &str,
+    ) -> Result<Option<OpenPr>, ToolProblem>;
+
+    /// Checks that the host will take `pr`. By default it takes every pull request.
+    fn check_new(&self, _pr: &NewPr) -> Result<(), ToolProblem> {
+        Ok(())
+    }
+
+    /// Opens `pr` in the repository of `origin` and returns its URL; `dir` is the worktree.
+    fn create(
+        &self,
+        tools: &dyn Tools,
+        dir: &Path,
+        origin: &Origin,
+        pr: &NewPr,
+    ) -> Result<String, ToolProblem>;
+
     /// The failed checks of a failed watch. A host that can fetch their logs adds the end of each log;
     /// by default there is none.
     fn failures(&self, _tools: &dyn Tools, checks: &[CheckResult]) -> Vec<Failure> {
@@ -201,7 +252,8 @@ impl<T: Tools> Hosts<T> {
         // Only an absolute http(s) URL is handed to a tool, so a stored value can never become an option.
         if !(url.starts_with("https://") || url.starts_with("http://")) {
             return Err(ToolProblem(format!(
-                "The pull request is not an http(s) URL: {url}"
+                "The pull request is not an http(s) URL: {}",
+                shown(url)
             )));
         }
         if is_azure_pr_url(url) {
@@ -211,6 +263,15 @@ impl<T: Tools> Hosts<T> {
             return Ok(&github::GitHub);
         }
         Err(unsupported())
+    }
+
+    /// The adapter of the host origin belongs to.
+    fn origin_adapter(origin: &Origin) -> Result<&'static dyn Adapter, ToolProblem> {
+        match origin.host {
+            Host::GitHub => Ok(&github::GitHub),
+            Host::Azure(_) => Ok(&azure::Azure),
+            Host::Unknown => Err(unknown_origin()),
+        }
     }
 }
 
@@ -244,27 +305,15 @@ impl<T: Tools> PrHost for Hosts<T> {
         origin: &Origin,
         branch: &str,
     ) -> Result<Option<OpenPr>, ToolProblem> {
-        match &origin.host {
-            Host::GitHub => github::find_open(&self.tools, dir, branch),
-            Host::Azure(repo) => azure::find_open(&self.tools, repo, branch),
-            Host::Unknown => Err(unknown_origin()),
-        }
+        Self::origin_adapter(origin)?.find_open(&self.tools, dir, origin, branch)
     }
 
     fn check_new(&self, origin: &Origin, pr: &NewPr) -> Result<(), ToolProblem> {
-        match &origin.host {
-            Host::GitHub => Ok(()),
-            Host::Azure(_) => azure::description(pr).map(drop),
-            Host::Unknown => Err(unknown_origin()),
-        }
+        Self::origin_adapter(origin)?.check_new(pr)
     }
 
     fn create(&self, dir: &Path, origin: &Origin, pr: &NewPr) -> Result<String, ToolProblem> {
-        match &origin.host {
-            Host::GitHub => github::create(&self.tools, dir, pr),
-            Host::Azure(repo) => azure::create(&self.tools, repo, pr),
-            Host::Unknown => Err(unknown_origin()),
-        }
+        Self::origin_adapter(origin)?.create(&self.tools, dir, origin, pr)
     }
 
     fn watch(
@@ -311,9 +360,14 @@ pub(crate) struct Origin {
     pub(crate) host: Host,
 }
 
-/// Works out the pull request host from origin and the `jidoka.prProvider` override. `git` answers a
-/// read-only git question in the repository, or `None` when git fails. A missing origin, an unknown
-/// override or an Azure override that does not match origin is an error.
+/// Works out the pull request host from origin and the `jidoka.prProvider` override.
+///
+/// `git` answers a read-only git question in the repository, or `None` when git fails.
+///
+/// # Errors
+///
+/// Returns a problem that says what to fix when origin is missing, the override is unknown, an Azure
+/// override lacks its settings or does not match origin, or origin is not a valid Azure URL.
 pub(crate) fn detect_host(git: &dyn Fn(&[&str]) -> Option<String>) -> Result<Origin, ToolProblem> {
     let remote = git(&["remote", "get-url", "origin"]).ok_or_else(|| {
         ToolProblem("Cannot identify the repository provider: origin is not configured.".into())

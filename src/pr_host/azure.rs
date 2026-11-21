@@ -6,15 +6,15 @@
 //! Watching CI reads the live source branch ref instead (`AzurePr::live_head`), which shows a push at once.
 
 use super::{
-    Adapter, Head, NewPr, OpenPr, ToolError, ToolOutput, ToolProblem, Tools, encode_segment,
-    watch::Snapshot,
+    Adapter, Head, Host, NewPr, OpenPr, Origin, ToolError, ToolOutput, ToolProblem, Tools,
+    encode_segment, watch::Snapshot,
 };
 use crate::{
     pr_state::PrState,
     pr_wait::{BaseState, CheckResult},
 };
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
 pub(super) struct Azure;
 
@@ -56,6 +56,30 @@ impl Adapter for Azure {
             base: Some(base_state(&after)),
         })
     }
+
+    fn find_open(
+        &self,
+        tools: &dyn Tools,
+        _dir: &Path,
+        origin: &Origin,
+        branch: &str,
+    ) -> Result<Option<OpenPr>, ToolProblem> {
+        find_open(tools, repo_of(origin)?, branch)
+    }
+
+    fn check_new(&self, pr: &NewPr) -> Result<(), ToolProblem> {
+        description(pr).map(drop)
+    }
+
+    fn create(
+        &self,
+        tools: &dyn Tools,
+        _dir: &Path,
+        origin: &Origin,
+        pr: &NewPr,
+    ) -> Result<String, ToolProblem> {
+        create(tools, repo_of(origin)?, pr)
+    }
 }
 
 /// Whether the pull request is still active; a pull request in a state Jidoka does not know is an error.
@@ -91,11 +115,19 @@ fn state_of(data: &Value) -> Result<PrState, ToolProblem> {
     }
 }
 
+/// The Azure repository of `origin`. `Hosts` picks this adapter for an Azure origin only.
+fn repo_of(origin: &Origin) -> Result<&AzureRepo, ToolProblem> {
+    match &origin.host {
+        Host::Azure(repo) => Ok(repo),
+        _ => Err(ToolProblem("The origin is not an Azure repository.".into())),
+    }
+}
+
 /// Azure DevOps rejects a pull request description longer than this many characters.
 const DESCRIPTION_LIMIT: usize = 4000;
 
 /// The first active pull request from `branch` in `repo`, skipping pull requests from forks.
-pub(super) fn find_open(
+fn find_open(
     tools: &dyn Tools,
     repo: &AzureRepo,
     branch: &str,
@@ -149,7 +181,7 @@ pub(super) fn find_open(
 ///
 /// Returns a problem when the body is not UTF-8, too long or has NUL bytes, or when `az` on Windows
 /// cannot take the title or the file's path.
-pub(super) fn description(pr: &NewPr) -> Result<String, ToolProblem> {
+fn description(pr: &NewPr) -> Result<String, ToolProblem> {
     let text = std::fs::read_to_string(pr.body_file)
         .map_err(|_| ToolProblem("The pull request body could not be read as UTF-8.".into()))?;
     let length = text.chars().count();
@@ -197,11 +229,7 @@ fn file_argument(path: &str) -> String {
 }
 
 /// Opens `pr` in `repo` with `az repos pr create` and returns its canonical URL.
-pub(super) fn create(
-    tools: &dyn Tools,
-    repo: &AzureRepo,
-    pr: &NewPr,
-) -> Result<String, ToolProblem> {
+fn create(tools: &dyn Tools, repo: &AzureRepo, pr: &NewPr) -> Result<String, ToolProblem> {
     let description = description(pr)?;
     let org = repo.org_url();
     let title = format!("--title={}", pr.title);
