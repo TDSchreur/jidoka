@@ -5,7 +5,7 @@
 //! tool calls. The command text is dropped as soon as it is classified: nothing but categories, flags and
 //! counts leaves this module.
 
-use crate::{agent_logs::LogRead, usage::Tokens};
+use crate::{agent_logs::Response, usage::Tokens};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
@@ -71,74 +71,26 @@ pub(crate) struct Request {
     pub(crate) subagent: bool,
 }
 
-/// The requests of one session log, and the runs it claims.
-#[derive(Debug)]
-pub(crate) struct SessionRequests {
-    pub(crate) id: String,
-    /// Whether the session has subagent logs. Without them its figures cover the coordinator only.
-    pub(crate) has_subagent_logs: bool,
-    /// The run ids an executed `jidoka run update <id>` command in this session names.
-    pub(crate) claims: HashSet<String>,
-    pub(crate) requests: Vec<Request>,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct RequestRead {
-    pub(crate) sessions: Vec<SessionRequests>,
-    pub(crate) notes: Vec<String>,
-    pub(crate) root_found: bool,
-    pub(crate) timed_out: bool,
-    pub(crate) truncated: bool,
-}
-
-/// The requests of what an adapter read: each response gets its category.
-pub(crate) fn requests_from(read: LogRead) -> RequestRead {
-    let sessions = read
-        .sessions
-        .into_iter()
-        .map(|session| SessionRequests {
-            id: session.id,
-            has_subagent_logs: session.has_subagent_logs,
-            claims: session.claims,
-            requests: session
-                .responses
-                .into_iter()
-                .map(|response| {
-                    // A response whose tool calls the log does not give is not known to have made none.
-                    let class = if response.calls_known {
-                        classify(&response.commands, response.other_tool, response.any_tool)
-                    } else {
-                        Classification {
-                            category: Category::NotCategorized,
-                            chained_reporting: false,
-                            several_categories: false,
-                        }
-                    };
-                    Request {
-                        ts: response.ts,
-                        category: class.category,
-                        tokens: response.tokens,
-                        chained_reporting: class.chained_reporting,
-                        several_categories: class.several_categories,
-                        tool_output_bytes: response.tool_output_bytes,
-                        subagent: response.subagent,
-                    }
-                })
-                .collect(),
-        })
-        .collect();
-    let mut notes: Vec<String> = Vec::new();
-    for note in read.notes {
-        if !notes.contains(&note.text) {
-            notes.push(note.text);
+/// The request a response made: its category comes from the commands of its tool calls.
+pub(crate) fn request_of(response: &Response) -> Request {
+    // A response whose tool calls the log does not give is not known to have made none.
+    let class = if response.calls_known {
+        classify(&response.commands, response.other_tool, response.any_tool)
+    } else {
+        Classification {
+            category: Category::NotCategorized,
+            chained_reporting: false,
+            several_categories: false,
         }
-    }
-    RequestRead {
-        sessions,
-        notes,
-        root_found: read.root_found,
-        timed_out: read.timed_out,
-        truncated: read.truncated,
+    };
+    Request {
+        ts: response.ts,
+        category: class.category,
+        tokens: response.tokens,
+        chained_reporting: class.chained_reporting,
+        several_categories: class.several_categories,
+        tool_output_bytes: response.tool_output_bytes,
+        subagent: response.subagent,
     }
 }
 

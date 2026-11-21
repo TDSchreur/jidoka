@@ -1,9 +1,9 @@
 //! `jidoka run requests`: the model requests of a run per category, with their tokens.
 
 use crate::{
-    agent_logs::{ReadLimits, Roots, RunWindow, read_claude, read_codex, read_copilot},
+    agent_logs::{LogSession, ReadLimits, Roots, RunWindow, read_sessions},
     inspect::shown,
-    request_logs::{Category, Request, SessionRequests, requests_from},
+    request_logs::{Category, Request, request_of},
     run::Run,
     stats::{number, table_with},
     usage::{FUTURE_SLACK_MS, Tokens, mark_at},
@@ -96,10 +96,6 @@ fn in_run(run: &Run, request: &Request) -> bool {
             }))
 }
 
-fn claims(run: &Run, session: &SessionRequests) -> bool {
-    session.claims.contains(&run.id) || run.sessions.contains(&session.id)
-}
-
 /// Start of the note for a run whose recorded sessions no scanned log claims.
 pub(crate) const RECORDED_NOT_FOUND: &str =
     "the run has recorded sessions, but none of their logs were found";
@@ -152,23 +148,13 @@ pub(crate) fn analyze(
     };
     let window = RunWindow::new(target, runs, first.at);
     let tracked = &window.tracked;
-    let limits = ReadLimits::default();
-    let read = requests_from(read_claude(&roots.claude, &window, deadline, limits));
-    let codex = requests_from(read_codex(&roots.codex, &window, deadline, limits));
-    let copilot = requests_from(read_copilot(&roots.copilot, &window, deadline, limits));
-    let (timed_out, truncated) = (
-        read.timed_out || codex.timed_out || copilot.timed_out,
-        read.truncated || codex.truncated || copilot.truncated,
-    );
-    result.notes.extend(read.notes.iter().cloned());
-    for note in codex.notes.iter().chain(&copilot.notes) {
-        if !result.notes.contains(note) {
-            result.notes.push(note.clone());
+    let read = read_sessions(roots, &window, deadline, ReadLimits::default());
+    for note in &read.notes {
+        if !result.notes.contains(&note.text) {
+            result.notes.push(note.text.clone());
         }
     }
-    let mut sessions = read.sessions;
-    sessions.extend(codex.sessions);
-    sessions.extend(copilot.sessions);
+    let (timed_out, truncated) = (read.timed_out, read.truncated);
     if timed_out {
         result
             .notes
@@ -180,14 +166,15 @@ pub(crate) fn analyze(
                 .into(),
         );
     }
-    let claimed: Vec<&SessionRequests> = sessions
+    let claimed: Vec<&LogSession> = read
+        .sessions
         .iter()
-        .filter(|session| claims(target, session))
+        .filter(|session| session.belongs_to(target))
         .collect();
     if claimed.is_empty() {
         result.notes.push(if !target.sessions.is_empty() {
             recorded_not_found_note(target, roots)
-        } else if !read.root_found && !codex.root_found && !copilot.root_found {
+        } else if read.roots_found == 0 {
             "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()
         } else {
             "no session log executed a jidoka run update for this run and none was recorded for it"
@@ -200,10 +187,11 @@ pub(crate) fn analyze(
         let rivals: Vec<&Run> = tracked
             .iter()
             .copied()
-            .filter(|run| run.id != target.id && claims(run, session))
+            .filter(|run| run.id != target.id && session.belongs_to(run))
             .collect();
         let mut used = false;
-        for request in &session.requests {
+        for response in &session.responses {
+            let request = &request_of(response);
             // A request from the future cannot be the run's work: a clock is wrong or the log is made up.
             if request.ts > now.saturating_add(FUTURE_SLACK_MS) || !in_run(target, request) {
                 continue;

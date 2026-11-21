@@ -22,7 +22,7 @@ use crate::{
     install::agent_home,
     request_logs::{Variables, is_real_dir, result_bytes, run_claims, truncate},
     run::Run,
-    usage::{Entry, PauseKind, Tokens, overlaps, parse_timestamp},
+    usage::{PauseKind, Tokens, overlaps, parse_timestamp},
 };
 use serde_json::Value;
 use std::{
@@ -77,22 +77,6 @@ impl Roots {
     }
 }
 
-/// A session that names a run or was recorded for one, with its de-duplicated entries.
-#[derive(Debug)]
-pub(crate) struct RunSession {
-    pub(crate) id: String,
-    /// The run ids the log names.
-    pub(crate) mentions: HashSet<String>,
-    pub(crate) entries: Vec<Entry>,
-    /// Pause markers in the log: what and when, never text. Claude Code only.
-    pub(crate) pauses: Vec<(PauseKind, u64)>,
-    /// When the log shows the agent or the user working, sorted. Claude Code only.
-    pub(crate) activity: Vec<u64>,
-    pub(crate) attention: Vec<(u64, crate::attention::Signal)>,
-    /// The skills the agent used, with when, sorted. Only the skill's name is kept.
-    pub(crate) skills: Vec<(u64, String)>,
-}
-
 /// Something that limits what a session's usage covers.
 #[derive(Debug)]
 pub(crate) struct Note {
@@ -103,7 +87,7 @@ pub(crate) struct Note {
 
 #[derive(Debug, Default)]
 pub(crate) struct ReadResult {
-    pub(crate) sessions: Vec<RunSession>,
+    pub(crate) sessions: Vec<LogSession>,
     pub(crate) notes: Vec<Note>,
     /// How many of the three log folders exist.
     pub(crate) roots_found: usize,
@@ -329,6 +313,14 @@ pub(crate) struct LogSession {
     pub(crate) skills: Vec<(u64, String)>,
 }
 
+impl LogSession {
+    /// Whether the session belongs to `run`: it executed a Jidoka command that names the run, or the run
+    /// recorded the session (the Session claim in the glossary).
+    pub(crate) fn belongs_to(&self, run: &Run) -> bool {
+        self.claims.contains(&run.id) || run.sessions.contains(&self.id)
+    }
+}
+
 /// What one adapter read.
 #[derive(Debug, Default)]
 pub(crate) struct LogRead {
@@ -525,30 +517,6 @@ impl<'a> ReadPass<'a> {
     }
 }
 
-/// A session as usage sees it.
-fn run_session(session: LogSession) -> RunSession {
-    RunSession {
-        id: session.id,
-        mentions: session.claims,
-        entries: session
-            .responses
-            .into_iter()
-            .map(|response| Entry {
-                session: response.session,
-                ts: response.ts,
-                model: response.model,
-                tokens: response.tokens,
-                subagent: response.subagent,
-                effort: response.effort,
-            })
-            .collect(),
-        pauses: session.pauses,
-        activity: session.activity,
-        attention: session.attention,
-        skills: session.skills,
-    }
-}
-
 /// Reads every session log that names a run in the window or was recorded for one, within `deadline`.
 pub(crate) fn read_sessions(
     roots: &Roots,
@@ -566,9 +534,11 @@ pub(crate) fn read_sessions(
         out.timed_out |= read.timed_out;
         out.truncated |= read.truncated;
         out.notes.extend(read.notes);
-        out.sessions
-            .extend(read.sessions.into_iter().map(run_session));
+        out.sessions.extend(read.sessions);
     }
     out.sessions.sort_by(|a, b| a.id.cmp(&b.id));
     out
 }
+
+#[cfg(test)]
+mod tests;
