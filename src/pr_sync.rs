@@ -8,7 +8,10 @@ use crate::{
     run_begin::{first_line, git, last_line, valid_branch_name},
 };
 use serde::Serialize;
-use std::{path::Path, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 /// Runs git. Tests override it to keep the user's own git settings out.
 pub(crate) trait Git {
@@ -40,6 +43,127 @@ pub(crate) trait Git {
 pub(crate) struct RealGit;
 
 impl Git for RealGit {}
+
+/// A run's Workspace that passed the checks `pr open` and `pr sync` share.
+pub(crate) struct Workspace {
+    pub(crate) dir: PathBuf,
+    pub(crate) branch: String,
+    /// The base branch, from `--base` or origin's default branch.
+    pub(crate) base: String,
+}
+
+/// Checks the run's Workspace before anything is merged or pushed: the worktree exists, it is on a branch that
+/// is safe to push and that the run records, no merge is in progress, the base is another branch, and nothing
+/// is uncommitted.
+pub(crate) fn check_workspace(
+    run: &PrRun,
+    base: Option<&str>,
+    git: &dyn Git,
+) -> Result<Workspace, ToolProblem> {
+    let worktree = run.worktree.as_deref().ok_or_else(|| {
+        ToolProblem(format!(
+            "Run {} has no worktree recorded. Record it with `jidoka run update` (--worktree and --branch), or create the workspace with `jidoka run begin`.",
+            run.id
+        ))
+    })?;
+    let dir = Path::new(worktree);
+    if !dir.is_dir() {
+        return Err(ToolProblem(format!(
+            "The recorded worktree {} does not exist.",
+            shown(worktree)
+        )));
+    }
+    let branch = git
+        .git(dir, &["branch", "--show-current"])
+        .map_err(|error| {
+            ToolProblem(format!(
+                "{} could not be read: {}",
+                shown(worktree),
+                shown(first_line(&error))
+            ))
+        })?;
+    if branch.is_empty() {
+        return Err(ToolProblem(format!(
+            "The worktree {} is not on a branch (a detached HEAD).",
+            shown(worktree)
+        )));
+    }
+    // A branch name that git could read as an option or a refspec (`+main` forces an update of main) is
+    // never handed to git.
+    if !valid_branch_name(&branch) {
+        return Err(ToolProblem(format!(
+            "The branch name {} is one this command will not push: it could be read as a git option or a forced refspec. Rename the branch (`git branch -m`) and try again.",
+            shown(&branch)
+        )));
+    }
+    if let Some(recorded) = &run.branch
+        && *recorded != branch
+    {
+        return Err(ToolProblem(format!(
+            "The worktree is on {} but the run records {}. Switch it back, or record the right branch with `jidoka run update`.",
+            shown(&branch),
+            shown(recorded)
+        )));
+    }
+    if git
+        .status(dir, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])
+        .map_err(ToolProblem)?
+        == 0
+    {
+        return Err(ToolProblem(
+            "A merge is in progress in the worktree. Resolve it (or abort it yourself), commit, and try again."
+                .into(),
+        ));
+    }
+    let base = match base {
+        Some(base) => base.to_string(),
+        None => git
+            .git(
+                dir,
+                &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+            )
+            .ok()
+            .and_then(|head| head.strip_prefix("origin/").map(str::to_string))
+            .ok_or_else(|| {
+                ToolProblem(
+                    "origin/HEAD is not set, so the base branch is not known. Pass it with --base."
+                        .into(),
+                )
+            })?,
+    };
+    if branch == base {
+        return Err(ToolProblem(format!(
+            "{} is the base branch. A pull request needs a feature branch.",
+            shown(&branch)
+        )));
+    }
+    let status = git.git(dir, &["status", "--porcelain"]).map_err(|error| {
+        ToolProblem(format!(
+            "The status of {} could not be read: {}",
+            shown(worktree),
+            shown(first_line(&error))
+        ))
+    })?;
+    if !status.is_empty() {
+        return Err(ToolProblem(format!(
+            "The worktree has uncommitted changes ({} paths). Commit them, then try again.",
+            status.lines().count()
+        )));
+    }
+    Ok(Workspace {
+        dir: dir.to_path_buf(),
+        branch,
+        base,
+    })
+}
+
+/// Pushes `branch` to origin and sets it as the upstream. It never forces: the branch is pushed by its full
+/// name on both sides, so that no name is read as a refspec. The error is what git printed.
+pub(crate) fn push_branch(git: &dyn Git, dir: &Path, branch: &str) -> Result<(), String> {
+    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    git.git(dir, &["push", "-u", "origin", &refspec])
+        .map(|_| ())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -136,19 +260,6 @@ pub(crate) fn sync(
     api: &dyn RunApi,
 ) -> Result<Synced, ToolProblem> {
     let problem = |text: String| ToolProblem(text);
-    let worktree = run.worktree.as_deref().ok_or_else(|| {
-        problem(format!(
-            "Run {} has no worktree recorded. Record it with `jidoka run update` (--worktree and --branch), or create the workspace with `jidoka run begin`.",
-            run.id
-        ))
-    })?;
-    let dir = Path::new(worktree);
-    if !dir.is_dir() {
-        return Err(problem(format!(
-            "The recorded worktree {} does not exist.",
-            shown(worktree)
-        )));
-    }
     if let Some(state @ (PrState::Merged | PrState::Closed)) = run.pr_state {
         let hint = if state == PrState::Merged {
             format!(" Run `jidoka run cleanup {}`.", run.id)
@@ -160,70 +271,12 @@ pub(crate) fn sync(
             state.label()
         )));
     }
+    let Workspace { dir, branch, base } = check_workspace(run, options.base.as_deref(), git)?;
+    let dir = dir.as_path();
     let read = |args: &[&str], what: &str| {
         git.git(dir, args)
             .map_err(|error| problem(format!("{what} failed: {}", shown(first_line(&error)))))
     };
-    let branch = read(&["branch", "--show-current"], "Reading the branch")?;
-    if branch.is_empty() {
-        return Err(problem(
-            "The worktree is not on a branch (a detached HEAD).".into(),
-        ));
-    }
-    if !valid_branch_name(&branch) {
-        return Err(problem(format!(
-            "The branch name {} is one this command will not push: it could be read as a git option or a forced refspec. Rename the branch (`git branch -m`) and try again.",
-            shown(&branch)
-        )));
-    }
-    if let Some(recorded) = &run.branch
-        && *recorded != branch
-    {
-        return Err(problem(format!(
-            "The worktree is on {} but the run records {}. Switch it back, or record the right branch with `jidoka run update`.",
-            shown(&branch),
-            shown(recorded)
-        )));
-    }
-    if git
-        .status(dir, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])
-        .map_err(problem)?
-        == 0
-    {
-        return Err(problem(
-            "A merge is in progress in the worktree. Resolve it (or abort it yourself), commit, and try again."
-                .into(),
-        ));
-    }
-    let base = match &options.base {
-        Some(base) => base.clone(),
-        None => git
-            .git(
-                dir,
-                &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-            )
-            .ok()
-            .and_then(|head| head.strip_prefix("origin/").map(str::to_string))
-            .ok_or_else(|| {
-                problem(
-                    "origin/HEAD is not set, so the base branch is not known. Pass it with --base."
-                        .into(),
-                )
-            })?,
-    };
-    if branch == base {
-        return Err(problem(format!(
-            "{} is the base branch; there is nothing to bring up to date.",
-            shown(&branch)
-        )));
-    }
-    let status = read(&["status", "--porcelain"], "Reading the status")?;
-    if !status.is_empty() {
-        return Err(problem(format!(
-            "The worktree has uncommitted changes ({} paths). Commit them, then try again.",
-            status.lines().count()
-        )));
-    }
 
     let base_ref = format!("refs/remotes/origin/{base}");
     git.git(
@@ -306,10 +359,8 @@ pub(crate) fn sync(
             what,
         )?))
     };
-    let push_refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
     let push = || {
-        git.git(dir, &["push", "-u", "origin", &push_refspec])
-            .map(|_| ())
+        push_branch(git, dir, &branch)
             .map_err(|error| {
                 let lower = error.to_lowercase();
                 // `[remote rejected]` is a hook or a branch rule saying no; only these mean the branch moved on.

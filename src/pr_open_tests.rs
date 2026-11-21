@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::pr_host::{FakeHost, Host, OpenPr, Origin};
-use std::{cell::RefCell, fs, process::Command};
+use std::{cell::RefCell, fs, path::Path, process::Command};
 use tempfile::TempDir;
 
 /// The plain path form git prints; on Windows `canonicalize` gives a `\\?\` path that git reads as a URL.
@@ -51,11 +51,10 @@ fn run_git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
-/// A bare remote with `develop`, a clone `repo`, and a worktree `wt` on a branch `feature` with one commit.
+/// A bare remote with `develop`, a clone `repo` (not kept), and a worktree `wt` on a branch `feature` with one commit.
 struct Project {
     _dir: TempDir,
     remote: PathBuf,
-    repo: PathBuf,
     wt: PathBuf,
 }
 
@@ -96,7 +95,6 @@ impl Project {
         Self {
             _dir: dir,
             remote,
-            repo,
             wt,
         }
     }
@@ -265,7 +263,7 @@ fn a_retry_finds_the_open_pull_request_and_does_not_make_a_second() {
 
 #[test]
 fn nothing_is_pushed_when_a_check_fails_first() {
-    // Uncommitted changes.
+    // Uncommitted changes, one of the Workspace checks `pr sync` shares (tested in pr_sync).
     let project = Project::new();
     fs::write(project.wt.join("work.txt"), "unsaved").unwrap();
     let problem = open(
@@ -278,21 +276,6 @@ fn nothing_is_pushed_when_a_check_fails_first() {
     .unwrap_err();
     assert!(problem.0.contains("uncommitted"), "{}", problem.0);
     assert_eq!(project.remote_branch("feature"), None);
-
-    // The branch is the base.
-    let project = Project::new();
-    let mut run = run_of(&project);
-    run.worktree = Some(project.repo.display().to_string());
-    run.branch = Some("develop".into());
-    let problem = open(
-        &run,
-        &options(&project),
-        &FakeHost::opening(URL),
-        &FakeGit::default(),
-        &FakeApi::default(),
-    )
-    .unwrap_err();
-    assert!(problem.0.contains("base branch"), "{}", problem.0);
 
     // No commits beyond the base.
     let project = Project::new();
@@ -307,54 +290,6 @@ fn nothing_is_pushed_when_a_check_fails_first() {
     .unwrap_err();
     assert!(problem.0.contains("no commits beyond"), "{}", problem.0);
     assert_eq!(project.remote_branch("feature"), None);
-
-    // The worktree is on another branch than the run records.
-    let project = Project::new();
-    let mut run = run_of(&project);
-    run.branch = Some("other".into());
-    let problem = open(
-        &run,
-        &options(&project),
-        &FakeHost::opening(URL),
-        &FakeGit::default(),
-        &FakeApi::default(),
-    )
-    .unwrap_err();
-    assert!(
-        problem.0.contains("other") && problem.0.contains("feature"),
-        "{}",
-        problem.0
-    );
-
-    // The run records no worktree, or one that is gone.
-    let project = Project::new();
-    let mut run = run_of(&project);
-    run.worktree = None;
-    assert!(
-        open(
-            &run,
-            &options(&project),
-            &FakeHost::opening(URL),
-            &FakeGit::default(),
-            &FakeApi::default()
-        )
-        .unwrap_err()
-        .0
-        .contains("no worktree")
-    );
-    run.worktree = Some(project.wt.join("gone").display().to_string());
-    assert!(
-        open(
-            &run,
-            &options(&project),
-            &FakeHost::opening(URL),
-            &FakeGit::default(),
-            &FakeApi::default()
-        )
-        .unwrap_err()
-        .0
-        .contains("does not exist")
-    );
 }
 
 #[test]
