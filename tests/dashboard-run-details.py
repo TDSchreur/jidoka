@@ -626,6 +626,9 @@ return {sheet: dialog.getBoundingClientRect().width, factsLeft: facts.left, rout
         self.assertTrue(narrow["factsFirst"])
         self.assertEqual(narrow["sticky"], "static")
         self.assertLessEqual(narrow["factsTop"] + 1, narrow["routeTop"])
+        tablet = drive(body, runs=[fixture], size=(1024, 900))
+        self.assertEqual(tablet["sticky"], "static")
+        self.assertLessEqual(tablet["factsTop"] + 1, tablet["routeTop"])
 
     def test_slow_detail_response_survives_list_refresh(self):
         class SlowDetail(Handler):

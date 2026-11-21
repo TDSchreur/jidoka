@@ -799,7 +799,12 @@ function Detail({ run, runs, now, onClose, onDelete, onSynced, onOpenRun, group 
   const listed = Array.isArray(run.tickets) && run.tickets.some((t) => t.reference === run.current_ticket);
   const { stops, other } = runHistory(run, now);
   // The facts column holds what is true of the Run as a whole; the route column holds what happened along the way.
-  const hasFacts = Boolean(Array.isArray(gateData?.stage_gates) && gateData.stage_gates.some((stage) => stage.gates.length) || gateData?.checks_unavailable || gateData?.checks?.skipped?.length || gateData?.recorded_skipped_checks?.length || gateData?.model_route?.stages?.length);
+  const hasGates = Array.isArray(gateData?.stage_gates) && gateData.stage_gates.some((stage) => stage.gates.length);
+  const hasChecksUnavailable = Boolean(gateData?.checks_unavailable);
+  const hasSkipped = Boolean(gateData?.checks?.skipped?.length);
+  const hasRecordedSkipped = Boolean(gateData?.recorded_skipped_checks?.length);
+  const hasModelRoute = Boolean(gateData?.model_route?.stages?.length);
+  const hasFacts = Boolean(group) || hasGates || hasChecksUnavailable || hasSkipped || hasRecordedSkipped || hasModelRoute;
   return html`<dialog
     ref=${dialog}
     class="detail"
@@ -837,10 +842,10 @@ function Detail({ run, runs, now, onClose, onDelete, onSynced, onOpenRun, group 
         ${ts !== null ? html`<span class="status-item status-updated">Updated${' '}<${SheetTime} at=${ts} now=${now} /></span>` : null}
         ${blocked && run.blocking_reason ? html`<p class="status-reason">${run.blocking_reason}</p>` : null}
       </div>
-      <div class="detail-layout">
-        ${hasFacts || group ? html`<aside class="detail-facts" aria-label="Run facts">
+      <div class=${hasFacts ? 'detail-layout has-facts' : 'detail-layout'}>
+        ${hasFacts ? html`<aside class="detail-facts" aria-label="Run facts">
           ${group ? html`<${DetailGroup} group=${group} run=${run} runs=${runs} now=${now} onOpenRun=${onOpenRun} />` : null}
-          ${Array.isArray(gateData?.stage_gates) && gateData.stage_gates.some((stage) => stage.gates.length) ? html`
+          ${hasGates ? html`
             <section class="stage-gates" aria-labelledby="gate-heading">
               <h3 id="gate-heading">Stage gates</h3>
               ${gateData.stage_gates.filter((stage) => stage.gates.length).map((stage) => html`
@@ -852,16 +857,16 @@ function Detail({ run, runs, now, onClose, onDelete, onSynced, onOpenRun, group 
                   </li>`)}</ul>
                 </div>`)}
             </section>` : null}
-          ${gateData?.checks_unavailable ? html`<p role="status">Check selection unavailable: ${gateData.checks_unavailable}</p>` : null}
-          ${gateData?.checks?.skipped?.length ? html`<section aria-labelledby="skipped-heading">
+          ${hasChecksUnavailable ? html`<p role="status">Check selection unavailable: ${gateData.checks_unavailable}</p>` : null}
+          ${hasSkipped ? html`<section aria-labelledby="skipped-heading">
             <h3 id="skipped-heading">Checks currently skipped</h3>
             <ul>${gateData.checks.skipped.map((check) => html`<li>${check.name}: ${check.reason}</li>`)}</ul>
           </section>` : null}
-          ${gateData?.recorded_skipped_checks?.length ? html`<section aria-labelledby="recorded-skipped-heading">
+          ${hasRecordedSkipped ? html`<section aria-labelledby="recorded-skipped-heading">
             <h3 id="recorded-skipped-heading">Checks skipped when recorded${gateData.recorded_skipped_rework ? ` · Rework ${gateData.recorded_skipped_rework}` : ''}</h3>
             <ul>${gateData.recorded_skipped_checks.map((check) => html`<li>${check.name}: ${check.reason}</li>`)}</ul>
           </section>` : null}
-          ${gateData?.model_route?.stages?.length ? html`<${ModelRoute} route=${gateData.model_route} />` : null}
+          ${hasModelRoute ? html`<${ModelRoute} route=${gateData.model_route} />` : null}
         </aside>` : null}
         <div class="detail-route">
           <ol class="route" aria-label="Route">
@@ -1426,9 +1431,8 @@ function ProjectsMenu({ projects, hiddenProjects, counts, onHide, onDelete }) {
 function App() {
   const { runs, failed, lastOk, reload } = useRuns();
   const groups = useGroups();
-  // Which group each run is in, to name it on the run's row and detail.
-  const groupOf = new Map((groups ?? []).flatMap((group) => group.members.map((member) => [member.run, group.title])));
-  const groupById = new Map((groups ?? []).flatMap((group) => group.members.map((member) => [member.run, group])));
+  // The group each run is in: its title goes on the run's row, the whole group on its detail.
+  const groupOfRun = new Map((groups ?? []).flatMap((group) => group.members.map((member) => [member.run, group])));
   useReloadOnNewServer();
   const now = useNow();
   const [onlyWaiting, setOnlyWaiting] = useState(false);
@@ -1604,7 +1608,7 @@ function App() {
               </div>
               ${line.length
                 ? html`<ul class="line-rows">
-                    ${line.map((entry) => html`<${LineRow} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${open} group=${groupOf.get(entry.run.id)} />`)}
+                    ${line.map((entry) => html`<${LineRow} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${open} group=${groupOfRun.get(entry.run.id)?.title} />`)}
                   </ul>`
                 : html`<p class="empty">${onlyWaiting ? 'Nothing needs you right now.' : 'Nothing on the line.'}</p>`}
             </section>`
@@ -1652,7 +1656,7 @@ function App() {
             onDelete=${(run) => setPending({ runs: [run] })}
             onSynced=${reload}
             onOpenRun=${switchTo}
-            group=${groupById.get(openRun.id)}
+            group=${groupOfRun.get(openRun.id)}
           />`
         : null}
     </main>

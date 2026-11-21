@@ -277,8 +277,10 @@ body:has(.confirm[open]) { overflow: hidden; }
 .detail-group-runs li { padding: var(--space-2) 0; overflow-wrap: anywhere; }
 .detail-group-list li { padding: var(--space-1) 0; overflow-wrap: anywhere; font-size: var(--text-xs); line-height: var(--leading-xs); }
 .detail-route { min-width: 0; }
-@container (min-width: 60rem) {
-  .detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(20rem, 26rem); grid-template-areas: "route facts"; gap: var(--space-8) var(--space-8); align-items: start; }
+/* Two columns need a body wider than 961 px (the sheet at 1024 px, where it is the whole screen) and fit in the 1067 px of the 1280 px rule below,
+   so 66rem (990 px at 15 px per rem) gives one column up to 1024 px and two from 1280 px. Change this and that rule together. */
+@container (min-width: 66rem) {
+  .detail-layout.has-facts { display: grid; grid-template-columns: minmax(0, 1fr) minmax(20rem, 26rem); grid-template-areas: "route facts"; gap: var(--space-8) var(--space-8); align-items: start; }
   .detail-route { grid-area: route; }
   .detail-facts { grid-area: facts; position: sticky; top: var(--space-7); max-height: calc(100vh - 2 * var(--space-7)); max-height: calc(100dvh - 2 * var(--space-7)); margin: 0; padding-left: var(--space-8); overflow-y: auto; border-left: var(--stroke-thin) solid var(--color-rule); }
 }
