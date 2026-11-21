@@ -448,12 +448,20 @@ struct StarterStages {
     finish: ModelChoice,
 }
 
+/// The stronger models offered for complex Define and Build work.
+#[derive(Serialize)]
+struct StarterComplex {
+    define: ModelChoice,
+    build: ModelChoice,
+}
+
 /// One agent's starter entry; `enabled` is written only when it is off.
 #[derive(Serialize)]
 struct StarterEntry {
     #[serde(skip_serializing_if = "is_true")]
     enabled: bool,
     stages: StarterStages,
+    complex: StarterComplex,
 }
 
 #[derive(Serialize)]
@@ -492,17 +500,29 @@ fn starter_stages(agent: RoutingAgent) -> StarterStages {
             finish: choice("haiku", "low"),
         },
         RoutingAgent::Codex => StarterStages {
-            define: choice("gpt-6.1-terra", "medium"),
-            build: choice("gpt-6.1-terra", "medium"),
-            check: choice("gpt-6.1-terra", "medium"),
+            define: choice("gpt-6.2-sol", "medium"),
+            build: choice("gpt-6.2-sol", "medium"),
+            check: choice("gpt-6.2-astra", "medium"),
             finish: choice("gpt-6-luna", "low"),
         },
         RoutingAgent::Copilot => StarterStages {
             define: choice("claude-sonnet-5.5", "medium"),
             build: choice("claude-sonnet-5.5", "medium"),
-            check: choice("claude-sonnet-5.5", "medium"),
+            check: choice("gpt-6.2-astra", "medium"),
             finish: choice("claude-haiku-4.5", "low"),
         },
+    }
+}
+
+fn starter_complex(agent: RoutingAgent) -> StarterComplex {
+    let model = match agent {
+        RoutingAgent::Claude => "opus",
+        RoutingAgent::Codex => "gpt-6.2-sol",
+        RoutingAgent::Copilot => "claude-opus-5.5",
+    };
+    StarterComplex {
+        define: choice(model, "high"),
+        build: choice(model, "high"),
     }
 }
 
@@ -513,6 +533,7 @@ fn starter(agents: &[RoutingAgent]) -> String {
         agents.contains(&agent).then(|| StarterEntry {
             enabled: true,
             stages: starter_stages(agent),
+            complex: starter_complex(agent),
         })
     };
     let file = StarterFile {
@@ -538,6 +559,16 @@ pub(crate) fn created_message(shown: &str, about: Option<&str>) -> String {
     }
     message.push_str(" Edit the models and efforts, or set \"enabled\": false to switch it off.");
     message
+}
+
+/// Atomically replaces the policy with the starter for `agents`.
+pub(crate) fn replace_starter(path: &Path, agents: &[RoutingAgent]) -> io::Result<()> {
+    let folder = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(folder)?;
+    let mut temp = tempfile::NamedTempFile::new_in(folder)?;
+    temp.write_all(starter(agents).as_bytes())?;
+    temp.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 /// Writes the starter for `agents` to `path`, creating its folder. Whatever is already at `path`, even a

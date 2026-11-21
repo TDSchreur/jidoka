@@ -1,10 +1,10 @@
-//! Installation creates the default policy without replacing user settings.
+//! Installation replaces the policy with defaults for all agents.
 mod common;
 
 use std::fs;
 
 #[test]
-fn install_creates_the_two_agent_policy_and_preserves_existing_content() {
+fn install_replaces_the_policy_with_defaults_for_all_agents() {
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config");
     let run = || {
@@ -40,10 +40,19 @@ fn install_creates_the_two_agent_policy_and_preserves_existing_content() {
         (
             "codex",
             [
-                ("define", "gpt-6.1-terra", "medium"),
-                ("build", "gpt-6.1-terra", "medium"),
-                ("check", "gpt-6.1-terra", "medium"),
+                ("define", "gpt-6.2-sol", "medium"),
+                ("build", "gpt-6.2-sol", "medium"),
+                ("check", "gpt-6.2-astra", "medium"),
                 ("finish", "gpt-6-luna", "low"),
+            ],
+        ),
+        (
+            "copilot",
+            [
+                ("define", "claude-sonnet-5.5", "medium"),
+                ("build", "claude-sonnet-5.5", "medium"),
+                ("check", "gpt-6.2-astra", "medium"),
+                ("finish", "claude-haiku-4.5", "low"),
             ],
         ),
     ] {
@@ -55,5 +64,8 @@ fn install_creates_the_two_agent_policy_and_preserves_existing_content() {
     }
     fs::write(&path, "my existing policy").unwrap();
     assert!(run().status.success());
-    assert_eq!(fs::read_to_string(&path).unwrap(), "my existing policy");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap(),
+        value
+    );
 }

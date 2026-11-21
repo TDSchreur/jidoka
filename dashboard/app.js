@@ -703,8 +703,50 @@ function CheckPrButton({ run, onSynced }) {
   </span>`;
 }
 
+/** The change group a Run belongs to: its runs (those on this dashboard open their own sheet), what this run waits on and its milestones. */
+function DetailGroup({ group, run, runs, now, onOpenRun }) {
+  const mine = group.members.find((member) => member.run === run.id);
+  const dependencies = mine?.dependencies ?? [];
+  const milestones = (group.milestones ?? []).filter((milestone) => milestone.runs?.includes(run.id));
+  return html`<section class="detail-group" aria-labelledby="detail-group-heading">
+    <h3 id="detail-group-heading">Change group</h3>
+    <p class="detail-group-title">${group.title}</p>
+    ${group.summary ? html`<p class="detail-group-meta">${group.summary}</p>` : null}
+    <p class="detail-group-meta">Spec: <${LinkOrText} value=${group.spec} /></p>
+    <h4>Runs</h4>
+    <ul class="detail-group-runs">
+      ${group.members.map((member) => {
+        const [state, style] = memberPrState(member);
+        const name = member.missing ? `Run ${member.run}` : member.title;
+        const here = member.run === run.id;
+        const other = here ? null : runs.find((candidate) => candidate.id === member.run);
+        return html`<li key=${member.run}>
+          ${other ? html`<button type="button" class="link" onClick=${() => onOpenRun(other)}>${name}</button>` : html`<strong>${name}</strong>`}${here ? ' (this run)' : null}
+          ${member.repository ? html`${' '}<span class="group-repo"><${ProjectName} path=${member.repository} /></span>` : null}
+          ${' '}<span class=${`pr-state ${style}`}>${state}</span>
+        </li>`;
+      })}
+    </ul>
+    ${dependencies.length
+      ? html`<h4>This run waits on</h4>
+          <ul class="detail-group-list">
+            ${dependencies.map((dep) => {
+              const at = typeof dep.checked_at === 'number' ? dep.checked_at : null;
+              return html`<li key=${dep.id}>${dep.description}: ${dep.status}, <strong>${dep.cleared ? 'cleared' : 'pending'}</strong>${at !== null ? html`${' '}(last checked <${SheetTime} at=${at} now=${now} />)` : null}</li>`;
+            })}
+          </ul>`
+      : null}
+    ${milestones.length
+      ? html`<h4>Milestones</h4>
+          <ul class="detail-group-list">
+            ${milestones.map((milestone) => html`<li key=${milestone.id}>${milestone.text}: <strong>${milestone.confirmed ? 'confirmed' : 'pending'}</strong></li>`)}
+          </ul>`
+      : null}
+  </section>`;
+}
+
 /** The Run's route card in a native modal dialog on the right. The browser handles focus containment and Escape. */
-function Detail({ run, now, onClose, onDelete, onSynced, group }) {
+function Detail({ run, runs, now, onClose, onDelete, onSynced, onOpenRun, group }) {
   const [gateData, setGateData] = useState(null);
   useEffect(() => {
     let active = true;
@@ -756,6 +798,13 @@ function Detail({ run, now, onClose, onDelete, onSynced, group }) {
   const total = usageTotal(run);
   const listed = Array.isArray(run.tickets) && run.tickets.some((t) => t.reference === run.current_ticket);
   const { stops, other } = runHistory(run, now);
+  // The facts column holds what is true of the Run as a whole; the route column holds what happened along the way.
+  const hasGates = Array.isArray(gateData?.stage_gates) && gateData.stage_gates.some((stage) => stage.gates.length);
+  const hasChecksUnavailable = Boolean(gateData?.checks_unavailable);
+  const hasSkipped = Boolean(gateData?.checks?.skipped?.length);
+  const hasRecordedSkipped = Boolean(gateData?.recorded_skipped_checks?.length);
+  const hasModelRoute = Boolean(gateData?.model_route?.stages?.length);
+  const hasFacts = Boolean(group) || hasGates || hasChecksUnavailable || hasSkipped || hasRecordedSkipped || hasModelRoute;
   return html`<dialog
     ref=${dialog}
     class="detail"
@@ -779,7 +828,6 @@ function Detail({ run, now, onClose, onDelete, onSynced, group }) {
       <p class="detail-sub">
         <span><${ProjectName} path=${projectOf(run)} /></span>
         ${run.mode ? html`<span>${run.mode}</span>` : null}
-        ${group ? html`<span>Group: ${group}</span>` : null}
         ${run.branch ? html`<span class="branch"><code>${run.branch}</code><${CopyButton} value=${run.branch} what="branch" /></span>` : null}
       </p>
       ${active && run.activity ? html`<p class="detail-activity">${run.activity}</p>` : null}
@@ -794,43 +842,50 @@ function Detail({ run, now, onClose, onDelete, onSynced, group }) {
         ${ts !== null ? html`<span class="status-item status-updated">Updated${' '}<${SheetTime} at=${ts} now=${now} /></span>` : null}
         ${blocked && run.blocking_reason ? html`<p class="status-reason">${run.blocking_reason}</p>` : null}
       </div>
-      ${Array.isArray(gateData?.stage_gates) && gateData.stage_gates.some((stage) => stage.gates.length) ? html`
-        <section class="stage-gates" aria-labelledby="gate-heading">
-          <h3 id="gate-heading">Stage gates</h3>
-          ${gateData.stage_gates.filter((stage) => stage.gates.length).map((stage) => html`
-            <div class="gate-stage"><h4>${STATION_NAME[stage.stage] ?? stage.stage}</h4>
-              <ul>${stage.gates.map((gate) => html`<li class="gate">
-                <div class="gate-title"><span class="gate-name">${gate.name}:</span> <span class="gate-status">${gate.status === 'recorded-pass' ? 'Recorded pass' : gate.status === 'unknown' ? 'Unknown' : gate.status}</span></div>
-                <p class="gate-description">${gate.description}${gate.rework ? html`<span> · Rework ${gate.rework}</span>` : null}</p>
-                ${gate.evidence ? html`<p class="gate-evidence">Evidence: ${gate.evidence}</p>` : null}
-              </li>`)}</ul>
-            </div>`)}
-        </section>` : null}
-      ${gateData?.checks_unavailable ? html`<p role="status">Check selection unavailable: ${gateData.checks_unavailable}</p>` : null}
-      ${gateData?.checks?.skipped?.length ? html`<section aria-labelledby="skipped-heading">
-        <h3 id="skipped-heading">Checks currently skipped</h3>
-        <ul>${gateData.checks.skipped.map((check) => html`<li>${check.name}: ${check.reason}</li>`)}</ul>
-      </section>` : null}
-      ${gateData?.recorded_skipped_checks?.length ? html`<section aria-labelledby="recorded-skipped-heading">
-        <h3 id="recorded-skipped-heading">Checks skipped when recorded${gateData.recorded_skipped_rework ? ` · Rework ${gateData.recorded_skipped_rework}` : ''}</h3>
-        <ul>${gateData.recorded_skipped_checks.map((check) => html`<li>${check.name}: ${check.reason}</li>`)}</ul>
-      </section>` : null}
-      <ol class="route" aria-label="Route">
-        ${stops.map((stop, index) => html`<${Stop} key=${index} run=${run} stop=${stop} now=${now} />`)}
-      </ol>
-      <${UnstartedTickets} run=${run} tickets=${other.tickets} now=${now} />
-      <${OtherReports} reports=${other.reports} events=${other.events} summaries=${other.summaries} now=${now} />
-      ${gateData?.model_route?.stages?.length ? html`<${ModelRoute} route=${gateData.model_route} />` : null}
-      ${run.usage
-        ? html`<details class="usage" open=${active}>
-            <summary>
-              Token usage${total !== null ? html`<span class="usage-total">${tokenCount(total)}${' fresh'}</span>` : null}${run.usage.cost
-                ? html`<span class="usage-total">${'Est. cost '}${costText(run.usage.cost, true)}</span>`
-                : null}
-            </summary>
-            <${UsageDetail} usage=${run.usage} />
-          </details>`
-        : null}
+      <div class=${hasFacts ? 'detail-layout has-facts' : 'detail-layout'}>
+        ${hasFacts ? html`<aside class="detail-facts" aria-label="Run facts">
+          ${group ? html`<${DetailGroup} group=${group} run=${run} runs=${runs} now=${now} onOpenRun=${onOpenRun} />` : null}
+          ${hasGates ? html`
+            <section class="stage-gates" aria-labelledby="gate-heading">
+              <h3 id="gate-heading">Stage gates</h3>
+              ${gateData.stage_gates.filter((stage) => stage.gates.length).map((stage) => html`
+                <div class="gate-stage"><h4>${STATION_NAME[stage.stage] ?? stage.stage}</h4>
+                  <ul>${stage.gates.map((gate) => html`<li class="gate">
+                    <div class="gate-title"><span class="gate-name">${gate.name}:</span> <span class="gate-status">${gate.status === 'recorded-pass' ? 'Recorded pass' : gate.status === 'unknown' ? 'Unknown' : gate.status}</span></div>
+                    <p class="gate-description">${gate.description}${gate.rework ? html`<span> · Rework ${gate.rework}</span>` : null}</p>
+                    ${gate.evidence ? html`<p class="gate-evidence">Evidence: ${gate.evidence}</p>` : null}
+                  </li>`)}</ul>
+                </div>`)}
+            </section>` : null}
+          ${hasChecksUnavailable ? html`<p role="status">Check selection unavailable: ${gateData.checks_unavailable}</p>` : null}
+          ${hasSkipped ? html`<section aria-labelledby="skipped-heading">
+            <h3 id="skipped-heading">Checks currently skipped</h3>
+            <ul>${gateData.checks.skipped.map((check) => html`<li>${check.name}: ${check.reason}</li>`)}</ul>
+          </section>` : null}
+          ${hasRecordedSkipped ? html`<section aria-labelledby="recorded-skipped-heading">
+            <h3 id="recorded-skipped-heading">Checks skipped when recorded${gateData.recorded_skipped_rework ? ` · Rework ${gateData.recorded_skipped_rework}` : ''}</h3>
+            <ul>${gateData.recorded_skipped_checks.map((check) => html`<li>${check.name}: ${check.reason}</li>`)}</ul>
+          </section>` : null}
+          ${hasModelRoute ? html`<${ModelRoute} route=${gateData.model_route} />` : null}
+        </aside>` : null}
+        <div class="detail-route">
+          <ol class="route" aria-label="Route">
+            ${stops.map((stop, index) => html`<${Stop} key=${index} run=${run} stop=${stop} now=${now} />`)}
+          </ol>
+          <${UnstartedTickets} run=${run} tickets=${other.tickets} now=${now} />
+          <${OtherReports} reports=${other.reports} events=${other.events} summaries=${other.summaries} now=${now} />
+          ${run.usage
+            ? html`<details class="usage" open=${active}>
+                <summary>
+                  Token usage${total !== null ? html`<span class="usage-total">${tokenCount(total)}${' fresh'}</span>` : null}${run.usage.cost
+                    ? html`<span class="usage-total">${'Est. cost '}${costText(run.usage.cost, true)}</span>`
+                    : null}
+                </summary>
+                <${UsageDetail} usage=${run.usage} />
+              </details>`
+            : null}
+        </div>
+      </div>
       <div class="detail-foot">
         <dl class="ids">
           ${run.repository
@@ -1376,8 +1431,8 @@ function ProjectsMenu({ projects, hiddenProjects, counts, onHide, onDelete }) {
 function App() {
   const { runs, failed, lastOk, reload } = useRuns();
   const groups = useGroups();
-  // Which group each run is in, to name it on the run's row and detail.
-  const groupOf = new Map((groups ?? []).flatMap((group) => group.members.map((member) => [member.run, group.title])));
+  // The group each run is in: its title goes on the run's row, the whole group on its detail.
+  const groupOfRun = new Map((groups ?? []).flatMap((group) => group.members.map((member) => [member.run, group])));
   useReloadOnNewServer();
   const now = useNow();
   const [onlyWaiting, setOnlyWaiting] = useState(false);
@@ -1471,6 +1526,11 @@ function App() {
     setOpenKey(key);
   };
   const close = () => setOpenKey(null);
+  // Another run's sheet from inside this one: focus goes back to the control that opened the first sheet.
+  const switchTo = (run) => {
+    lastOpened.current = runKey(run);
+    setOpenKey(runKey(run));
+  };
   useEffect(() => {
     // The Run is no longer listed: close the detail, so it does not come back if the Run returns.
     if (openKey !== null && runs && !openRun) setOpenKey(null);
@@ -1548,7 +1608,7 @@ function App() {
               </div>
               ${line.length
                 ? html`<ul class="line-rows">
-                    ${line.map((entry) => html`<${LineRow} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${open} group=${groupOf.get(entry.run.id)} />`)}
+                    ${line.map((entry) => html`<${LineRow} key=${runKey(entry.run)} run=${entry.run} now=${now} onOpen=${open} group=${groupOfRun.get(entry.run.id)?.title} />`)}
                   </ul>`
                 : html`<p class="empty">${onlyWaiting ? 'Nothing needs you right now.' : 'Nothing on the line.'}</p>`}
             </section>`
@@ -1590,11 +1650,13 @@ function App() {
         ? html`<${Detail}
             key=${runKey(openRun)}
             run=${openRun}
+            runs=${runs}
             now=${now}
             onClose=${close}
             onDelete=${(run) => setPending({ runs: [run] })}
             onSynced=${reload}
-            group=${groupOf.get(openRun.id)}
+            onOpenRun=${switchTo}
+            group=${groupOfRun.get(openRun.id)}
           />`
         : null}
     </main>

@@ -604,6 +604,32 @@ return {gates: text(dialog.querySelector('[aria-labelledby="gate-heading"]')),
         self.assertIn("security: no matching path", result["recorded"])
         self.assertIn("Stage gates", result["headings"])
 
+    def test_wide_sheet_puts_the_facts_right_of_the_route_and_narrow_stacks_them(self):
+        fixture = {**ACTIVE, "checks": {"skipped": [{"name": "code-review", "reason": "fast has no check stage"}]}}
+        body = """
+const dialog = await openRun('run-active');
+await wait(() => dialog.querySelector('.detail-facts #model-route-heading'), 'the facts column');
+const rect = (selector) => dialog.querySelector(selector).getBoundingClientRect();
+const facts = rect('.detail-facts');
+const route = rect('.detail-route');
+return {sheet: dialog.getBoundingClientRect().width, factsLeft: facts.left, routeRight: route.right, factsTop: facts.top, routeTop: route.top,
+        factsFirst: dialog.querySelector('.detail-facts').compareDocumentPosition(dialog.querySelector('.detail-route')) & Node.DOCUMENT_POSITION_FOLLOWING,
+        sticky: getComputedStyle(dialog.querySelector('.detail-facts')).position};
+"""
+        wide = drive(body, runs=[fixture], size=(1440, 900))
+        self.assertGreater(wide["sheet"], 896)
+        self.assertGreaterEqual(wide["factsLeft"], wide["routeRight"])
+        self.assertEqual(wide["sticky"], "sticky")
+        self.assertTrue(wide["factsFirst"])
+        narrow = drive(body, runs=[fixture], size=(800, 900))
+        self.assertLessEqual(narrow["sheet"], 800)
+        self.assertTrue(narrow["factsFirst"])
+        self.assertEqual(narrow["sticky"], "static")
+        self.assertLessEqual(narrow["factsTop"] + 1, narrow["routeTop"])
+        tablet = drive(body, runs=[fixture], size=(1024, 900))
+        self.assertEqual(tablet["sticky"], "static")
+        self.assertLessEqual(tablet["factsTop"] + 1, tablet["routeTop"])
+
     def test_slow_detail_response_survives_list_refresh(self):
         class SlowDetail(Handler):
             list_refreshed = threading.Event()

@@ -167,7 +167,7 @@ fn refresh(
         return;
     };
     let result = crate::install::install_skill_files(&record.agents, home, var, &mut io::sink())
-        .and_then(|()| crate::install::create_default_policy(var))
+        .and_then(|()| crate::install::replace_default_policy(var))
         .map(|_| ())
         .and_then(|()| {
             let current = InstallRecord::current(record.agents.clone());
