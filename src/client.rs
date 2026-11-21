@@ -390,6 +390,8 @@ mod tests {
         assert_eq!(run.stage, crate::run::Stage::Build);
         assert_eq!(run.gates.len(), 3);
         assert_eq!(run.gates[0].evidence.as_deref(), Some("reviewed"));
+        assert_eq!(run.stage_exits[0].stage, crate::run::Stage::Define);
+        assert_eq!(run.stage_exits[0].to, Some(crate::run::Stage::Build));
     }
 
     fn lifecycle(server: &TestServer, id: &str, action: &str, options: &[&str]) {

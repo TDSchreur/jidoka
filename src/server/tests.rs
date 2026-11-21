@@ -1145,7 +1145,7 @@ async fn run_api_exposes_gate_status_and_skipped_checks() {
         .find(|g| g["name"] == "verified")
         .unwrap();
     assert_eq!(verified["status"], "failed");
-    assert_eq!(verified["evidence"], "Tests failed");
+    assert_eq!(verified["results"][0]["evidence"], "Tests failed");
     assert_eq!(body["checks"]["skipped"][0]["name"], "code-review");
     assert!(
         body["checks"]["skipped"][0]["reason"]
@@ -1155,6 +1155,68 @@ async fn run_api_exposes_gate_status_and_skipped_checks() {
     );
     let finish = gates.iter().find(|s| s["stage"] == "finish").unwrap();
     assert_eq!(finish["gates"][0]["status"], "unknown");
+}
+
+#[rocket::async_test]
+async fn stage_exits_preserve_passes_and_distinguish_refused_and_forced_advances() {
+    let dir = TestDir::new();
+    fs::write(dir.0.path().join("runs.json"), r#"[{"id":"42","title":"t","project":"/work","mode":"balanced","stage":"build","status":"running","gates":[]}]"#).unwrap();
+    let api = client(&dir).await;
+    let advance = |body| {
+        api.post("/api/runs/42/advance")
+            .header(cli_token_header(&api))
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .header(ContentType::JSON)
+            .body(body)
+    };
+    let refused = advance("{}").dispatch().await;
+    assert_eq!(refused.status(), HttpStatus::BadRequest);
+    assert!(
+        refused
+            .into_string()
+            .await
+            .unwrap()
+            .contains("Build has no ticket plan")
+    );
+    assert!(fetch(&api, "42").await.1.unwrap().stage_exits.is_empty());
+
+    let plan = report(&api, "42", r#"{"unticketed":true}"#).await;
+    assert_eq!(plan.status(), HttpStatus::Ok);
+    assert_eq!(advance("{}").dispatch().await.status(), HttpStatus::Ok);
+    let accepted = fetch(&api, "42").await.1.unwrap().stage_exits;
+    assert_eq!(accepted[0].gates[0].name, crate::stages::Gate::TicketsDone);
+
+    let ticket = report(
+        &api,
+        "42",
+        r#"{"tickets":[{"reference":"local-1","title":"Follow-up work"}]}"#,
+    )
+    .await;
+    assert_eq!(ticket.status(), HttpStatus::Ok);
+    assert_eq!(
+        advance(r#"{"force":true,"reason":"Checks unavailable"}"#)
+            .dispatch()
+            .await
+            .status(),
+        HttpStatus::Ok
+    );
+    let details = fetch(&api, "42").await.1.unwrap();
+    assert_eq!(details.stage_exits[0], accepted[0]);
+    assert_eq!(
+        details.stage_exits[1].outcome,
+        crate::run_gate::ExitOutcome::Override {
+            reason: "Checks unavailable".into(),
+        }
+    );
+    let dashboard = run_detail(&details).unwrap();
+    let passes = dashboard["stage_gates"].as_array().unwrap();
+    assert_eq!(passes[0]["gates"][0]["status"], "passed");
+    assert_eq!(passes[1]["gates"][0]["status"], "bypassed");
+    let finish = passes
+        .iter()
+        .find(|pass| pass["stage"] == "finish")
+        .unwrap();
+    assert_eq!(finish["gates"][1]["status"], "awaiting-live-check");
 }
 
 #[rocket::async_test]

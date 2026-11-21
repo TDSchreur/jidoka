@@ -4,7 +4,7 @@
 use crate::pr_wait::{
     Gh, ToolProblem, azure_pr_head, azure_pr_status, is_azure_pr_url, problem, run_gh,
 };
-use crate::run::{Completion, LifecycleSource, PrResult, Run, RunStatus, RunStore, Stage};
+use crate::run::{LifecycleSource, PrResult, Run, RunStatus, RunStore, Stage};
 use serde::{Deserialize, Serialize};
 use std::io;
 
@@ -205,9 +205,7 @@ pub(crate) fn follow_up(run: &mut Run, status: &PrStatus, at: u64) -> Result<boo
         (PrState::Merged, RunStatus::Running | RunStatus::Blocked)
             if run.stage == Stage::Finish =>
         {
-            run.complete(Completion::Merged {
-                url: status.url.clone(),
-            })?;
+            crate::run_gate::finish_from_merge(run, &status.url, at)?;
         }
         (PrState::Closed, RunStatus::Running) => {
             run.block(CLOSED_REASON, LifecycleSource::PullRequest, at)?;

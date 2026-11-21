@@ -75,7 +75,7 @@ pub(crate) struct Run {
     gate_generation: u64,
     pub(crate) gates: Vec<crate::run_gate::GateResult>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) check_history: Vec<crate::run_gate::CheckSnapshot>,
+    pub(crate) stage_exits: Vec<crate::run_gate::StageExit>,
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) project: String,

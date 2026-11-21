@@ -447,15 +447,17 @@ fn run_with_cost(run: &Run) -> serde_json::Result<serde_json::Value> {
 /// Enrich a single run with gate and check status. Diff and HEAD inspection is kept off list polling.
 fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
     let mut value = run_with_cost(run)?;
-    value["stage_gates"] = serde_json::to_value(crate::run_next::stage_gates(run))?;
     if let Some(routing) = &run.model_routing {
         value["model_route"] = serde_json::json!({
             "agent": routing.agent,
             "stages": crate::inspect::route_entries(routing, run.usage.as_ref(), run.rework),
         });
     }
-    if let Some(snapshot) = run.check_history.last() {
-        value["recorded_skipped_checks"] = serde_json::to_value(&snapshot.skipped)?;
+    if let Some(snapshot) = run.stage_exits.iter().rev().find(|exit| {
+        exit.stage == crate::run::Stage::Check
+            && exit.outcome == crate::run_gate::ExitOutcome::Accepted
+    }) {
+        value["recorded_skipped_checks"] = serde_json::to_value(&snapshot.skipped_checks)?;
         value["recorded_skipped_rework"] = serde_json::to_value(snapshot.rework)?;
     } else if let Some(result) = run.gates.iter().rev().find(|result| result.check.is_some()) {
         value["recorded_skipped_checks"] = serde_json::to_value(&result.skipped_checks)?;
@@ -466,6 +468,11 @@ fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
         Some(crate::run::Mode::Fast) => Ok(Vec::new()),
         Some(_) => crate::run_next::changed_paths(run, &crate::run_check::ReadOnlyGit),
     };
+    value["stage_gates"] = serde_json::to_value(crate::run_next::stage_gates(
+        run,
+        paths.as_deref().map_err(String::as_str),
+        &crate::run_check::ReadOnlyGit,
+    ))?;
     match paths {
         Ok(paths) => {
             value["checks"] = serde_json::to_value(crate::run_next::checks_for(

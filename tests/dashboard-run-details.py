@@ -310,13 +310,22 @@ return {chip, deferred: text(shippedRow), lists, hole: hole.borderTopColor, over
             {**SHIPPED, "id": "no-ci", "completion": {"kind": "ci", "outcome": "no-ci", "head": "def5678"}},
             {**SHIPPED, "id": "override", "completion": {"kind": "override", "reason": "CI service unavailable"}},
         ]
-        for run in completed:
+        completed.append({**SHIPPED, "id": "merge", "stage_gates": [
+            {"stage": "finish", "exit": {"outcome": "merged"},
+             "gates": [{"name": "ci-passed", "status": "bypassed", "description": "CI passed"}]},
+        ]})
+        for run in completed[:3]:
             run["pr_status"] = {"url": PR, "state": "open", "checked_at": AT}
         body = """
 const labels = {};
-for (const id of ['ci', 'no-ci', 'override']) {
+for (const id of ['ci', 'no-ci', 'override', 'merge']) {
   const dialog = await openRun(id);
   labels[id] = text(dialog.querySelector('.status-row'));
+  if (id === 'merge') {
+    const gates = await wait(() => dialog.querySelector('#gate-heading'), 'saved exit');
+    labels.mergeExit = text(gates.parentElement.querySelector('.gate-exit'));
+    labels.mergeCiStatus = text(gates.parentElement.querySelector('.gate-status'));
+  }
   await closeRun();
 }
 return labels;
@@ -325,8 +334,11 @@ return labels;
         self.assertIn("CI passed on abc1234", labels["ci"])
         self.assertIn("No CI on def5678", labels["no-ci"])
         self.assertIn("Override (CI service unavailable)", labels["override"])
-        for row in labels.values():
-            self.assertIn("PR #233 open", row)
+        self.assertIn("PR #233 merged", labels["merge"])
+        self.assertEqual(labels["mergeExit"], "PR merge observed")
+        self.assertEqual(labels["mergeCiStatus"], "bypassed")
+        for id in ("ci", "no-ci", "override"):
+            self.assertIn("PR #233 open", labels[id])
 
     def stop(self, snapshot, name):
         return next(s for s in snapshot["stops"] if s["name"] == name)
@@ -614,16 +626,35 @@ return {
             self.assertGreaterEqual(result["panelRatio"], 3, result)
 
     def test_gate_and_skipped_check_text_is_accessible(self):
-        fixture = {**ACTIVE, "stage_gates": [{"stage": "build", "gates": [
-            {"name": "verified", "status": "failed", "description": "verification passed", "evidence": "Tests failed", "rework": 2},
-        ]}, {"stage": "finish", "gates": [{"name": "ci-passed", "status": "unknown", "description": "CI passed"}]}],
+        fixture = {**ACTIVE, "stage_gates": [
+            {"stage": "build", "exit": {"outcome": "accepted"}, "gates": [
+                {"name": "verified", "status": "passed", "description": "verification passed",
+                 "results": [{"commit": "abc1234", "evidence": "Checks passed"}]},
+            ]},
+            {"stage": "build", "rework": 2, "exit": {"outcome": "override", "reason": "Review service down"},
+             "gates": [{"name": "verified", "status": "bypassed", "description": "verification passed"}]},
+            {"stage": "check", "exit": {"outcome": "rework", "number": 2, "finding": "F1"}, "gates": []},
+            {"stage": "check", "rework": 2, "gates": [
+                {"name": "verified", "status": "failed", "description": "verification passed",
+                 "results": [{"evidence": "Tests failed"}]},
+                {"name": "no-actionable-findings", "status": "open", "reason": "Findings F1 are open"},
+            ]},
+            {"stage": "finish", "gates": [
+                {"name": "ci-passed", "status": "awaiting-live-check", "description": "CI passed"},
+            ]},
+        ],
             "checks": {"skipped": [{"name": "code-review", "reason": "fast has no check stage"}]},
             "recorded_skipped_checks": [{"name": "security", "reason": "no matching path"}],
             "recorded_skipped_rework": 2}
         result = drive("""
 const dialog = await openRun('run-active');
 await wait(() => dialog.querySelector('[aria-labelledby="gate-heading"]'), 'gate status');
-return {gates: text(dialog.querySelector('[aria-labelledby="gate-heading"]')),
+const gates = dialog.querySelector('[aria-labelledby="gate-heading"]');
+const exits = [...gates.querySelectorAll('.gate-stage')].map((stage) => ({
+  outcome: text(stage.querySelector('.gate-exit')),
+  statuses: [...stage.querySelectorAll('.gate-status')].map(text),
+}));
+return {gates: text(gates), exits,
         skipped: text(dialog.querySelector('[aria-labelledby="skipped-heading"]')),
         recorded: text(dialog.querySelector('[aria-labelledby="recorded-skipped-heading"]')),
         headings: [...dialog.querySelectorAll('h3, h4')].map(text)};
@@ -631,7 +662,12 @@ return {gates: text(dialog.querySelector('[aria-labelledby="gate-heading"]')),
         self.assertIn("verified: failed", result["gates"])
         self.assertIn("Evidence: Tests failed", result["gates"])
         self.assertIn("Rework 2", result["gates"])
-        self.assertIn("ci-passed: Unknown", result["gates"])
+        self.assertIn("ci-passed: Awaiting live check", result["gates"])
+        self.assertIn("Findings F1 are open", result["gates"])
+        self.assertIn({"outcome": "Accepted", "statuses": ["passed"]}, result["exits"])
+        self.assertIn("Evidence: commit abc1234 · Checks passed", result["gates"])
+        self.assertIn({"outcome": "Override (Review service down)", "statuses": ["bypassed"]}, result["exits"])
+        self.assertIn("Started Rework 2 (F1)", result["gates"])
         self.assertIn("code-review: fast has no check stage", result["skipped"])
         self.assertIn("Checks skipped when recorded · Rework 2", result["recorded"])
         self.assertIn("security: no matching path", result["recorded"])

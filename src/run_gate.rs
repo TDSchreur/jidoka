@@ -44,10 +44,85 @@ pub(crate) struct SkippedCheck {
     pub(crate) reason: String,
 }
 
+/// A gate evaluated against the current stage pass or copied into its exit record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct CheckSnapshot {
+pub(crate) struct Evaluation {
+    pub(crate) name: Gate,
+    pub(crate) status: GateStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) results: Vec<GateResult>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum GateStatus {
+    Open,
+    Failed,
+    Passed,
+    AwaitingLiveCheck,
+    Bypassed,
+    Unknown,
+}
+
+impl Evaluation {
+    pub(crate) fn with_status(name: Gate, status: GateStatus) -> Self {
+        Self {
+            name,
+            status,
+            reason: None,
+            detail: None,
+            results: Vec::new(),
+        }
+    }
+}
+
+/// The immutable evidence for one accepted move out of a stage pass.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct StageExit {
+    pub(crate) stage: Stage,
     pub(crate) rework: Option<u32>,
-    pub(crate) skipped: Vec<SkippedCheck>,
+    pub(crate) to: Option<Stage>,
+    pub(crate) at: u64,
+    #[serde(flatten)]
+    pub(crate) outcome: ExitOutcome,
+    pub(crate) gates: Vec<Evaluation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) skipped_checks: Vec<SkippedCheck>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "kebab-case")]
+pub(crate) enum ExitOutcome {
+    Accepted,
+    Override { reason: String },
+    Merged { url: String },
+    Rework { number: u32, finding: String },
+}
+
+pub(crate) fn save_exit(
+    run: &mut Run,
+    to: Destination,
+    at: u64,
+    outcome: ExitOutcome,
+    gates: Vec<Evaluation>,
+    skipped_checks: Vec<SkippedCheck>,
+) {
+    run.stage_exits.push(StageExit {
+        stage: run.stage,
+        rework: run.rework,
+        to: match to {
+            Destination::Stage(stage) => Some(stage),
+            Destination::Done => None,
+        },
+        at,
+        outcome,
+        gates,
+        skipped_checks,
+    });
 }
 
 #[derive(Deserialize, Serialize)]
@@ -121,7 +196,10 @@ pub(crate) fn record(run: &mut Run, record: Record, git: &dyn Git) -> Result<(),
     if record.gate == Gate::NoActionableFindings && record.passed {
         no_open_findings(run).map_err(|problem| format!("{problem}; {RESOLVE_FINDINGS}"))?;
     }
-    if matches!(record.gate, Gate::TicketsDone | Gate::CiPassed) {
+    if matches!(
+        record.gate,
+        Gate::TicketsDone | Gate::FinishSummary | Gate::CiPassed
+    ) {
         return Err("This gate is checked automatically".into());
     }
     if run.gates.len() >= MAX_GATE_RESULTS {
@@ -216,7 +294,7 @@ fn ticket_plan_recorded(run: &Run) -> Result<(), String> {
     )
 }
 
-pub(crate) fn tickets_done(run: &Run) -> Result<(), String> {
+fn tickets_done(run: &Run) -> Result<(), String> {
     ticket_plan_recorded(run)?;
     require(
         run.tickets
@@ -238,33 +316,39 @@ pub(crate) fn latest_ticket_verification<'a>(
     })
 }
 
-pub(crate) fn tickets_verified(run: &Run, git: &dyn Git) -> Result<(), String> {
+fn tickets_verified<'a>(
+    run: &'a Run,
+    git: &dyn Git,
+    head: &str,
+) -> Result<Vec<&'a GateResult>, String> {
     ticket_plan_recorded(run)?;
-    let head = head(run, git)?;
     if let Some(attempt) = run.unticketed_attempt {
-        return require(
-            run.gates
-                .iter()
-                .rev()
-                .find(|result| {
-                    result.gate == Gate::TicketsVerified
-                        && result.stage == Stage::Build
-                        && result.rework == run.rework
-                        && result.ticket.is_none()
-                        && result.work_attempt == Some(attempt)
-                })
-                .is_some_and(|result| result.passed && result.commit.as_deref() == Some(&head)),
-            "Unticketed Build has no passing verification on its current HEAD",
-        );
+        return run
+            .gates
+            .iter()
+            .rev()
+            .find(|result| {
+                result.gate == Gate::TicketsVerified
+                    && result.stage == Stage::Build
+                    && result.rework == run.rework
+                    && result.ticket.is_none()
+                    && result.work_attempt == Some(attempt)
+            })
+            .filter(|result| result.passed && result.commit.as_deref() == Some(head))
+            .map(|result| vec![result])
+            .ok_or_else(|| {
+                "Unticketed Build has no passing verification on its current HEAD".into()
+            });
     }
     let worktree = run
         .worktree
         .as_deref()
         .ok_or("Record the run's worktree first")?;
+    let mut passed = Vec::new();
     for ticket in &run.tickets {
-        let commit = latest_ticket_verification(run, ticket)
+        let (result, commit) = latest_ticket_verification(run, ticket)
             .filter(|result| result.passed)
-            .and_then(|result| result.commit.as_deref())
+            .and_then(|result| Some((result, result.commit.as_deref()?)))
             .ok_or_else(|| {
                 format!(
                     "Ticket {} has no passing verification for its current attempt",
@@ -274,7 +358,7 @@ pub(crate) fn tickets_verified(run: &Run, git: &dyn Git) -> Result<(), String> {
         if commit != head {
             match git.status(
                 Path::new(worktree),
-                &["merge-base", "--is-ancestor", commit, &head],
+                &["merge-base", "--is-ancestor", commit, head],
             ) {
                 Ok(0) => {}
                 Ok(1) => {
@@ -297,8 +381,9 @@ pub(crate) fn tickets_verified(run: &Run, git: &dyn Git) -> Result<(), String> {
                 }
             }
         }
+        passed.push(result);
     }
-    Ok(())
+    Ok(passed)
 }
 
 fn skipped_snapshot(selection: &crate::checks::Selection) -> Vec<SkippedCheck> {
@@ -312,14 +397,14 @@ fn skipped_snapshot(selection: &crate::checks::Selection) -> Vec<SkippedCheck> {
         .collect()
 }
 
-pub(crate) fn latest(run: &Run, gate: Gate) -> Option<&GateResult> {
+fn latest(run: &Run, gate: Gate) -> Option<&GateResult> {
     run.gates
         .iter()
         .rev()
         .find(|r| r.gate == gate && r.stage == run.stage && r.rework == run.rework)
 }
 
-pub(crate) fn latest_check<'a>(run: &'a Run, gate: Gate, check: &str) -> Option<&'a GateResult> {
+fn latest_check<'a>(run: &'a Run, gate: Gate, check: &str) -> Option<&'a GateResult> {
     run.gates.iter().rev().find(|r| {
         r.gate == gate
             && r.stage == run.stage
@@ -328,31 +413,162 @@ pub(crate) fn latest_check<'a>(run: &'a Run, gate: Gate, check: &str) -> Option<
     })
 }
 
-pub(crate) fn checks_passed(
-    run: &Run,
+fn check_results<'a>(
+    run: &'a Run,
     selection: &crate::checks::Selection,
     gate: Gate,
-    head: Option<&str>,
-) -> bool {
-    let Some(head) = head else { return false };
+    head: &str,
+) -> Result<Vec<&'a GateResult>, String> {
     selection
         .applicable
         .iter()
         .filter(|entry| entry.check.gate.gate() == gate)
-        .all(|entry| {
+        .map(|entry| {
             latest_check(run, gate, entry.check.name)
-                .is_some_and(|r| r.passed && r.commit.as_deref() == Some(head))
+                .filter(|result| result.passed && result.commit.as_deref() == Some(head))
+                .ok_or_else(|| format!("Check {} has no passing result on HEAD", entry.check.name))
         })
+        .collect()
+}
+
+/// Evaluate the same local inputs for guidance and advancement. CI requires a separate live check.
+pub(crate) fn evaluate(
+    run: &Run,
+    gates: &[Gate],
+    git: &dyn Git,
+    candidate: &Option<Result<String, String>>,
+    selection: Result<&crate::checks::Selection, &str>,
+) -> Vec<Evaluation> {
+    let candidate = candidate
+        .as_ref()
+        .ok_or("This stage has no local candidate")
+        .and_then(|head| head.as_deref().map_err(String::as_str));
+    gates
+        .iter()
+        .map(|&gate| evaluate_gate(run, gate, git, candidate, selection))
+        .collect()
+}
+
+pub(crate) fn candidate(
+    run: &Run,
+    gates: &[Gate],
+    git: &dyn Git,
+) -> Option<Result<String, String>> {
+    gates
+        .iter()
+        .any(|gate| {
+            matches!(
+                gate,
+                Gate::Verified | Gate::TicketsVerified | Gate::ChecksRecorded
+            )
+        })
+        .then(|| head(run, git))
+}
+
+fn evaluate_gate(
+    run: &Run,
+    gate: Gate,
+    git: &dyn Git,
+    candidate: Result<&str, &str>,
+    selection: Result<&crate::checks::Selection, &str>,
+) -> Evaluation {
+    let mut evaluation = Evaluation::with_status(gate, GateStatus::Passed);
+    let recorded = match gate {
+        Gate::Verified | Gate::NoActionableFindings => latest(run, gate),
+        Gate::TicketsDone
+        | Gate::TicketsVerified
+        | Gate::ChecksRecorded
+        | Gate::FinishSummary
+        | Gate::CiPassed => None,
+    };
+    let result = match gate {
+        Gate::TicketsDone => tickets_done(run).map(|()| {
+            evaluation.detail = run
+                .unticketed_attempt
+                .map(|attempt| format!("Unticketed work (attempt {attempt})"))
+                .or_else(|| {
+                    Some(
+                        run.tickets
+                            .iter()
+                            .map(|ticket| {
+                                format!("{} (attempt {})", ticket.reference, ticket.work_attempt)
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    )
+                });
+            Vec::new()
+        }),
+        Gate::Verified => passing_record(recorded).and_then(|result| {
+            require(
+                result.commit.as_deref() == Some(candidate?),
+                "The verification commit does not match HEAD",
+            )?;
+            Ok(vec![result])
+        }),
+        Gate::TicketsVerified => candidate
+            .map_err(str::to_owned)
+            .and_then(|head| tickets_verified(run, git, head)),
+        Gate::ChecksRecorded => selection
+            .map_err(str::to_owned)
+            .and_then(|selection| check_results(run, selection, gate, candidate?)),
+        Gate::NoActionableFindings => {
+            no_open_findings(run).and_then(|()| passing_record(recorded).map(|result| vec![result]))
+        }
+        Gate::FinishSummary => run.check_finish_summary().map(|()| {
+            evaluation.detail = run.summaries.get(&Stage::Finish).cloned();
+            Vec::new()
+        }),
+        Gate::CiPassed => {
+            return Evaluation::with_status(gate, GateStatus::AwaitingLiveCheck);
+        }
+    };
+    match result {
+        Ok(results) => evaluation.results = results.into_iter().cloned().collect(),
+        Err(reason) => {
+            evaluation.reason = Some(reason);
+            evaluation.status = GateStatus::Open;
+            if let Some(failed) = recorded.filter(|result| !result.passed) {
+                evaluation.status = GateStatus::Failed;
+                evaluation.results.push(failed.clone());
+            }
+        }
+    }
+    evaluation
+}
+
+fn passing_record(recorded: Option<&GateResult>) -> Result<&GateResult, String> {
+    recorded
+        .filter(|record| record.passed)
+        .ok_or_else(|| "No passing result was recorded".into())
+}
+
+impl Gate {
+    pub(crate) fn remedy(self) -> &'static str {
+        match self {
+            Self::TicketsDone => {
+                r#"list tickets with `jidoka run update <id> --ticket "<ref> <title>"` and mark them done with `--ticket-status <ref>=done`, or declare `--unticketed`"#
+            }
+            Self::Verified => {
+                "run full verification and record `jidoka run gate <id> verified pass`"
+            }
+            Self::TicketsVerified => {
+                "mark the listed ticket in progress or declare unticketed work, then verify and run `jidoka run gate <id> tickets-verified pass`"
+            }
+            Self::ChecksRecorded => {
+                "record each result with `jidoka run gate <id> checks-recorded pass --check <name>`"
+            }
+            Self::NoActionableFindings => RECORD_OR_RESOLVE_FINDINGS,
+            Self::FinishSummary => "record `jidoka run update <id> --summary finish=<text>`",
+            Self::CiPassed => "open the pull request and pass CI; run `jidoka pr wait <id>`",
+        }
+    }
 }
 
 pub(crate) fn advance(run: &mut Run, git: &dyn Git, tool: &dyn pr_wait::Gh) -> Result<(), String> {
     advance_with_clock(run, git, tool, &pr_wait::RealClock(Instant::now()))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "collects gate failures for every stage kind before applying the transition"
-)]
 fn advance_with_clock(
     run: &mut Run,
     git: &dyn Git,
@@ -361,125 +577,134 @@ fn advance_with_clock(
 ) -> Result<(), String> {
     let mode = run.mode.ok_or("Record the run's mode first")?;
     let transition = stages::next(mode, run.stage, run.status)?;
-    if transition.to == Destination::Done {
-        run.check_finish_summary()?;
-    }
-    let mut failures = Vec::new();
-    let check_head = if run.stage == Stage::Check {
-        Some(head(run, git)?)
-    } else {
-        None
-    };
+    let candidate = candidate(run, transition.gates, git);
     let selection = if run.stage == Stage::Check {
-        let paths = crate::run_next::changed_paths(run, git)?;
-        Some(crate::checks::select(mode, &paths))
+        crate::run_next::changed_paths(run, git).map(|paths| crate::checks::select(mode, &paths))
     } else {
-        None
+        Err("Check selection is only available in Check".into())
     };
-    let mut ci_evidence = None;
-    for gate in transition.gates {
-        let (result, remedy) = match gate {
-            Gate::TicketsDone => (
-                tickets_done(run),
-                "list tickets with `jidoka run update <id> --ticket \"<ref> <title>\"` and mark them done with `--ticket-status <ref>=done`, or declare `--unticketed`",
-            ),
-            Gate::Verified => (
-                verified(run, git),
-                "run full verification and record `jidoka run gate <id> verified pass`",
-            ),
-            Gate::TicketsVerified => (
-                tickets_verified(run, git),
-                "mark the listed ticket in progress or declare unticketed work, then verify and run `jidoka run gate <id> tickets-verified pass`",
-            ),
-            Gate::ChecksRecorded => (
-                require(
-                    selection.as_ref().is_some_and(|selection| {
-                        checks_passed(run, selection, *gate, check_head.as_deref())
-                    }),
-                    "An applicable check has no passing result",
-                ),
-                "record each result with `jidoka run gate <id> checks-recorded pass --check <name>`",
-            ),
-            Gate::NoActionableFindings => (
-                no_open_findings(run).and_then(|()| {
-                    require(
-                        latest(run, *gate).is_some_and(|r| r.passed),
-                        "No passing result was recorded",
-                    )
-                }),
-                RECORD_OR_RESOLVE_FINDINGS,
-            ),
-            Gate::CiPassed => (
-                ci_passed(run, git, tool, clock).map(|evidence| ci_evidence = Some(evidence)),
-                "open the pull request and pass CI; run `jidoka pr wait <id>`",
-            ),
-        };
-        if let Err(reason) = result {
-            failures.push(format!(
-                "{}: {reason}; {}",
-                serde_json::to_value(gate)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_owned))
-                    .unwrap_or_default(),
-                remedy.replace("<id>", &run.id)
-            ));
-        }
-    }
+    let mut gates = evaluate(
+        run,
+        transition.gates,
+        git,
+        &candidate,
+        selection.as_ref().map_err(String::as_str),
+    );
+    let failures: Vec<_> = gates
+        .iter()
+        .filter_map(|gate| {
+            gate.reason
+                .as_ref()
+                .map(|reason| gate_failure(run, gate.name, reason))
+        })
+        .collect();
     if !failures.is_empty() {
         return Err(format!("Cannot advance:\n{}", failures.join("\n")));
     }
-    if let Some(before) = check_head
+    if let Some(Ok(before)) = candidate
         && head(run, git)? != before
     {
         return Err("The worktree HEAD changed while checking gates; try again".into());
     }
-    if let Some(selection) = selection {
-        record_snapshot(run, &selection)?;
-    }
+
+    let at = updated_now().map_err(|error| format!("Could not read the time: {error}"))?;
     if transition.to == Destination::Done {
-        let (outcome, commit, pr_status) = ci_evidence.ok_or("CI evidence is missing")?;
-        if run.gates.len() >= MAX_GATE_RESULTS {
-            return Err(format!(
-                "A run can hold at most {MAX_GATE_RESULTS} gate results"
-            ));
-        }
-        let short: String = commit.chars().take(7).collect();
-        let evidence = format!("{} on {short}", outcome.label());
-        run.gates.push(GateResult {
-            gate: Gate::CiPassed,
-            stage: run.stage,
-            rework: run.rework,
-            passed: true,
-            evidence: Some(evidence),
-            commit: Some(commit.clone()),
-            ticket: None,
-            work_attempt: None,
-            check: None,
-            skipped_checks: vec![],
-        });
-        run.complete(Completion::Ci {
-            head: commit,
-            outcome,
+        let (outcome, commit, pr_status) = ci_passed(run, git, tool, clock).map_err(|reason| {
+            format!(
+                "Cannot advance:\n{}",
+                gate_failure(run, Gate::CiPassed, &reason)
+            )
         })?;
-        run.pr_status = Some(pr_status);
+        finish_with_ci(run, outcome, commit, pr_status, &mut gates)?;
     }
+    save_exit(
+        run,
+        transition.to,
+        at,
+        ExitOutcome::Accepted,
+        gates,
+        selection
+            .as_ref()
+            .map_or_else(|_| Vec::new(), skipped_snapshot),
+    );
     if let Destination::Stage(stage) = transition.to {
         run.stage = stage;
     }
     Ok(())
 }
 
-fn record_snapshot(run: &mut Run, selection: &crate::checks::Selection) -> Result<(), String> {
-    if run.check_history.len() >= MAX_GATE_RESULTS {
+fn gate_failure(run: &Run, gate: Gate, reason: &str) -> String {
+    format!(
+        "{}: {reason}; {}",
+        gate.name(),
+        gate.remedy().replace("<id>", &run.id)
+    )
+}
+
+fn finish_with_ci(
+    run: &mut Run,
+    outcome: CiOutcome,
+    commit: String,
+    pr_status: pr_state::PrStatus,
+    gates: &mut [Evaluation],
+) -> Result<(), String> {
+    if run.gates.len() >= MAX_GATE_RESULTS {
         return Err(format!(
-            "A run can hold at most {MAX_GATE_RESULTS} check snapshots"
+            "A run can hold at most {MAX_GATE_RESULTS} gate results"
         ));
     }
-    run.check_history.push(CheckSnapshot {
+    let ci = gates
+        .iter_mut()
+        .find(|gate| gate.name == Gate::CiPassed)
+        .ok_or("Finish has no CI gate")?;
+    let short: String = commit.chars().take(7).collect();
+    let result = GateResult {
+        gate: Gate::CiPassed,
+        stage: run.stage,
         rework: run.rework,
-        skipped: skipped_snapshot(selection),
-    });
+        passed: true,
+        evidence: Some(format!("{} on {short}", outcome.label())),
+        commit: Some(commit.clone()),
+        ticket: None,
+        work_attempt: None,
+        check: None,
+        skipped_checks: Vec::new(),
+    };
+    run.complete(Completion::Ci {
+        head: commit,
+        outcome,
+    })?;
+    ci.status = GateStatus::Passed;
+    ci.results.push(result.clone());
+    run.gates.push(result);
+    run.pr_status = Some(pr_status);
     Ok(())
+}
+
+pub(crate) fn finish_from_merge(run: &mut Run, url: &str, at: u64) -> Result<(), String> {
+    run.complete(Completion::Merged {
+        url: url.to_owned(),
+    })?;
+    save_exit(
+        run,
+        Destination::Done,
+        at,
+        ExitOutcome::Merged {
+            url: url.to_owned(),
+        },
+        vec![
+            finish_summary(run),
+            Evaluation::with_status(Gate::CiPassed, GateStatus::Bypassed),
+        ],
+        Vec::new(),
+    );
+    Ok(())
+}
+
+fn finish_summary(run: &Run) -> Evaluation {
+    let mut summary = Evaluation::with_status(Gate::FinishSummary, GateStatus::Passed);
+    summary.detail = run.summaries.get(&Stage::Finish).cloned();
+    summary
 }
 
 /// The body of `POST /api/runs/<id>/advance`: an optional forced advance with the reason for it.
@@ -578,11 +803,34 @@ pub(crate) fn advance_forced(run: &mut Run, reason: &str) -> Result<(), String> 
     }
     let at = updated_now().map_err(|error| format!("Could not read the time: {error}"))?;
     let from = run.stage;
-    match transition.to {
-        Destination::Stage(stage) => run.stage = stage,
-        Destination::Done => run.complete(Completion::Override {
+    if transition.to == Destination::Done {
+        run.complete(Completion::Override {
             reason: reason.into(),
-        })?,
+        })?;
+    }
+    let gates = transition
+        .gates
+        .iter()
+        .map(|&gate| {
+            if gate == Gate::FinishSummary {
+                finish_summary(run)
+            } else {
+                Evaluation::with_status(gate, GateStatus::Bypassed)
+            }
+        })
+        .collect();
+    save_exit(
+        run,
+        transition.to,
+        at,
+        ExitOutcome::Override {
+            reason: reason.into(),
+        },
+        gates,
+        Vec::new(),
+    );
+    if let Destination::Stage(stage) = transition.to {
+        run.stage = stage;
     }
     run.run_reports.push(RunReport {
         kind: ReportKind::Activity,
@@ -599,17 +847,6 @@ fn require(condition: bool, reason: &str) -> Result<(), String> {
     } else {
         Err(reason.to_string())
     }
-}
-
-fn verified(run: &Run, git: &dyn Git) -> Result<(), String> {
-    let result = latest(run, Gate::Verified)
-        .filter(|r| r.passed)
-        .ok_or("No passing verification was recorded")?;
-    let current = head(run, git)?;
-    require(
-        result.commit.as_deref() == Some(current.as_str()),
-        "The verification commit does not match HEAD",
-    )
 }
 
 fn ci_passed(
@@ -951,7 +1188,7 @@ mod tests {
         assert!(error.contains("outside the current Git history"), "{error}");
         *git.0.borrow_mut() = "def5678".into();
         advance().unwrap();
-        assert_eq!(store.get("1").unwrap().unwrap().stage, Stage::Check);
+        let first_build = store.get("1").unwrap().unwrap().stage_exits[1].clone();
         update(&["--finding", "code-review", "-", "Bug"]);
         store
             .transition(
@@ -984,7 +1221,44 @@ mod tests {
         gate(result(Gate::Verified, true)).unwrap();
         advance().unwrap();
         advance().unwrap();
-        assert_eq!(store.get("1").unwrap().unwrap().status, RunStatus::Done);
+        let finished = store.get("1").unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Done);
+        assert_eq!(finished.stage_exits[1], first_build);
+        assert!(matches!(
+            finished.stage_exits[2].outcome,
+            ExitOutcome::Rework { number: 1, .. }
+        ));
+        assert_ne!(finished.stage_exits[1].gates, finished.stage_exits[3].gates);
+    }
+
+    #[test]
+    fn a_finding_opened_after_review_blocks_next_and_advance() {
+        let git = FakeGit(RefCell::new("abc1234".into()));
+        let mut run = run(Stage::Check);
+        run.mode = Some(Mode::Balanced);
+        for gate in [
+            Gate::ChecksRecorded,
+            Gate::NoActionableFindings,
+            Gate::Verified,
+        ] {
+            record(&mut run, result(gate, true), &git).unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        std::fs::write(&path, serde_json::to_vec(&[&run]).unwrap()).unwrap();
+        let store = crate::run::RunStore::open(&path).unwrap();
+        let update = crate::run::parse_update(&["--finding", "code-review", "-", "Bug"]).unwrap();
+        let run = store.update_with("1", update, &git).unwrap().unwrap();
+        let next = crate::run_next::build_with_git(&run, Ok(&[]), &git).unwrap();
+        assert!(crate::run_next::render(&next).contains("Findings F1 are open"));
+        let dashboard =
+            serde_json::to_value(crate::run_next::stage_gates(&run, Ok(&[]), &git)).unwrap();
+        assert!(dashboard.to_string().contains("Findings F1 are open"));
+        let error = store
+            .change_gate("1", |run| advance(run, &git, &host()))
+            .unwrap_err();
+        assert!(error.contains("Findings F1 are open"));
+        assert!(store.get("1").unwrap().unwrap().stage_exits.is_empty());
     }
 
     #[test]
@@ -1238,6 +1512,7 @@ mod tests {
         let reopened = crate::run::RunStore::open(&path).unwrap();
         let after_merge = reopened.get("1").unwrap().unwrap();
         assert_eq!(after_merge.completion, run.completion);
+        assert_eq!(after_merge.stage_exits, run.stage_exits);
         assert_eq!(after_merge.finished_at, run.finished_at);
         assert_eq!(
             after_merge.pr_status.unwrap().state,
@@ -1403,40 +1678,18 @@ mod tests {
             check: Some(name.into()),
             skipped_checks: vec![],
         };
+        let check = |run: &Run, head: &str| {
+            check_results(run, &selection, Gate::ChecksRecorded, head).map(|results| results.len())
+        };
         run.gates.push(result("a", true));
-        assert!(!checks_passed(
-            &run,
-            &selection,
-            Gate::ChecksRecorded,
-            Some("head-1")
-        ));
+        assert!(check(&run, "head-1").is_err());
         run.gates.push(result("b", true));
-        assert!(checks_passed(
-            &run,
-            &selection,
-            Gate::ChecksRecorded,
-            Some("head-1")
-        ));
-        assert!(!checks_passed(
-            &run,
-            &selection,
-            Gate::ChecksRecorded,
-            Some("head-2")
-        ));
+        assert_eq!(check(&run, "head-1").unwrap(), 2);
+        assert!(check(&run, "head-2").is_err());
         run.gates.push(result("b", false));
-        assert!(!checks_passed(
-            &run,
-            &selection,
-            Gate::ChecksRecorded,
-            Some("head-1")
-        ));
+        assert!(check(&run, "head-1").is_err());
         run.rework = Some(1);
-        assert!(!checks_passed(
-            &run,
-            &selection,
-            Gate::ChecksRecorded,
-            Some("head-1")
-        ));
+        assert!(check(&run, "head-1").is_err());
     }
 
     #[test]
@@ -1457,13 +1710,20 @@ mod tests {
             }],
         };
         let mut run = run(Stage::Check);
-        record_snapshot(&mut run, &selection).unwrap();
+        save_exit(
+            &mut run,
+            Destination::Stage(Stage::Finish),
+            0,
+            ExitOutcome::Accepted,
+            Vec::new(),
+            skipped_snapshot(&selection),
+        );
         let mut restored: Run =
             serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
         restored.rework = Some(1);
-        assert_eq!(restored.check_history[0].skipped[0].name, "extra");
+        assert_eq!(restored.stage_exits[0].skipped_checks[0].name, "extra");
         assert_eq!(
-            restored.check_history[0].skipped[0].reason,
+            restored.stage_exits[0].skipped_checks[0].reason,
             "no matching path"
         );
     }
@@ -1510,7 +1770,7 @@ mod tests {
                 if args.starts_with(&["rev-parse", "HEAD"]) {
                     let count = self.0.get();
                     self.0.set(count + 1);
-                    Ok(if count < 2 { "old" } else { "new" }.into())
+                    Ok(if count == 0 { "old" } else { "new" }.into())
                 } else {
                     Ok(String::new())
                 }
@@ -1525,6 +1785,6 @@ mod tests {
         let error = advance(&mut run, &MovingHead(std::cell::Cell::new(0)), &host()).unwrap_err();
         assert!(error.contains("HEAD changed"), "{error}");
         assert_eq!(run.stage, Stage::Check);
-        assert!(run.check_history.is_empty());
+        assert!(run.stage_exits.is_empty());
     }
 }

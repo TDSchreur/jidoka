@@ -667,6 +667,47 @@ function PrLink({ run }) {
   </span>`;
 }
 
+const GATE_STATUS = {
+  'awaiting-live-check': 'Awaiting live check',
+  unknown: 'Unknown',
+};
+
+function exitLabel(exit) {
+  switch (exit?.outcome) {
+    case 'accepted': return 'Accepted';
+    case 'override': return `Override (${exit.reason})`;
+    case 'merged': return 'PR merge observed';
+    case 'rework': return `Started Rework ${exit.number} (${exit.finding})`;
+    default: return null;
+  }
+}
+
+function GateEvidence({ result }) {
+  const parts = [result.check, result.ticket, result.work_attempt ? `attempt ${result.work_attempt}` : null,
+    result.commit ? `commit ${result.commit}` : null, result.evidence].filter(Boolean);
+  return parts.length ? html`<p class="gate-evidence">Evidence: ${parts.join(' · ')}</p>` : null;
+}
+
+function StageGates({ passes }) {
+  return html`<section class="stage-gates" aria-labelledby="gate-heading">
+    <h3 id="gate-heading">Stage gates</h3>
+    ${passes.map((pass) => html`
+      <div class="gate-stage">
+        <h4>${STATION_NAME[pass.stage] ?? pass.stage}${pass.rework ? ` · Rework ${pass.rework}` : ''}</h4>
+        <div>
+          ${pass.exit ? html`<p class="gate-exit">${exitLabel(pass.exit)}</p>` : null}
+          ${pass.gates.length ? html`<ul>${pass.gates.map((gate) => html`
+            <li class="gate">
+              <div class="gate-title"><span class="gate-name">${gate.name}:</span> <span class="gate-status">${GATE_STATUS[gate.status] ?? gate.status}</span></div>
+              <p class="gate-description">${gate.reason ?? gate.description}</p>
+              ${gate.detail ? html`<p class="gate-evidence">Evidence: ${gate.detail}</p>` : null}
+              ${gate.results?.map((result) => html`<${GateEvidence} result=${result} />`)}
+            </li>`)}</ul>` : null}
+        </div>
+      </div>`)}
+  </section>`;
+}
+
 function CompletionLabel({ run }) {
   if (run.status !== 'done') return null;
   const completion = run.completion;
@@ -815,12 +856,12 @@ function Detail({ run, runs, now, onClose, onDelete, onSynced, onOpenRun, group 
   const total = usageTotal(run);
   const { stops, other } = runHistory(run, now);
   // The facts column holds what is true of the Run as a whole; the route column holds what happened along the way.
-  const hasGates = Array.isArray(gateData?.stage_gates) && gateData.stage_gates.some((stage) => stage.gates.length);
+  const gatePasses = gateData?.stage_gates?.filter((pass) => pass.gates.length || pass.exit) ?? [];
   const hasChecksUnavailable = Boolean(gateData?.checks_unavailable);
   const hasSkipped = Boolean(gateData?.checks?.skipped?.length);
   const hasRecordedSkipped = Boolean(gateData?.recorded_skipped_checks?.length);
   const hasModelRoute = Boolean(gateData?.model_route?.stages?.length);
-  const hasFacts = Boolean(group) || hasGates || hasChecksUnavailable || hasSkipped || hasRecordedSkipped || hasModelRoute;
+  const hasFacts = Boolean(group) || gatePasses.length > 0 || hasChecksUnavailable || hasSkipped || hasRecordedSkipped || hasModelRoute;
   return html`<dialog
     ref=${dialog}
     class="detail"
@@ -861,18 +902,7 @@ function Detail({ run, runs, now, onClose, onDelete, onSynced, onOpenRun, group 
       <div class=${hasFacts ? 'detail-layout has-facts' : 'detail-layout'}>
         ${hasFacts ? html`<aside class="detail-facts" aria-label="Run facts">
           ${group ? html`<${DetailGroup} group=${group} run=${run} runs=${runs} now=${now} onOpenRun=${onOpenRun} />` : null}
-          ${hasGates ? html`
-            <section class="stage-gates" aria-labelledby="gate-heading">
-              <h3 id="gate-heading">Stage gates</h3>
-              ${gateData.stage_gates.filter((stage) => stage.gates.length).map((stage) => html`
-                <div class="gate-stage"><h4>${STATION_NAME[stage.stage] ?? stage.stage}</h4>
-                  <ul>${stage.gates.map((gate) => html`<li class="gate">
-                    <div class="gate-title"><span class="gate-name">${gate.name}:</span> <span class="gate-status">${gate.status === 'recorded-pass' ? 'Recorded pass' : gate.status === 'unknown' ? 'Unknown' : gate.status}</span></div>
-                    <p class="gate-description">${gate.description}${gate.rework ? html`<span> · Rework ${gate.rework}</span>` : null}</p>
-                    ${gate.evidence ? html`<p class="gate-evidence">Evidence: ${gate.evidence}</p>` : null}
-                  </li>`)}</ul>
-                </div>`)}
-            </section>` : null}
+          ${gatePasses.length ? html`<${StageGates} passes=${gatePasses} />` : null}
           ${hasChecksUnavailable ? html`<p role="status">Check selection unavailable: ${gateData.checks_unavailable}</p>` : null}
           ${hasSkipped ? html`<section aria-labelledby="skipped-heading">
             <h3 id="skipped-heading">Checks currently skipped</h3>

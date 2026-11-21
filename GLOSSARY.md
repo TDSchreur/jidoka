@@ -4,7 +4,7 @@
 
 **Stage**: The current part of a run: Define, Build, Check, or Finish. Which Stages a run goes through, and in what order, depends on its Workflow mode and is owned by the CLI: a run changes Stage only through `jidoka run advance`, or through Rework.
 
-**Gate**: A condition that must hold before a run may leave a Stage, such as all tickets done, verification passed on the head commit, a review recorded, or CI passed. The agent records a Gate result with `jidoka run gate`; the CLI checks what it can itself, and `jidoka run advance` refuses, listing each failing Gate, until they all pass.
+**Gate**: A condition that must hold before a run may leave a Stage, such as all tickets done, verification passed on the head commit, a review recorded, or CI passed. Agents record manual Gate results with `jidoka run gate`. The CLI and dashboard share the same evaluation for local Gates. Advance evaluates live CI when required. Each accepted exit preserves its gate evidence for that stage pass.
 
 **Needs you**: A run that is blocked and waiting for the user. The dashboard lists it in the andon strip, marks its row on the line amber, sorts it first and counts it in the page title.
 

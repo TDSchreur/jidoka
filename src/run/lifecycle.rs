@@ -188,6 +188,17 @@ impl Run {
         {
             open.rework = Some(number);
         }
+        crate::run_gate::save_exit(
+            self,
+            transition.to,
+            at,
+            crate::run_gate::ExitOutcome::Rework {
+                number,
+                finding: finding.clone(),
+            },
+            Vec::new(),
+            Vec::new(),
+        );
         self.stage = stage;
         self.rework = Some(number);
         self.rework_history.push(ReworkRecord {

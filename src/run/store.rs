@@ -132,7 +132,7 @@ impl RunStore {
         let run = Run {
             gate_generation: 0,
             gates: Vec::new(),
-            check_history: Vec::new(),
+            stage_exits: Vec::new(),
             id,
             title: new.title,
             project: new.project,

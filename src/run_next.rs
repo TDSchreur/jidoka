@@ -6,6 +6,7 @@ use crate::{
     pr_sync::Git,
     routing::{ModelChoice, ModelRouting, RoutingAgent},
     run::{Mode, Run, RunStatus, Stage, Ticket, TicketStatus},
+    run_gate::{self, Evaluation, ExitOutcome, GateStatus, StageExit},
     stages::{self, Destination, Gate},
 };
 use serde::Serialize;
@@ -16,6 +17,8 @@ use std::{collections::BTreeMap, path::Path};
 pub(crate) struct OpenGate {
     name: Gate,
     description: &'static str,
+    status: GateStatus,
+    reason: Option<String>,
 }
 
 /// A legal move out of the current Stage.
@@ -102,7 +105,9 @@ pub(crate) struct Next {
     instructions: String,
     /// The gates still open on the move to the next Stage.
     gates: Vec<OpenGate>,
-    gate_results: Vec<crate::run_gate::GateResult>,
+    gate_results: Vec<run_gate::GateResult>,
+    stage_exits: Vec<StageExit>,
+    checks_unavailable: Option<String>,
     moves: Vec<Move>,
     /// Only in the Check stage.
     checks: Option<Checks>,
@@ -150,138 +155,106 @@ fn describe(gate: Gate) -> &'static str {
         Gate::NoActionableFindings => {
             "the checks left no actionable findings; otherwise start a Rework"
         }
+        Gate::FinishSummary => "a Finish summary is recorded",
         Gate::CiPassed => "CI passed on the pull request's head commit, or the project has no CI",
     }
 }
 
-fn open(run: &Run, gates: &[Gate], paths: Option<&[String]>) -> Vec<OpenGate> {
-    gates
-        .iter()
-        .filter(|&&gate| match gate {
-            Gate::TicketsDone => crate::run_gate::tickets_done(run).is_err(),
-            Gate::ChecksRecorded => !paths.zip(run.mode).is_some_and(|(paths, mode)| {
-                let selection = checks::select(mode, paths);
-                let head = crate::run_gate::head(run, &crate::run_check::ReadOnlyGit).ok();
-                crate::run_gate::checks_passed(run, &selection, gate, head.as_deref())
-            }),
-            Gate::NoActionableFindings => {
-                !crate::run_gate::latest(run, gate).is_some_and(|r| r.passed)
-            }
-            Gate::Verified => !crate::run_gate::latest(run, gate).is_some_and(|r| {
-                r.passed
-                    && crate::run_gate::head(run, &crate::run_check::ReadOnlyGit)
-                        .ok()
-                        .as_ref()
-                        == r.commit.as_ref()
-            }),
-            Gate::TicketsVerified => {
-                crate::run_gate::tickets_verified(run, &crate::run_check::ReadOnlyGit).is_err()
-            }
-            Gate::CiPassed => true,
-        })
-        .map(|&name| OpenGate {
-            name,
-            description: describe(name),
+fn open(evaluations: Vec<Evaluation>) -> Vec<OpenGate> {
+    evaluations
+        .into_iter()
+        .filter(|gate| gate.status != GateStatus::Passed)
+        .map(|gate| OpenGate {
+            name: gate.name,
+            description: describe(gate.name),
+            status: gate.status,
+            reason: gate.reason,
         })
         .collect()
 }
 
-/// A snapshot of each stage's exit gates. Advancing stores the `ci-passed` outcome, and a
-/// merged pull request counts as passed CI. `tickets-done` is derived from the tickets.
-/// Other unrecorded automatic checks are unknown outside the current stage.
 #[derive(Serialize)]
-pub(crate) struct StageGates {
+pub(crate) struct StageGates<'a> {
     stage: Stage,
-    gates: Vec<GateStatus>,
+    rework: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exit: Option<&'a ExitOutcome>,
+    gates: Vec<GateDisplay>,
 }
 
 #[derive(Serialize)]
-struct GateStatus {
-    name: Gate,
+struct GateDisplay {
+    #[serde(flatten)]
+    evaluation: Evaluation,
     description: &'static str,
-    status: &'static str,
-    evidence: Option<String>,
-    rework: Option<u32>,
 }
 
-pub(crate) fn stage_gates(run: &Run) -> Vec<StageGates> {
+fn gate_display(evaluations: Vec<Evaluation>) -> Vec<GateDisplay> {
+    evaluations
+        .into_iter()
+        .map(|evaluation| GateDisplay {
+            description: describe(evaluation.name),
+            evaluation,
+        })
+        .collect()
+}
+
+/// Show saved exits and live local results for the current pass.
+pub(crate) fn stage_gates<'a>(
+    run: &'a Run,
+    paths: Result<&[String], &str>,
+    git: &dyn Git,
+) -> Vec<StageGates<'a>> {
     let Some(mode) = run.mode else {
         return Vec::new();
     };
-    let changed_paths = changed_paths(run, &crate::run_check::ReadOnlyGit).ok();
-    let order = stages::stages(mode);
-    let reached = order.iter().position(|&stage| stage == run.stage);
-    order
-        .iter()
-        .enumerate()
-        .map(|(index, &stage)| {
-            let transition =
-                stages::next(mode, stage, RunStatus::Running).expect("stage belongs to mode");
-            let current = stage == run.stage && run.status != RunStatus::Done;
-            // A stage the run has left: before the current one, or any stage of a done run.
-            let left = run.status == RunStatus::Done || reached.is_some_and(|at| index < at);
-            let open_gates = if current {
-                open(run, transition.gates, changed_paths.as_deref())
-            } else {
-                Vec::new()
-            };
-            let gates = transition
+    let history = run.stage_exits.iter().map(|exit| StageGates {
+        stage: exit.stage,
+        rework: exit.rework,
+        exit: Some(&exit.outcome),
+        gates: gate_display(exit.gates.clone()),
+    });
+    let remaining = stages::stages(mode).iter().filter_map(|&stage| {
+        let transition = stages::next(mode, stage, RunStatus::Running).ok()?;
+        let active = stage == run.stage && run.status != RunStatus::Done;
+        if !active && run.stage_exits.iter().any(|exit| exit.stage == stage) {
+            return None;
+        }
+        let gates = if active {
+            current_evaluations(run, mode, transition.gates, paths, git)
+        } else {
+            transition
                 .gates
                 .iter()
-                .map(|&gate| {
-                    let result = run.gates.iter().rev().find(|r| {
-                        r.stage == stage && r.gate == gate && (!current || r.rework == run.rework)
-                    });
-                    let status = if current {
-                        if open_gates.iter().any(|g| g.name == gate) {
-                            if result.is_some_and(|r| !r.passed) {
-                                "failed"
-                            } else {
-                                "open"
-                            }
-                        } else {
-                            "passed"
-                        }
-                    } else if gate == Gate::ChecksRecorded {
-                        if run
-                            .check_history
-                            .iter()
-                            .any(|snapshot| snapshot.rework == run.rework)
-                        {
-                            "recorded-pass"
-                        } else {
-                            "unknown"
-                        }
-                    } else if let Some(result) = result {
-                        if result.passed {
-                            "recorded-pass"
-                        } else {
-                            "failed"
-                        }
-                    } else if gate == Gate::TicketsDone
-                        && left
-                        && crate::run_gate::tickets_done(run).is_ok()
-                    {
-                        "recorded-pass"
-                    } else {
-                        "unknown"
-                    };
-                    GateStatus {
-                        name: gate,
-                        description: describe(gate),
-                        status,
-                        evidence: if gate == Gate::ChecksRecorded && !current {
-                            None
-                        } else {
-                            result.and_then(|r| r.evidence.clone())
-                        },
-                        rework: result.and_then(|r| r.rework),
-                    }
-                })
-                .collect();
-            StageGates { stage, gates }
+                .map(|&gate| Evaluation::with_status(gate, GateStatus::Unknown))
+                .collect()
+        };
+        Some(StageGates {
+            stage,
+            rework: active.then_some(run.rework).flatten(),
+            exit: None,
+            gates: gate_display(gates),
         })
-        .collect()
+    });
+    history.chain(remaining).collect()
+}
+
+fn current_evaluations(
+    run: &Run,
+    mode: Mode,
+    gates: &[Gate],
+    paths: Result<&[String], &str>,
+    git: &dyn Git,
+) -> Vec<Evaluation> {
+    let candidate = run_gate::candidate(run, gates, git);
+    let selection = paths.map(|paths| checks::select(mode, paths));
+    run_gate::evaluate(
+        run,
+        gates,
+        git,
+        &candidate,
+        selection.as_ref().map_err(|reason| *reason),
+    )
 }
 
 include!(concat!(env!("OUT_DIR"), "/stage_chunks.rs"));
@@ -396,7 +369,7 @@ pub(crate) fn changed_paths(run: &Run, git: &dyn Git) -> Result<Vec<String>, Str
     .map_err(|error| format!("Could not inspect the changed paths in {worktree}: {error}"))
 }
 
-fn rework_move(run: &Run, mode: Mode, changed_paths: &[String]) -> Option<Move> {
+fn rework_move(run: &Run, mode: Mode) -> Option<Move> {
     let rework = stages::rework(mode, run.stage, run.status).ok()?;
     let Destination::Stage(stage) = rework.to else {
         return None;
@@ -405,7 +378,7 @@ fn rework_move(run: &Run, mode: Mode, changed_paths: &[String]) -> Option<Move> 
         kind: "rework",
         to: Some(stage),
         rework: Some(crate::run::next_rework(run.rework).ok()?),
-        gates: open(run, rework.gates, Some(changed_paths)),
+        gates: Vec::new(),
     })
 }
 
@@ -430,7 +403,16 @@ fn recorded_gate_results(run: &Run) -> Vec<crate::run_gate::GateResult> {
 /// # Errors
 ///
 /// Returns a message when the run has no recorded mode.
+#[cfg(test)]
 pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String> {
+    build_with_git(run, Ok(changed_paths), &crate::run_check::ReadOnlyGit)
+}
+
+pub(crate) fn build_with_git(
+    run: &Run,
+    changed_paths: Result<&[String], &str>,
+    git: &dyn Git,
+) -> Result<Next, String> {
     let mode = run.mode.ok_or_else(|| {
         "the run has no recorded mode; record it with `jidoka run update <id> --mode <mode>`"
             .to_string()
@@ -440,7 +422,13 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
     let mut note = None;
     match stages::next(mode, run.stage, run.status) {
         Ok(transition) => {
-            gates = open(run, transition.gates, Some(changed_paths));
+            gates = open(current_evaluations(
+                run,
+                mode,
+                transition.gates,
+                changed_paths,
+                git,
+            ));
             let (kind, to) = match transition.to {
                 Destination::Stage(stage) => ("stage", Some(stage)),
                 Destination::Done => ("done", None),
@@ -451,32 +439,9 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
                 rework: None,
                 gates: gates.clone(),
             });
-            moves.extend(rework_move(run, mode, changed_paths));
+            moves.extend(rework_move(run, mode));
         }
         Err(reason) => note = Some(reason),
-    }
-    // A done run has no stage left to carry out, so it gets no instructions.
-    let mut stage_instructions = if run.status == RunStatus::Done {
-        String::new()
-    } else {
-        instructions(
-            mode,
-            run.stage,
-            run.model_routing
-                .as_ref()
-                .filter(|routing| {
-                    routing.choice_for(run.stage).is_some()
-                        || (run.stage == Stage::Finish
-                            && routing.choice_for(Stage::Build).is_some())
-                })
-                .map(|routing| routing.agent),
-        )
-    };
-    if run.stage == Stage::Check && run.status != RunStatus::Done {
-        for applicable in checks::select(mode, changed_paths).applicable {
-            stage_instructions.push_str("\n\n");
-            stage_instructions.push_str(applicable.check.instructions);
-        }
     }
     Ok(Next {
         run: run.id.clone(),
@@ -485,12 +450,16 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
         stage: run.stage,
         status: run.status,
         rework: run.rework,
-        instructions: stage_instructions,
+        instructions: stage_instructions(run, mode, changed_paths.ok()),
         gates,
         gate_results: recorded_gate_results(run),
+        stage_exits: run.stage_exits.clone(),
+        checks_unavailable: changed_paths.err().map(str::to_owned),
         moves,
-        checks: (run.stage == Stage::Check && mode != Mode::Fast)
-            .then(|| checks_for(mode, changed_paths, run.model_routing.as_ref())),
+        checks: changed_paths
+            .ok()
+            .filter(|_| run.stage == Stage::Check && mode != Mode::Fast)
+            .map(|paths| checks_for(mode, paths, run.model_routing.as_ref())),
         summaries: run.summaries.clone(),
         tickets: run.tickets.clone(),
         unticketed_attempt: run.unticketed_attempt,
@@ -521,6 +490,32 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
         group: None,
         knowledge: None,
     })
+}
+
+fn stage_instructions(run: &Run, mode: Mode, changed_paths: Option<&[String]>) -> String {
+    if run.status == RunStatus::Done {
+        return String::new();
+    }
+    let mut stage_instructions = instructions(
+        mode,
+        run.stage,
+        run.model_routing
+            .as_ref()
+            .filter(|routing| {
+                routing.choice_for(run.stage).is_some()
+                    || (run.stage == Stage::Finish && routing.choice_for(Stage::Build).is_some())
+            })
+            .map(|routing| routing.agent),
+    );
+    if run.stage == Stage::Check
+        && let Some(paths) = changed_paths
+    {
+        for applicable in checks::select(mode, paths).applicable {
+            stage_instructions.push_str("\n\n");
+            stage_instructions.push_str(applicable.check.instructions);
+        }
+    }
+    stage_instructions
 }
 
 fn render_tickets(next: &Next, out: &mut String) {
@@ -611,6 +606,12 @@ pub(crate) fn render(next: &Next) -> String {
             knowledge.instructions.trim_end()
         )
     }));
+    if let Some(reason) = &next.checks_unavailable {
+        out.push_str(&format!(
+            "\nCheck selection unavailable: {}\n",
+            shown(reason)
+        ));
+    }
     if let Some(checks) = &next.checks {
         out.push_str("\nChecks\n");
         for entry in &checks.applicable {
@@ -620,7 +621,7 @@ pub(crate) fn render(next: &Next) -> String {
                 shown(&entry.reason)
             ));
             if let Some(gate) = entry.gate {
-                out.push_str(&format!("        gate: {}\n", shown_name(gate)));
+                out.push_str(&format!("        gate: {}\n", gate.name()));
             }
             if let Some(model) = &entry.model {
                 out.push_str(&format!(
@@ -644,32 +645,10 @@ pub(crate) fn render(next: &Next) -> String {
     if !next.gate_results.is_empty() {
         out.push_str("\nRecorded gate results\n");
         for result in &next.gate_results {
-            out.push_str(&format!(
-                "  {}  {}{}{}{}{}{}\n",
-                if result.passed { "pass" } else { "fail" },
-                shown_name(result.gate),
-                result
-                    .check
-                    .as_ref()
-                    .map_or(String::new(), |s| format!(" (check {})", shown(s))),
-                result
-                    .ticket
-                    .as_ref()
-                    .map_or(String::new(), |s| format!(" (ticket {})", shown(s))),
-                result
-                    .work_attempt
-                    .map_or(String::new(), |attempt| format!(" (attempt {attempt})")),
-                result
-                    .commit
-                    .as_ref()
-                    .map_or(String::new(), |commit| format!(" at {}", shown(commit))),
-                result
-                    .evidence
-                    .as_ref()
-                    .map_or(String::new(), |s| format!(": {}", shown(s)))
-            ));
+            render_result(&mut out, result, "  ");
         }
     }
+    render_exits(&mut out, &next.stage_exits);
     if let Some(note) = &next.note {
         out.push_str(&format!("\nNo move: {note}\n"));
     }
@@ -689,9 +668,12 @@ pub(crate) fn render(next: &Next) -> String {
         }
         for gate in &mv.gates {
             out.push_str(&format!(
-                "  open  {}: {}\n",
-                shown_name(gate.name),
-                gate.description
+                "  {}  {}: {}\n",
+                gate_status_label(gate.status),
+                gate.name.name(),
+                gate.reason
+                    .as_deref()
+                    .map_or_else(|| gate.description.to_owned(), shown)
             ));
         }
     }
@@ -703,6 +685,75 @@ pub(crate) fn render(next: &Next) -> String {
         }
     }
     out
+}
+
+fn render_result(out: &mut String, result: &run_gate::GateResult, indent: &str) {
+    out.push_str(&format!(
+        "{indent}{}  {}{}{}{}{}{}\n",
+        if result.passed { "pass" } else { "fail" },
+        result.gate.name(),
+        result
+            .check
+            .as_ref()
+            .map_or(String::new(), |s| format!(" (check {})", shown(s))),
+        result
+            .ticket
+            .as_ref()
+            .map_or(String::new(), |s| format!(" (ticket {})", shown(s))),
+        result
+            .work_attempt
+            .map_or(String::new(), |attempt| format!(" (attempt {attempt})")),
+        result
+            .commit
+            .as_ref()
+            .map_or(String::new(), |commit| format!(" at {}", shown(commit))),
+        result
+            .evidence
+            .as_ref()
+            .map_or(String::new(), |s| format!(": {}", shown(s)))
+    ));
+}
+
+fn gate_status_label(status: GateStatus) -> &'static str {
+    match status {
+        GateStatus::Open => "open",
+        GateStatus::Failed => "failed",
+        GateStatus::Passed => "passed",
+        GateStatus::AwaitingLiveCheck => "awaiting live check",
+        GateStatus::Bypassed => "bypassed",
+        GateStatus::Unknown => "unknown",
+    }
+}
+
+fn render_exits(out: &mut String, exits: &[StageExit]) {
+    if exits.is_empty() {
+        return;
+    }
+    out.push_str("\nRecorded stage exits\n");
+    for exit in exits {
+        let pass = exit
+            .rework
+            .map_or_else(String::new, |n| format!(" (Rework {n})"));
+        let outcome = match &exit.outcome {
+            ExitOutcome::Accepted => "Accepted".to_string(),
+            ExitOutcome::Override { reason } => format!("Override ({})", shown(reason)),
+            ExitOutcome::Merged { url } => format!("PR merge observed ({})", shown(url)),
+            ExitOutcome::Rework { number, finding } => {
+                format!("Started Rework {number} ({})", shown(finding))
+            }
+        };
+        out.push_str(&format!("  {}{pass}: {outcome}\n", exit.stage.name()));
+        for gate in &exit.gates {
+            let status = gate_status_label(gate.status);
+            out.push_str(&format!("    {}: {status}\n", gate.name.name()));
+            if let Some(detail) = &gate.detail {
+                out.push_str(&format!("      {}\n", shown(detail)));
+            }
+            for result in &gate.results {
+                render_result(out, result, "      ");
+            }
+        }
+    }
 }
 
 /// The change group section of `run next`.
@@ -738,13 +789,6 @@ fn render_group(group: &GroupGuidance) -> String {
         }
     }
     out
-}
-
-fn shown_name(gate: Gate) -> String {
-    serde_json::to_value(gate)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_default()
 }
 
 pub(crate) fn parse_options(options: &[&str]) -> Result<bool, String> {
