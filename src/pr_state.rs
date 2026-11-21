@@ -205,7 +205,12 @@ pub(crate) fn follow_up(run: &mut Run, status: &PrStatus, at: u64) -> Result<boo
         (PrState::Merged, RunStatus::Running | RunStatus::Blocked)
             if run.stage == Stage::Finish =>
         {
-            crate::run_gate::finish_from_merge(run, &status.url, at)?;
+            run.leave(
+                crate::run::Exit::Merged {
+                    url: status.url.clone(),
+                },
+                at,
+            )?;
         }
         (PrState::Closed, RunStatus::Running) => {
             run.block(CLOSED_REASON, LifecycleSource::PullRequest, at)?;

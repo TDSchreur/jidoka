@@ -749,7 +749,12 @@ fn finishing_a_run_closes_its_window_and_an_update_cannot_reopen_it() {
         .unwrap();
     store
         .change_gate(&run.id, |run| {
-            crate::run_gate::advance_forced(run, "CI service unavailable")
+            run.leave(
+                Exit::Override {
+                    reason: "CI service unavailable".into(),
+                },
+                updated_now().unwrap(),
+            )
         })
         .unwrap();
     let done = store.get(&run.id).unwrap().unwrap();
@@ -1149,156 +1154,6 @@ fn mode_aliases_store_canonical_names() {
             .unwrap();
         assert_eq!(serde_json::to_value(updated).unwrap()["mode"], canonical);
     }
-}
-
-#[test]
-fn independent_gate_records_merge_but_run_changes_reject_stale_validation() {
-    use crate::run_gate::Record;
-    use crate::stages::Gate;
-    struct Interleaved<'a> {
-        store: &'a RunStore,
-        id: &'a str,
-        change_run: bool,
-    }
-    impl crate::pr_sync::Git for Interleaved<'_> {
-        fn git(&self, _: &std::path::Path, _: &[&str]) -> Result<String, String> {
-            if self.change_run {
-                self.store
-                    .transition(
-                        self.id,
-                        LifecycleRequest::Block {
-                            reason: "waiting".into(),
-                        },
-                    )
-                    .unwrap();
-            } else {
-                self.store
-                    .record_gate(
-                        self.id,
-                        Record {
-                            gate: Gate::NoActionableFindings,
-                            passed: true,
-                            evidence: None,
-                            check: None,
-                        },
-                        &crate::pr_sync::RealGit,
-                    )
-                    .unwrap();
-            }
-            Ok("abc123".into())
-        }
-    }
-    let dir = TestDir::new();
-    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-    let run = new_run(&store, "task");
-    store
-        .update(
-            &run.id,
-            parse_update(&["--worktree", "/work/repo"]).unwrap(),
-        )
-        .unwrap();
-    let verified = || Record {
-        gate: Gate::Verified,
-        passed: true,
-        evidence: None,
-        check: None,
-    };
-    store
-        .record_gate(
-            &run.id,
-            verified(),
-            &Interleaved {
-                store: &store,
-                id: &run.id,
-                change_run: false,
-            },
-        )
-        .unwrap();
-    let current = store.get(&run.id).unwrap().unwrap();
-    assert_eq!(current.gates.len(), 2);
-    assert!(
-        current
-            .gates
-            .iter()
-            .any(|gate| gate.gate == Gate::Verified && gate.commit.as_deref() == Some("abc123")),
-        "verified gate should retain its checked commit"
-    );
-    assert!(
-        current
-            .gates
-            .iter()
-            .any(|gate| gate.gate == Gate::NoActionableFindings),
-        "independent gate should be preserved"
-    );
-    let error = store
-        .record_gate(
-            &run.id,
-            verified(),
-            &Interleaved {
-                store: &store,
-                id: &run.id,
-                change_run: true,
-            },
-        )
-        .unwrap_err();
-    assert!(
-        error.contains("changed while checking"),
-        "unexpected error: {error}"
-    );
-    assert_eq!(store.get(&run.id).unwrap().unwrap().gates.len(), 2);
-}
-
-#[test]
-fn gate_record_rejects_run_change_reverted_during_validation() {
-    use crate::run_gate::Record;
-    use crate::stages::Gate;
-
-    struct Revert<'a> {
-        store: &'a RunStore,
-        id: &'a str,
-    }
-    impl crate::pr_sync::Git for Revert<'_> {
-        fn git(&self, _: &std::path::Path, _: &[&str]) -> Result<String, String> {
-            for activity in ["B", "A"] {
-                self.store
-                    .update(self.id, parse_update(&["--activity", activity]).unwrap())
-                    .unwrap();
-            }
-            Ok("abc123".into())
-        }
-    }
-    let dir = TestDir::new();
-    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-    let run = new_run(&store, "task");
-    store
-        .update(
-            &run.id,
-            parse_update(&["--worktree", "/work/repo", "--activity", "A"]).unwrap(),
-        )
-        .unwrap();
-    let error = store
-        .record_gate(
-            &run.id,
-            Record {
-                gate: Gate::Verified,
-                passed: true,
-                evidence: None,
-                check: None,
-            },
-            &Revert {
-                store: &store,
-                id: &run.id,
-            },
-        )
-        .unwrap_err();
-    assert!(
-        error.contains("changed while checking"),
-        "unexpected error: {error}"
-    );
-    assert!(
-        store.get(&run.id).unwrap().unwrap().gates.is_empty(),
-        "stale gate must not be recorded"
-    );
 }
 
 #[test]

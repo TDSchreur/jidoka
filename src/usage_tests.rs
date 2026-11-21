@@ -1170,7 +1170,12 @@ mod auto_block {
             .unwrap();
         done.store
             .change_gate(&done.id, |run| {
-                crate::run_gate::advance_forced(run, "CI service unavailable")
+                run.leave(
+                    crate::run::Exit::Override {
+                        reason: "CI service unavailable".into(),
+                    },
+                    crate::run::updated_now().unwrap(),
+                )
             })
             .unwrap();
         collect_active(&done.store, &done.settings, now).unwrap();

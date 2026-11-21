@@ -1,7 +1,6 @@
 //! The run records and the one way to change them safely.
 
 use super::*;
-use crate::run_gate::GateResult;
 
 /// The run records, shared by clones: usage is collected in the background on a clone.
 #[derive(Clone)]
@@ -387,7 +386,14 @@ impl RunStore {
                     finding,
                     classification,
                     decision,
-                } => run.start_rework(finding, classification, decision, now),
+                } => run.leave(
+                    Exit::Rework {
+                        finding,
+                        classification,
+                        decision,
+                    },
+                    now,
+                ),
                 LifecycleRequest::WorkspaceBlocked { reason } => {
                     if run.block_source == Some(LifecycleSource::Workspace) {
                         run.refresh_block(&reason, LifecycleSource::Workspace, now)
@@ -415,27 +421,23 @@ impl RunStore {
         .expect("test run exists");
     }
 
-    /// Record a gate against a snapshot, merging independent concurrent gate results.
+    /// Records the gate result `check` returns for a snapshot, merging independent concurrent gate results.
     pub(crate) fn record_gate(
         &self,
         id: &str,
-        record: crate::run_gate::Record,
-        git: &dyn crate::pr_sync::Git,
+        check: impl FnOnce(&Run) -> Result<GateResult, String>,
     ) -> Result<(), String> {
         self.change_from_snapshot(
             id,
             Stamp::Gate,
             |snapshot| {
-                let mut checked = snapshot.clone();
-                crate::run_gate::record(&mut checked, record, git)?;
-                let result = checked.gates.pop().ok_or("Gate result was not recorded")?;
+                let result = check(snapshot)?;
                 Ok((Gates::MayAppend(result.clone()), result))
             },
             |current, result, _, now| {
-                if current.gates.len() >= crate::run_gate::MAX_GATE_RESULTS {
+                if current.gates.len() >= MAX_GATE_RESULTS {
                     return Err(format!(
-                        "A run can hold at most {} gate results",
-                        crate::run_gate::MAX_GATE_RESULTS
+                        "A run can hold at most {MAX_GATE_RESULTS} gate results"
                     ));
                 }
                 current.gates.push(result);
@@ -501,9 +503,6 @@ impl RunStore {
                 changed.usage = current.usage.clone();
                 *current = changed;
                 mark(current, now, activity);
-                if current.status == RunStatus::Done {
-                    current.finished_at = Some(now);
-                }
                 Ok(())
             },
         )
@@ -685,11 +684,6 @@ impl RunStore {
                 run.updated_at = Some(now);
                 run.gate_generation = run.gate_generation.wrapping_add(1);
                 mark(run, now, None);
-                run.finished_at = if run.status == RunStatus::Done {
-                    Some(now)
-                } else {
-                    None
-                };
                 result = PrResult::Accepted { changed: true };
             }
             run.pr_status = Some(status);

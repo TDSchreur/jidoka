@@ -1229,7 +1229,7 @@ async fn stage_exits_preserve_passes_and_distinguish_refused_and_forced_advances
     assert_eq!(details.stage_exits[0], accepted[0]);
     assert_eq!(
         details.stage_exits[1].outcome,
-        crate::run_gate::ExitOutcome::Override {
+        crate::run::ExitOutcome::Override {
             reason: "Checks unavailable".into(),
         }
     );

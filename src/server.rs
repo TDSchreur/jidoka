@@ -454,8 +454,7 @@ fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
         });
     }
     if let Some(snapshot) = run.stage_exits.iter().rev().find(|exit| {
-        exit.stage == crate::run::Stage::Check
-            && exit.outcome == crate::run_gate::ExitOutcome::Accepted
+        exit.stage == crate::run::Stage::Check && exit.outcome == crate::run::ExitOutcome::Accepted
     }) {
         value["recorded_skipped_checks"] = serde_json::to_value(&snapshot.skipped_checks)?;
         value["recorded_skipped_rework"] = serde_json::to_value(snapshot.rework)?;
@@ -562,8 +561,11 @@ fn record_gate(
     record: Json<crate::run_gate::Record>,
     store: &State<RunStore>,
 ) -> Result<&'static str, (HttpStatus, String)> {
+    let record = record.into_inner();
     store
-        .record_gate(id, record.into_inner(), &crate::pr_sync::RealGit)
+        .record_gate(id, |run| {
+            crate::run_gate::record(run, record, &crate::pr_sync::RealGit)
+        })
         .map_err(|error| (HttpStatus::BadRequest, error))?;
     Ok("Gate recorded")
 }

@@ -1,10 +1,9 @@
-//! Intentional status changes and the policy for returning from Check to Build.
+//! Intentional status changes: blocking and resuming a run, and the lifecycle requests.
 
 use super::{
-    FindingState, MAX_EVENTS, MAX_NOTE_BYTES, MAX_REWORK, PauseKind, Run, RunEvent, RunEventKind,
-    RunStatus, UpdateRun, check_text,
+    MAX_EVENTS, MAX_NOTE_BYTES, PauseKind, Run, RunEvent, RunEventKind, RunStatus, UpdateRun,
+    check_text,
 };
-use crate::stages::{self, Destination};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -21,17 +20,6 @@ pub(crate) enum LifecycleSource {
 pub(crate) enum FindingClassification {
     Wording,
     Behavior,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub(crate) struct ReworkRecord {
-    pub(crate) number: u32,
-    pub(crate) at: u64,
-    pub(crate) finding: String,
-    pub(crate) findings: Vec<String>,
-    pub(crate) classification: FindingClassification,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) decision: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -56,9 +44,6 @@ pub(crate) enum LifecycleRequest {
         update: Box<UpdateRun>,
     },
 }
-
-/// ADR-0006 requires a decision for behavior changes in the third Rework.
-const WORDING_REWORK: u32 = 3;
 
 impl Run {
     pub(crate) fn block(
@@ -142,83 +127,6 @@ impl Run {
             });
         }
     }
-
-    pub(super) fn start_rework(
-        &mut self,
-        finding: String,
-        classification: FindingClassification,
-        decision: Option<String>,
-        at: u64,
-    ) -> Result<(), String> {
-        let mode = self
-            .mode
-            .ok_or("Record the run's mode before starting a Rework")?;
-        let transition = stages::rework(mode, self.stage, self.status)?;
-        let number = next_rework(self.rework)?;
-        if let Some(decision) = &decision {
-            check_text("Rework decision", decision, MAX_NOTE_BYTES)?;
-        }
-        if (number > WORDING_REWORK
-            || (number == WORDING_REWORK && classification == FindingClassification::Behavior))
-            && decision.is_none()
-        {
-            return Err(format!(
-                "Rework {number} requires the user's decision; record it with --decision"
-            ));
-        }
-        let findings: Vec<_> = self
-            .open_findings()
-            .map(|finding| finding.id.clone())
-            .collect();
-        if !findings.contains(&finding) {
-            return Err(format!(
-                "Rework requires a recorded open finding; {finding} is not open"
-            ));
-        }
-
-        let Destination::Stage(stage) = transition.to else {
-            return Err("A Rework must lead to Build".into());
-        };
-        for open in self
-            .findings
-            .iter_mut()
-            .filter(|finding| finding.state == FindingState::Open)
-        {
-            open.rework = Some(number);
-        }
-        crate::run_gate::save_exit(
-            self,
-            transition.to,
-            at,
-            crate::run_gate::ExitOutcome::Rework {
-                number,
-                finding: finding.clone(),
-            },
-            Vec::new(),
-            Vec::new(),
-        );
-        self.stage = stage;
-        self.rework = Some(number);
-        self.rework_history.push(ReworkRecord {
-            number,
-            at,
-            finding,
-            findings,
-            classification,
-            decision,
-        });
-        Ok(())
-    }
-}
-
-pub(crate) fn next_rework(current: Option<u32>) -> Result<u32, String> {
-    let count = current.unwrap_or_default();
-    if count >= MAX_REWORK {
-        return Err(format!(
-            "The run has reached the limit of {MAX_REWORK} Reworks"
-        ));
-    }
-    Ok(count + 1)
 }
 
 pub(crate) fn parse_lifecycle(action: &str, options: &[&str]) -> Result<LifecycleRequest, String> {
