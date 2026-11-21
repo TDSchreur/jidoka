@@ -4,7 +4,7 @@
 use crate::pr_wait::{
     Gh, ToolProblem, azure_pr_head, azure_pr_status, is_azure_pr_url, problem, run_gh,
 };
-use crate::run::{FieldUpdate, PrResult, Run, RunStatus, RunStore, Stage, UpdateRun};
+use crate::run::{Completion, PrResult, Run, RunStatus, RunStore, Stage};
 use serde::{Deserialize, Serialize};
 use std::io;
 
@@ -199,33 +199,24 @@ fn due(status: Option<&PrStatus>, url: &str, now: u64) -> bool {
 /// The reason a run is blocked when its pull request was closed without merging.
 pub(crate) const CLOSED_REASON: &str = "PR closed without merge";
 
-/// What a read state means for a run: a merged pull request finishes a run that is not done, and a closed one
-/// blocks a running run. Both clear the activity, which was about waiting for a pull request that is gone.
-/// Anything else, including an unreachable host, leaves the run as it is.
-pub(crate) fn follow_up(run: &Run, state: PrState) -> Option<UpdateRun> {
-    let mut update = match (state, run.status) {
+/// Applies the lifecycle consequence of an observed merge or close.
+pub(crate) fn follow_up(run: &mut Run, status: &PrStatus) -> Result<bool, String> {
+    match (status.state, run.status) {
         (PrState::Merged, RunStatus::Running | RunStatus::Blocked)
             if run.stage == Stage::Finish =>
         {
-            let mut update = UpdateRun::new(RunStatus::Done);
-            update.blocking_reason = FieldUpdate::Clear;
-            // Finish cannot be done without a summary; keep the agent's when it wrote one.
-            if !run.summaries.contains_key(&Stage::Finish) {
-                update
-                    .summaries
-                    .set(Stage::Finish, Some("Pull request merged".into()));
-            }
-            update
+            run.complete(Completion::Merged {
+                url: status.url.clone(),
+            })?;
         }
         (PrState::Closed, RunStatus::Running) => {
-            let mut update = UpdateRun::new(RunStatus::Blocked);
-            update.blocking_reason = FieldUpdate::Set(CLOSED_REASON.into());
-            update
+            run.status = RunStatus::Blocked;
+            run.blocking_reason = Some(CLOSED_REASON.into());
+            run.activity = None;
         }
-        _ => return None,
-    };
-    update.activity = FieldUpdate::Clear;
-    Some(update)
+        _ => return Ok(false),
+    }
+    Ok(true)
 }
 
 /// Says what a read state is and, when `changed`, what became of the run.

@@ -271,7 +271,7 @@ class GroupsTest(unittest.TestCase):
     def test_runs_and_counts_are_unchanged_by_groups(self):
         without = drive(COUNTS + "return {counts};", None)["counts"]
         self.assertEqual(without["line"], "On the line (5)")
-        self.assertEqual(without["shipped"], "Shipped (1)")
+        self.assertEqual(without["shipped"], "Completed (1)")
         self.assertEqual(self.data["counts"], without)
 
     def test_missing_groups_endpoint_hides_the_section(self):

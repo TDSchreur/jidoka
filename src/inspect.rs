@@ -1,7 +1,7 @@
 //! The readable form of a run, for `jidoka run inspect`: everything a new session needs to continue it.
 
 use crate::routing::{ModelChoice, ModelRouting, model_matches};
-use crate::run::{Mode, Run, RunEventKind, RunStatus, Stage, TicketStatus};
+use crate::run::{Completion, Mode, Run, RunEventKind, RunStatus, Stage, TicketStatus};
 use crate::usage::{Usage, UsageStatus, format_timestamp};
 use std::collections::BTreeSet;
 
@@ -432,6 +432,23 @@ pub(crate) fn render(run: &Run) -> String {
     out.push_str(&field("Base commit", run.base_commit.as_deref()));
     out.push_str(&field("Spec", run.spec.as_deref()));
     out.push_str(&field("Pull request", run.pr.as_deref()));
+    if let Some(status) = run
+        .pr_status
+        .as_ref()
+        .filter(|status| Some(&status.url) == run.pr.as_ref())
+    {
+        out.push_str(&field("PR state", Some(status.state.label())));
+    }
+    let completion = match &run.completion {
+        Some(Completion::Ci { head, outcome }) => Some(format!("{} on {head}", outcome.label())),
+        Some(Completion::Merged { url }) => Some(format!("PR merge observed ({url})")),
+        Some(Completion::Override { reason }) => Some(format!("Override ({reason})")),
+        None if run.status == RunStatus::Done => Some(UNKNOWN.into()),
+        None => None,
+    };
+    if let Some(completion) = completion {
+        out.push_str(&field("Completion", Some(&completion)));
+    }
     let done = run
         .tickets
         .iter()

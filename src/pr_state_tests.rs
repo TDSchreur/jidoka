@@ -153,7 +153,7 @@ fn a_new_pull_request_url_is_checked_at_once_and_runs_without_one_are_left_alone
     // The Run now records another pull request: its stored state is for the old URL, so it is read again.
     let other = "https://github.com/o/r/pull/8";
     let update: UpdateRun =
-        serde_json::from_str(&format!(r#"{{"status":"running","pr":"{other}"}}"#)).unwrap();
+        serde_json::from_str(&format!(r#"{{"status":"done","pr":"{other}"}}"#)).unwrap();
     store.update(&id, update).unwrap();
     assert_eq!(refresh(&store, &gh, 1).unwrap(), 1);
     let status = stored(&store, &id).unwrap();
@@ -249,6 +249,11 @@ fn a_merged_pull_request_finishes_the_run_and_clears_its_activity() {
     let run = the_run(&store, &id);
     assert_eq!((run.stage, run.status), (Stage::Finish, RunStatus::Done));
     assert_eq!(run.activity, None);
+    assert_eq!(run.summaries[&Stage::Finish], "Pull request merged");
+    assert_eq!(
+        run.completion,
+        Some(crate::run::Completion::Merged { url: PR.into() })
+    );
 }
 
 #[test]

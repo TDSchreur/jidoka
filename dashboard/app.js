@@ -8,8 +8,7 @@ import { GROUPS, STATIONS, STATION_NAME, findingCount, runHistory, shortSha, tic
 const html = htm.bind(h);
 
 const STATUSES = ['running', 'blocked', 'done'];
-// A finished Run is called Shipped; its status stays `done` in the CLI, the API and runs.json.
-const STATUS_LABEL = { running: 'Running', blocked: 'Blocked', done: 'Shipped' };
+const STATUS_LABEL = { running: 'Running', blocked: 'Blocked', done: 'Done' };
 /** The status in sentence case; an unknown status shows as recorded. */
 const statusLabel = (status) => STATUS_LABEL[status] ?? String(status);
 const TICKET_STATUS = { pending: 'Pending', 'in-progress': 'In progress', done: 'Done' };
@@ -661,6 +660,17 @@ function PrLink({ run }) {
   </span>`;
 }
 
+function CompletionLabel({ run }) {
+  if (run.status !== 'done') return null;
+  const completion = run.completion;
+  const text = completion?.kind === 'ci'
+    ? `${completion.outcome === 'no-ci' ? 'No CI' : 'CI passed'} on ${completion.head}`
+    : completion?.kind === 'merged' ? 'PR merge observed'
+    : completion?.kind === 'override' ? `Override (${completion.reason})`
+    : 'Reason unavailable';
+  return html`<span class="status-item">Completion ${text}</span>`;
+}
+
 /** Asks the server to read the Run's pull request from its host now; the Run follows a merge or a close. */
 async function syncRun(id) {
   const response = await fetch(`/api/runs/${encodeURIComponent(id)}/sync`, {
@@ -681,8 +691,8 @@ const SYNC_RESULT = {
 /** Reads the pull request now instead of waiting for the next automatic check, and says what it found. */
 function CheckPrButton({ run, onSynced }) {
   const [check, setCheck] = useState({ busy: false, text: '' });
-  // A finished run has nothing to follow, unless this check just finished it and the result is still shown.
-  if (!run.pr || (run.status === 'done' && !check.text)) return null;
+  const merged = run.pr_status?.url === run.pr && run.pr_status?.state === 'merged';
+  if (!run.pr || (merged && !check.text)) return null;
   const start = async () => {
     setCheck({ busy: true, text: 'Checking the pull request…' });
     try {
@@ -834,6 +844,7 @@ function Detail({ run, runs, now, onClose, onDelete, onSynced, onOpenRun, group 
       ${active && run.current_ticket && !listed ? html`<p class="detail-ticket">Current ticket: ${run.current_ticket}</p>` : null}
       <div class=${blocked ? 'status-row blocked' : 'status-row'}>
         <span class=${STATUSES.includes(run.status) ? `badge ${run.status}` : 'badge'}>${statusLabel(run.status)}</span>
+        <${CompletionLabel} run=${run} />
         <${PrLink} run=${run} />
         <${CheckPrButton} run=${run} onSynced=${onSynced} />
         ${spec ? html`<span class="status-item"><a href=${spec.href} target="_blank" rel="noopener noreferrer">Spec ${shortRef(spec)}</a></span>` : null}
@@ -909,7 +920,7 @@ function localDateTime(date) {
   return date.toLocaleString('en-GB');
 }
 
-/** The day a Run shipped, by its last update: Today, Yesterday, the date, or Undated without a time. */
+/** The day a Run completed, by its last update: Today, Yesterday, the date, or Undated without a time. */
 function dayLabel(ts, now) {
   if (ts === null) return 'Undated';
   const day = (ms) => new Date(ms).setHours(0, 0, 0, 0);
@@ -919,7 +930,7 @@ function dayLabel(ts, now) {
   return new Date(ts).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 }
 
-/** Finished Runs in a compact table, newest first, grouped by day. Clear shipped removes their records after confirming. */
+/** Finished Runs in a compact table, newest first, grouped by day. Clear completed removes their records after confirming. */
 function ShippedLog({ entries, now, onOpen, onClear }) {
   const groups = [];
   for (const entry of entries) {
@@ -929,21 +940,21 @@ function ShippedLog({ entries, now, onOpen, onClear }) {
   }
   return html`<section class="shipped" aria-labelledby="shipped-title">
     <div class="shipped-head">
-      <h2 id="shipped-title">Shipped<span class="count">${` (${entries.length})`}</span></h2>
+      <h2 id="shipped-title">Completed<span class="count">${` (${entries.length})`}</span></h2>
       <button type="button" class="text-button" onClick=${onClear}>
-        Clear shipped…<span class="visually-hidden">${` ${entries.length} runs`}</span>
+        Clear completed…<span class="visually-hidden">${` ${entries.length} runs`}</span>
       </button>
     </div>
     <div class="table-scroll" role="region" aria-labelledby="shipped-title" tabindex="0">
       <table class="shipped-table">
-        <caption class="visually-hidden">Shipped runs, newest first, grouped by day</caption>
+        <caption class="visually-hidden">Completed runs, newest first, grouped by day</caption>
         <thead>
           <tr>
             <th scope="col">Run</th>
             <th scope="col">Project</th>
             <th scope="col">Pull request</th>
             <th scope="col">Fresh tokens</th>
-            <th scope="col">Shipped</th>
+            <th scope="col">Completed</th>
           </tr>
         </thead>
         ${groups.map(
@@ -1630,9 +1641,9 @@ function App() {
             title=${pending.project
               ? `Delete ${names.get(pending.project) ?? pending.project}?`
               : pending.shipped
-                ? `Clear ${pending.runs.length} shipped ${pending.runs.length === 1 ? 'run' : 'runs'}?`
+                ? `Clear ${pending.runs.length} completed ${pending.runs.length === 1 ? 'run' : 'runs'}?`
                 : 'Delete this run?'}
-            confirmLabel=${pending.shipped ? 'Clear shipped' : 'Delete'}
+            confirmLabel=${pending.shipped ? 'Clear completed' : 'Delete'}
             onConfirm=${confirmDelete}
             onCancel=${() => setPending(null)}
           >
@@ -1640,7 +1651,7 @@ function App() {
               ${pending.project
                 ? `This removes all ${pending.runs.length} run records for this project from the dashboard.`
                 : pending.shipped
-                  ? `This removes the records of the shipped runs from the dashboard.`
+                  ? `This removes the records of the completed runs from the dashboard.`
                   : html`This removes the record of <strong>${pending.runs[0].title}</strong> from the dashboard.`}
               The repository, worktrees, branches and pull requests stay as they are.
             </p>

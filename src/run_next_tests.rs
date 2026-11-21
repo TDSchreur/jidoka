@@ -401,7 +401,7 @@ fn past_check_gate_uses_completed_snapshot_not_one_individual_result() {
 }
 
 #[test]
-fn finished_run_shows_merged_ci_and_done_tickets_as_recorded() {
+fn merged_pull_request_is_not_ci_evidence() {
     let mut run = run(Mode::Fast, Stage::Finish, None);
     run.tickets.clear();
     run.status = RunStatus::Done;
@@ -427,8 +427,8 @@ fn finished_run_shows_merged_ci_and_done_tickets_as_recorded() {
             .clone()
     };
     let ci = gate("finish", "ci-passed");
-    assert_eq!(ci["status"], "recorded-pass");
-    assert_eq!(ci["evidence"], "Pull request merged");
+    assert_eq!(ci["status"], "unknown");
+    assert!(ci["evidence"].is_null());
     assert_eq!(gate("build", "tickets-done")["status"], "recorded-pass");
 
     // A stage the run has not reached yet stays unknown, even with every ticket done.

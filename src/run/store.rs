@@ -154,6 +154,7 @@ impl RunStore {
             timeline: Vec::new(),
             events: Vec::new(),
             finished_at: None,
+            completion: None,
             sessions: new.session.into_iter().collect(),
             usage: None,
             pr_status: None,
@@ -281,6 +282,14 @@ impl RunStore {
     ) -> io::Result<Option<Run>> {
         update.validate().map_err(io_invalid)?;
         self.change(id, Stamp::Agent, |next, updated_at| {
+            if update.status == RunStatus::Done && next.status != RunStatus::Done {
+                return Err(io_invalid(
+                    "Use `jidoka run advance <id>` to complete Finish",
+                ));
+            }
+            if next.status == RunStatus::Done && update.status != RunStatus::Done {
+                return Err(io_invalid("The run is done"));
+            }
             let was_blocked = matches!(next.status, RunStatus::Blocked);
             let was_running = matches!(next.status, RunStatus::Running);
             next.status = update.status;
@@ -334,18 +343,12 @@ impl RunStore {
                     },
                 )
                 .map_err(io_invalid)?;
-            if update.status == RunStatus::Done && next.stage != Stage::Finish {
-                return Err(io_invalid(format!(
-                    "A run is done only after Finish; it is in {}. Use `jidoka run advance <id>`",
-                    next.stage.name()
-                )));
-            }
             update.tickets.apply(next).map_err(io_invalid)?;
             update.reports.apply(next, updated_at).map_err(io_invalid)?;
             update.routing.apply(next).map_err(io_invalid)?;
             update.summaries.apply(next);
-            if update.status == RunStatus::Done {
-                summaries::check_done(next).map_err(io_invalid)?;
+            if next.completion.is_some() {
+                next.check_finish_summary().map_err(io_invalid)?;
             }
             for session in update.sessions {
                 if !next.sessions.contains(&session) {
@@ -356,13 +359,8 @@ impl RunStore {
                 next.sessions.drain(..next.sessions.len() - KEEP_SESSIONS);
             }
             record_block_change(next, was_blocked, updated_at);
-            // Where the work is now, for attributing token usage; and when it ended.
+            // Where the work is now, for attributing token usage.
             mark(next, updated_at, started_with);
-            next.finished_at = match (next.status, next.finished_at) {
-                (RunStatus::Done, None) => Some(updated_at),
-                (RunStatus::Done, kept) => kept,
-                _ => None,
-            };
             Ok(Edit::Save)
         })
     }
@@ -437,7 +435,19 @@ impl RunStore {
                     ));
                 }
                 changed.run_reports = reports;
-                changed.pr_status = current.pr_status.clone();
+                if changed.pr_status == snapshot.pr_status
+                    || current
+                        .pr_status
+                        .as_ref()
+                        .zip(changed.pr_status.as_ref())
+                        .is_some_and(|(current, observed)| {
+                            current.url == observed.url
+                                && (current.state == crate::pr_state::PrState::Merged
+                                    || current.checked_at >= observed.checked_at)
+                        })
+                {
+                    changed.pr_status = current.pr_status.clone();
+                }
                 changed.usage = current.usage.clone();
                 *current = changed;
                 mark(current, now, None);
@@ -632,15 +642,11 @@ impl RunStore {
                 }
             }
             result = PrResult::Accepted { changed: false };
-            if let Some(update) = crate::pr_state::follow_up(run, status.state) {
+            let was_blocked = run.status == RunStatus::Blocked;
+            if crate::pr_state::follow_up(run, &status).map_err(io_invalid)? {
                 let now = updated_now()?;
                 run.updated_at = Some(now);
                 run.gate_generation = run.gate_generation.wrapping_add(1);
-                let was_blocked = run.status == RunStatus::Blocked;
-                run.status = update.status;
-                update.activity.apply(&mut run.activity);
-                update.blocking_reason.apply(&mut run.blocking_reason);
-                update.summaries.apply(run);
                 record_block_change(run, was_blocked, now);
                 mark(run, now, None);
                 run.finished_at = if run.status == RunStatus::Done {

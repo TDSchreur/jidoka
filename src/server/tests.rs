@@ -434,9 +434,25 @@ async fn usage_is_collected_in_the_background_when_a_run_moves_on() {
     report(
         &api,
         &run.id,
-        r#"{"status":"done","summaries":{"finish":"Shipped"}}"#,
+        r#"{"status":"running","mode":"fast","summaries":{"finish":"Completed"}}"#,
     )
     .await;
+    let response = api
+        .post(format!("/api/runs/{}/advance", run.id))
+        .header(cli_token_header(&api))
+        .header(Header::new("Host", "127.0.0.1:4311"))
+        .header(ContentType::JSON)
+        .body(r#"{"force":true,"reason":"CI service unavailable"}"#)
+        .dispatch()
+        .await;
+    assert_eq!(response.status(), HttpStatus::Ok);
+    let completed = fetch(&api, &run.id).await.1.unwrap();
+    assert_eq!(
+        completed.completion,
+        Some(crate::run::Completion::Override {
+            reason: "CI service unavailable".into()
+        })
+    );
     collector.wait_idle().await;
     let usage = fetch(&api, &run.id).await.1.unwrap().usage.unwrap();
     assert_eq!(
@@ -450,7 +466,7 @@ async fn usage_is_collected_in_the_background_when_a_run_moves_on() {
 }
 
 #[rocket::async_test]
-async fn finish_done_without_a_summary_is_a_bad_request() {
+async fn reporting_done_in_finish_is_a_bad_request() {
     let dir = TestDir::new();
     let api = client(&dir).await;
     let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
@@ -462,7 +478,7 @@ async fn finish_done_without_a_summary_is_a_bad_request() {
             .into_string()
             .await
             .unwrap()
-            .contains("--summary finish=")
+            .contains("jidoka run advance")
     );
     let stored = fetch(&api, &run.id).await.1.unwrap();
     assert!(stored.finished_at.is_none());
@@ -617,13 +633,13 @@ async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
         .update(
             &run.id,
             serde_json::from_str(&format!(
-                r#"{{"status":"done","pr":"{pr}","summaries":{{"finish":"Shipped"}}}}"#
+                r#"{{"status":"running","pr":"{pr}","summaries":{{"finish":"Completed"}}}}"#
             ))
             .unwrap(),
         )
         .unwrap();
     store
-        .set_pr_status(
+        .record_pr_result(
             &run.id,
             PrStatus {
                 url: pr.into(),
@@ -649,6 +665,11 @@ async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
         list[0]["pr_status"],
         serde_json::json!({"url": pr, "state": "merged", "checked_at": 42})
     );
+    assert_eq!(
+        list[0]["completion"],
+        serde_json::json!({"kind":"merged","url":pr})
+    );
+    assert_eq!(list[0]["summaries"]["finish"], "Completed");
     // An update through the API cannot set it.
     let response = api
         .post(format!("/api/runs/{}", run.id))

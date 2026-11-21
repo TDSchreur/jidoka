@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 /// Help lines for the summary flags, as a macro so `UPDATE_HELP` can stay a `const` built with `concat!`.
 macro_rules! help {
     () => {
-        "  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `done` is only accepted in Finish and needs a Finish summary)\n"
+        "  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\n"
     };
 }
 pub(super) use help;
@@ -21,11 +21,6 @@ pub(crate) struct SummariesUpdate {
 }
 
 impl SummariesUpdate {
-    /// Sets the summary of `stage`; `None` removes it.
-    pub(crate) fn set(&mut self, stage: Stage, summary: Option<String>) {
-        self.summaries.insert(stage, summary);
-    }
-
     /// Reads `--summary` or `--clear-summary` and the value after it.
     pub(super) fn parse_option<'a>(
         &mut self,
@@ -71,7 +66,7 @@ impl SummariesUpdate {
     }
 }
 
-/// A run is marked done only with a Finish summary, so a reader can tell what shipped.
+/// A run is marked done only with a Finish summary, so a reader can tell what the run accomplished.
 pub(super) fn check_done(run: &Run) -> Result<(), String> {
     if run
         .summaries
@@ -79,7 +74,7 @@ pub(super) fn check_done(run: &Run) -> Result<(), String> {
         .is_none_or(|text| text.trim().is_empty())
     {
         return Err(
-            "Finish cannot be marked done without a Finish summary; add --summary finish=<what shipped>"
+            "Finish cannot be marked done without a Finish summary; add --summary finish=<summary>"
                 .into(),
         );
     }

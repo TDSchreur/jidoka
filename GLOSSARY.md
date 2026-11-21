@@ -12,7 +12,7 @@
 
 **The line**: The dashboard's list of active runs (every run that is not done), one row each, with a rail of the four Stages that shows where the run is.
 
-**Shipped**: The dashboard's name for a finished run, one with the status `done`. Shipped runs are listed below the line, grouped by day. The CLI, the API and `runs.json` keep the status `done`.
+**Done** means Jidoka ended work on a run. Done runs appear under Completed in the dashboard. The run's completion reason and its pull request state are recorded separately.
 
 **Pull request state**: Whether a run's pull request is open, a draft, merged or closed. The dashboard server reads it from GitHub with `gh` or from Azure Repos with `az`, keeps it on the run and reads it again about once a minute until it is merged. When it cannot be read, it is unknown, with the reason; it is never guessed.
 

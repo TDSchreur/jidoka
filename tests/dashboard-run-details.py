@@ -27,6 +27,7 @@ SHIPPED = {
     "worktree": "/work/shop.worktrees/gift-card-checkout", "base_commit": "9f3c2b7d1e", "branch": "gift-card-checkout",
     "mode": "balanced", "stage": "finish", "status": "done", "updated_at": AT, "activity": "Pull request merged",
     "spec": SPEC, "pr": PR, "pr_status": {"url": PR, "state": "merged", "checked_at": AT},
+    "completion": {"kind": "merged", "url": PR},
     "rework": 1, "current_ticket": None,
     "summaries": {"define": "Gift cards are bought at checkout and redeemed once.", "check": "One review finding fixed."},
     "tickets": [{"reference": T1, "title": "Redeem a card", "status": "done"}, {"reference": T2, "title": "Buy a card", "status": "done"}],
@@ -299,13 +300,38 @@ return {chip, deferred: text(shippedRow), lists, hole: hole.borderTopColor, over
         self.assertTrue(r["overflow"])
         self.assertIn("1234567", r["codes"])
 
+    def test_completion_reason_and_pr_state_are_independent(self):
+        completed = [
+            {**SHIPPED, "id": "ci", "completion": {"kind": "ci", "outcome": "passed", "head": "abc1234"}},
+            {**SHIPPED, "id": "no-ci", "completion": {"kind": "ci", "outcome": "no-ci", "head": "def5678"}},
+            {**SHIPPED, "id": "override", "completion": {"kind": "override", "reason": "CI service unavailable"}},
+        ]
+        for run in completed:
+            run["pr_status"] = {"url": PR, "state": "open", "checked_at": AT}
+        body = """
+const labels = {};
+for (const id of ['ci', 'no-ci', 'override']) {
+  const dialog = await openRun(id);
+  labels[id] = text(dialog.querySelector('.status-row'));
+  await closeRun();
+}
+return labels;
+"""
+        labels = drive(body, runs=completed)
+        self.assertIn("CI passed on abc1234", labels["ci"])
+        self.assertIn("No CI on def5678", labels["no-ci"])
+        self.assertIn("Override (CI service unavailable)", labels["override"])
+        for row in labels.values():
+            self.assertIn("PR #233 open", row)
+
     def stop(self, snapshot, name):
         return next(s for s in snapshot["stops"] if s["name"] == name)
 
     def test_header_leads_with_status_pr_and_spec(self):
         s = self.shipped
         self.assertEqual(s["heading"], "Add a gift card checkout")
-        self.assertIn("Shipped", s["statusRow"])
+        self.assertIn("Done", s["statusRow"])
+        self.assertIn("Completion PR merge observed", s["statusRow"])
         self.assertEqual(s["prLink"], "PR #233")
         self.assertIn("PR #233 merged", s["statusRow"])
         self.assertEqual(s["specLink"], "Spec #230")

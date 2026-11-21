@@ -131,6 +131,9 @@ pub(crate) struct Run {
     /// When the run was marked done; usage after that is not the run's.
     #[serde(default)]
     pub(crate) finished_at: Option<u64>,
+    /// Evidence or an explicit reason for ending the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) completion: Option<Completion>,
     /// Ids of the agent sessions recorded for this run.
     #[serde(default)]
     pub(crate) sessions: Vec<String>,
@@ -147,6 +150,53 @@ pub(crate) struct Run {
         deserialize_with = "routing_or_none"
     )]
     pub(crate) model_routing: Option<ModelRouting>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub(crate) enum Completion {
+    Ci { head: String, outcome: CiOutcome },
+    Merged { url: String },
+    Override { reason: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CiOutcome {
+    Passed,
+    NoCi,
+}
+
+impl CiOutcome {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Passed => "CI passed",
+            Self::NoCi => "No CI",
+        }
+    }
+}
+
+impl Run {
+    /// Completes Finish with evidence, retaining the summary or supplying one for a merge.
+    pub(crate) fn complete(&mut self, completion: Completion) -> Result<(), String> {
+        if self.stage != Stage::Finish || self.status == RunStatus::Done {
+            return Err("Only an unfinished run in Finish can be completed".into());
+        }
+        if matches!(completion, Completion::Merged { .. }) && self.check_finish_summary().is_err() {
+            self.summaries
+                .insert(Stage::Finish, "Pull request merged".into());
+        }
+        self.check_finish_summary()?;
+        self.status = RunStatus::Done;
+        self.completion = Some(completion);
+        self.activity = None;
+        self.blocking_reason = None;
+        Ok(())
+    }
+
+    pub(crate) fn check_finish_summary(&self) -> Result<(), String> {
+        summaries::check_done(self)
+    }
 }
 
 /// Reads a stored selection, treating only the earlier shape (an object with `roles` or `tasks`) as absent.

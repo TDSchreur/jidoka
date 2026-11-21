@@ -1,37 +1,22 @@
 use super::*;
 use crate::test_support::TestDir;
 
-const FINISH_SUMMARY: [&str; 2] = ["--summary", "finish=Shipped"];
-
 #[test]
-fn finish_done_needs_a_finish_summary() {
+fn generic_updates_cannot_complete_finish_with_or_without_a_summary() {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     let run = new_run(&store, "task");
-    let error = store
-        .update(&run.id, parse_update("done", &[]).unwrap())
-        .unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-    assert!(error.to_string().contains("only after Finish"));
-
     store.set_stage(&run.id, Stage::Finish);
-    let error = store
-        .update(&run.id, parse_update("done", &[]).unwrap())
-        .unwrap_err();
-    assert!(error.to_string().contains("--summary finish="));
+    for options in [&[][..], &["--summary", "finish=Completed"][..]] {
+        let error = store
+            .update(&run.id, parse_update("done", options).unwrap())
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("jidoka run advance"));
+    }
     let after = store.get(&run.id).unwrap().unwrap();
     assert!(after.finished_at.is_none() && after.summaries.is_empty());
-
-    let done = store
-        .update(&run.id, parse_update("done", &FINISH_SUMMARY).unwrap())
-        .unwrap()
-        .unwrap();
-    assert!(matches!(done.status, RunStatus::Done));
-    // A summary recorded earlier counts.
-    let again = store
-        .update(&run.id, parse_update("done", &[]).unwrap())
-        .unwrap();
-    assert!(again.is_some());
+    assert!(after.completion.is_none());
 }
 
 #[test]
@@ -190,8 +175,7 @@ fn failed_updates_leave_the_store_unchanged() {
     apply(Stage::Build, "running", &[]);
     apply(Stage::Build, "running", &session);
     apply(Stage::Build, "running", &session);
-    apply(Stage::Finish, "done", &FINISH_SUMMARY);
-    apply(Stage::Finish, "done", &FINISH_SUMMARY);
+    apply(Stage::Finish, "running", &["--summary", "finish=Completed"]);
     assert!(
         store
             .update("999999", UpdateRun::new(RunStatus::Running))
@@ -769,33 +753,37 @@ fn a_mark_records_the_activity_of_the_update_that_created_it() {
 }
 
 #[test]
-fn finishing_a_run_closes_its_window_and_reopening_clears_it() {
+fn finishing_a_run_closes_its_window_and_an_update_cannot_reopen_it() {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     let run = new_run(&store, "task");
     store.set_stage(&run.id, Stage::Finish);
-    let done = store
-        .update(&run.id, parse_update("done", &FINISH_SUMMARY).unwrap())
-        .unwrap()
-        .unwrap();
-    let end = done.finished_at.expect("closed when done");
-    let again = store
+    store
         .update(
             &run.id,
-            parse_update("done", &["--summary", "finish=Shipped", "--activity", "x"]).unwrap(),
+            parse_update(
+                "running",
+                &["--mode", "fast", "--summary", "finish=Completed"],
+            )
+            .unwrap(),
         )
-        .unwrap()
         .unwrap();
-    assert_eq!(
-        again.finished_at,
-        Some(end),
-        "a second done update keeps the first end"
+    store
+        .change_gate(&run.id, |run| {
+            crate::run_gate::advance_forced(run, "CI service unavailable")
+        })
+        .unwrap();
+    let done = store.get(&run.id).unwrap().unwrap();
+    assert!(done.finished_at.is_some());
+    assert!(
+        store
+            .update(&run.id, parse_update("running", &[]).unwrap())
+            .is_err()
     );
-    let reopened = store
-        .update(&run.id, parse_update("running", &[]).unwrap())
-        .unwrap()
-        .unwrap();
-    assert_eq!(reopened.finished_at, None);
+    assert_eq!(
+        store.get(&run.id).unwrap().unwrap().finished_at,
+        done.finished_at
+    );
 }
 
 #[test]

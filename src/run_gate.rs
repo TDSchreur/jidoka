@@ -4,8 +4,8 @@ use crate::{
     pr_sync::Git,
     pr_wait,
     run::{
-        MAX_REPORTS_PER_RUN, MAX_TEXT_BYTES, ReportKind, Run, RunReport, RunStatus, Stage,
-        TicketStatus, updated_now,
+        CiOutcome, Completion, MAX_REPORTS_PER_RUN, MAX_TEXT_BYTES, ReportKind, Run, RunReport,
+        RunStatus, Stage, TicketStatus, updated_now,
     },
     stages::{self, Destination, Gate},
 };
@@ -252,6 +252,9 @@ fn advance_with_clock(
 ) -> Result<(), String> {
     let mode = run.mode.ok_or("Record the run's mode first")?;
     let transition = stages::next(mode, run.stage, run.status)?;
+    if transition.to == Destination::Done {
+        run.check_finish_summary()?;
+    }
     let mut failures = Vec::new();
     let check_head = if run.stage == Stage::Check {
         Some(head(run, git)?)
@@ -340,25 +343,35 @@ fn advance_with_clock(
     if let Some(selection) = selection {
         record_snapshot(run, &selection)?;
     }
-    if let Some((evidence, commit)) = ci_evidence {
+    if transition.to == Destination::Done {
+        let (outcome, commit, pr_status) = ci_evidence.ok_or("CI evidence is missing")?;
         if run.gates.len() >= MAX_GATE_RESULTS {
             return Err(format!(
                 "A run can hold at most {MAX_GATE_RESULTS} gate results"
             ));
         }
+        let short: String = commit.chars().take(7).collect();
+        let evidence = format!("{} on {short}", outcome.label());
         run.gates.push(GateResult {
             gate: Gate::CiPassed,
             stage: run.stage,
             rework: run.rework,
             passed: true,
             evidence: Some(evidence),
-            commit: Some(commit),
+            commit: Some(commit.clone()),
             ticket: None,
             check: None,
             skipped_checks: vec![],
         });
+        run.complete(Completion::Ci {
+            head: commit,
+            outcome,
+        })?;
+        run.pr_status = Some(pr_status);
     }
-    apply(run, transition.to);
+    if let Destination::Stage(stage) = transition.to {
+        run.stage = stage;
+    }
     Ok(())
 }
 
@@ -373,13 +386,6 @@ fn record_snapshot(run: &mut Run, selection: &crate::checks::Selection) -> Resul
         skipped: skipped_snapshot(selection),
     });
     Ok(())
-}
-
-fn apply(run: &mut Run, to: Destination) {
-    match to {
-        Destination::Stage(stage) => run.stage = stage,
-        Destination::Done => run.status = RunStatus::Done,
-    }
 }
 
 /// The body of `POST /api/runs/<id>/advance`: an optional forced advance with the reason for it.
@@ -462,6 +468,10 @@ pub(crate) fn parse_advance_options(options: &[&str]) -> Result<AdvanceOptions, 
 pub(crate) fn advance_forced(run: &mut Run, reason: &str) -> Result<(), String> {
     let mode = run.mode.ok_or("Record the run's mode first")?;
     let transition = stages::next(mode, run.stage, run.status)?;
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err("Provide a reason for the forced advance".into());
+    }
     let text = format!("Forced advance from {}: {reason}", run.stage.name());
     if text.len() > MAX_TEXT_BYTES || text.chars().any(char::is_control) {
         return Err(format!(
@@ -473,13 +483,20 @@ pub(crate) fn advance_forced(run: &mut Run, reason: &str) -> Result<(), String> 
             "A run can hold at most {MAX_REPORTS_PER_RUN} run reports"
         ));
     }
+    let at = updated_now().map_err(|error| format!("Could not read the time: {error}"))?;
+    let from = run.stage;
+    match transition.to {
+        Destination::Stage(stage) => run.stage = stage,
+        Destination::Done => run.complete(Completion::Override {
+            reason: reason.into(),
+        })?,
+    }
     run.run_reports.push(RunReport {
         kind: ReportKind::Activity,
         text,
-        stage: run.stage,
-        at: updated_now().map_err(|error| format!("Could not read the time: {error}"))?,
+        stage: from,
+        at,
     });
-    apply(run, transition.to);
     Ok(())
 }
 
@@ -507,8 +524,9 @@ fn ci_passed(
     git: &dyn Git,
     tool: &dyn pr_wait::Gh,
     clock: &dyn pr_wait::Clock,
-) -> Result<(String, String), String> {
+) -> Result<(CiOutcome, String, pr_state::PrStatus), String> {
     let url = run.pr.as_deref().ok_or("No pull request is recorded")?;
+    let checked_at = updated_now().map_err(|error| format!("Could not read the time: {error}"))?;
     let state = pr_state::read(tool, url)
         .map_err(|error| format!("Could not read pull request state: {}", error.0))?;
     require(
@@ -537,20 +555,25 @@ fn ci_passed(
         result.head == commit,
         "The pull request head does not match the worktree HEAD",
     )?;
-    require(
-        matches!(
-            result.outcome,
-            pr_wait::Outcome::Passed | pr_wait::Outcome::NoCi
-        ),
-        &format!("CI outcome is {:?}", result.outcome),
-    )?;
-    let short: String = commit.chars().take(7).collect();
-    let evidence = if result.outcome == pr_wait::Outcome::Passed {
-        format!("CI passed on {short}")
-    } else {
-        format!("No CI on {short}")
+    let outcome = match result.outcome {
+        pr_wait::Outcome::Passed => CiOutcome::Passed,
+        pr_wait::Outcome::NoCi => CiOutcome::NoCi,
+        other => return Err(format!("CI outcome is {other:?}")),
     };
-    Ok((evidence, commit))
+    require(
+        head(run, git)? == commit,
+        "The worktree HEAD changed while checking CI; try again",
+    )?;
+    Ok((
+        outcome,
+        commit,
+        pr_state::PrStatus {
+            url: url.into(),
+            state,
+            reason: None,
+            checked_at,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -595,6 +618,8 @@ mod tests {
         run.worktree = Some("/work".into());
         run.base_commit = Some("abc1234".into());
         run.pr = Some("https://github.com/o/r/pull/7".into());
+        run.summaries
+            .insert(Stage::Finish, "Implemented the task".into());
         run
     }
     fn result(gate: Gate, passed: bool) -> Record {
@@ -964,14 +989,73 @@ mod tests {
     }
 
     #[test]
-    fn advancing_out_of_finish_stores_the_ci_result() {
+    fn finish_requires_a_summary_even_when_forced() {
         let git = FakeGit(RefCell::new("abc1234".into()));
         let mut run = run(Stage::Finish);
-        advance(&mut run, &git, &host()).unwrap();
+        run.summaries.insert(Stage::Finish, "  ".into());
+        assert!(
+            advance(&mut run, &git, &host())
+                .unwrap_err()
+                .contains("--summary finish=")
+        );
+        assert!(advance_forced(&mut run, "CI service unavailable").is_err());
+        assert_eq!(run.status, RunStatus::Running);
+        assert!(run.run_reports.is_empty());
+        assert!(run.gates.is_empty());
+
+        run.summaries
+            .insert(Stage::Finish, "Implemented the task".into());
+        advance_forced(&mut run, "CI service unavailable").unwrap();
+        assert_eq!(run.status, RunStatus::Done);
+        assert_eq!(
+            run.completion,
+            Some(Completion::Override {
+                reason: "CI service unavailable".into()
+            })
+        );
+        assert!(run.gates.is_empty());
+    }
+
+    #[test]
+    fn advancing_out_of_finish_stores_the_ci_result() {
+        let git = FakeGit(RefCell::new("abc1234".into()));
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("runs.json");
+        let initial = run(Stage::Finish);
+        std::fs::write(&path, serde_json::to_vec(&vec![initial]).unwrap()).unwrap();
+        let store = crate::run::RunStore::open(&path).unwrap();
+        store
+            .change_gate("1", |run| advance(run, &git, &host()))
+            .unwrap();
+        let run = store.get("1").unwrap().unwrap();
         let stored = run.gates.iter().find(|r| r.gate == Gate::CiPassed).unwrap();
         assert!(stored.passed);
         assert_eq!(stored.stage, Stage::Finish);
         assert_eq!(stored.evidence.as_deref(), Some("CI passed on abc1234"));
+        assert_eq!(
+            run.completion,
+            Some(Completion::Ci {
+                head: "abc1234".into(),
+                outcome: CiOutcome::Passed
+            })
+        );
+        assert_eq!(
+            run.pr_status.as_ref().map(|status| status.state),
+            Some(pr_state::PrState::Open)
+        );
+        assert!(crate::inspect::render(&run).contains("CI passed on abc1234"));
+        assert!(crate::inspect::render(&run).contains("PR state      open"));
+        let mut merged = run.pr_status.clone().unwrap();
+        merged.state = pr_state::PrState::Merged;
+        store.record_pr_result("1", merged).unwrap();
+        let reopened = crate::run::RunStore::open(&path).unwrap();
+        let after_merge = reopened.get("1").unwrap().unwrap();
+        assert_eq!(after_merge.completion, run.completion);
+        assert_eq!(after_merge.finished_at, run.finished_at);
+        assert_eq!(
+            after_merge.pr_status.unwrap().state,
+            pr_state::PrState::Merged
+        );
     }
 
     #[test]
@@ -985,6 +1069,13 @@ mod tests {
         advance_with_clock(&mut no_ci_run, &git, &no_checks, &clock).unwrap();
         assert!(clock.0.get() >= Duration::from_secs(90));
         assert_eq!(no_ci_run.status, RunStatus::Done);
+        assert_eq!(
+            no_ci_run.completion,
+            Some(Completion::Ci {
+                head: "abc1234".into(),
+                outcome: CiOutcome::NoCi
+            })
+        );
 
         let clock = Clock::default();
         let late_failure = AppearingChecks {

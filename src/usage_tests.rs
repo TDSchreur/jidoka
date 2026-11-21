@@ -953,9 +953,6 @@ mod auto_block {
 
         fn agent_update(&self, status: RunStatus, reason: Option<&str>) {
             let mut update = UpdateRun::new(status);
-            if status == RunStatus::Done {
-                update.summaries.set(Stage::Finish, Some("Shipped".into()));
-            }
             if let Some(reason) = reason {
                 update.blocking_reason = FieldUpdate::Set(reason.into());
             }
@@ -1157,7 +1154,21 @@ mod auto_block {
         // Done runs are not collected at all.
         let done = Fixture::new();
         done.store.set_stage(&done.id, Stage::Finish);
-        done.agent_update(RunStatus::Done, None);
+        done.store
+            .update(
+                &done.id,
+                crate::run::parse_update(
+                    "running",
+                    &["--mode", "fast", "--summary", "finish=Completed"],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        done.store
+            .change_gate(&done.id, |run| {
+                crate::run_gate::advance_forced(run, "CI service unavailable")
+            })
+            .unwrap();
         collect_active(&done.store, &done.settings, now).unwrap();
         assert!(done.run().usage.is_none());
     }

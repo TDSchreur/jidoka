@@ -237,12 +237,6 @@ pub(crate) fn stage_gates(run: &Run) -> Vec<StageGates> {
                     let result = run.gates.iter().rev().find(|r| {
                         r.stage == stage && r.gate == gate && (!current || r.rework == run.rework)
                     });
-                    let merged = run.status == RunStatus::Done
-                        && run
-                            .pr_status
-                            .as_ref()
-                            .is_some_and(|status| status.state == crate::pr_state::PrState::Merged);
-                    let mut merged_evidence = None;
                     let status = if current {
                         if open_gates.iter().any(|g| g.name == gate) {
                             if result.is_some_and(|r| !r.passed) {
@@ -274,9 +268,6 @@ pub(crate) fn stage_gates(run: &Run) -> Vec<StageGates> {
                         && run.tickets.iter().all(|t| t.status == TicketStatus::Done)
                     {
                         "recorded-pass"
-                    } else if gate == Gate::CiPassed && merged {
-                        merged_evidence = Some("Pull request merged".to_owned());
-                        "recorded-pass"
                     } else {
                         "unknown"
                     };
@@ -287,7 +278,7 @@ pub(crate) fn stage_gates(run: &Run) -> Vec<StageGates> {
                         evidence: if gate == Gate::ChecksRecorded && !current {
                             None
                         } else {
-                            result.and_then(|r| r.evidence.clone()).or(merged_evidence)
+                            result.and_then(|r| r.evidence.clone())
                         },
                         rework: result.and_then(|r| r.rework),
                     }
