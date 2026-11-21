@@ -57,11 +57,14 @@ const fn openai(short: Rates, long: Option<Rates>) -> Price {
 /// estimate at API list prices, not what a ChatGPT/Codex or Claude subscription is charged.
 ///
 /// Claude source: Anthropic's published API prices, as given in the claude-api skill's pricing reference
-/// (model table, models guide and prompt-caching guide), read on 2026-11-08. Cache reads are listed
-/// explicitly for Fable 5.1 ($0.25), Opus 5.5 and Sonnet 5.5 ($0.20). The claude-opus-4-8 cache prices are
+/// (model table, models guide and prompt-caching guide), read on 2026-11-21. Cache reads are listed
+/// explicitly for Fable 5.1 ($0.25), Fable 5.2 ($0.20), Opus 5.5 ($0.20) and Sonnet 5.5 ($0.10). The claude-opus-4-8 cache prices are
 /// derived from Anthropic's documented multipliers: 0.1x input for a cache read, 1.25x input for a
-/// 5-minute cache write. Other cache writes are the documented 1.25x input price. Haiku 5.5 is left out
-/// (its reference lists tiered input/output prices and no cache prices). Claude prices have no long tier.
+/// 5-minute cache write. Other cache writes are the documented 1.25x input price. Haiku 5.5 lists no cache
+/// prices, so its cache read is 0.1x and its cache write 1.25x of the input price. Haiku 5.5 is priced at its
+/// up-to-100K-token tier only ($0.10 in, $0.50 out; $0.50 and $2.50 beyond 100K): the stored long-context split
+/// uses one threshold for every model, so requests above 100K input tokens are underestimated (ADR-0022).
+/// Claude prices have no long tier.
 ///
 /// OpenAI source: the Standard tier of https://developers.openai.com/api/docs/pricing (input, cached input,
 /// output) and https://developers.openai.com/api/docs/guides/reasoning (reasoning tokens are billed as
@@ -73,8 +76,10 @@ const fn openai(short: Rates, long: Option<Rates>) -> Price {
 /// codex-mini-latest) are unknown; Priority, Flex, Batch and regional uplifts are not applied.
 pub(crate) const PRICES: &[(&str, Price)] = &[
     ("claude-fable-5-1", price(10.0, 50.0, 0.25, 12.5)),
+    ("claude-fable-5-2", price(8.0, 40.0, 0.20, 10.0)),
     ("claude-opus-5-5", price(4.0, 20.0, 0.20, 5.0)),
-    ("claude-sonnet-5-5", price(2.0, 10.0, 0.20, 2.5)),
+    ("claude-sonnet-5-5", price(2.0, 10.0, 0.10, 2.5)),
+    ("claude-haiku-5-5", price(0.10, 0.50, 0.01, 0.125)),
     ("claude-opus-4-8", price(5.0, 25.0, 0.50, 6.25)),
     (
         "gpt-6-1-terra",
@@ -485,6 +490,13 @@ mod tests {
         assert!(lookup(table, "claude-m-5.5").is_some());
         assert!(lookup(table, "claude-m-5-5").is_some());
         assert!(lookup(table, "claude-m-5.6").is_none());
+    }
+
+    #[test]
+    fn built_in_prices_cover_haiku_5_5_and_fable_5_2() {
+        for model in ["claude-haiku-5-5", "claude-fable-5-2"] {
+            assert!(lookup(PRICES, model).is_some(), "{model}");
+        }
     }
 
     #[test]
