@@ -30,7 +30,21 @@ fn an_older_record_refreshes_the_skills_with_one_stderr_line_and_no_stdout() {
         r#"{"version":"0.0.1","agents":["claude"],"claude_config_dirs":[]}"#,
     )
     .unwrap();
+    let policy = record.with_file_name("model-routing.json");
+    std::fs::write(&policy, "custom policy").unwrap();
     let before = jidoka(home.path(), &["run", "inspect", "x"]);
+    let routing: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&policy).unwrap()).unwrap();
+    assert_eq!(
+        routing["agents"]["codex"]["stages"]["define"]["model"],
+        "gpt-6.2-sol"
+    );
+    assert_eq!(
+        routing["agents"]["codex"]["stages"]["check"]["model"],
+        "gpt-6.2-astra"
+    );
+    assert!(routing["agents"]["claude"].is_object());
+    assert!(routing["agents"]["copilot"].is_object());
     let stderr = String::from_utf8_lossy(&before.stderr);
     let expected = format!(
         "jidoka: updated skills to {} for claude",
