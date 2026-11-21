@@ -1,1 +1,3 @@
-The run detail sheet is wider on screens of 1280 px and up and shows two columns: the route on the left and a sticky column with the stage gates, check selection and model routing on the right. Narrower sheets keep one column, with that information above the route.
+The run detail sheet is wider on screens of 1280 px and up and shows two columns: the route on the left and a sticky column with the change group, stage gates, check selection and model routing on the right. Narrower sheets keep one column, with that information above the route. The facts sections share one heading size and spacing.
+
+A run in a change group now shows a "Change group" section in that column instead of a "Group:" line under the title: the group's title, summary and spec, its runs with repository and pull request state, what this run waits on and its milestones. A run of the group that is on this dashboard opens its own sheet from there.

@@ -703,8 +703,50 @@ function CheckPrButton({ run, onSynced }) {
   </span>`;
 }
 
+/** The change group a Run belongs to: its runs (those on this dashboard open their own sheet), what this run waits on and its milestones. */
+function DetailGroup({ group, run, runs, now, onOpenRun }) {
+  const mine = group.members.find((member) => member.run === run.id);
+  const dependencies = mine?.dependencies ?? [];
+  const milestones = (group.milestones ?? []).filter((milestone) => milestone.runs?.includes(run.id));
+  return html`<section class="detail-group" aria-labelledby="detail-group-heading">
+    <h3 id="detail-group-heading">Change group</h3>
+    <p class="detail-group-title">${group.title}</p>
+    ${group.summary ? html`<p class="detail-group-meta">${group.summary}</p>` : null}
+    <p class="detail-group-meta">Spec: <${LinkOrText} value=${group.spec} /></p>
+    <h4>Runs</h4>
+    <ul class="detail-group-runs">
+      ${group.members.map((member) => {
+        const [state, style] = memberPrState(member);
+        const name = member.missing ? `Run ${member.run}` : member.title;
+        const here = member.run === run.id;
+        const other = here ? null : runs.find((candidate) => candidate.id === member.run);
+        return html`<li key=${member.run}>
+          ${other ? html`<button type="button" class="link" onClick=${() => onOpenRun(other)}>${name}</button>` : html`<strong>${name}</strong>`}${here ? ' (this run)' : null}
+          ${member.repository ? html`${' '}<span class="group-repo"><${ProjectName} path=${member.repository} /></span>` : null}
+          ${' '}<span class=${`pr-state ${style}`}>${state}</span>
+        </li>`;
+      })}
+    </ul>
+    ${dependencies.length
+      ? html`<h4>This run waits on</h4>
+          <ul class="detail-group-list">
+            ${dependencies.map((dep) => {
+              const at = typeof dep.checked_at === 'number' ? dep.checked_at : null;
+              return html`<li key=${dep.id}>${dep.description}: ${dep.status}, <strong>${dep.cleared ? 'cleared' : 'pending'}</strong>${at !== null ? html`${' '}(last checked <${SheetTime} at=${at} now=${now} />)` : null}</li>`;
+            })}
+          </ul>`
+      : null}
+    ${milestones.length
+      ? html`<h4>Milestones</h4>
+          <ul class="detail-group-list">
+            ${milestones.map((milestone) => html`<li key=${milestone.id}>${milestone.text}: <strong>${milestone.confirmed ? 'confirmed' : 'pending'}</strong></li>`)}
+          </ul>`
+      : null}
+  </section>`;
+}
+
 /** The Run's route card in a native modal dialog on the right. The browser handles focus containment and Escape. */
-function Detail({ run, now, onClose, onDelete, onSynced, group }) {
+function Detail({ run, runs, now, onClose, onDelete, onSynced, onOpenRun, group }) {
   const [gateData, setGateData] = useState(null);
   useEffect(() => {
     let active = true;
@@ -781,7 +823,6 @@ function Detail({ run, now, onClose, onDelete, onSynced, group }) {
       <p class="detail-sub">
         <span><${ProjectName} path=${projectOf(run)} /></span>
         ${run.mode ? html`<span>${run.mode}</span>` : null}
-        ${group ? html`<span>Group: ${group}</span>` : null}
         ${run.branch ? html`<span class="branch"><code>${run.branch}</code><${CopyButton} value=${run.branch} what="branch" /></span>` : null}
       </p>
       ${active && run.activity ? html`<p class="detail-activity">${run.activity}</p>` : null}
@@ -797,7 +838,8 @@ function Detail({ run, now, onClose, onDelete, onSynced, group }) {
         ${blocked && run.blocking_reason ? html`<p class="status-reason">${run.blocking_reason}</p>` : null}
       </div>
       <div class="detail-layout">
-        ${hasFacts ? html`<aside class="detail-facts" aria-label="Run facts">
+        ${hasFacts || group ? html`<aside class="detail-facts" aria-label="Run facts">
+          ${group ? html`<${DetailGroup} group=${group} run=${run} runs=${runs} now=${now} onOpenRun=${onOpenRun} />` : null}
           ${Array.isArray(gateData?.stage_gates) && gateData.stage_gates.some((stage) => stage.gates.length) ? html`
             <section class="stage-gates" aria-labelledby="gate-heading">
               <h3 id="gate-heading">Stage gates</h3>
@@ -1386,6 +1428,7 @@ function App() {
   const groups = useGroups();
   // Which group each run is in, to name it on the run's row and detail.
   const groupOf = new Map((groups ?? []).flatMap((group) => group.members.map((member) => [member.run, group.title])));
+  const groupById = new Map((groups ?? []).flatMap((group) => group.members.map((member) => [member.run, group])));
   useReloadOnNewServer();
   const now = useNow();
   const [onlyWaiting, setOnlyWaiting] = useState(false);
@@ -1479,6 +1522,11 @@ function App() {
     setOpenKey(key);
   };
   const close = () => setOpenKey(null);
+  // Another run's sheet from inside this one: focus goes back to the control that opened the first sheet.
+  const switchTo = (run) => {
+    lastOpened.current = runKey(run);
+    setOpenKey(runKey(run));
+  };
   useEffect(() => {
     // The Run is no longer listed: close the detail, so it does not come back if the Run returns.
     if (openKey !== null && runs && !openRun) setOpenKey(null);
@@ -1598,11 +1646,13 @@ function App() {
         ? html`<${Detail}
             key=${runKey(openRun)}
             run=${openRun}
+            runs=${runs}
             now=${now}
             onClose=${close}
             onDelete=${(run) => setPending({ runs: [run] })}
             onSynced=${reload}
-            group=${groupOf.get(openRun.id)}
+            onOpenRun=${switchTo}
+            group=${groupById.get(openRun.id)}
           />`
         : null}
     </main>
