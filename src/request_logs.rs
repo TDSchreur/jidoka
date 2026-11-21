@@ -5,16 +5,12 @@
 //! tool calls. The command text is dropped as soon as it is classified: nothing but categories, flags and
 //! counts leaves this module.
 
-use crate::{
-    agent_logs::{ReadLimits, RunWindow, read_claude},
-    usage::Tokens,
-};
+use crate::{agent_logs::LogRead, usage::Tokens};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     path::Path,
-    time::Instant,
 };
 
 pub(crate) const MAX_COMMAND_BYTES: usize = 64 * 1024;
@@ -95,15 +91,8 @@ pub(crate) struct RequestRead {
     pub(crate) truncated: bool,
 }
 
-/// Reads the Claude Code logs under `root` through the agent log module and gives each response its
-/// category.
-pub(crate) fn read_requests(
-    root: &Path,
-    window: &RunWindow,
-    deadline: Instant,
-    limits: ReadLimits,
-) -> RequestRead {
-    let read = read_claude(root, window, deadline, limits);
+/// The requests of what an adapter read: each response gets its category.
+pub(crate) fn requests_from(read: LogRead) -> RequestRead {
     let sessions = read
         .sessions
         .into_iter()

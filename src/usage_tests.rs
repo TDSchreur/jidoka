@@ -746,6 +746,31 @@ fn a_usage_limit_with_no_later_activity_is_an_unresumed_pause_and_is_not_a_model
 }
 
 #[test]
+fn a_recorded_codex_log_that_is_too_large_gets_a_note() {
+    let world = World::new();
+    let path = world
+        .dir
+        .path()
+        .join("codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-cdx1.jsonl");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // A sparse file: larger than the reader's limit without writing it.
+    fs::File::create(path)
+        .unwrap()
+        .set_len(65 * 1024 * 1024)
+        .unwrap();
+    let target = run(RUN_A, &[(0, "build", None, None)], None, &["cdx1"]);
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert!(
+        usage
+            .notes
+            .iter()
+            .any(|note| note.contains("larger than 64 MiB")),
+        "{:?}",
+        usage.notes
+    );
+}
+
+#[test]
 fn a_virtual_tool_call_line_is_skipped_without_a_note_and_real_responses_still_count() {
     let virtual_line = json!({"type": "assistant", "isVirtual": true, "isApiErrorMessage": false, "timestamp": iso(15),
         "message": {"model": "<synthetic>", "content": [{"type": "tool_use", "name": "Bash"}],

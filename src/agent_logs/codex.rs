@@ -1,27 +1,11 @@
-//! Reads the model requests of Codex rollout files for `jidoka run requests`.
+//! The Codex adapter: rollout files under `sessions/<year>/<month>/<day>/rollout-*.jsonl`, and the rollouts of
+//! a session's subagents, which name their root session.
 //!
-//! Like the Claude Code reader, it keeps of each request only the time, the token counts and a category
-//! taken from its commands; of each session, the runs that an executed `jidoka run update <id>` names.
-//! Codex runs commands through a small JavaScript snippet (`tools.exec_command({cmd: "..."})`). The snippet
-//! is scanned for string literals and never run. The command text, tool output and paths are dropped as
-//! soon as they are classified: nothing but categories, flags and counts leaves this module.
+//! Codex runs commands through a small JavaScript snippet (`tools.exec_command({cmd: "..."})`). The snippet is
+//! scanned for string literals and never run. The command text is handed on only to be classified.
 
-use crate::{
-    agent_logs::{
-        DAY_MS, LogFile, MTIME_SLACK_MS, ReadLimits, civil_day, codex_meta, codex_tokens, files_in,
-        has_token_counts, merge_largest, modified_ms, read_text, sub_dirs, timestamp,
-    },
-    request_logs::{
-        MAX_COMMAND_BYTES, Request, RequestRead, SessionRequests, Variables, classify,
-        result_bytes, run_claims, truncate,
-    },
-};
-use serde_json::Value;
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    path::{Path, PathBuf},
-    time::Instant,
-};
+use super::*;
+use crate::request_logs::MAX_COMMAND_BYTES;
 
 /// The most of one JavaScript snippet that is read. A patch can carry whole files.
 const MAX_SNIPPET_CHARS: usize = 256 * 1024;
@@ -409,157 +393,303 @@ pub(crate) fn codex_claims(text: &str, ids: &HashSet<&str>) -> HashSet<String> {
     claims
 }
 
+/// The ids on a rollout's `session_meta` line. A rollout of a subagent has its own id and the id of the
+/// root session it belongs to.
+pub(crate) fn codex_meta(text: &str) -> Option<(String, String, bool)> {
+    let line = text
+        .lines()
+        .find(|line| line.contains("\"session_meta\""))?;
+    let data: Value = serde_json::from_str(line).ok()?;
+    let payload = data.get("payload")?;
+    let id = payload.get("id")?.as_str()?.to_string();
+    let root = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or(&id)
+        .to_string();
+    let subagent = payload
+        .pointer("/source/subagent")
+        .is_some_and(|v| !v.is_null() && *v != Value::Bool(false))
+        || payload["thread_source"] == "subagent"
+        || root != id;
+    Some((id, root, subagent))
+}
+
+/// What a Codex `turn_context` line says about the model and effort of a turn.
+#[derive(Clone)]
+struct TurnSettings {
+    model: String,
+    effort: Option<String>,
+}
+
+/// Whether a `token_usage_record` usage object reports any input or output count.
+pub(crate) fn has_token_counts(usage: &Value) -> bool {
+    usage.is_object()
+        && (count(usage.get("input_tokens")).is_some()
+            || count(usage.get("output_tokens")).is_some())
+}
+
+/// The token counts of a Codex `token_usage_record`. Codex counts cached input inside `input_tokens`; the
+/// cached part is moved to cache read, and cache writes are taken out of input too.
+pub(crate) fn codex_tokens(usage: &Value) -> Tokens {
+    let (input, cached, written) = (
+        count(usage.get("input_tokens")),
+        count(usage.get("cached_input_tokens")),
+        count(usage.get("cache_write_input_tokens")),
+    );
+    Tokens {
+        input: input.map(|n| {
+            n.saturating_sub(cached.unwrap_or(0))
+                .saturating_sub(written.unwrap_or(0))
+        }),
+        cache_read: cached,
+        cache_write: written,
+        output: count(usage.get("output_tokens")),
+        reasoning: count(usage.get("reasoning_output_tokens")),
+    }
+}
+
+/// The skills a Codex rollout shows used: tool calls whose command reads a `<name>/SKILL.md`. Tool output
+/// and the session's own instructions mention skill files too, so only the calls are looked at.
+fn codex_skills(text: &str, parsed: &mut LogUsage) {
+    for line in text.lines().filter(|line| line.contains("SKILL.md")) {
+        let Ok(data) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let payload = &data["payload"];
+        if !matches!(
+            payload["type"].as_str(),
+            Some("function_call" | "custom_tool_call")
+        ) {
+            continue;
+        }
+        let Some(ts) = timestamp(data.get("timestamp")) else {
+            continue;
+        };
+        // A call's command is its `arguments` (a JSON string) or, for a custom tool, its `input`.
+        let command = payload["arguments"]
+            .as_str()
+            .or_else(|| payload["input"].as_str())
+            .unwrap_or_default();
+        parsed
+            .skills
+            .extend(skills_read_by(command).into_iter().map(|name| (ts, name)));
+    }
+}
+
+// --- the rollout files ------------------------------------------------------------------------------
+
 /// What one rollout file gave.
-struct Rollout {
-    /// The responses, by key.
-    requests: Vec<(String, Request)>,
-    /// The run ids an executed `jidoka run update` in this rollout names.
+#[derive(Default)]
+struct CodexLog {
+    /// The responses and their keys.
+    responses: Vec<(String, Response)>,
+    /// The run ids an executed Jidoka command in this rollout names.
     claims: HashSet<String>,
-    malformed: usize,
+    skipped: Skipped,
+    skills: Vec<(u64, String)>,
+}
+
+/// Adds one `response_item` to the open response: a call, or the result of an earlier call.
+fn response_item(
+    payload: &Value,
+    open: &mut Open,
+    open_calls: &mut HashSet<String>,
+    owners: &mut HashMap<String, usize>,
+    log: &mut CodexLog,
+) {
+    match payload["type"].as_str() {
+        Some("custom_tool_call") => {
+            open.any_tool = true;
+            if let Some(call) = payload["call_id"].as_str() {
+                open_calls.insert(call.to_string());
+            }
+            if payload["name"] == "exec" {
+                let snippet = read_snippet(payload["input"].as_str().unwrap_or(""));
+                open.commands.extend(snippet.commands);
+                open.other_tool |= snippet.other_tool;
+            } else {
+                open.other_tool = true;
+            }
+        }
+        Some("function_call") => {
+            open.any_tool = true;
+            open.other_tool = true;
+            if let Some(call) = payload["call_id"].as_str() {
+                open_calls.insert(call.to_string());
+            }
+        }
+        Some("custom_tool_call_output" | "function_call_output") => {
+            let Some(call) = payload["call_id"].as_str() else {
+                return;
+            };
+            let bytes = result_bytes(&payload["output"]);
+            if open_calls.remove(call) {
+                open.tool_output_bytes = open.tool_output_bytes.saturating_add(bytes);
+            } else if let Some(index) = owners.remove(call)
+                && let Some((_, response)) = log.responses.get_mut(index)
+            {
+                response.tool_output_bytes = Some(
+                    response
+                        .tool_output_bytes
+                        .unwrap_or(0)
+                        .saturating_add(bytes),
+                );
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Reads the responses of one rollout. A response ends at its `token_usage_record`; the calls since the
 /// previous record or the start of the turn belong to it, and their results, which come after it, are added
-/// to it by `call_id`.
-fn parse_rollout(text: &str, session: &str, subagent: bool, ids: &HashSet<&str>) -> Rollout {
-    let mut rollout = Rollout {
-        requests: Vec::new(),
-        claims: HashSet::new(),
-        malformed: 0,
-    };
+/// to it by `call_id`. Its model and effort come from the `turn_context` of its turn. Reasoning tokens are
+/// part of output; see `codex_tokens` for how the counts are split.
+fn parse_codex(text: &str, session: &str, subagent: bool, ids: &HashSet<&str>) -> CodexLog {
+    const MARKERS: [&str; 4] = [
+        "\"response_item\"",
+        "\"token_usage_record\"",
+        "\"task_started\"",
+        "\"turn_context\"",
+    ];
+    let mut log = CodexLog::default();
     if !subagent {
-        rollout.claims = codex_claims(text, ids);
+        log.claims = codex_claims(text, ids);
     }
     let mut open = Open::default();
-    // The calls of the open response, and the index in `requests` of a closed response that made a call.
+    // The calls of the open response, and the index in `responses` of a closed response that made a call.
     let mut open_calls: HashSet<String> = HashSet::new();
     let mut owners: HashMap<String, usize> = HashMap::new();
-    for (number, line) in text.lines().enumerate().filter(|(_, line)| {
-        line.contains("\"response_item\"")
-            || line.contains("\"token_usage_record\"")
-            || line.contains("\"task_started\"")
-    }) {
+    let mut by_turn: BTreeMap<String, TurnSettings> = BTreeMap::new();
+    let mut last: Option<TurnSettings> = None;
+    for (number, line) in text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| MARKERS.iter().any(|marker| line.contains(marker)))
+    {
         let Ok(data) = serde_json::from_str::<Value>(line) else {
-            rollout.malformed += 1;
+            log.skipped.malformed += 1;
             continue;
         };
         let payload = &data["payload"];
         match data["type"].as_str() {
+            Some("turn_context") => {
+                if let Some(model) = model_name(&payload["model"]) {
+                    // The effort belongs to the same turn as the model.
+                    let settings = TurnSettings {
+                        model,
+                        effort: effort_name(&payload["effort"]),
+                    };
+                    if let Some(turn) = payload["turn_id"].as_str() {
+                        by_turn.insert(turn.to_string(), settings.clone());
+                    }
+                    last = Some(settings);
+                }
+            }
             // A turn starts. Calls still open belong to no response: a subagent rollout opens with a copy
             // of its parent's history, which has calls and results but no token records.
             Some("event_msg") if payload["type"] == "task_started" => {
                 open = Open::default();
                 open_calls.clear();
             }
-            Some("response_item") => match payload["type"].as_str() {
-                Some("custom_tool_call") => {
-                    open.any_tool = true;
-                    if let Some(call) = payload["call_id"].as_str() {
-                        open_calls.insert(call.to_string());
-                    }
-                    if payload["name"] == "exec" {
-                        let snippet = read_snippet(payload["input"].as_str().unwrap_or(""));
-                        for command in snippet.commands {
-                            open.commands.push(command);
-                        }
-                        open.other_tool |= snippet.other_tool;
-                    } else {
-                        open.other_tool = true;
-                    }
-                }
-                Some("function_call") => {
-                    open.any_tool = true;
-                    open.other_tool = true;
-                    if let Some(call) = payload["call_id"].as_str() {
-                        open_calls.insert(call.to_string());
-                    }
-                }
-                Some("custom_tool_call_output" | "function_call_output") => {
-                    let Some(call) = payload["call_id"].as_str() else {
-                        continue;
-                    };
-                    let bytes = result_bytes(&payload["output"]);
-                    if open_calls.remove(call) {
-                        open.tool_output_bytes = open.tool_output_bytes.saturating_add(bytes);
-                    } else if let Some(index) = owners.remove(call)
-                        && let Some((_, request)) = rollout.requests.get_mut(index)
-                    {
-                        request.tool_output_bytes =
-                            Some(request.tool_output_bytes.unwrap_or(0).saturating_add(bytes));
-                    }
-                }
-                _ => {}
-            },
+            Some("response_item") => {
+                response_item(payload, &mut open, &mut open_calls, &mut owners, &mut log)
+            }
             Some("token_usage_record") => {
                 let closed = std::mem::take(&mut open);
                 let calls = std::mem::take(&mut open_calls);
                 let usage = &payload["usage"];
-                let tokens = codex_tokens(usage);
-                let ts = timestamp(data.get("timestamp"));
-                let Some(ts) = ts.filter(|_| has_token_counts(usage)) else {
+                let ts = timestamp(data.get("timestamp")).filter(|_| has_token_counts(usage));
+                // The turn's own settings, or the latest ones when the record names no known turn.
+                let settings = payload["turn_id"]
+                    .as_str()
+                    .and_then(|turn| by_turn.get(turn))
+                    .or(last.as_ref());
+                let (Some(ts), Some(settings)) = (ts, settings) else {
+                    log.skipped.unusable += 1;
                     continue;
                 };
-                let class = classify(&closed.commands, closed.other_tool, closed.any_tool);
                 let key = match payload["response_id"].as_str() {
                     Some(id) => format!("codex|{id}"),
-                    None => format!("codex|{session}|line {number}"),
+                    None => {
+                        log.skipped.unidentified += 1;
+                        format!("codex|{session}|line {number}")
+                    }
                 };
                 for call in calls {
-                    owners.insert(call, rollout.requests.len());
+                    owners.insert(call, log.responses.len());
                 }
-                rollout.requests.push((
+                log.responses.push((
                     key,
-                    Request {
+                    Response {
+                        session: session.to_string(),
                         ts,
-                        category: class.category,
-                        tokens,
-                        chained_reporting: class.chained_reporting,
-                        several_categories: class.several_categories,
-                        tool_output_bytes: Some(closed.tool_output_bytes),
+                        model: settings.model.clone(),
+                        effort: settings.effort.clone(),
+                        tokens: codex_tokens(usage),
                         subagent,
+                        commands: closed.commands,
+                        other_tool: closed.other_tool,
+                        any_tool: closed.any_tool,
+                        tool_output_bytes: Some(closed.tool_output_bytes),
                     },
                 ));
             }
             _ => {}
         }
     }
-    rollout
+    log.skills = {
+        let mut markers = LogUsage::default();
+        codex_skills(text, &mut markers);
+        markers.skills
+    };
+    log
 }
 
-/// A rollout file seen on the first pass.
-struct Seen {
+/// A rollout seen on the first pass: its ids and where it is, not its text, so unclaimed rollouts cost no
+/// memory.
+struct Found {
     path: PathBuf,
     id: String,
     root: String,
     subagent: bool,
-    /// Parsed already, because it names a tracked run or was recorded.
-    parsed: Option<Rollout>,
+    claims: HashSet<String>,
 }
 
-/// Reads the Codex rollouts under `root`: every session that executed `jidoka run update` for a run in
-/// `ids`, or was recorded for one in `recorded`, together with the rollouts of its subagents.
+/// The recorded session a rollout's file name ends with (`rollout-<time>-<session id>.jsonl`). A rollout
+/// that cannot be read has no `session_meta` to say whose it is, so its name does.
+fn recorded_in_name<'a>(name: &str, recorded: &HashSet<&'a str>) -> Option<&'a str> {
+    let stem = name.strip_suffix(".jsonl")?;
+    recorded
+        .iter()
+        .find(|id| stem == **id || stem.ends_with(&format!("-{id}")))
+        .copied()
+}
+
+/// Reads the Codex rollouts under `root`: every session that executed a Jidoka command naming a run in the
+/// window, or was recorded for one, together with the rollouts of its subagents.
 #[expect(
     clippy::too_many_lines,
-    reason = "scans logs, filters by run, and tallies usage in one pass; also takes six inputs"
+    reason = "walks the day folders, picks the claimed roots, parses their rollouts and merges the responses in one pass"
 )]
-pub(crate) fn read_codex_requests(
+pub(crate) fn read_codex(
     root: &Path,
-    ids: &HashSet<&str>,
-    recorded: &HashSet<&str>,
-    from: u64,
+    window: &RunWindow,
     deadline: Instant,
     limits: ReadLimits,
-) -> RequestRead {
-    let mut out = RequestRead {
+) -> LogRead {
+    let mut out = LogRead {
         root_found: root.is_dir(),
-        ..RequestRead::default()
+        ..LogRead::default()
     };
     if !out.root_found {
         return out;
     }
-    let (mut files, mut bytes) = (0usize, 0u64);
-    let earliest_day = civil_day(from.saturating_sub(DAY_MS));
-    let mut seen: Vec<Seen> = Vec::new();
+    let mut pass = ReadPass::new(window, deadline, limits);
+    // The reading flags and notes of the shared helpers; moved into `out` at the end.
+    let mut state = ReadResult::default();
+    let earliest_day = civil_day(window.from.saturating_sub(DAY_MS));
+    let mut found: Vec<Found> = Vec::new();
     'days: for year in sub_dirs(root) {
         for month in sub_dirs(&year.path()) {
             for day in sub_dirs(&month.path()) {
@@ -578,117 +708,133 @@ pub(crate) fn read_codex_requests(
                     if !(file_name.starts_with("rollout-") && file_name.ends_with(".jsonl")) {
                         continue;
                     }
-                    if Instant::now() > deadline {
-                        out.timed_out = true;
-                    }
-                    files += 1;
-                    if files > limits.files || bytes > limits.bytes {
-                        out.truncated = true;
-                    }
-                    if out.timed_out || out.truncated {
+                    if pass.over_limit(&mut state) {
                         break 'days;
                     }
-                    if modified_ms(&path).is_some_and(|m| m.saturating_add(MTIME_SLACK_MS) < from) {
+                    if pass.stale(&path) {
                         continue;
                     }
-                    let text = match read_text(&path) {
-                        Ok(LogFile::Content(text)) => text,
-                        Ok(LogFile::Skipped | LogFile::TooBig) => continue,
-                        Err(error) => {
-                            if recorded.iter().any(|id| file_name.contains(*id)) {
-                                out.notes
-                                    .push(format!("a session log could not be read: {error}"));
-                            }
-                            continue;
-                        }
+                    let session =
+                        recorded_in_name(&file_name, &window.recorded).unwrap_or(&file_name);
+                    let Some(text) = pass.load(&path, session, &mut state) else {
+                        continue;
                     };
-                    bytes += text.len() as u64;
                     let Some((id, session_root, subagent)) = codex_meta(&text) else {
                         continue;
                     };
-                    let is_recorded =
-                        recorded.contains(id.as_str()) || recorded.contains(session_root.as_str());
-                    // Only a rollout that names a tracked run, or was recorded, is read now.
-                    let parsed = (is_recorded || ids.iter().any(|run| text.contains(run)))
-                        .then(|| parse_rollout(&text, &session_root, subagent, ids));
-                    seen.push(Seen {
+                    let claims = if subagent {
+                        HashSet::new()
+                    } else {
+                        codex_claims(&text, &window.ids)
+                    };
+                    found.push(Found {
                         path,
                         id,
                         root: session_root,
                         subagent,
-                        parsed,
+                        claims,
                     });
                 }
             }
         }
     }
     // A subagent's rollout names the run only through its root session, so the roots decide.
-    let claimed_roots: HashSet<String> = seen
+    let claimed_roots: HashSet<String> = found
         .iter()
         .filter(|rollout| {
-            recorded.contains(rollout.id.as_str())
-                || recorded.contains(rollout.root.as_str())
-                || (!rollout.subagent
-                    && rollout
-                        .parsed
-                        .as_ref()
-                        .is_some_and(|parsed| !parsed.claims.is_empty()))
+            !rollout.claims.is_empty()
+                || window.recorded.contains(rollout.id.as_str())
+                || window.recorded.contains(rollout.root.as_str())
         })
         .map(|rollout| rollout.root.clone())
         .collect();
-    let mut malformed = 0;
-    let mut by_root: BTreeMap<String, (HashSet<String>, bool)> = BTreeMap::new();
+    struct Root {
+        claims: HashSet<String>,
+        has_subagent_logs: bool,
+        skipped: Skipped,
+        any_response: bool,
+        markers: LogUsage,
+    }
+    let mut by_root: BTreeMap<String, Root> = BTreeMap::new();
     // A response that two rollouts hold counts once, with the largest counts.
-    let mut requests: BTreeMap<String, (String, Request)> = BTreeMap::new();
-    for rollout in seen.into_iter().filter(|r| claimed_roots.contains(&r.root)) {
-        if Instant::now() > deadline {
-            out.timed_out = true;
+    let mut seen: BTreeMap<String, Response> = BTreeMap::new();
+    for rollout in found.iter().filter(|r| claimed_roots.contains(&r.root)) {
+        if pass.over_limit(&mut state) {
             break;
         }
-        let parsed = match rollout.parsed {
-            Some(parsed) => parsed,
-            None => match read_text(&rollout.path) {
-                Ok(LogFile::Content(text)) => {
-                    parse_rollout(&text, &rollout.root, rollout.subagent, ids)
-                }
-                _ => continue,
-            },
+        // Only a claimed rollout is read again, to parse it.
+        let Some(text) = pass.load(&rollout.path, &rollout.root, &mut state) else {
+            continue;
         };
-        malformed += parsed.malformed;
-        let entry = by_root.entry(rollout.root.clone()).or_default();
-        entry.0.extend(parsed.claims);
-        entry.1 |= rollout.subagent;
-        for (key, request) in parsed.requests {
-            match requests.get_mut(&key) {
-                Some((_, existing)) => {
-                    merge_largest(&mut existing.tokens, &request.tokens);
+        let parsed = parse_codex(&text, &rollout.root, rollout.subagent, &window.ids);
+        let attention = (!rollout.subagent)
+            .then(|| crate::attention::signals(crate::attention::Agent::Codex, &text));
+        drop(text);
+        let entry = by_root.entry(rollout.root.clone()).or_insert_with(|| Root {
+            claims: HashSet::new(),
+            has_subagent_logs: false,
+            skipped: Skipped::default(),
+            any_response: false,
+            markers: LogUsage::default(),
+        });
+        entry.claims.extend(rollout.claims.iter().cloned());
+        entry.has_subagent_logs |= rollout.subagent;
+        entry.skipped.add(&parsed.skipped);
+        entry.any_response |= !parsed.responses.is_empty();
+        entry.markers.skills.extend(parsed.skills);
+        entry
+            .markers
+            .attention
+            .extend(attention.into_iter().flatten());
+        for (key, response) in parsed.responses {
+            match seen.get_mut(&key) {
+                Some(existing) => {
+                    merge_largest(&mut existing.tokens, &response.tokens);
                     existing.tool_output_bytes =
-                        existing.tool_output_bytes.max(request.tool_output_bytes);
+                        existing.tool_output_bytes.max(response.tool_output_bytes);
                 }
                 None => {
-                    requests.insert(key, (rollout.root.clone(), request));
+                    seen.insert(key, response);
                 }
             }
         }
     }
-    if malformed > 0 {
-        out.notes.push(format!(
-            "{malformed} malformed Codex log line(s) were skipped"
-        ));
+    let mut by_session: BTreeMap<String, Vec<Response>> = BTreeMap::new();
+    for response in seen.into_values() {
+        by_session
+            .entry(response.session.clone())
+            .or_default()
+            .push(response);
     }
-    let mut by_session: BTreeMap<String, Vec<Request>> = BTreeMap::new();
-    for (session, request) in requests.into_values() {
-        by_session.entry(session).or_default().push(request);
-    }
-    for (id, (claims, has_subagent_logs)) in by_root {
-        let mut requests = by_session.remove(&id).unwrap_or_default();
-        requests.sort_by_key(|request| request.ts);
-        out.sessions.push(SessionRequests {
+    for (id, root) in by_root {
+        if !plain_id(&id) {
+            continue;
+        }
+        skipped_notes(
+            "Codex",
+            &id,
+            &root.skipped,
+            !root.any_response,
+            &mut state.notes,
+        );
+        let mut responses = by_session.remove(&id).unwrap_or_default();
+        responses.sort_by_key(|response| response.ts);
+        let mut skills = root.markers.skills;
+        skills.sort();
+        skills.dedup();
+        out.sessions.push(LogSession {
             id,
-            has_subagent_logs,
-            claims,
-            requests,
+            has_subagent_logs: root.has_subagent_logs,
+            claims: root.claims,
+            responses,
+            pauses: Vec::new(),
+            activity: Vec::new(),
+            attention: root.markers.attention,
+            skills,
         });
     }
+    out.notes = state.notes;
+    out.timed_out = state.timed_out;
+    out.truncated = state.truncated;
     out
 }

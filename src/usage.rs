@@ -661,7 +661,18 @@ fn collect_limited(
         } else {
             "no session log names this run and none was recorded for it; its agent may not write logs this tool reads, or its session id was never recorded".to_string()
         };
-        return Usage::not_tracked(reason, now);
+        // A log recorded for the run that could not be read is why nothing was found: say so.
+        let mut usage = Usage::not_tracked(reason, now);
+        for note in &read.notes {
+            let recorded = note
+                .session
+                .as_ref()
+                .is_some_and(|id| target.sessions.contains(id));
+            if recorded && !usage.notes.contains(&note.text) {
+                usage.notes.push(note.text.clone());
+            }
+        }
+        return usage;
     }
     let skills = used_skills(target, tracked, &claimed);
     let (rows, unattributed, counted) = attribute(target, runs, &read.sessions, now);

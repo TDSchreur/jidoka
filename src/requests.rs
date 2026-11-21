@@ -1,11 +1,10 @@
 //! `jidoka run requests`: the model requests of a run per category, with their tokens.
 
 use crate::{
-    agent_logs::{ReadLimits, Roots, RunWindow},
-    codex_requests::read_codex_requests,
+    agent_logs::{ReadLimits, Roots, RunWindow, read_claude, read_codex},
     copilot_requests::read_copilot_requests,
     inspect::shown,
-    request_logs::{Category, Request, SessionRequests, read_requests},
+    request_logs::{Category, Request, SessionRequests, requests_from},
     run::Run,
     stats::{number, table_with},
     usage::{FUTURE_SLACK_MS, Tokens, mark_at},
@@ -156,8 +155,8 @@ pub(crate) fn analyze(
     let tracked = &window.tracked;
     let (ids, recorded, from) = (&window.ids, &window.recorded, window.from);
     let limits = ReadLimits::default();
-    let read = read_requests(&roots.claude, &window, deadline, limits);
-    let codex = read_codex_requests(&roots.codex, ids, recorded, from, deadline, limits);
+    let read = requests_from(read_claude(&roots.claude, &window, deadline, limits));
+    let codex = requests_from(read_codex(&roots.codex, &window, deadline, limits));
     let copilot = read_copilot_requests(&roots.copilot, ids, recorded, from, deadline, limits);
     let (timed_out, truncated) = (
         read.timed_out || codex.timed_out || copilot.timed_out,

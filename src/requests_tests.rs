@@ -298,6 +298,28 @@ fn a_command_run_from_inside_a_script_tool_claims_the_run_without_being_a_reques
 }
 
 #[test]
+fn a_recorded_codex_log_that_is_too_large_gets_a_note() {
+    let world = World::new();
+    let path = world.dir.path().join(CODEX_FILE);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // A sparse file: larger than the reader's limit without writing it.
+    fs::File::create(path)
+        .unwrap()
+        .set_len(65 * 1024 * 1024)
+        .unwrap();
+    let target = run(RUN_A, 0, Some(100), &["abc"]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    assert!(
+        result
+            .notes
+            .iter()
+            .any(|note| note.contains("larger than 64 MiB")),
+        "{:?}",
+        result.notes
+    );
+}
+
+#[test]
 fn requests_outside_the_run_are_not_counted() {
     let world = World::new();
     world.session(
@@ -695,6 +717,11 @@ fn codex_meta(id: &str, root: Option<&str>) -> String {
     json!({"type": "session_meta", "timestamp": iso(0), "payload": payload}).to_string()
 }
 
+/// The `turn_context` that gives a Codex response its model: a response without one is not counted.
+fn codex_context() -> String {
+    json!({"type": "turn_context", "timestamp": iso(0), "payload": {"model": "gpt-test", "turn_id": "turn-1"}}).to_string()
+}
+
 /// A `custom_tool_call` whose JavaScript snippet is `snippet`.
 fn codex_exec(call: &str, snippet: &str) -> String {
     json!({"type": "response_item", "timestamp": iso(5), "payload": {
@@ -735,6 +762,7 @@ fn codex_responses_get_the_category_of_their_commands_and_other_tool_calls() {
         CODEX_FILE,
         &[
             codex_meta("abc", None),
+            codex_context(),
             codex_exec_commands("a1", &["git commit -m x"]),
             codex_usage(10, "r1"),
             // Two commands in one snippet: a verification and a push; the push wins by priority.
@@ -772,6 +800,7 @@ fn a_codex_subagent_rollout_is_categorized_and_shown_on_its_own_lines() {
         CODEX_FILE,
         &[
             codex_meta("abc", None),
+            codex_context(),
             codex_exec_commands("a1", &["cargo test"]),
             codex_usage(10, "r1"),
         ],
@@ -780,6 +809,7 @@ fn a_codex_subagent_rollout_is_categorized_and_shown_on_its_own_lines() {
         "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-30-sub1.jsonl",
         &[
             codex_meta("sub1", Some("abc")),
+            codex_context(),
             codex_exec_commands("s1", &["git log -1"]),
             codex_usage(20, "s-r1"),
             codex_usage(30, "s-r2"),
