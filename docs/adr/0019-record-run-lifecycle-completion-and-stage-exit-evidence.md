@@ -1,4 +1,8 @@
-# Record run completion and pull request state
+---
+status: accepted
+---
+
+# Record run lifecycle, completion and stage exit evidence
 
 Done means Jidoka ended work on a run. Jidoka records the Finish summary and how the run completed. A pull request has its own state because the run can finish with CI confirmed while the pull request is open. An observed merge can also finish a run without CI evidence. A forced completion carries the explicit reason.
 

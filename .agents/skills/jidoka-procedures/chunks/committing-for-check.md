@@ -9,7 +9,13 @@ Wait for every check started in Check to report. Record its findings and resolve
 
 Classify the whole set of fixes. Use `wording` when every fix is limited to comments, docs, docstrings, log messages or typos in internal names. Use `behavior` when any fix changes what users or callers see or rely on, including user-facing messages, public names and interfaces, outputs or logic.
 
-Fix actionable findings in Reworks 1 and 2. In Rework 3, wording fixes can proceed without a decision. If any fixes would change behavior, use `jidoka run block <id> --reason "Decision needed on remaining Check findings"` and list those findings. Ask the user whether to fix the behavior findings in Rework 3, list them in the pull request and proceed with the wording fixes, or stop.
+Findings alone never block a run; it is blocked only while it waits for the user's decision.
+
+Fix actionable findings in Reworks 1 and 2. In Rework 3, wording fixes can proceed without a decision. If any fixes would change behavior, use `jidoka run block <id> --reason "Decision needed on remaining Check findings"` and list those findings. Ask the user to choose one of three options:
+
+1. Fix the behavior findings in Rework 3 too.
+2. List them in the pull request and proceed with only the wording fixes.
+3. Stop.
 
 After Rework 3, or when a finding cannot be resolved, block and ask the user whether to do one more Rework, list the findings in the pull request and finish, or stop.
 

@@ -17,5 +17,5 @@ After the second Rework, findings that change only wording or documentation are 
 ## Consequences
 
 - Findings alone never block a run; it is `blocked` only while it waits for the user's decision past the cap.
-- The cap exists in two places that must be kept in step: the Rework rules in the procedures skill and `REWORK_CAP` in `dashboard/app.js`, which shows "Rework 1/3" and "past the cap of 3" from the fourth.
+- The cap exists in three places that must be kept in step: the Rework rules in the procedures skill, `REWORK_CAP` in `dashboard/app.js` (which shows "Rework 1/3" and "past the cap of 3" from the fourth) and `WORDING_REWORK` in `src/run/lifecycle.rs`. The server refuses a Rework past the cap, and a behavior Rework 3, unless the request carries `--decision`.
 - The wording-versus-behaviour split is judged by the agent from the definitions above, so a borderline finding can go either way.
