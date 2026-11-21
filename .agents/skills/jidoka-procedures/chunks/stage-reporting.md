@@ -4,6 +4,13 @@ Record stage summaries and ticket status with `jidoka run update <id> running`; 
 
 ### Codex command approvals
 
-When a Jidoka command needs escalation in Codex and a reusable approval is appropriate, pass the narrow, stable subcommand as the tool's `prefix_rule`. For example, use `["jidoka", "pr", "wait"]` for PR monitoring. Keep run IDs, titles and paths in the command arguments so changing them does not invalidate the saved approval. Keep any flags that limit what the approved command can do. Avoid a blanket `jidoka`, `jidoka run` or `jidoka pr` prefix.
+For every escalated Jidoka command eligible for reusable Codex approval, set the execution tool’s `prefix_rule` explicitly. Use the complete command verb as separate tokens, including any nested subcommands.
+
+- `jidoka run inspect <id> --json` uses `["jidoka", "run", "inspect"]`.
+- `jidoka run check <id>` uses `["jidoka", "run", "check"]`.
+- `jidoka run advance <id> …` uses `["jidoka", "run", "advance"]`.
+- `jidoka pr wait <id>` uses `["jidoka", "pr", "wait"]`.
+
+Keep changing operands such as IDs, titles, paths and output formats in the command arguments. A saved approval should apply across runs of the same verb. Preserve restrictions required for the approved action and use one-time approval when the host or command requires it. Avoid broad prefixes such as `jidoka`, `jidoka run` or `jidoka pr`.
 
 For cleanup, confirm that the user has authorized removing the merged run's worktree and local branch before requesting escalation. If the user wants a reusable cleanup approval and the host’s approval rules permit a persistent approval for cleanup, use `["jidoka", "run", "cleanup"]` and explain that saving it covers future run IDs. Otherwise request one-time approval. Jidoka checks whether the recorded pull request has merged before removing the worktree or branch.

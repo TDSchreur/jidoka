@@ -5,6 +5,8 @@ description: "Guide one change that spans several repositories: read the platfor
 
 # Change across repositories
 
+In Codex, when requesting escalation for any Jidoka command eligible for reusable approval, set the tool’s `prefix_rule` to the specific command verb, for example `["jidoka", "run", "check"]`. Keep run IDs and other changing arguments in the command itself.
+
 This skill coordinates; it never implements code across repositories itself. Each repository gets its own ordinary Jidoka run, in its own checkout and fresh agent session, with its own worktree, gates and pull request. A **change group** only links those runs to one shared spec and records what each waits on.
 
 The knowledge repo is optional and is not worked through Jidoka runs: pull with rebase, make one change, commit it alone, push directly to its default branch, and on a rejected push pull again and retry. Group commands need a running dashboard (`jidoka dashboard`).
