@@ -1,5 +1,6 @@
 //! Gate evaluation, gate recording and the live CI check that decide how a run may leave a Stage.
 use crate::{
+    pr_host::{Hosts, PrHost, Tools},
     pr_state,
     pr_sync::Git,
     pr_wait,
@@ -480,18 +481,14 @@ impl Gate {
 /// # Errors
 ///
 /// Returns a message naming each failing gate and its remedy, or why CI has not passed.
-pub(crate) fn accepted_exit(
-    run: &Run,
-    git: &dyn Git,
-    tool: &dyn pr_wait::Gh,
-) -> Result<Exit, String> {
+pub(crate) fn accepted_exit(run: &Run, git: &dyn Git, tool: &dyn Tools) -> Result<Exit, String> {
     accepted_exit_with_clock(run, git, tool, &pr_wait::RealClock(Instant::now()))
 }
 
 fn accepted_exit_with_clock(
     run: &Run,
     git: &dyn Git,
-    tool: &dyn pr_wait::Gh,
+    tool: &dyn Tools,
     clock: &dyn pr_wait::Clock,
 ) -> Result<Exit, String> {
     let mode = run.mode.ok_or("Record the run's mode first")?;
@@ -590,7 +587,7 @@ impl AdvanceRequest {
         store: &RunStore,
         id: &str,
         git: &dyn Git,
-        host: &dyn pr_wait::Gh,
+        host: &dyn Tools,
     ) -> Result<(), String> {
         self.validate()?;
         let forced = self.forced_reason()?.map(str::to_owned);
@@ -678,12 +675,13 @@ fn require(condition: bool, reason: &str) -> Result<(), String> {
 fn ci_passed(
     run: &Run,
     git: &dyn Git,
-    tool: &dyn pr_wait::Gh,
+    tool: &dyn Tools,
     clock: &dyn pr_wait::Clock,
 ) -> Result<CiEvidence, String> {
     let url = run.pr.as_deref().ok_or("No pull request is recorded")?;
     let checked_at = updated_now().map_err(|error| format!("Could not read the time: {error}"))?;
-    let state = pr_state::read(tool, url)
+    let state = Hosts::new(tool)
+        .state(url)
         .map_err(|error| format!("Could not read pull request state: {}", error.0))?;
     require(
         state == pr_state::PrState::Open,
@@ -736,7 +734,7 @@ fn ci_passed(
 mod tests {
     use super::*;
     use crate::{
-        pr_wait::{GhError, GhOutput},
+        pr_host::{ToolError, ToolOutput},
         run::{Completion, ExitOutcome, Mode, Ticket},
     };
     use std::cell::RefCell;
@@ -749,7 +747,7 @@ mod tests {
     }
 
     /// Leaves the Stage of a run value once its exit gates pass, as the store does with the exit.
-    fn advance_on(run: &mut Run, git: &dyn Git, tool: &dyn pr_wait::Gh) -> Result<(), String> {
+    fn advance_on(run: &mut Run, git: &dyn Git, tool: &dyn Tools) -> Result<(), String> {
         let exit = accepted_exit(run, git, tool)?;
         run.leave(exit, 1)
     }
@@ -757,7 +755,7 @@ mod tests {
     fn advance_with_clock(
         run: &mut Run,
         git: &dyn Git,
-        tool: &dyn pr_wait::Gh,
+        tool: &dyn Tools,
         clock: &dyn pr_wait::Clock,
     ) -> Result<(), String> {
         let exit = accepted_exit_with_clock(run, git, tool, clock)?;
@@ -768,7 +766,7 @@ mod tests {
     fn advance_stored(
         store: &crate::run::RunStore,
         git: &dyn Git,
-        tool: &dyn pr_wait::Gh,
+        tool: &dyn Tools,
     ) -> Result<(), String> {
         store.advance("1", AdvanceMetadata::default(), |run| {
             accepted_exit(run, git, tool)
@@ -803,8 +801,11 @@ mod tests {
         bucket: &'static str,
         head: &'static str,
     }
-    impl pr_wait::Gh for FakeGh {
-        fn run(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+    impl Tools for FakeGh {
+        fn az(&self, _: &[&str]) -> Result<ToolOutput, ToolError> {
+            panic!("GitHub must not use az")
+        }
+        fn gh(&self, _: Option<&Path>, args: &[&str]) -> Result<ToolOutput, ToolError> {
             let value = if args.contains(&"checks") {
                 serde_json::json!([{"name":"test", "bucket":self.bucket, "state":"SUCCESS", "link":""}])
             } else if args.contains(&"state,isDraft") {
@@ -812,7 +813,7 @@ mod tests {
             } else {
                 serde_json::json!({"state":self.state,"headRefOid":self.head,"mergeStateStatus":"CLEAN","baseRefName":"main"})
             };
-            Ok(GhOutput {
+            Ok(ToolOutput {
                 code: Some(0),
                 stdout: value.to_string(),
                 stderr: String::new(),
@@ -1271,14 +1272,17 @@ mod tests {
     #[test]
     fn merge_during_ci_check_reports_sync_even_if_the_head_changed() {
         struct MergedDuringWait;
-        impl pr_wait::Gh for MergedDuringWait {
-            fn run(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+        impl Tools for MergedDuringWait {
+            fn az(&self, _: &[&str]) -> Result<ToolOutput, ToolError> {
+                panic!("GitHub must not use az")
+            }
+            fn gh(&self, _: Option<&Path>, args: &[&str]) -> Result<ToolOutput, ToolError> {
                 let value = if args.contains(&"state,isDraft") {
                     serde_json::json!({"state":"OPEN","isDraft":false})
                 } else {
                     serde_json::json!({"state":"MERGED","headRefOid":"new-head","mergeStateStatus":"CLEAN","baseRefName":"main"})
                 };
-                Ok(GhOutput {
+                Ok(ToolOutput {
                     code: Some(0),
                     stdout: value.to_string(),
                     stderr: String::new(),
@@ -1375,8 +1379,11 @@ mod tests {
     struct AppearingChecks {
         answers: RefCell<std::collections::VecDeque<&'static str>>,
     }
-    impl pr_wait::Gh for AppearingChecks {
-        fn run(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+    impl Tools for AppearingChecks {
+        fn az(&self, _: &[&str]) -> Result<ToolOutput, ToolError> {
+            panic!("GitHub must not use az")
+        }
+        fn gh(&self, _: Option<&Path>, args: &[&str]) -> Result<ToolOutput, ToolError> {
             if args.contains(&"checks") {
                 let mut answers = self.answers.borrow_mut();
                 let answer = if answers.len() > 1 {
@@ -1384,13 +1391,13 @@ mod tests {
                 } else {
                     *answers.front().unwrap()
                 };
-                return Ok(GhOutput {
+                return Ok(ToolOutput {
                     code: Some(0),
                     stdout: answer.into(),
                     stderr: String::new(),
                 });
             }
-            host().run(args)
+            host().gh(None, args)
         }
     }
 
@@ -1505,9 +1512,12 @@ mod tests {
         }
     }
     struct BrokenHost;
-    impl pr_wait::Gh for BrokenHost {
-        fn run(&self, _: &[&str]) -> Result<GhOutput, GhError> {
-            Err(GhError::Other("host unavailable".into()))
+    impl Tools for BrokenHost {
+        fn az(&self, _: &[&str]) -> Result<ToolOutput, ToolError> {
+            Err(ToolError::Other("host unavailable".into()))
+        }
+        fn gh(&self, _: Option<&Path>, _: &[&str]) -> Result<ToolOutput, ToolError> {
+            Err(ToolError::Other("host unavailable".into()))
         }
     }
     #[test]
@@ -1528,11 +1538,11 @@ mod tests {
     }
 
     struct Azure;
-    impl pr_wait::Gh for Azure {
-        fn run(&self, _: &[&str]) -> Result<GhOutput, GhError> {
+    impl Tools for Azure {
+        fn gh(&self, _: Option<&Path>, _: &[&str]) -> Result<ToolOutput, ToolError> {
             panic!("Azure must not use gh")
         }
-        fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+        fn az(&self, args: &[&str]) -> Result<ToolOutput, ToolError> {
             let value = match args {
                 ["repos", "pr", "show", ..] => {
                     serde_json::json!({"pullRequestId":535,"status":"active","isDraft":false,"sourceRefName":"refs/heads/feature","lastMergeSourceCommit":{"commitId":"abc1234"},"repository":{"id":"repo","name":"Repo","project":{"name":"Project"}}})
@@ -1549,7 +1559,7 @@ mod tests {
                 ["devops", "invoke", ..] => serde_json::json!({"value":[]}),
                 _ => panic!("unexpected Azure command {args:?}"),
             };
-            Ok(GhOutput {
+            Ok(ToolOutput {
                 code: Some(0),
                 stdout: value.to_string(),
                 stderr: String::new(),

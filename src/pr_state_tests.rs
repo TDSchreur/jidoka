@@ -1,78 +1,11 @@
-//! Pull request state against a scripted `gh`, and the refresh pass against a real run store.
+//! The refresh pass and the Pull request state rule against a real run store and a fake pull request host.
 
 use super::*;
-use crate::pr_wait::{GhError, GhOutput};
+use crate::pr_host::{FakeHost, Head};
 use crate::run::{NewRun, RunStatus, RunStore, Stage, UpdateRun};
 use crate::test_support::{TestDir, advance_to};
-use std::sync::Mutex;
 
 const PR: &str = "https://github.com/o/r/pull/7";
-
-/// Answers every `gh` call with the next scripted answer (the last one repeats) and records the calls.
-struct ScriptedGh {
-    answers: Mutex<Vec<Result<GhOutput, GhError>>>,
-    calls: Mutex<Vec<String>>,
-}
-
-impl ScriptedGh {
-    fn new(answers: Vec<Result<GhOutput, GhError>>) -> Self {
-        Self {
-            answers: Mutex::new(answers),
-            calls: Mutex::new(Vec::new()),
-        }
-    }
-    fn calls(&self) -> Vec<String> {
-        self.calls.lock().unwrap().clone()
-    }
-}
-
-impl ScriptedGh {
-    fn answer(&self, call: String) -> Result<GhOutput, GhError> {
-        self.calls.lock().unwrap().push(call);
-        let mut answers = self.answers.lock().unwrap();
-        if answers.len() > 1 {
-            answers.remove(0)
-        } else {
-            match &answers[0] {
-                Ok(output) => Ok(output.clone()),
-                Err(GhError::NotInstalled) => Err(GhError::NotInstalled),
-                Err(GhError::Other(text)) => Err(GhError::Other(text.clone())),
-            }
-        }
-    }
-}
-
-impl Gh for ScriptedGh {
-    fn run(&self, args: &[&str]) -> Result<GhOutput, GhError> {
-        self.answer(args.join(" "))
-    }
-    fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
-        self.answer(format!("az {}", args.join(" ")))
-    }
-}
-
-fn view(state: &str, draft: bool) -> Result<GhOutput, GhError> {
-    Ok(GhOutput {
-        code: Some(0),
-        stdout: format!(r#"{{"state":"{state}","isDraft":{draft}}}"#),
-        stderr: String::new(),
-    })
-}
-
-#[test]
-fn a_github_pull_request_reads_as_open_draft_merged_or_closed() {
-    // `gh pr view --json state,isDraft` reports OPEN, MERGED or CLOSED, and isDraft for an open draft.
-    for (state, draft, expected) in [
-        ("OPEN", false, PrState::Open),
-        ("OPEN", true, PrState::Draft),
-        ("MERGED", false, PrState::Merged),
-        ("CLOSED", false, PrState::Closed),
-    ] {
-        let gh = ScriptedGh::new(vec![view(state, draft)]);
-        assert_eq!(read(&gh, PR).unwrap(), expected, "{state} draft={draft}");
-        assert_eq!(gh.calls(), [format!("pr view {PR} --json state,isDraft")]);
-    }
-}
 
 fn store() -> (TestDir, RunStore) {
     let dir = TestDir::new();
@@ -114,27 +47,35 @@ fn stored(store: &RunStore, id: &str) -> Option<PrStatus> {
 fn merged_is_final_and_others_are_checked_again_after_a_minute() {
     let (_dir, store) = store();
     run_with_pr(&store, PR);
-    let gh = ScriptedGh::new(vec![view("OPEN", false), view("MERGED", false)]);
-    refresh(&store, &gh, 0).unwrap();
+    let host = FakeHost::states(&[PrState::Open, PrState::Merged]);
+    refresh(&store, &host, 0).unwrap();
     // Within the minute nothing is asked again.
-    assert_eq!(refresh(&store, &gh, 59_999).unwrap(), 0);
+    assert_eq!(refresh(&store, &host, 59_999).unwrap(), 0);
     // After it, the open one is, and it has been merged.
-    assert_eq!(refresh(&store, &gh, 60_000).unwrap(), 1);
+    assert_eq!(refresh(&store, &host, 60_000).unwrap(), 1);
     // Merged is never asked again, however much later.
-    assert_eq!(refresh(&store, &gh, 10_000_000).unwrap(), 0);
-    assert_eq!(gh.calls().len(), 2);
+    assert_eq!(refresh(&store, &host, 10_000_000).unwrap(), 0);
+    assert_eq!(host.calls(), [format!("state {PR}"), format!("state {PR}")]);
 }
 
 #[test]
 fn a_problem_is_stored_as_unknown_with_its_reason_and_tried_again() {
     let (_dir, store) = store();
     let id = run_with_pr(&store, PR);
-    let gh = ScriptedGh::new(vec![Err(GhError::NotInstalled), view("CLOSED", false)]);
-    refresh(&store, &gh, 0).unwrap();
+    let closed = Head {
+        state: PrState::Closed,
+        commit: "abc1234".into(),
+        branch: "feature".into(),
+    };
+    let host = FakeHost::new(vec![Err("The tool is not installed.".into()), Ok(closed)]);
+    refresh(&store, &host, 0).unwrap();
     let unknown = stored(&store, &id).unwrap();
     assert_eq!(unknown.state, PrState::Unknown);
-    assert!(unknown.reason.unwrap().contains("not installed"));
-    refresh(&store, &gh, 60_000).unwrap();
+    assert_eq!(
+        unknown.reason.as_deref(),
+        Some("The tool is not installed.")
+    );
+    refresh(&store, &host, 60_000).unwrap();
     assert_eq!(stored(&store, &id).unwrap().state, PrState::Closed);
 }
 
@@ -151,78 +92,15 @@ fn a_new_pull_request_url_is_checked_at_once_and_runs_without_one_are_left_alone
             model_routing: None,
         })
         .unwrap();
-    let gh = ScriptedGh::new(vec![view("MERGED", false), view("OPEN", true)]);
-    assert_eq!(refresh(&store, &gh, 0).unwrap(), 1);
+    let host = FakeHost::states(&[PrState::Merged, PrState::Draft]);
+    assert_eq!(refresh(&store, &host, 0).unwrap(), 1);
     // The Run now records another pull request: its stored state is for the old URL, so it is read again.
     let other = "https://github.com/o/r/pull/8";
     let update: UpdateRun = serde_json::from_str(&format!(r#"{{"pr":"{other}"}}"#)).unwrap();
     store.update(&id, update).unwrap();
-    assert_eq!(refresh(&store, &gh, 1).unwrap(), 1);
+    assert_eq!(refresh(&store, &host, 1).unwrap(), 1);
     let status = stored(&store, &id).unwrap();
     assert_eq!((status.url.as_str(), status.state), (other, PrState::Draft));
-}
-
-const AZURE_PR: &str = "https://dev.azure.com/org/Proj/_git/Repo/pullrequest/535";
-
-/// What `az repos pr show` prints for pull request 535 of Proj/Repo, cut to the fields that matter here.
-fn azure(status: &str, draft: bool) -> Result<GhOutput, GhError> {
-    Ok(GhOutput {
-        code: Some(0),
-        stdout: format!(
-            r#"{{"pullRequestId":535,"status":"{status}","isDraft":{draft},"repository":{{"name":"Repo","project":{{"name":"Proj"}}}},"forkSource":null}}"#
-        ),
-        stderr: String::new(),
-    })
-}
-
-#[test]
-fn an_azure_repos_pull_request_reads_as_open_draft_merged_or_closed() {
-    // Azure Repos reports active, completed or abandoned, and isDraft for an active draft.
-    for (status, draft, expected) in [
-        ("active", false, PrState::Open),
-        ("active", true, PrState::Draft),
-        ("completed", false, PrState::Merged),
-        ("abandoned", false, PrState::Closed),
-    ] {
-        let az = ScriptedGh::new(vec![azure(status, draft)]);
-        assert_eq!(
-            read(&az, AZURE_PR).unwrap(),
-            expected,
-            "{status} draft={draft}"
-        );
-        assert_eq!(
-            az.calls(),
-            [
-                "az repos pr show --id 535 --organization https://dev.azure.com/org --output json --detect false"
-            ]
-        );
-    }
-}
-
-#[test]
-fn the_head_of_a_pull_request_is_its_commit_and_branch() {
-    let gh = ScriptedGh::new(vec![Ok(GhOutput {
-        code: Some(0),
-        stdout: r#"{"headRefOid":"ABCD1234","headRefName":"feature/x"}"#.into(),
-        stderr: String::new(),
-    })]);
-    let head = super::head(&gh, "https://github.com/o/r/pull/7").unwrap();
-    assert_eq!(
-        (head.commit.as_str(), head.branch.as_str()),
-        ("abcd1234", "feature/x")
-    );
-    assert!(gh.calls()[0].contains("headRefOid,headRefName"));
-
-    let az = ScriptedGh::new(vec![Ok(GhOutput {
-        code: Some(0),
-        stdout: r#"{"pullRequestId":535,"repository":{"name":"Repo","project":{"name":"Proj"}},"sourceRefName":"refs/heads/feature/x","lastMergeSourceCommit":{"commitId":"abcd1234"}}"#.into(),
-        stderr: String::new(),
-    })]);
-    let head = super::head(&az, AZURE_PR).unwrap();
-    assert_eq!(
-        (head.commit.as_str(), head.branch.as_str()),
-        ("abcd1234", "feature/x")
-    );
 }
 
 fn run_waiting_for_ci(store: &RunStore) -> String {
@@ -245,8 +123,7 @@ fn the_run(store: &RunStore, id: &str) -> crate::run::Run {
 fn a_merged_pull_request_finishes_the_run_and_clears_its_activity() {
     let (_dir, store) = store();
     let id = run_waiting_for_ci(&store);
-    let gh = ScriptedGh::new(vec![view("MERGED", false)]);
-    refresh(&store, &gh, 0).unwrap();
+    refresh(&store, &FakeHost::states(&[PrState::Merged]), 0).unwrap();
     let run = the_run(&store, &id);
     assert_eq!((run.stage, run.status), (Stage::Finish, RunStatus::Done));
     assert_eq!(run.activity, None);
@@ -261,52 +138,47 @@ fn a_merged_pull_request_finishes_the_run_and_clears_its_activity() {
 fn syncing_one_run_reads_the_host_now_even_when_the_state_is_recent() {
     let (_dir, store) = store();
     let id = run_waiting_for_ci(&store);
-    let gh = ScriptedGh::new(vec![view("OPEN", false), view("MERGED", false)]);
-    refresh(&store, &gh, 0).unwrap();
-    let (status, _) = sync_run(&store, &gh, &id, 1).unwrap().unwrap();
+    let host = FakeHost::states(&[PrState::Open, PrState::Merged]);
+    refresh(&store, &host, 0).unwrap();
+    let (status, _) = sync_run(&store, &host, &id, 1).unwrap().unwrap();
     assert_eq!(status.state, PrState::Merged);
     assert_eq!(stored(&store, &id).unwrap().checked_at, 1);
     assert_eq!(stored(&store, &id).unwrap().state, PrState::Merged);
     assert_eq!(the_run(&store, &id).status, RunStatus::Done);
-    assert_eq!(gh.calls().len(), 2);
+    assert_eq!(host.calls().len(), 2);
 }
 
 /// Replaces the PR while the host request is in flight.
-struct ReplacingGh<'a> {
+struct ReplacingHost<'a> {
     store: &'a RunStore,
     id: &'a str,
-    answer: Result<GhOutput, GhError>,
+    state: PrState,
 }
 
-impl Gh for ReplacingGh<'_> {
-    fn run(&self, _args: &[&str]) -> Result<GhOutput, GhError> {
+impl PrHost for ReplacingHost<'_> {
+    fn state(&self, _url: &str) -> Result<PrState, ToolProblem> {
         let update: UpdateRun =
             serde_json::from_str(r#"{"pr":"https://github.com/o/r/pull/8"}"#).unwrap();
         self.store.update(self.id, update).unwrap();
-        match &self.answer {
-            Ok(output) => Ok(output.clone()),
-            Err(_) => panic!("the scripted host must succeed"),
-        }
+        Ok(self.state)
     }
-    fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
-        self.run(args)
+
+    fn head(&self, _url: &str) -> Result<Head, ToolProblem> {
+        panic!("the refresh reads only the state")
     }
 }
 
 #[test]
 fn superseded_host_results_do_not_change_the_run_or_its_cached_status() {
-    for (url, answer) in [
-        (PR, view("MERGED", false)),
-        (AZURE_PR, azure("abandoned", false)),
-    ] {
+    for state in [PrState::Merged, PrState::Closed] {
         let (_dir, store) = store();
-        let id = run_with_pr(&store, url);
-        let gh = ReplacingGh {
+        let id = run_with_pr(&store, PR);
+        let host = ReplacingHost {
             store: &store,
             id: &id,
-            answer,
+            state,
         };
-        refresh(&store, &gh, 123).unwrap();
+        refresh(&store, &host, 123).unwrap();
         let run = the_run(&store, &id);
         assert_eq!(run.pr.as_deref(), Some("https://github.com/o/r/pull/8"));
         assert_eq!(run.status, RunStatus::Running);

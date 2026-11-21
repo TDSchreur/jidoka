@@ -2,23 +2,22 @@
 
 use crate::{
     inspect::shown,
-    pr_wait::{GhError, GhOutput, ToolProblem, problem},
+    pr_host::{
+        AzureRepo, Host, Origin, RealTools, ToolError, ToolOutput, ToolProblem, Tools, az_parsed,
+        detect_host, problem, started,
+    },
     run_begin::{first_line, git, last_line, valid_branch_name},
 };
 use serde::Serialize;
-use std::{
-    io,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::{Path, PathBuf};
 
 /// Runs `gh` in a folder, so that it finds the repository from the git remotes there. Tests answer from a
 /// script.
 pub(crate) trait Gh {
-    fn run(&self, dir: &Path, args: &[&str]) -> Result<GhOutput, GhError>;
+    fn run(&self, dir: &Path, args: &[&str]) -> Result<ToolOutput, ToolError>;
 
-    fn az(&self, _dir: &Path, _args: &[&str]) -> Result<GhOutput, GhError> {
-        Err(GhError::NotInstalled)
+    fn az(&self, _dir: &Path, _args: &[&str]) -> Result<ToolOutput, ToolError> {
+        Err(ToolError::NotInstalled)
     }
 
     /// Runs git in a folder. Tests override this to keep the user's own git settings out.
@@ -27,50 +26,16 @@ pub(crate) trait Gh {
     }
 }
 
-/// The real `gh`.
+/// The real `gh` and `az`, started through the pull request host's tools.
 pub(crate) struct RealGh;
 
 impl Gh for RealGh {
-    fn az(&self, dir: &Path, args: &[&str]) -> Result<GhOutput, GhError> {
-        let output = Command::new(crate::doctor::az_program())
-            .current_dir(dir)
-            .args(args)
-            .env("AZURE_CORE_ONLY_SHOW_ERRORS", "true")
-            .env("AZURE_EXTENSION_USE_DYNAMIC_INSTALL", "no")
-            .output()
-            .map_err(|error| {
-                if error.kind() == io::ErrorKind::NotFound {
-                    GhError::NotInstalled
-                } else {
-                    GhError::Other(error.to_string())
-                }
-            })?;
-        Ok(GhOutput {
-            code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        })
+    fn az(&self, _dir: &Path, args: &[&str]) -> Result<ToolOutput, ToolError> {
+        RealTools.az(args)
     }
 
-    fn run(&self, dir: &Path, args: &[&str]) -> Result<GhOutput, GhError> {
-        let output = Command::new("gh")
-            .current_dir(dir)
-            .args(args)
-            .env("GH_PROMPT_DISABLED", "1")
-            .env("NO_COLOR", "1")
-            .output()
-            .map_err(|error| {
-                if error.kind() == io::ErrorKind::NotFound {
-                    GhError::NotInstalled
-                } else {
-                    GhError::Other(error.to_string())
-                }
-            })?;
-        Ok(GhOutput {
-            code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        })
+    fn run(&self, dir: &Path, args: &[&str]) -> Result<ToolOutput, ToolError> {
+        RealTools.gh(Some(dir), args)
     }
 }
 
@@ -182,14 +147,8 @@ pub(crate) struct Opened {
     pub(crate) recorded: bool,
 }
 
-fn run_gh(gh: &dyn Gh, dir: &Path, args: &[&str]) -> Result<GhOutput, ToolProblem> {
-    gh.run(dir, args).map_err(|error| match error {
-        GhError::NotInstalled => ToolProblem(
-            "The GitHub CLI (`gh`) is not installed or not on PATH. Install it from https://cli.github.com, run `gh auth login`, and try again."
-                .into(),
-        ),
-        GhError::Other(text) => ToolProblem(format!("Could not run `gh`: {text}")),
-    })
+fn run_gh(gh: &dyn Gh, dir: &Path, args: &[&str]) -> Result<ToolOutput, ToolProblem> {
+    started(gh.run(dir, args))
 }
 
 /// A rejected or failed push as a message that says what to do.
@@ -283,210 +242,6 @@ fn open_pull_request(
     }))
 }
 
-/// The pull request host a repository uses, as `jidoka pr open` and `jidoka doctor` see it.
-pub(crate) enum Host {
-    GitHub,
-    Azure(AzureRepo),
-    /// Neither the origin URL nor `jidoka.prProvider` names a supported host.
-    Unknown,
-}
-
-/// The origin URL and the host it belongs to.
-pub(crate) struct Origin {
-    pub(crate) url: String,
-    pub(crate) host: Host,
-}
-
-/// Works out the pull request host from origin and the `jidoka.prProvider` override. `git` answers a
-/// read-only git question in the repository, or `None` when git fails. A missing origin, an unknown
-/// override or an Azure override that does not match origin is an error.
-pub(crate) fn detect_host(git: &dyn Fn(&[&str]) -> Option<String>) -> Result<Origin, ToolProblem> {
-    let remote = git(&["remote", "get-url", "origin"]).ok_or_else(|| {
-        ToolProblem("Cannot identify the repository provider: origin is not configured.".into())
-    })?;
-    let provider = git(&["config", "--get", "jidoka.prProvider"]);
-    let azure = match provider.as_deref() {
-        None => AzureRepo::from_remote(&remote)?,
-        Some("github") => None,
-        Some("azure") => {
-            let get = |key: &str| {
-                git(&["config", "--get", key]).ok_or_else(|| {
-                    ToolProblem(format!(
-                        "Set git config {key} for the Azure provider override."
-                    ))
-                })
-            };
-            let org = get("jidoka.azureOrganization")?;
-            let project = get("jidoka.azureProject")?;
-            let repo = get("jidoka.azureRepository")?;
-            let url = format!(
-                "https://dev.azure.com/{}/{}/_git/{}",
-                AzureRepo::encoded(&org),
-                AzureRepo::encoded(&project),
-                AzureRepo::encoded(&repo)
-            );
-            let selected = AzureRepo::from_remote(&url)?;
-            match AzureRepo::from_remote(&remote)? {
-                Some(actual) if Some(&actual) != selected.as_ref() => {
-                    return Err(ToolProblem(
-                        "Azure provider configuration does not match origin.".into(),
-                    ));
-                }
-                None if get("jidoka.azureOrigin")? != remote => {
-                    return Err(ToolProblem(
-                        "Azure provider configuration does not match origin.".into(),
-                    ));
-                }
-                _ => {}
-            }
-            selected
-        }
-        Some(_) => {
-            return Err(ToolProblem(
-                "Unknown jidoka.prProvider; choose github or azure.".into(),
-            ));
-        }
-    };
-    let host = match azure {
-        Some(repo) => Host::Azure(repo),
-        None if provider.as_deref() == Some("github") || is_github_remote(&remote) => Host::GitHub,
-        None => Host::Unknown,
-    };
-    Ok(Origin { url: remote, host })
-}
-
-fn is_github_remote(remote: &str) -> bool {
-    if remote.starts_with("git@github.com:") {
-        return true;
-    }
-    let rest = remote
-        .strip_prefix("https://")
-        .or_else(|| remote.strip_prefix("http://"))
-        .or_else(|| remote.strip_prefix("ssh://"));
-    rest.and_then(|url| url.split_once('/'))
-        .is_some_and(|(authority, _)| {
-            let host = authority.rsplit('@').next().unwrap_or(authority);
-            host.eq_ignore_ascii_case("github.com")
-                || host.eq_ignore_ascii_case("github.com:22")
-                || host.eq_ignore_ascii_case("github.com:443")
-        })
-}
-
-/// What is percent-encoded in an Azure URL path segment: everything but letters, digits and the unreserved
-/// `-`, `.`, `_` and `~` of RFC 3986, so a name like `my-repo` appears as Azure itself shows it.
-const URL_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
-    .remove(b'-')
-    .remove(b'.')
-    .remove(b'_')
-    .remove(b'~');
-
-/// `value` percent-encoded as one segment of an Azure URL path.
-pub(crate) fn encode_segment(value: &str) -> String {
-    percent_encoding::utf8_percent_encode(value, URL_SEGMENT).to_string()
-}
-
-/// Azure DevOps Services repository identified by its origin URL.
-#[derive(PartialEq, Eq)]
-pub(crate) struct AzureRepo {
-    pub(crate) organization: String,
-    pub(crate) project: String,
-    pub(crate) repository: String,
-}
-
-impl AzureRepo {
-    pub(crate) fn from_remote(remote: &str) -> Result<Option<Self>, ToolProblem> {
-        let remote = remote.trim_end_matches('/');
-        // Azure HTTPS remotes commonly include a username; it never belongs in output or API calls.
-        let normalized = if let Some(rest) = remote.strip_prefix("https://") {
-            if let Some((authority, path)) = rest.split_once('/') {
-                let host = authority.rsplit('@').next().unwrap_or(authority);
-                if host == "dev.azure.com" || host.ends_with(".visualstudio.com") {
-                    format!("https://{host}/{path}")
-                } else {
-                    remote.to_string()
-                }
-            } else {
-                remote.to_string()
-            }
-        } else {
-            remote.to_string()
-        };
-        let remote = normalized.as_str();
-        let parts: Vec<&str> = if let Some(path) = remote.strip_prefix("https://dev.azure.com/") {
-            let p: Vec<_> = path.split('/').collect();
-            if p.len() != 4 || p[2] != "_git" {
-                return Err(ToolProblem("Invalid Azure Repos origin URL.".into()));
-            }
-            vec![p[0], p[1], p[3]]
-        } else if let Some(path) = remote
-            .strip_prefix("git@ssh.dev.azure.com:v3/")
-            .or_else(|| remote.strip_prefix("ssh://git@ssh.dev.azure.com/v3/"))
-            .or_else(|| remote.strip_prefix("ssh://git@ssh.dev.azure.com:22/v3/"))
-        {
-            path.split('/').collect()
-        } else if let Some(path) = remote.strip_prefix("https://") {
-            let Some((host, path)) = path.split_once('/') else {
-                return Ok(None);
-            };
-            let Some(org) = host.strip_suffix(".visualstudio.com") else {
-                return Ok(None);
-            };
-            let mut p: Vec<_> = path.split('/').collect();
-            if p.first() == Some(&"DefaultCollection") {
-                p.remove(0);
-            }
-            if p.len() != 3 || p[1] != "_git" {
-                return Err(ToolProblem("Invalid Azure Repos origin URL.".into()));
-            }
-            vec![org, p[0], p[2]]
-        } else {
-            return Ok(None);
-        };
-        if parts.len() != 3 {
-            return Err(ToolProblem("Invalid Azure Repos origin URL.".into()));
-        }
-        let decode = |part: &str| -> Result<String, ToolProblem> {
-            let decoded = percent_encoding::percent_decode_str(part)
-                .decode_utf8()
-                .map_err(|_| ToolProblem("Invalid Azure Repos origin URL.".into()))?
-                .into_owned();
-            if decoded.is_empty()
-                || decoded.starts_with('-')
-                || decoded == "."
-                || decoded == ".."
-                || decoded
-                    .chars()
-                    .any(|c| c.is_control() || matches!(c, '/' | '\\' | '?' | '#' | '@' | '%'))
-            {
-                return Err(ToolProblem("Invalid Azure Repos origin URL.".into()));
-            }
-            Ok(decoded)
-        };
-        Ok(Some(Self {
-            organization: decode(parts[0])?,
-            project: decode(parts[1])?,
-            repository: decode(parts[2])?,
-        }))
-    }
-    fn encoded(value: &str) -> String {
-        encode_segment(value)
-    }
-    fn org_url(&self) -> String {
-        format!(
-            "https://dev.azure.com/{}",
-            Self::encoded(&self.organization)
-        )
-    }
-    fn pr_url(&self, id: u64) -> String {
-        format!(
-            "{}/{}/_git/{}/pullrequest/{id}",
-            self.org_url(),
-            Self::encoded(&self.project),
-            Self::encoded(&self.repository)
-        )
-    }
-}
-
 /// Windows runs `az.cmd` through `cmd.exe`, and Rust refuses arguments that `cmd.exe` would re-parse.
 /// Checking them before the push keeps a refusal from leaving a pushed branch without a pull request.
 fn check_az_text(what: &str, text: &str, windows: bool) -> Result<(), ToolProblem> {
@@ -513,20 +268,7 @@ fn az_file_argument(path: &str) -> String {
 }
 
 fn az_json(gh: &dyn Gh, dir: &Path, args: &[&str]) -> Result<serde_json::Value, ToolProblem> {
-    let result = gh.az(dir, args).map_err(|error| match error {
-        GhError::NotInstalled => ToolProblem("Azure CLI (`az`) is not installed. Install it and the azure-devops extension, then sign in.".into()),
-        GhError::Other(text) => ToolProblem(format!(
-            "Could not start Azure CLI ({}): {}",
-            shown(&crate::doctor::az_program().to_string_lossy()),
-            shown(first_line(&text))
-        )),
-    })?;
-    if result.code != Some(0) {
-        // CLI output can contain credentials or remote URLs; do not include it in diagnostics.
-        return Err(ToolProblem("Azure CLI request failed. Check the azure-devops extension, authentication, and repository access.".into()));
-    }
-    serde_json::from_str(&result.stdout)
-        .map_err(|_| ToolProblem("Azure CLI returned invalid JSON.".into()))
+    az_parsed(args, gh.az(dir, args))
 }
 
 fn azure_existing(

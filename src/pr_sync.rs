@@ -2,9 +2,9 @@
 
 use crate::{
     inspect::shown,
+    pr_host::ToolProblem,
     pr_open::{PrRun, RunApi},
     pr_state::PrState,
-    pr_wait::ToolProblem,
     run_begin::{first_line, git, last_line, valid_branch_name},
 };
 use serde::Serialize;

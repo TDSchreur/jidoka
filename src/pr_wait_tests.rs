@@ -1,42 +1,43 @@
 //! `jidoka pr wait` against a scripted `gh` and a clock that never sleeps.
 
 use super::*;
+use crate::pr_host::{ToolError, ToolOutput};
 use serde_json::{Value, json};
-use std::{cell::RefCell, collections::VecDeque};
+use std::{cell::RefCell, collections::VecDeque, path::Path};
 
 const PR: &str = "https://github.com/o/r/pull/7";
 
 /// Answers `gh` calls from queues; the last answer of a queue repeats.
 #[derive(Default)]
 struct FakeGh {
-    views: RefCell<VecDeque<Result<GhOutput, GhError>>>,
-    checks: RefCell<VecDeque<Result<GhOutput, GhError>>>,
-    logs: RefCell<VecDeque<Result<GhOutput, GhError>>>,
+    views: RefCell<VecDeque<Result<ToolOutput, ToolError>>>,
+    checks: RefCell<VecDeque<Result<ToolOutput, ToolError>>>,
+    logs: RefCell<VecDeque<Result<ToolOutput, ToolError>>>,
     calls: RefCell<Vec<String>>,
-    azure: RefCell<VecDeque<Result<GhOutput, GhError>>>,
+    azure: RefCell<VecDeque<Result<ToolOutput, ToolError>>>,
 }
 
-fn ok(stdout: impl Into<String>) -> Result<GhOutput, GhError> {
-    Ok(GhOutput {
+fn ok(stdout: impl Into<String>) -> Result<ToolOutput, ToolError> {
+    Ok(ToolOutput {
         code: Some(0),
         stdout: stdout.into(),
         stderr: String::new(),
     })
 }
 
-fn failed(code: i32, stderr: &str) -> Result<GhOutput, GhError> {
-    Ok(GhOutput {
+fn failed(code: i32, stderr: &str) -> Result<ToolOutput, ToolError> {
+    Ok(ToolOutput {
         code: Some(code),
         stdout: String::new(),
         stderr: stderr.into(),
     })
 }
 
-fn view(head: &str, state: &str, merge: &str) -> Result<GhOutput, GhError> {
+fn view(head: &str, state: &str, merge: &str) -> Result<ToolOutput, ToolError> {
     ok(json!({"headRefOid": head, "state": state, "mergeStateStatus": merge, "baseRefName": "develop"}).to_string())
 }
 
-fn checks(list: &[(&str, &str)]) -> Result<GhOutput, GhError> {
+fn checks(list: &[(&str, &str)]) -> Result<ToolOutput, ToolError> {
     let items: Vec<_> = list
         .iter()
         .map(|(name, bucket)| {
@@ -46,7 +47,7 @@ fn checks(list: &[(&str, &str)]) -> Result<GhOutput, GhError> {
     ok(serde_json::to_string(&items).unwrap())
 }
 
-fn next(queue: &RefCell<VecDeque<Result<GhOutput, GhError>>>) -> Result<GhOutput, GhError> {
+fn next(queue: &RefCell<VecDeque<Result<ToolOutput, ToolError>>>) -> Result<ToolOutput, ToolError> {
     let mut queue = queue.borrow_mut();
 
     if queue.len() > 1 {
@@ -54,20 +55,20 @@ fn next(queue: &RefCell<VecDeque<Result<GhOutput, GhError>>>) -> Result<GhOutput
     } else {
         match queue.front().expect("the script has an answer") {
             Ok(output) => Ok(output.clone()),
-            Err(GhError::NotInstalled) => Err(GhError::NotInstalled),
-            Err(GhError::Other(text)) => Err(GhError::Other(text.clone())),
+            Err(ToolError::NotInstalled) => Err(ToolError::NotInstalled),
+            Err(ToolError::Other(text)) => Err(ToolError::Other(text.clone())),
         }
     }
 }
 
-impl Gh for FakeGh {
-    fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+impl Tools for FakeGh {
+    fn az(&self, args: &[&str]) -> Result<ToolOutput, ToolError> {
         self.calls
             .borrow_mut()
             .push(format!("az {}", args.join(" ")));
         next(&self.azure)
     }
-    fn run(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+    fn gh(&self, _: Option<&Path>, args: &[&str]) -> Result<ToolOutput, ToolError> {
         self.calls.borrow_mut().push(args.join(" "));
         match args {
             ["pr", "view", ..] => next(&self.views),
@@ -81,8 +82,8 @@ impl Gh for FakeGh {
 
 impl FakeGh {
     fn script(
-        views: Vec<Result<GhOutput, GhError>>,
-        checks: Vec<Result<GhOutput, GhError>>,
+        views: Vec<Result<ToolOutput, ToolError>>,
+        checks: Vec<Result<ToolOutput, ToolError>>,
     ) -> Self {
         Self {
             views: RefCell::new(views.into()),
@@ -269,11 +270,11 @@ fn fail_fast_returns_at_the_first_failure_and_lists_what_still_runs() {
 // --- rework 1 ---------------------------------------------------------------------------------------
 
 struct AzureScript;
-impl Gh for AzureScript {
-    fn run(&self, _: &[&str]) -> Result<GhOutput, GhError> {
+impl Tools for AzureScript {
+    fn gh(&self, _: Option<&Path>, _: &[&str]) -> Result<ToolOutput, ToolError> {
         panic!("GitHub CLI must not be called for Azure")
     }
-    fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+    fn az(&self, args: &[&str]) -> Result<ToolOutput, ToolError> {
         match args {
             ["repos", "pr", "show", ..] => ok(json!({"pullRequestId":535,"status":"active", "sourceRefName":"refs/heads/feature", "lastMergeSourceCommit":{"commitId":"abc"}, "repository":{"id":"repo","name":"Kahoot","project":{"name":"Projects"}}}).to_string()),
             ["repos", "ref", "list", ..] => ok(json!([{"name":"refs/heads/feature","objectId":"abc"}]).to_string()),
@@ -326,11 +327,11 @@ impl AzureCase {
         }
     }
 }
-impl Gh for AzureCase {
-    fn run(&self, _: &[&str]) -> Result<GhOutput, GhError> {
+impl Tools for AzureCase {
+    fn gh(&self, _: Option<&Path>, _: &[&str]) -> Result<ToolOutput, ToolError> {
         panic!("unexpected gh call")
     }
-    fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
+    fn az(&self, args: &[&str]) -> Result<ToolOutput, ToolError> {
         let data = match args {
             ["repos", "pr", "show", ..] => {
                 let state = pop_or_repeat(&self.pr_states);
@@ -379,7 +380,7 @@ fn run_azure(case: &AzureCase, seconds: u64) -> Result<Waited, ToolProblem> {
         },
     )
 }
-fn run_azure_with(gh: &dyn Gh, options: &Options) -> Result<Waited, ToolProblem> {
+fn run_azure_with(gh: &dyn Tools, options: &Options) -> Result<Waited, ToolProblem> {
     wait(
         Some("https://dev.azure.com/dutchworkz/Projects/_git/Kahoot/pullrequest/535"),
         options,

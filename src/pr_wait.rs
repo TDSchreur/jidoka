@@ -1,37 +1,14 @@
 //! `jidoka pr wait`: watches the checks of a run's pull request and returns one CI outcome.
 
-use crate::inspect::shown;
-use serde::Serialize;
-use std::{
-    io,
-    process::Command,
-    time::{Duration, Instant},
+use crate::{
+    inspect::shown,
+    pr_host::{ToolProblem, Tools, is_azure_pr_url, problem, run_gh},
 };
-
-/// What `gh` printed.
-#[derive(Clone, Debug)]
-pub(crate) struct GhOutput {
-    pub(crate) code: Option<i32>,
-    pub(crate) stdout: String,
-    pub(crate) stderr: String,
-}
-
-#[derive(Debug)]
-pub(crate) enum GhError {
-    NotInstalled,
-    Other(String),
-}
+use serde::Serialize;
+use std::time::{Duration, Instant};
 
 #[path = "pr_wait_azure.rs"]
 mod azure;
-
-/// Runs host tools. The real implementation starts programs; tests answer from a script.
-pub(crate) trait Gh {
-    fn run(&self, args: &[&str]) -> Result<GhOutput, GhError>;
-    fn az(&self, _args: &[&str]) -> Result<GhOutput, GhError> {
-        Err(GhError::NotInstalled)
-    }
-}
 
 /// Time, so that tests never sleep.
 pub(crate) trait Clock {
@@ -106,10 +83,6 @@ pub(crate) struct Waited {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) failures: Vec<Failure>,
 }
-
-/// A problem with the tools or the run, not a CI outcome. The message says what to do.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct ToolProblem(pub(crate) String);
 
 /// How long to wait for the checks when the caller says nothing.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -200,50 +173,6 @@ pub(crate) fn parse_options(options: &[&str]) -> Result<(Options, bool), String>
     Ok((parsed, json))
 }
 
-/// The real `gh`.
-pub(crate) struct RealGh;
-
-impl Gh for RealGh {
-    fn az(&self, args: &[&str]) -> Result<GhOutput, GhError> {
-        let output = Command::new(crate::doctor::az_program())
-            .args(args)
-            .env("AZURE_CORE_ONLY_SHOW_ERRORS", "true")
-            .env("AZURE_EXTENSION_USE_DYNAMIC_INSTALL", "no")
-            .output()
-            .map_err(|error| {
-                if error.kind() == io::ErrorKind::NotFound {
-                    GhError::NotInstalled
-                } else {
-                    GhError::Other(error.to_string())
-                }
-            })?;
-        Ok(GhOutput {
-            code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        })
-    }
-    fn run(&self, args: &[&str]) -> Result<GhOutput, GhError> {
-        let output = Command::new("gh")
-            .args(args)
-            .env("GH_PROMPT_DISABLED", "1")
-            .env("NO_COLOR", "1")
-            .output()
-            .map_err(|error| {
-                if error.kind() == io::ErrorKind::NotFound {
-                    GhError::NotInstalled
-                } else {
-                    GhError::Other(error.to_string())
-                }
-            })?;
-        Ok(GhOutput {
-            code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        })
-    }
-}
-
 /// The real clock.
 pub(crate) struct RealClock(pub(crate) Instant);
 
@@ -257,8 +186,8 @@ impl Clock for RealClock {
 }
 
 /// Checks that `gh` can be started, so that its absence is reported before anything else is.
-pub(crate) fn check_gh(gh: &dyn Gh) -> Result<(), ToolProblem> {
-    run_gh(gh, &["--version"]).map(|_| ())
+pub(crate) fn check_gh(tools: &dyn Tools) -> Result<(), ToolProblem> {
+    run_gh(tools, None, &["--version"]).map(|_| ())
 }
 
 /// How often the checks are asked for.
@@ -275,49 +204,7 @@ struct View {
     merge: String,
 }
 
-fn first_line(text: &str) -> &str {
-    text.lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("")
-        .trim()
-}
-
-/// A failed `gh` call as a message that says what to do.
-pub(crate) fn problem(what: &str, output: &GhOutput) -> ToolProblem {
-    let stderr = output.stderr.to_lowercase();
-    if output.code == Some(4) || stderr.contains("gh auth login") {
-        return ToolProblem(
-            "The GitHub CLI is not signed in. Run `gh auth login` and try again.".into(),
-        );
-    }
-    let detail = shown(first_line(if output.stderr.trim().is_empty() {
-        &output.stdout
-    } else {
-        &output.stderr
-    }));
-    if stderr.contains("error connecting")
-        || stderr.contains("could not resolve host")
-        || stderr.contains("no such host")
-        || stderr.contains("i/o timeout")
-    {
-        return ToolProblem(format!(
-            "Could not reach GitHub. Check your network connection and try again. ({detail})"
-        ));
-    }
-    ToolProblem(format!("`gh {what}` failed: {detail}"))
-}
-
-pub(crate) fn run_gh(gh: &dyn Gh, args: &[&str]) -> Result<GhOutput, ToolProblem> {
-    gh.run(args).map_err(|error| match error {
-        GhError::NotInstalled => ToolProblem(
-            "The GitHub CLI (`gh`) is not installed or not on PATH. Install it from https://cli.github.com, run `gh auth login`, and try again."
-                .into(),
-        ),
-        GhError::Other(text) => ToolProblem(format!("Could not run `gh`: {text}")),
-    })
-}
-
-fn read_view(gh: &dyn Gh, pull_request: &str) -> Result<View, ToolProblem> {
+fn read_view(tools: &dyn Tools, pull_request: &str) -> Result<View, ToolProblem> {
     let args = [
         "pr",
         "view",
@@ -325,7 +212,7 @@ fn read_view(gh: &dyn Gh, pull_request: &str) -> Result<View, ToolProblem> {
         "--json",
         "headRefOid,state,mergeStateStatus",
     ];
-    let output = run_gh(gh, &args)?;
+    let output = run_gh(tools, None, &args)?;
     if output.code != Some(0) {
         return Err(problem("pr view", &output));
     }
@@ -342,7 +229,7 @@ fn read_view(gh: &dyn Gh, pull_request: &str) -> Result<View, ToolProblem> {
     })
 }
 
-fn read_checks(gh: &dyn Gh, pull_request: &str) -> Result<Vec<CheckResult>, ToolProblem> {
+fn read_checks(tools: &dyn Tools, pull_request: &str) -> Result<Vec<CheckResult>, ToolProblem> {
     let args = [
         "pr",
         "checks",
@@ -350,7 +237,7 @@ fn read_checks(gh: &dyn Gh, pull_request: &str) -> Result<Vec<CheckResult>, Tool
         "--json",
         "name,bucket,state,link",
     ];
-    let output = run_gh(gh, &args)?;
+    let output = run_gh(tools, None, &args)?;
     // `gh pr checks` exits non-zero while checks are pending or failed; the JSON is what counts.
     let stdout = output.stdout.trim();
     if !stdout.starts_with('[') {
@@ -379,7 +266,7 @@ fn read_checks(gh: &dyn Gh, pull_request: &str) -> Result<Vec<CheckResult>, Tool
 
 /// The base state from `mergeStateStatus`; an unknown one is asked for again.
 fn base_state(
-    gh: &dyn Gh,
+    tools: &dyn Tools,
     clock: &dyn Clock,
     pull_request: &str,
     mut merge: String,
@@ -390,7 +277,7 @@ fn base_state(
             "DIRTY" => return Ok(BaseState::Conflicts),
             "UNKNOWN" | "" if attempt < BASE_RETRIES => {
                 clock.sleep(BASE_RETRY);
-                merge = read_view(gh, pull_request)?.merge;
+                merge = read_view(tools, pull_request)?.merge;
             }
             "UNKNOWN" | "" => return Ok(BaseState::Unknown),
             _ => return Ok(BaseState::UpToDate),
@@ -492,7 +379,7 @@ fn excerpt(log: &str) -> Option<String> {
 
 /// The failed checks, each run's log fetched once (the first failed check of a run carries it), for at
 /// most `MAX_LOGS` runs. A log that cannot be fetched leaves the name and link only.
-fn failures(gh: &dyn Gh, checks: &[CheckResult]) -> Vec<Failure> {
+fn failures(tools: &dyn Tools, checks: &[CheckResult]) -> Vec<Failure> {
     let mut fetched: Vec<&str> = Vec::new();
     let mut out = Vec::new();
     for check in checks.iter().filter(|check| check.bucket == "fail") {
@@ -502,8 +389,11 @@ fn failures(gh: &dyn Gh, checks: &[CheckResult]) -> Vec<Failure> {
             && fetched.len() < MAX_LOGS
         {
             fetched.push(id);
-            text = gh
-                .run(&["run", "view", id, "--repo", &repository, "--log-failed"])
+            text = tools
+                .gh(
+                    None,
+                    &["run", "view", id, "--repo", &repository, "--log-failed"],
+                )
                 .ok()
                 .filter(|output| output.code == Some(0))
                 .and_then(|output| excerpt(&output.stdout));
@@ -527,32 +417,13 @@ pub(crate) fn pushed_head(worktree: &std::path::Path, branch: &str) -> Option<St
     (rev(&format!("refs/remotes/origin/{branch}^{{commit}}"))? == head).then_some(head)
 }
 
-/// The status and draft flag of an Azure Repos pull request, read with `az` the way `wait` reads it.
-pub(crate) fn azure_pr_status(gh: &dyn Gh, url: &str) -> Result<(String, bool), ToolProblem> {
-    azure::status(gh, url)
-}
-
-/// The last source commit and source branch of the Azure Repos pull request at `url`.
-pub(crate) fn azure_pr_head(gh: &dyn Gh, url: &str) -> Result<(String, String), ToolProblem> {
-    azure::head(gh, url)
-}
-
-/// Whether `url` is an Azure DevOps Services pull request URL, in its canonical or legacy form.
-pub(crate) fn is_azure_pr_url(url: &str) -> bool {
-    url.starts_with("https://dev.azure.com/")
-        || url
-            .strip_prefix("https://")
-            .and_then(|rest| rest.split('/').next())
-            .is_some_and(|host| host.ends_with(".visualstudio.com"))
-}
-
 /// Watches the checks of `pull_request` for its current head commit until they have ended, and returns the
 /// CI outcome. `activity` is told what the run is doing, and `progress` how far the checks are. It only
 /// reads: it never merges, pushes or updates the branch.
 pub(crate) fn wait(
     pull_request: Option<&str>,
     options: &Options,
-    gh: &dyn Gh,
+    tools: &dyn Tools,
     clock: &dyn Clock,
     activity: &mut dyn FnMut(&str),
     progress: &mut dyn FnMut(&str),
@@ -564,9 +435,9 @@ pub(crate) fn wait(
         )
     })?;
     if is_azure_pr_url(pull_request) {
-        return azure::wait(pull_request, options, gh, clock, activity, progress);
+        return azure::wait(pull_request, options, tools, clock, activity, progress);
     }
-    let mut first = read_view(gh, pull_request)?;
+    let mut first = read_view(tools, pull_request)?;
     // The whole wait, including the grace for a just-pushed head, stays within `--timeout`.
     let started = clock.elapsed();
     if let Some(pushed) = &options.pushed_head {
@@ -576,7 +447,7 @@ pub(crate) fn wait(
         {
             progress("Waiting for the pull request to show the pushed commit");
             clock.sleep(HEAD_POLL);
-            first = read_view(gh, pull_request)?;
+            first = read_view(tools, pull_request)?;
         }
     }
     let result =
@@ -597,8 +468,8 @@ pub(crate) fn wait(
     }
     activity("Waiting for CI");
     let waited = loop {
-        let checks = read_checks(gh, pull_request)?;
-        let view = read_view(gh, pull_request)?;
+        let checks = read_checks(tools, pull_request)?;
+        let view = read_view(tools, pull_request)?;
         if view.state != "OPEN" {
             break result(Outcome::NotOpen, &view, Vec::new(), BaseState::Unknown);
         }
@@ -609,7 +480,7 @@ pub(crate) fn wait(
         let waited_for = clock.elapsed().saturating_sub(started);
         if checks.is_empty() {
             if waited_for >= GRACE.min(options.timeout) {
-                let base = base_state(gh, clock, pull_request, view.merge.clone())?;
+                let base = base_state(tools, clock, pull_request, view.merge.clone())?;
                 break result(Outcome::NoCi, &view, checks, base);
             }
             progress("No checks reported yet");
@@ -623,7 +494,7 @@ pub(crate) fn wait(
         let any_failed = checks.iter().any(|check| check.bucket == "fail");
         if pending > 0 && !(options.fail_fast && any_failed) {
             if waited_for >= options.timeout {
-                let base = base_state(gh, clock, pull_request, view.merge.clone())?;
+                let base = base_state(tools, clock, pull_request, view.merge.clone())?;
                 break result(Outcome::Timeout, &view, checks, base);
             }
             progress(&format!(
@@ -640,10 +511,10 @@ pub(crate) fn wait(
         } else {
             Outcome::Passed
         };
-        let base = base_state(gh, clock, pull_request, view.merge.clone())?;
+        let base = base_state(tools, clock, pull_request, view.merge.clone())?;
         let mut waited = result(outcome, &view, checks, base);
         if outcome == Outcome::Failed {
-            waited.failures = failures(gh, &waited.checks);
+            waited.failures = failures(tools, &waited.checks);
         }
         break waited;
     };

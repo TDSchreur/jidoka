@@ -1,8 +1,6 @@
 //! Read-only Azure DevOps Services pull request status watching.
-use super::{
-    BaseState, CheckResult, Clock, Failure, GRACE, Gh, GhError, Options, Outcome, POLL,
-    ToolProblem, Waited,
-};
+use super::{BaseState, CheckResult, Clock, Failure, GRACE, Options, Outcome, POLL, Waited};
+use crate::pr_host::{AzurePr, ToolProblem, Tools, az_json, encode_segment, required};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -13,270 +11,8 @@ const MAX_POLICY_PAGES: usize = 100;
 /// Configuration type ID of the Azure Repos Build policy.
 const BUILD_POLICY_TYPE: &str = "0609b952-1397-4640-95ec-e00a01b2c241";
 
-struct AzurePr {
-    org: String,
-    project: String,
-    repository: String,
-    id: String,
-}
-
-impl AzurePr {
-    fn parse(url: &str) -> Result<Self, ToolProblem> {
-        let Some(path) = url.strip_prefix("https://dev.azure.com/") else {
-            return Err(ToolProblem(
-                "Legacy visualstudio.com pull request URLs are not supported; record the canonical https://dev.azure.com/<organization>/<project>/_git/<repository>/pullrequest/<id> URL with `jidoka run update <run-id> --pr <url>`.".into(),
-            ));
-        };
-        let parts: Vec<_> = path.split('/').collect();
-        if parts.len() != 6
-            || parts[2] != "_git"
-            || parts[4] != "pullrequest"
-            || parts[5].is_empty()
-            || parts[5].parse::<u64>().ok().filter(|id| *id > 0).is_none()
-            || !parts[5].bytes().all(|b| b.is_ascii_digit())
-        {
-            return Err(ToolProblem("Invalid Azure pull request URL.".into()));
-        }
-        let decode = |s: &str| -> Result<String, ToolProblem> {
-            let value = percent_encoding::percent_decode_str(s)
-                .decode_utf8()
-                .map_err(|_| ToolProblem("Invalid Azure pull request URL.".into()))?
-                .into_owned();
-            if value.is_empty()
-                || value.starts_with('-')
-                || value == "."
-                || value == ".."
-                || value
-                    .chars()
-                    .any(|c| c.is_control() || matches!(c, '/' | '\\' | '?' | '#' | '@' | '%'))
-            {
-                return Err(ToolProblem("Invalid Azure pull request URL.".into()));
-            }
-            Ok(value)
-        };
-        let org = decode(parts[0])?;
-        let project = decode(parts[1])?;
-        let repository = decode(parts[3])?;
-        Ok(Self {
-            org: format!(
-                "https://dev.azure.com/{}",
-                crate::pr_open::encode_segment(&org)
-            ),
-            project,
-            repository,
-            id: parts[5].into(),
-        })
-    }
-    /// The pull request as Azure reports it, checked to be the one the URL names.
-    fn fetch(&self, gh: &dyn Gh) -> Result<Value, ToolProblem> {
-        let data = az_json(
-            gh,
-            &[
-                "repos",
-                "pr",
-                "show",
-                "--id",
-                &self.id,
-                "--organization",
-                &self.org,
-                "--output",
-                "json",
-                "--detect",
-                "false",
-            ],
-        )?;
-        if data["repository"]["name"].as_str() != Some(self.repository.as_str())
-            || data["repository"]["project"]["name"].as_str() != Some(self.project.as_str())
-            || data["pullRequestId"].as_u64() != self.id.parse::<u64>().ok()
-        {
-            return Err(ToolProblem(
-                "Azure pull request does not match the recorded repository.".into(),
-            ));
-        }
-        Ok(data)
-    }
-    fn show(&self, gh: &dyn Gh) -> Result<Value, ToolProblem> {
-        let data = self.fetch(gh)?;
-        if !data["forkSource"].is_null() {
-            return Err(ToolProblem(
-                "Watching pull requests from Azure forks is not supported yet.".into(),
-            ));
-        }
-        Ok(data)
-    }
-    fn head(&self, gh: &dyn Gh, data: &Value) -> Result<String, ToolProblem> {
-        let reference = required(&data["sourceRefName"], "source branch")?;
-        let branch = reference
-            .strip_prefix("refs/heads/")
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                ToolProblem("Azure pull request has an invalid source branch.".into())
-            })?;
-        let repo_id = required(&data["repository"]["id"], "repository ID")?;
-        let filter = format!("--filter=heads/{branch}");
-        let items = az_json(
-            gh,
-            &[
-                "repos",
-                "ref",
-                "list",
-                "--organization",
-                &self.org,
-                "--project",
-                &self.project,
-                "--repository",
-                repo_id,
-                &filter,
-                "--output",
-                "json",
-                "--detect",
-                "false",
-            ],
-        )?;
-        let list = items
-            .as_array()
-            .ok_or_else(|| ToolProblem("Azure refs response is not an array.".into()))?;
-        let found = list
-            .iter()
-            .find(|item| item["name"].as_str() == Some(reference))
-            .ok_or_else(|| ToolProblem("Azure source branch was not found.".into()))?;
-        Ok(required(&found["objectId"], "source head")?.to_string())
-    }
-    fn invoke(
-        &self,
-        gh: &dyn Gh,
-        resource: &str,
-        repository_id: &str,
-        iteration: Option<u64>,
-    ) -> Result<Vec<Value>, ToolProblem> {
-        let project = format!("project={}", self.project);
-        let repo = format!("repositoryId={repository_id}");
-        let id = format!("pullRequestId={}", self.id);
-        let iteration_arg = iteration.map(|value| format!("iterationId={value}"));
-        let mut args = vec![
-            "devops",
-            "invoke",
-            "--organization",
-            &self.org,
-            "--area",
-            "git",
-            "--resource",
-            resource,
-            "--route-parameters",
-            &project,
-            &repo,
-            &id,
-        ];
-        if let Some(value) = &iteration_arg {
-            args.push(value);
-        }
-        args.extend([
-            "--api-version",
-            "7.1",
-            "--output",
-            "json",
-            "--detect",
-            "false",
-        ]);
-        let data = az_json(gh, &args)?;
-        if !data["continuation_token"].is_null() {
-            return Err(ToolProblem(
-                "Azure returned a paginated response; cannot safely evaluate all checks.".into(),
-            ));
-        }
-        data["value"]
-            .as_array()
-            .cloned()
-            .ok_or_else(|| ToolProblem("Azure returned an invalid checks response.".into()))
-    }
-}
-
-/// The status (`active`, `completed` or `abandoned`) and draft flag of the Azure Repos pull request at `url`.
-pub(super) fn status(gh: &dyn Gh, url: &str) -> Result<(String, bool), ToolProblem> {
-    let data = AzurePr::parse(url)?.fetch(gh)?;
-    let status = required(&data["status"], "pull request status")?.to_string();
-    Ok((status, data["isDraft"].as_bool().unwrap_or(false)))
-}
-
-/// The last source commit and the source branch name of the Azure Repos pull request at `url`.
-pub(super) fn head(gh: &dyn Gh, url: &str) -> Result<(String, String), ToolProblem> {
-    let data = AzurePr::parse(url)?.fetch(gh)?;
-    let commit = required(&data["lastMergeSourceCommit"]["commitId"], "source commit")?;
-    let reference = required(&data["sourceRefName"], "source branch")?;
-    let branch = reference
-        .strip_prefix("refs/heads/")
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| ToolProblem("Azure pull request has an invalid source branch.".into()))?;
-    Ok((commit.to_string(), branch.to_string()))
-}
-
-fn required<'a>(value: &'a Value, label: &str) -> Result<&'a str, ToolProblem> {
-    value
-        .as_str()
-        .filter(|s| !s.is_empty() && !s.starts_with('-') && !s.chars().any(char::is_control))
-        .ok_or_else(|| ToolProblem(format!("Azure response has no valid {label}.")))
-}
-
 fn parse_time(value: &str) -> Option<time::OffsetDateTime> {
     time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
-}
-
-fn az_json(gh: &dyn Gh, args: &[&str]) -> Result<Value, ToolProblem> {
-    let operation = match args {
-        ["repos", "pr", "show", ..] => "read the pull request",
-        ["repos", "pr", "policy", "list", ..] => "list pull request policies",
-        ["repos", "ref", "list", ..] => "read the source branch",
-        ["pipelines", "runs", "show", ..] => "read the policy build",
-        ["devops", "invoke", ..] => "read pull request checks",
-        _ => "read Azure DevOps",
-    };
-    let result = gh.az(args).map_err(|error| match error {
-        GhError::NotInstalled => ToolProblem(
-            "Azure CLI (`az`) is not installed; install it and the azure-devops extension.".into(),
-        ),
-        GhError::Other(_) => ToolProblem(format!(
-            "Could not start Azure CLI to {operation}; check executable permissions."
-        )),
-    })?;
-    if result.code != Some(0) {
-        // Do not echo Azure output: it can contain credentials or other sensitive data.
-        let error = result.stderr.to_lowercase();
-        let advice = if error.contains("az login")
-            || error.contains("az devops login")
-            || error.contains("authentication")
-            || error.contains("unauthorized")
-            || error.contains("401")
-        {
-            "check Azure authentication with az login or az devops login"
-        } else if error.contains("extension")
-            || error.contains("not recognized")
-            || error.contains("unrecognized arguments")
-        {
-            "install or update the azure-devops extension"
-        } else if error.contains("forbidden")
-            || error.contains("permission")
-            || error.contains("403")
-        {
-            "check your repository and pipeline permissions"
-        } else if error.contains("connection")
-            || error.contains("timed out")
-            || error.contains("network")
-        {
-            "check the network connection"
-        } else {
-            "check the azure-devops extension, authentication, and repository access"
-        };
-        return Err(ToolProblem(format!(
-            "Azure CLI could not {operation}; {advice}."
-        )));
-    }
-    serde_json::from_str(&result.stdout).map_err(|error| {
-        ToolProblem(format!(
-            "Azure CLI returned invalid JSON while trying to {operation} (line {}, column {}).",
-            error.line(),
-            error.column()
-        ))
-    })
 }
 
 /// Azure's merge calculation proves conflicts; a successful merge does not prove the branch is up to date.
@@ -322,13 +58,13 @@ fn result(
 )]
 fn checks_for(
     pr: &AzurePr,
-    gh: &dyn Gh,
+    tools: &dyn Tools,
     data: &Value,
     head: &str,
     url: &str,
 ) -> Result<(Vec<CheckResult>, bool), ToolProblem> {
     let repo = required(&data["repository"]["id"], "repository ID")?;
-    let iterations = pr.invoke(gh, "pullRequestIterations", repo, None)?;
+    let iterations = pr.invoke(tools, "pullRequestIterations", repo, None)?;
     let latest = iterations
         .iter()
         .max_by_key(|item| item["id"].as_u64().unwrap_or(0));
@@ -356,7 +92,7 @@ fn checks_for(
     for page in 0..MAX_POLICY_PAGES {
         let skip = (page * POLICY_PAGE_SIZE).to_string();
         let response = az_json(
-            gh,
+            tools,
             &[
                 "repos",
                 "pr",
@@ -430,7 +166,7 @@ fn checks_for(
                     let id = id.to_string();
                     // The lookup only tells a cancelled build from a failed one; it never undoes the rejection.
                     let build = az_json(
-                        gh,
+                        tools,
                         &[
                             "pipelines",
                             "runs",
@@ -472,7 +208,7 @@ fn checks_for(
                 format!(
                     "{}/{}/_build/results?buildId={id}",
                     pr.org,
-                    crate::pr_open::encode_segment(&pr.project)
+                    encode_segment(&pr.project)
                 )
             })
             .unwrap_or_else(|| url.into());
@@ -486,8 +222,8 @@ fn checks_for(
             link,
         });
     }
-    let mut statuses = pr.invoke(gh, "pullRequestStatuses", repo, None)?;
-    statuses.extend(pr.invoke(gh, "pullRequestIterationStatuses", repo, Some(iteration))?);
+    let mut statuses = pr.invoke(tools, "pullRequestStatuses", repo, None)?;
+    statuses.extend(pr.invoke(tools, "pullRequestIterationStatuses", repo, Some(iteration))?);
     let mut latest_status: BTreeMap<(String, String), Value> = BTreeMap::new();
     for status in statuses {
         if status["iterationId"]
@@ -559,7 +295,7 @@ fn is_active(data: &Value) -> Result<bool, ToolProblem> {
 /// Ends the wait when the pull request is no longer open or its source moved away from `head`.
 fn moved_on(
     pr: &AzurePr,
-    gh: &dyn Gh,
+    tools: &dyn Tools,
     data: &Value,
     url: &str,
     head: &str,
@@ -576,7 +312,7 @@ fn moved_on(
             BaseState::Unknown,
         )));
     }
-    let current = pr.head(gh, data)?;
+    let current = pr.live_head(tools, data)?;
     if current != head {
         activity("Head commit changed while waiting for CI");
         return Ok(Some(result(
@@ -594,13 +330,13 @@ fn moved_on(
 pub(super) fn wait(
     url: &str,
     options: &Options,
-    gh: &dyn Gh,
+    tools: &dyn Tools,
     clock: &dyn Clock,
     activity: &mut dyn FnMut(&str),
     progress: &mut dyn FnMut(&str),
 ) -> Result<Waited, ToolProblem> {
     let pr = AzurePr::parse(url)?;
-    let first = pr.show(gh)?;
+    let first = pr.show(tools)?;
     if !is_active(&first)? {
         let head = first["lastMergeSourceCommit"]["commitId"]
             .as_str()
@@ -615,17 +351,17 @@ pub(super) fn wait(
             BaseState::Unknown,
         ));
     }
-    let head = pr.head(gh, &first)?;
+    let head = pr.live_head(tools, &first)?;
     activity("Waiting for CI");
     let started = clock.elapsed();
     loop {
-        let data = pr.show(gh)?;
-        if let Some(waited) = moved_on(&pr, gh, &data, url, &head, activity)? {
+        let data = pr.show(tools)?;
+        if let Some(waited) = moved_on(&pr, tools, &data, url, &head, activity)? {
             return Ok(waited);
         }
-        let (checks, applicable) = checks_for(&pr, gh, &data, &head, url)?;
-        let after = pr.show(gh)?;
-        if let Some(waited) = moved_on(&pr, gh, &after, url, &head, activity)? {
+        let (checks, applicable) = checks_for(&pr, tools, &data, &head, url)?;
+        let after = pr.show(tools)?;
+        if let Some(waited) = moved_on(&pr, tools, &after, url, &head, activity)? {
             return Ok(waited);
         }
         let elapsed = clock.elapsed().saturating_sub(started);

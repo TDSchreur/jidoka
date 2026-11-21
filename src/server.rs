@@ -2,8 +2,8 @@ use crate::{
     current_build,
     document::{self, DocumentError},
     groups::{Group, GroupError, GroupStore, GroupView, NewGroup, Target, valid_group_id},
+    pr_host::{Hosts, PrHost, RealTools},
     pr_state,
-    pr_wait::{self, RealGh},
     run::{NewRun, Run, RunStore, UpdateRun},
     usage::{UsageSettings, collect_and_store},
 };
@@ -580,7 +580,7 @@ fn advance_run(
 ) -> Result<&'static str, (HttpStatus, String)> {
     request
         .into_inner()
-        .advance(store, id, &crate::pr_sync::RealGit, &crate::pr_wait::RealGh)
+        .advance(store, id, &crate::pr_sync::RealGit, &RealTools)
         .map_err(|error| (HttpStatus::BadRequest, error))?;
     collector.after_update(store, id);
     Ok("Run advanced")
@@ -1192,8 +1192,8 @@ impl Collector {
     }
 }
 
-/// The tool that reads pull requests from their hosts, shared by the background pass and the sync endpoint.
-struct PrTool(std::sync::Arc<dyn pr_wait::Gh + Send + Sync>);
+/// The host that pull requests are read from, shared by the background pass and the sync endpoint.
+struct PrTool(std::sync::Arc<dyn PrHost + Send + Sync>);
 
 #[cfg(test)]
 pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> {
@@ -1202,7 +1202,7 @@ pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> 
         port,
         Collector::new(None),
         new_tokens()?,
-        std::sync::Arc::new(RealGh),
+        std::sync::Arc::new(Hosts::new(RealTools)),
     )
 }
 
@@ -1210,7 +1210,7 @@ pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> 
 fn build_rocket_with_tool(
     path: &Path,
     port: u16,
-    tool: std::sync::Arc<dyn pr_wait::Gh + Send + Sync>,
+    tool: std::sync::Arc<dyn PrHost + Send + Sync>,
 ) -> io::Result<Rocket<Build>> {
     build_rocket_with_tokens(path, port, Collector::new(None), new_tokens()?, tool)
 }
@@ -1240,7 +1240,7 @@ pub(crate) fn build_rocket_with(
         port,
         collector,
         new_tokens()?,
-        std::sync::Arc::new(RealGh),
+        std::sync::Arc::new(Hosts::new(RealTools)),
     )
 }
 
@@ -1256,7 +1256,7 @@ fn build_rocket_with_tokens(
     port: u16,
     collector: Collector,
     (session_token, cli_token): (SessionToken, String),
-    tool: std::sync::Arc<dyn pr_wait::Gh + Send + Sync>,
+    tool: std::sync::Arc<dyn PrHost + Send + Sync>,
 ) -> io::Result<Rocket<Build>> {
     let config = Figment::from(rocket::Config::default())
         .merge(("address", LOOPBACK_HOST))
@@ -1380,7 +1380,7 @@ const PR_STATE_PASS: std::time::Duration = std::time::Duration::from_secs(20);
 /// a slow or missing tool never holds up a request. Merged pull requests are not read again.
 fn watch_pr_states(
     store: RunStore,
-    tool: std::sync::Arc<dyn pr_wait::Gh + Send + Sync>,
+    tool: std::sync::Arc<dyn PrHost + Send + Sync>,
     pass: std::time::Duration,
 ) -> rocket::tokio::task::JoinHandle<()> {
     rocket::tokio::spawn(async move {
@@ -1451,7 +1451,7 @@ pub(crate) fn serve(
             port,
             Collector::new(Some(usage)),
             tokens,
-            std::sync::Arc::new(RealGh),
+            std::sync::Arc::new(Hosts::new(RealTools)),
         )
         .map_err(|error| {
             io::Error::new(error.kind(), format!("could not open run storage: {error}"))

@@ -1,7 +1,7 @@
 //! `jidoka pr open` with real git in temporary repositories (a local bare remote) and a scripted `gh`.
 
 use super::*;
-use std::{cell::RefCell, collections::VecDeque, fs};
+use std::{cell::RefCell, collections::VecDeque, fs, process::Command};
 use tempfile::TempDir;
 
 /// The plain path form git prints; on Windows `canonicalize` gives a `\\?\` path that git reads as a URL.
@@ -118,9 +118,9 @@ impl Project {
 
 #[derive(Default)]
 struct FakeGh {
-    version: RefCell<Option<Result<GhOutput, GhError>>>,
-    list: RefCell<VecDeque<Result<GhOutput, GhError>>>,
-    create: RefCell<VecDeque<Result<GhOutput, GhError>>>,
+    version: RefCell<Option<Result<ToolOutput, ToolError>>>,
+    list: RefCell<VecDeque<Result<ToolOutput, ToolError>>>,
+    create: RefCell<VecDeque<Result<ToolOutput, ToolError>>>,
     calls: RefCell<Vec<(PathBuf, String)>>,
     /// The arguments of every git command the code ran.
     git_calls: RefCell<Vec<Vec<String>>>,
@@ -129,23 +129,23 @@ struct FakeGh {
     az_missing: std::cell::Cell<bool>,
 }
 
-fn ok(stdout: &str) -> Result<GhOutput, GhError> {
-    Ok(GhOutput {
+fn ok(stdout: &str) -> Result<ToolOutput, ToolError> {
+    Ok(ToolOutput {
         code: Some(0),
         stdout: stdout.into(),
         stderr: String::new(),
     })
 }
 
-fn failed(code: i32, stderr: &str) -> Result<GhOutput, GhError> {
-    Ok(GhOutput {
+fn failed(code: i32, stderr: &str) -> Result<ToolOutput, ToolError> {
+    Ok(ToolOutput {
         code: Some(code),
         stdout: String::new(),
         stderr: stderr.into(),
     })
 }
 
-fn pop(queue: &RefCell<VecDeque<Result<GhOutput, GhError>>>) -> Result<GhOutput, GhError> {
+fn pop(queue: &RefCell<VecDeque<Result<ToolOutput, ToolError>>>) -> Result<ToolOutput, ToolError> {
     queue
         .borrow_mut()
         .pop_front()
@@ -153,9 +153,9 @@ fn pop(queue: &RefCell<VecDeque<Result<GhOutput, GhError>>>) -> Result<GhOutput,
 }
 
 impl Gh for FakeGh {
-    fn az(&self, dir: &Path, args: &[&str]) -> Result<GhOutput, GhError> {
+    fn az(&self, dir: &Path, args: &[&str]) -> Result<ToolOutput, ToolError> {
         if self.az_missing.get() {
-            return Err(GhError::NotInstalled);
+            return Err(ToolError::NotInstalled);
         }
         self.calls
             .borrow_mut()
@@ -199,13 +199,13 @@ impl Gh for FakeGh {
         }
     }
 
-    fn run(&self, dir: &Path, args: &[&str]) -> Result<GhOutput, GhError> {
+    fn run(&self, dir: &Path, args: &[&str]) -> Result<ToolOutput, ToolError> {
         self.calls
             .borrow_mut()
             .push((dir.to_path_buf(), args.join(" ")));
         match args {
             ["--version"] => match self.version.borrow().as_ref() {
-                Some(Err(GhError::NotInstalled)) => Err(GhError::NotInstalled),
+                Some(Err(ToolError::NotInstalled)) => Err(ToolError::NotInstalled),
                 _ => ok("gh version 2"),
             },
             ["pr", "list", ..] => pop(&self.list),

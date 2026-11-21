@@ -15,6 +15,7 @@ mod install;
 mod install_record;
 mod knowledge;
 mod plans;
+mod pr_host;
 mod pr_open;
 mod pr_state;
 mod pr_sync;
@@ -39,6 +40,7 @@ mod usage;
 mod usage_logs;
 
 use client::{fetch_run, fetch_runs, start_run};
+use pr_host::PrHost;
 use run::UPDATE_HELP;
 use server::{DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
@@ -377,8 +379,9 @@ fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Erro
         return Err("The run has no pull request recorded. Record it with `jidoka run update <id> --pr <url>`.".into());
     };
     let checked_at = run::updated_now()?;
-    let state =
-        pr_state::read(&pr_wait::RealGh, url).map_err(|problem| inspect::shown(&problem.0))?;
+    let state = pr_host::Hosts::new(pr_host::RealTools)
+        .state(url)
+        .map_err(|problem| inspect::shown(&problem.0))?;
     let changed = apply_pr_state(id, url, state, checked_at)?;
     if json {
         println!(
@@ -437,8 +440,13 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
         pr: run.pr.clone(),
     };
     let cwd = std::env::current_dir()?;
-    let cleaned = run_cleanup::cleanup(&recorded, &pr_wait::RealGh, &pr_sync::RealGit, &cwd)
-        .map_err(|problem| inspect::shown(&problem.0))?;
+    let cleaned = run_cleanup::cleanup(
+        &recorded,
+        &pr_host::Hosts::new(pr_host::RealTools),
+        &pr_sync::RealGit,
+        &cwd,
+    )
+    .map_err(|problem| inspect::shown(&problem.0))?;
     print!("{}", run_cleanup::render(&recorded, cleaned));
     if cleaned.needs_update() {
         report_to_dashboard(
@@ -486,10 +494,10 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     let (mut wait_options, json) =
         pr_wait::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
     client::check_run_id(id)?;
-    let gh = pr_wait::RealGh;
+    let tools = pr_host::RealTools;
     let run = fetch_run_cli(id)?;
-    if !run.pr.as_deref().is_some_and(pr_wait::is_azure_pr_url) {
-        pr_wait::check_gh(&gh).map_err(|problem| problem.0)?;
+    if !run.pr.as_deref().is_some_and(pr_host::is_azure_pr_url) {
+        pr_wait::check_gh(&tools).map_err(|problem| problem.0)?;
     }
     // The run's activity follows the wait, keeping its status. Only a running run is updated.
     let running = matches!(run.status, run::RunStatus::Running);
@@ -504,7 +512,7 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
         }
     };
     // Only GitHub can lag behind a push in what it reports; the Azure wait does not use the hint.
-    let github = !run.pr.as_deref().is_some_and(pr_wait::is_azure_pr_url);
+    let github = !run.pr.as_deref().is_some_and(pr_host::is_azure_pr_url);
     if let (true, Some(worktree), Some(branch)) = (github, &run.worktree, &run.branch) {
         wait_options.pushed_head = pr_wait::pushed_head(std::path::Path::new(worktree), branch);
     }
@@ -512,7 +520,7 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     let waited = pr_wait::wait(
         run.pr.as_deref(),
         &wait_options,
-        &gh,
+        &tools,
         &clock,
         &mut activity,
         &mut |text| eprintln!("{text}"),
@@ -523,7 +531,7 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     {
         // The wait only reports that the pull request is gone; the run follows what happened to it.
         let checked_at = run::updated_now()?;
-        match pr_state::read(&gh, url) {
+        match pr_host::Hosts::new(&tools).state(url) {
             Ok(state) => match apply_pr_state(id, url, state, checked_at) {
                 Ok(changed) => eprint!("{}", pr_state::describe(state, changed)),
                 Err(error) => eprintln!("The run could not be updated: {error}"),
