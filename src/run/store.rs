@@ -139,7 +139,6 @@ impl RunStore {
             stage: Stage::Define,
             status: RunStatus::Running,
             activity: None,
-            current_ticket: None,
             blocking_reason: None,
             block_source: None,
             rework: None,
@@ -154,6 +153,8 @@ impl RunStore {
             spec: None,
             pr: None,
             tickets: Vec::new(),
+            unticketed_attempt: None,
+            last_work_attempt: 0,
             ticket_reports: Vec::new(),
             run_reports: Vec::new(),
             findings: Vec::new(),
@@ -321,7 +322,6 @@ impl RunStore {
                 _ => None,
             };
             update.activity.apply(&mut next.activity);
-            update.current_ticket.apply(&mut next.current_ticket);
             update.worktree.apply(&mut next.worktree);
             update.branch.apply(&mut next.branch);
             update.base_commit.map_hex().apply(&mut next.base_commit);
@@ -741,6 +741,7 @@ mod tests {
             evidence: None,
             commit: None,
             ticket: Some(ticket.into()),
+            work_attempt: None,
             check: None,
             skipped_checks: Vec::new(),
         }

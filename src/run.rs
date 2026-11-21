@@ -31,7 +31,7 @@ mod summaries;
 mod tickets;
 
 pub(crate) const UPDATE_HELP: &str = concat!(
-    "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast>\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n",
+    "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast>\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n",
     tickets::help!(),
     findings::help!(),
     reports::help!(),
@@ -83,8 +83,6 @@ pub(crate) struct Run {
     pub(crate) status: RunStatus,
     #[serde(default)]
     pub(crate) activity: Option<String>,
-    #[serde(default)]
-    pub(crate) current_ticket: Option<String>,
     /// Why the run is blocked; the dashboard shows it as the status reason.
     #[serde(default)]
     pub(crate) blocking_reason: Option<String>,
@@ -121,6 +119,12 @@ pub(crate) struct Run {
     pub(crate) pr: Option<String>,
     #[serde(default)]
     pub(crate) tickets: Vec<Ticket>,
+    /// The attempt assigned when the run explicitly declared that Build has no listed tickets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) unticketed_attempt: Option<u64>,
+    /// Last attempt allocated to listed or unticketed work on this run.
+    #[serde(default)]
+    last_work_attempt: u64,
     #[serde(default)]
     pub(crate) ticket_reports: Vec<TicketReport>,
     #[serde(default)]
@@ -187,6 +191,20 @@ impl CiOutcome {
 }
 
 impl Run {
+    pub(crate) fn active_ticket(&self) -> Option<&Ticket> {
+        self.tickets
+            .iter()
+            .find(|ticket| ticket.status == TicketStatus::InProgress)
+    }
+
+    fn allocate_work_attempt(&mut self) -> Result<u64, String> {
+        self.last_work_attempt = self
+            .last_work_attempt
+            .checked_add(1)
+            .ok_or("This run has exhausted its work attempts")?;
+        Ok(self.last_work_attempt)
+    }
+
     /// Completes Finish with evidence, retaining the summary or supplying one for a merge.
     pub(crate) fn complete(&mut self, completion: Completion) -> Result<(), String> {
         if self.stage != Stage::Finish || self.status == RunStatus::Done {
@@ -294,6 +312,8 @@ pub(crate) struct Ticket {
     pub(crate) reference: String,
     pub(crate) title: String,
     pub(crate) status: TicketStatus,
+    #[serde(default)]
+    pub(crate) work_attempt: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -426,8 +446,6 @@ impl NewRun {
 pub(crate) struct UpdateRun {
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub(crate) activity: FieldUpdate,
-    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
-    pub(crate) current_ticket: FieldUpdate,
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub(crate) mode: FieldUpdate<Mode>,
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
@@ -621,15 +639,8 @@ fn io_invalid(message: impl Into<String>) -> io::Error {
 impl UpdateRun {
     pub(crate) fn validate(&self) -> Result<(), String> {
         self.activity.validate(MAX_NOTE_BYTES)?;
-        self.current_ticket.validate(MAX_PATH_BYTES)?;
         if matches!(self.mode, FieldUpdate::Clear) {
             return Err("The workflow mode cannot be cleared".into());
-        }
-        if let FieldUpdate::Set(value) = &self.current_ticket {
-            check_reference("Current ticket", value, MAX_PATH_BYTES)?;
-            if value.chars().any(char::is_whitespace) {
-                return Err("Current ticket reference must not contain spaces".into());
-            }
         }
         if let FieldUpdate::Set(value) = &self.worktree {
             check_text("Worktree", value, MAX_PATH_BYTES)?;
@@ -723,7 +734,7 @@ pub(crate) fn parse_update(options: &[&str]) -> Result<UpdateRun, String> {
                 })?);
                 continue;
             }
-            "--ticket" | "--clear-tickets" | "--ticket-status" => {
+            "--ticket" | "--clear-tickets" | "--unticketed" | "--ticket-status" => {
                 update.tickets.parse_option(flag, &mut next_value)?;
                 continue;
             }
@@ -755,7 +766,6 @@ pub(crate) fn parse_update(options: &[&str]) -> Result<UpdateRun, String> {
         }
         let field = match *flag {
             "--activity" | "--clear-activity" => &mut update.activity,
-            "--current-ticket" | "--clear-current-ticket" => &mut update.current_ticket,
             "--worktree" | "--clear-worktree" => &mut update.worktree,
             "--branch" | "--clear-branch" => &mut update.branch,
             "--base-commit" | "--clear-base-commit" => &mut update.base_commit,
@@ -804,10 +814,7 @@ fn mark(run: &mut Run, at: u64, activity: Option<String>) {
         stage,
         rework: if building { run.rework } else { None },
         ticket: if building {
-            run.tickets
-                .iter()
-                .find(|t| t.status == TicketStatus::InProgress)
-                .map(|t| t.reference.clone())
+            run.active_ticket().map(|ticket| ticket.reference.clone())
         } else {
             None
         },

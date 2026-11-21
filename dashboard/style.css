@@ -297,7 +297,7 @@ body:has(.confirm[open]) { overflow: hidden; }
 .status-row.blocked .badge { background: none; border-color: var(--color-on-amber); color: var(--color-on-amber); }
 .status-row.blocked a, .status-row.blocked .status-updated { color: var(--color-on-amber); }
 .status-row.blocked a:focus-visible { outline-color: var(--color-on-amber); }
-.detail-ticket { margin: 0 0 var(--space-4); overflow-wrap: anywhere; color: var(--color-muted); font-size: var(--text-s); }
+.ticket-verification { margin: 0; color: var(--color-muted); font-size: var(--text-s); }
 .pr-reason { color: var(--color-muted); overflow-wrap: anywhere; }
 .status-row.blocked .pr-reason, .status-row.blocked .status-reason { color: var(--color-on-amber); }
 .other-reports { margin: var(--space-4) 0; }

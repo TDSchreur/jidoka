@@ -4,8 +4,8 @@ use crate::{
     pr_sync::Git,
     pr_wait,
     run::{
-        CiOutcome, Completion, MAX_REPORTS_PER_RUN, MAX_TEXT_BYTES, ReportKind, Run, RunReport,
-        RunStatus, Stage, TicketStatus, updated_now,
+        CiOutcome, Completion, MAX_REPORTS_PER_RUN, MAX_TEXT_BYTES, Mode, ReportKind, Run,
+        RunReport, RunStatus, Stage, Ticket, TicketStatus, updated_now,
     },
     stages::{self, Destination, Gate},
 };
@@ -30,6 +30,8 @@ pub(crate) struct GateResult {
     pub(crate) evidence: Option<String>,
     pub(crate) commit: Option<String>,
     pub(crate) ticket: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) work_attempt: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) check: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -159,7 +161,17 @@ pub(crate) fn record(run: &mut Run, record: Record, git: &dyn Git) -> Result<(),
         }
         Vec::new()
     };
-    let commit = if matches!(record.gate, Gate::Verified | Gate::ChecksRecorded) && record.passed {
+    let (ticket, work_attempt) = if record.gate == Gate::TicketsVerified {
+        let (ticket, attempt) = ticket_verification_target(run)?;
+        (ticket.map(|t| t.reference.clone()), Some(attempt))
+    } else {
+        (None, None)
+    };
+    let commit = if matches!(
+        record.gate,
+        Gate::Verified | Gate::ChecksRecorded | Gate::TicketsVerified
+    ) && record.passed
+    {
         Some(head(run, git)?)
     } else {
         None
@@ -169,15 +181,6 @@ pub(crate) fn record(run: &mut Run, record: Record, git: &dyn Git) -> Result<(),
     {
         return Err("The worktree HEAD changed while selecting checks; try again".into());
     }
-    let ticket = if record.gate == Gate::TicketsVerified {
-        Some(
-            run.current_ticket
-                .clone()
-                .ok_or("Record the current ticket before its verification")?,
-        )
-    } else {
-        None
-    };
     run.gates.push(GateResult {
         gate: record.gate,
         stage: run.stage,
@@ -186,9 +189,115 @@ pub(crate) fn record(run: &mut Run, record: Record, git: &dyn Git) -> Result<(),
         evidence: record.evidence,
         commit,
         ticket,
+        work_attempt,
         check: record.check,
         skipped_checks,
     });
+    Ok(())
+}
+
+fn ticket_verification_target(run: &Run) -> Result<(Option<&Ticket>, u64), String> {
+    if run.stage != Stage::Build || run.mode != Some(Mode::Full) {
+        return Err("Record tickets-verified in Full Build".into());
+    }
+    if let Some(ticket) = run.active_ticket() {
+        return Ok((Some(ticket), ticket.work_attempt));
+    }
+    if let Some(attempt) = run.unticketed_attempt {
+        return Ok((None, attempt));
+    }
+    Err("Mark a listed ticket in progress before recording its verification, or declare unticketed work".into())
+}
+
+fn ticket_plan_recorded(run: &Run) -> Result<(), String> {
+    require(
+        !run.tickets.is_empty() || run.unticketed_attempt.is_some(),
+        "Build has no ticket plan",
+    )
+}
+
+pub(crate) fn tickets_done(run: &Run) -> Result<(), String> {
+    ticket_plan_recorded(run)?;
+    require(
+        run.tickets
+            .iter()
+            .all(|ticket| ticket.status == TicketStatus::Done),
+        "Some tickets are not done",
+    )
+}
+
+pub(crate) fn latest_ticket_verification<'a>(
+    run: &'a Run,
+    ticket: &Ticket,
+) -> Option<&'a GateResult> {
+    run.gates.iter().rev().find(|result| {
+        result.gate == Gate::TicketsVerified
+            && result.stage == Stage::Build
+            && result.ticket.as_deref() == Some(&ticket.reference)
+            && result.work_attempt == Some(ticket.work_attempt)
+    })
+}
+
+pub(crate) fn tickets_verified(run: &Run, git: &dyn Git) -> Result<(), String> {
+    ticket_plan_recorded(run)?;
+    let head = head(run, git)?;
+    if let Some(attempt) = run.unticketed_attempt {
+        return require(
+            run.gates
+                .iter()
+                .rev()
+                .find(|result| {
+                    result.gate == Gate::TicketsVerified
+                        && result.stage == Stage::Build
+                        && result.rework == run.rework
+                        && result.ticket.is_none()
+                        && result.work_attempt == Some(attempt)
+                })
+                .is_some_and(|result| result.passed && result.commit.as_deref() == Some(&head)),
+            "Unticketed Build has no passing verification on its current HEAD",
+        );
+    }
+    let worktree = run
+        .worktree
+        .as_deref()
+        .ok_or("Record the run's worktree first")?;
+    for ticket in &run.tickets {
+        let commit = latest_ticket_verification(run, ticket)
+            .filter(|result| result.passed)
+            .and_then(|result| result.commit.as_deref())
+            .ok_or_else(|| {
+                format!(
+                    "Ticket {} has no passing verification for its current attempt",
+                    ticket.reference
+                )
+            })?;
+        if commit != head {
+            match git.status(
+                Path::new(worktree),
+                &["merge-base", "--is-ancestor", commit, &head],
+            ) {
+                Ok(0) => {}
+                Ok(1) => {
+                    return Err(format!(
+                        "Ticket {} was verified on {commit}, which is outside the current Git history",
+                        ticket.reference
+                    ));
+                }
+                Ok(code) => {
+                    return Err(format!(
+                        "Could not check the verified commit {commit} for ticket {}: git exited with {code}",
+                        ticket.reference
+                    ));
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "Could not check the verified commit {commit} for ticket {}: {error}",
+                        ticket.reference
+                    ));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -271,32 +380,16 @@ fn advance_with_clock(
     for gate in transition.gates {
         let (result, remedy) = match gate {
             Gate::TicketsDone => (
-                require(
-                    run.tickets.iter().all(|t| t.status == TicketStatus::Done),
-                    "Some tickets are not done",
-                ),
-                "mark every ticket done with `jidoka run update <id> --ticket-status <ref>=done`",
+                tickets_done(run),
+                "list tickets with `jidoka run update <id> --ticket \"<ref> <title>\"` and mark them done with `--ticket-status <ref>=done`, or declare `--unticketed`",
             ),
             Gate::Verified => (
                 verified(run, git),
                 "run full verification and record `jidoka run gate <id> verified pass`",
             ),
             Gate::TicketsVerified => (
-                require(
-                    run.tickets.iter().all(|t| {
-                        run.gates
-                            .iter()
-                            .rev()
-                            .find(|r| {
-                                r.gate == *gate
-                                    && r.stage == run.stage
-                                    && r.ticket.as_deref() == Some(&t.reference)
-                            })
-                            .is_some_and(|r| r.passed)
-                    }),
-                    "A ticket has no passing verification",
-                ),
-                "set the current ticket with `jidoka run update <id> --current-ticket <reference>`, verify it, then run `jidoka run gate <id> tickets-verified pass`",
+                tickets_verified(run, git),
+                "mark the listed ticket in progress or declare unticketed work, then verify and run `jidoka run gate <id> tickets-verified pass`",
             ),
             Gate::ChecksRecorded => (
                 require(
@@ -360,6 +453,7 @@ fn advance_with_clock(
             evidence: Some(evidence),
             commit: Some(commit.clone()),
             ticket: None,
+            work_attempt: None,
             check: None,
             skipped_checks: vec![],
         });
@@ -425,7 +519,7 @@ pub(crate) struct AdvanceOptions {
 }
 
 /// Reads the options of `run advance`: `--summary <stage>=<text>`, `--activity <text>`,
-/// `--clear-current-ticket`, `--json` and `--force --reason <text>`, in any order and each at most once.
+/// `--json` and `--force --reason <text>`, in any order and each at most once.
 ///
 /// # Errors
 ///
@@ -449,7 +543,6 @@ pub(crate) fn parse_advance_options(options: &[&str]) -> Result<AdvanceOptions, 
                 parsed.update.extend([option.to_string(), value]);
             }
             "--reason" => parsed.request.reason = Some(value()?),
-            "--clear-current-ticket" => parsed.update.push(option.to_string()),
             "--force" => parsed.request.force = true,
             "--json" => parsed.json = true,
             _ => return Err(format!("Unknown option {option}")),
@@ -590,6 +683,14 @@ mod tests {
         fn git(&self, _: &Path, _: &[&str]) -> Result<String, String> {
             Ok(self.0.borrow().clone())
         }
+
+        fn status(&self, _: &Path, args: &[&str]) -> Result<i32, String> {
+            Ok(match args {
+                ["merge-base", "--is-ancestor", "abc1234", "def5678"] => 0,
+                ["merge-base", "--is-ancestor", _, _] => 1,
+                _ => panic!("Unexpected git status command {args:?}"),
+            })
+        }
     }
     struct FakeGh {
         state: &'static str,
@@ -701,19 +802,12 @@ mod tests {
             "Checking",
             "--summary",
             "build=Done",
-            "--clear-current-ticket",
         ])
         .unwrap();
         assert!(parsed.json && !parsed.request.force);
         assert_eq!(
             parsed.update,
-            [
-                "--activity",
-                "Checking",
-                "--summary",
-                "build=Done",
-                "--clear-current-ticket"
-            ]
+            ["--activity", "Checking", "--summary", "build=Done",]
         );
         assert_eq!(
             parse_advance_options(&["--force", "--reason", "why"])
@@ -748,6 +842,7 @@ mod tests {
             reference: "1".into(),
             title: "one".into(),
             status: TicketStatus::Pending,
+            work_attempt: 0,
         });
         let error = advance(&mut run, &git, &host()).unwrap_err();
         assert!(error.contains("tickets-done") && error.contains("verified"));
@@ -774,7 +869,8 @@ mod tests {
             run.tickets.push(Ticket {
                 reference: reference.into(),
                 title: reference.into(),
-                status: TicketStatus::Done,
+                status: TicketStatus::Pending,
+                work_attempt: 0,
             });
         }
         assert!(
@@ -782,13 +878,16 @@ mod tests {
                 .unwrap_err()
                 .contains("tickets-verified")
         );
-        run.current_ticket = Some("one".into());
+        assert!(record(&mut run, result(Gate::TicketsVerified, true), &git).is_err());
+        run.tickets[0].status = TicketStatus::InProgress;
         record(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
+        run.tickets[0].status = TicketStatus::Done;
         assert!(advance(&mut run, &git, &host()).is_err());
-        run.current_ticket = Some("two".into());
+        run.tickets[1].status = TicketStatus::InProgress;
         record(&mut run, result(Gate::TicketsVerified, false), &git).unwrap();
         assert!(advance(&mut run, &git, &host()).is_err());
         record(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
+        run.tickets[1].status = TicketStatus::Done;
         advance(&mut run, &git, &host()).unwrap();
         assert_eq!(run.stage, Stage::Check);
     }
@@ -810,7 +909,11 @@ mod tests {
                 .unwrap();
         };
         let gate = |record| store.change_gate("1", |run| super::record(run, record, &git));
-        let advance = || store.change_gate("1", |run| super::advance(run, &git, &host()));
+        let gh = FakeGh {
+            head: "def5678",
+            ..host()
+        };
+        let advance = || store.change_gate("1", |run| super::advance(run, &git, &gh));
         update(&[
             "--ticket",
             "https://example.com/1 One",
@@ -826,11 +929,27 @@ mod tests {
                 .unwrap()
                 .contains("tickets-verified pass")
         );
-        for reference in ["https://example.com/1", "https://example.com/2"] {
-            update(&["--current-ticket", reference]);
+        for (reference, commit) in [
+            ("https://example.com/1", "abc1234"),
+            ("https://example.com/2", "def5678"),
+        ] {
+            *git.0.borrow_mut() = commit.into();
+            update(&["--ticket-status", &format!("{reference}=in-progress")]);
             gate(result(Gate::TicketsVerified, true)).unwrap();
+            let current = store.get("1").unwrap().unwrap();
+            let active = current.active_ticket().unwrap();
+            assert_eq!(
+                current.timeline.last().unwrap().ticket.as_deref(),
+                Some(reference)
+            );
+            let verified = latest_ticket_verification(&current, active).unwrap();
+            assert_eq!(verified.commit.as_deref(), Some(commit));
             update(&["--ticket-status", &format!("{reference}=done")]);
         }
+        *git.0.borrow_mut() = "other123".into();
+        let error = advance().unwrap_err().to_string();
+        assert!(error.contains("outside the current Git history"), "{error}");
+        *git.0.borrow_mut() = "def5678".into();
         advance().unwrap();
         assert_eq!(store.get("1").unwrap().unwrap().stage, Stage::Check);
         update(&["--finding", "code-review", "-", "Bug"]);
@@ -844,6 +963,17 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
+        let reopened = "https://example.com/2";
+        update(&["--ticket-status", &format!("{reopened}=in-progress")]);
+        update(&["--ticket-status", &format!("{reopened}=done")]);
+        let error = advance().unwrap_err().to_string();
+        assert!(
+            error.contains(reopened) && error.contains("current attempt"),
+            "{error}"
+        );
+        update(&["--ticket-status", &format!("{reopened}=in-progress")]);
+        gate(result(Gate::TicketsVerified, true)).unwrap();
+        update(&["--ticket-status", &format!("{reopened}=done")]);
         advance().unwrap();
         gate(result(Gate::ChecksRecorded, true)).unwrap();
         let error = advance().unwrap_err();
@@ -855,6 +985,51 @@ mod tests {
         advance().unwrap();
         advance().unwrap();
         assert_eq!(store.get("1").unwrap().unwrap().status, RunStatus::Done);
+    }
+
+    #[test]
+    fn full_unticketed_build_requires_a_declaration_and_a_pass_on_the_current_head() {
+        use crate::run::{RunStore, parse_update};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("runs.json");
+        let git = FakeGit(RefCell::new("abc1234".into()));
+        let mut initial = run(Stage::Build);
+        initial.mode = Some(Mode::Full);
+        std::fs::write(&path, serde_json::to_vec(&vec![initial]).unwrap()).unwrap();
+        let store = RunStore::open(&path).unwrap();
+        let update = |options: &[&str]| {
+            store
+                .update_with("1", parse_update(options).unwrap(), &git)
+                .unwrap();
+        };
+        let advance = || store.change_gate("1", |run| super::advance(run, &git, &host()));
+        let pass = || {
+            store.change_gate("1", |run| {
+                record(run, result(Gate::TicketsVerified, true), &git)
+            })
+        };
+
+        let error = advance().unwrap_err().to_string();
+        assert!(
+            error.contains("tickets-done") && error.contains("no ticket plan"),
+            "{error}"
+        );
+        assert!(pass().is_err());
+        update(&["--unticketed"]);
+        let error = advance().unwrap_err().to_string();
+        assert!(
+            error.contains("tickets-verified") && !error.contains("tickets-done"),
+            "{error}"
+        );
+        pass().unwrap();
+        *git.0.borrow_mut() = "def5678".into();
+        assert!(advance().is_err(), "a moved HEAD needs fresh evidence");
+        pass().unwrap();
+        update(&["--clear-tickets"]);
+        update(&["--unticketed"]);
+        assert!(advance().is_err(), "a replaced plan needs fresh evidence");
+        pass().unwrap();
+        advance().unwrap();
     }
 
     #[test]
@@ -933,10 +1108,12 @@ mod tests {
                 reference: "ticket".into(),
                 title: "ticket".into(),
                 status: TicketStatus::Done,
+                work_attempt: 0,
             });
             if mode == Mode::Full {
-                run.current_ticket = Some("ticket".into());
+                run.tickets[0].status = TicketStatus::InProgress;
                 record(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
+                run.tickets[0].status = TicketStatus::Done;
             }
             advance(&mut run, &git, &host()).unwrap();
             assert_eq!(run.stage, Stage::Check);
@@ -1222,6 +1399,7 @@ mod tests {
             evidence: None,
             commit: Some("head-1".into()),
             ticket: None,
+            work_attempt: None,
             check: Some(name.into()),
             skipped_checks: vec![],
         };

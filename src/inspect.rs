@@ -404,6 +404,41 @@ pub(crate) fn plan_line(plan: &str) -> String {
     field("Plan", Some(plan))
 }
 
+fn render_tickets(run: &Run, out: &mut String) {
+    let done = run
+        .tickets
+        .iter()
+        .filter(|t| t.status == TicketStatus::Done)
+        .count();
+    if run.tickets.is_empty() {
+        out.push_str(if run.unticketed_attempt.is_some() {
+            "Tickets       unticketed work\n"
+        } else {
+            "Tickets       none recorded\n"
+        });
+    } else {
+        out.push_str(&format!(
+            "Tickets       {done} of {} done\n",
+            run.tickets.len()
+        ));
+        for ticket in &run.tickets {
+            out.push_str(&format!(
+                "  [{}] {} {}\n",
+                ticket_mark(ticket.status),
+                shown(&ticket.reference),
+                shown(&ticket.title)
+            ));
+            if let Some(result) = crate::run_gate::latest_ticket_verification(run, ticket) {
+                if let Some(commit) = &result.commit {
+                    out.push_str(&format!("    Verification recorded at {}\n", shown(commit)));
+                } else if !result.passed {
+                    out.push_str("    Verification failed\n");
+                }
+            }
+        }
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "formats every section of the run report as one long string builder"
@@ -449,27 +484,7 @@ pub(crate) fn render(run: &Run) -> String {
     if let Some(completion) = completion {
         out.push_str(&field("Completion", Some(&completion)));
     }
-    let done = run
-        .tickets
-        .iter()
-        .filter(|t| t.status == TicketStatus::Done)
-        .count();
-    if run.tickets.is_empty() {
-        out.push_str("Tickets       none recorded\n");
-    } else {
-        out.push_str(&format!(
-            "Tickets       {done} of {} done\n",
-            run.tickets.len()
-        ));
-        for ticket in &run.tickets {
-            out.push_str(&format!(
-                "  [{}] {} {}\n",
-                ticket_mark(ticket.status),
-                shown(&ticket.reference),
-                shown(&ticket.title)
-            ));
-        }
-    }
+    render_tickets(run, &mut out);
     if let Some(routing) = &run.model_routing {
         out.push_str(&routing_section(routing, run.usage.as_ref(), run.rework));
         if run.rework.is_some()
@@ -513,8 +528,8 @@ pub(crate) fn render(run: &Run) -> String {
             ));
         }
     }
-    if let Some(ticket) = &run.current_ticket {
-        out.push_str(&field("Current ticket", Some(ticket)));
+    if let Some(ticket) = run.active_ticket() {
+        out.push_str(&field("Current ticket", Some(&ticket.reference)));
     }
     if run.summaries.is_empty() {
         out.push_str("Summaries     none recorded\n");

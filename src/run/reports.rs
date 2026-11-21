@@ -185,6 +185,7 @@ mod tests {
             reference: "a".into(),
             title: "A".into(),
             status: crate::run::TicketStatus::Pending,
+            work_attempt: 0,
         });
         parsed(&[
             "--ticket-report",

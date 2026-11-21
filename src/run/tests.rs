@@ -236,23 +236,23 @@ fn cli_update_options_preserve_set_clear_and_reject_conflicts() {
     let update = parse_update(&[
         "--activity",
         "Implementing ticket",
-        "--current-ticket",
-        "https://example.com/42",
+        "--ticket-status",
+        "https://example.com/42=in-progress",
     ])
     .unwrap();
     let value = serde_json::to_value(update).unwrap();
     assert_eq!(value["activity"], "Implementing ticket");
-    assert_eq!(value["current_ticket"], "https://example.com/42");
-    let update = parse_update(&["--clear-activity", "--clear-current-ticket"]).unwrap();
+    assert_eq!(
+        value["ticket_status"]["https://example.com/42"],
+        "in-progress"
+    );
+    let update = parse_update(&["--clear-activity"]).unwrap();
     let value = serde_json::to_value(update).unwrap();
-    for field in ["activity", "current_ticket"] {
-        assert_eq!(value.get(field), Some(&serde_json::Value::Null));
-    }
+    assert_eq!(value.get("activity"), Some(&serde_json::Value::Null));
     for options in [
         vec!["--activity"],
         vec!["--activity", "--clear-activity"],
         vec!["--clear-activity", "--activity", "x"],
-        vec!["--clear-current-ticket", "--clear-current-ticket"],
         vec!["--unknown"],
         vec!["--current-ticket", "file:///tmp/ticket"],
         vec!["--blocking-reason", ""],
@@ -1095,7 +1095,7 @@ fn gate_change_preserves_concurrent_pr_refresh_and_rejects_run_updates() {
 }
 
 #[test]
-fn current_ticket_accepts_local_references() {
+fn active_ticket_accepts_local_references() {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     let run = new_run(&store, "task");
@@ -1105,14 +1105,14 @@ fn current_ticket_accepts_local_references() {
             parse_update(&[
                 "--ticket",
                 "/tmp/ticket.md Local ticket",
-                "--current-ticket",
-                "/tmp/ticket.md",
+                "--ticket-status",
+                "/tmp/ticket.md=in-progress",
             ])
             .unwrap(),
         )
         .unwrap()
         .unwrap();
-    assert_eq!(updated.current_ticket.as_deref(), Some("/tmp/ticket.md"));
+    assert_eq!(updated.active_ticket().unwrap().reference, "/tmp/ticket.md");
 }
 
 #[test]

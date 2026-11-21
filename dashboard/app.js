@@ -534,14 +534,19 @@ function EventLine({ event, now }) {
 function TicketList({ run, tickets, now }) {
   return html`<ol class="ticket-list">
     ${tickets.map(({ ticket, reports }) => {
-      const current = ticket.status !== 'done' && run.current_ticket != null && run.current_ticket === ticket.reference;
+      const verification = run.gates?.findLast((result) => result.gate === 'tickets-verified'
+        && result.stage === 'build' && result.ticket === ticket.reference
+        && result.work_attempt != null && result.work_attempt === ticket.work_attempt);
       return html`<li key=${ticket.reference} class=${ticket.status === 'done' ? 'ticket done' : 'ticket'}>
         <p class="ticket-line">
-          <span class="ticket-status">${current ? TICKET_STATUS['in-progress'] : (TICKET_STATUS[ticket.status] ?? String(ticket.status))}</span>
+          <span class="ticket-status">${TICKET_STATUS[ticket.status] ?? String(ticket.status)}</span>
           <span class="ticket-name"><${TicketRef} value=${String(ticket.reference)} />${' '}${isReadable(ticket.reference)
             ? html`<${ReaderLink} run=${run} reference=${String(ticket.reference)}>${ticket.title}</${ReaderLink}>`
             : ticket.title}</span>
         </p>
+        ${verification?.passed && verification.commit
+          ? html`<p class="ticket-verification">Verification recorded at <code>${shortSha(verification.commit)}</code></p>`
+          : verification && !verification.passed ? html`<p class="ticket-verification">Verification failed</p>` : null}
         <${SkillChips} reports=${reports} />
         <${ReportList} reports=${reports} now=${now} />
       </li>`;
@@ -597,13 +602,15 @@ function Stop({ run, stop, now }) {
   const label = stop.kind === 'pass' && stop.rework !== null ? `${stop.name} · Rework ${stop.rework <= REWORK_CAP ? stop.rework : `${stop.rework} (past the cap of ${REWORK_CAP})`}` : stop.name;
   const classes = ['stop', stop.state, stop.kind === 'pass' && stop.rework !== null ? 'rework-pass' : '', stop.sentBack ? 'sent-back' : ''].filter(Boolean).join(' ');
   const { progress, tokens, cost } = stop;
+  const unticketed = stop.stage === 'build' && run.unticketed_attempt != null;
   return html`<li class=${classes}>
     <span class="mark" aria-hidden="true"></span>
     <div class="stop-head">
       <h3>${label}<span class="visually-hidden">${`, ${STATION_STATE[stop.state]}`}</span></h3>
-      ${progress || tokens !== null || cost
+      ${progress || unticketed || tokens !== null || cost
         ? html`<span class="stop-meta">
             ${progress ? html`<span class="ticket-count">${progress.done} of ${progress.total} tickets done</span>` : null}
+            ${unticketed ? html`<span class="ticket-count">Unticketed work</span>` : null}
             ${tokens !== null ? html`<span class="stop-tokens">${compactTokens(tokens)}<span class="visually-hidden">${' fresh tokens'}</span></span>` : null}
             ${cost ? html`<span class="stop-cost"><span class="visually-hidden">Estimated cost </span>${costText(cost, true)}</span>` : null}
           </span>`
@@ -806,7 +813,6 @@ function Detail({ run, runs, now, onClose, onDelete, onSynced, onOpenRun, group 
   const localSpec = run.spec && !spec ? String(run.spec) : null;
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   const total = usageTotal(run);
-  const listed = Array.isArray(run.tickets) && run.tickets.some((t) => t.reference === run.current_ticket);
   const { stops, other } = runHistory(run, now);
   // The facts column holds what is true of the Run as a whole; the route column holds what happened along the way.
   const hasGates = Array.isArray(gateData?.stage_gates) && gateData.stage_gates.some((stage) => stage.gates.length);
@@ -841,7 +847,6 @@ function Detail({ run, runs, now, onClose, onDelete, onSynced, onOpenRun, group 
         ${run.branch ? html`<span class="branch"><code>${run.branch}</code><${CopyButton} value=${run.branch} what="branch" /></span>` : null}
       </p>
       ${active && run.activity ? html`<p class="detail-activity">${run.activity}</p>` : null}
-      ${active && run.current_ticket && !listed ? html`<p class="detail-ticket">Current ticket: ${run.current_ticket}</p>` : null}
       <div class=${blocked ? 'status-row blocked' : 'status-row'}>
         <span class=${STATUSES.includes(run.status) ? `badge ${run.status}` : 'badge'}>${statusLabel(run.status)}</span>
         <${CompletionLabel} run=${run} />

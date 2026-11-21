@@ -2,6 +2,8 @@
 
 Do not require extra approval of test seams or a separate ticket-breakdown approval. Ask the user when a decision is actually needed.
 
+Before advancing, record the Build plan with `jidoka run update <id>`. List every ticket in order with repeated `--ticket "<reference> <title>"` flags, or use `--unticketed` when the work does not need tickets.
+
 
 ## Saving the plan
 

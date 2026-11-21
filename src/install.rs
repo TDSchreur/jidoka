@@ -574,7 +574,7 @@ mod tests {
             "--base-commit",
             "--spec",
             "--ticket",
-            "--ticket-status",
+            "--unticketed",
             "--summary",
             "--pr",
         ] {

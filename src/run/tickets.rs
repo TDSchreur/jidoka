@@ -14,7 +14,7 @@ const MAX_TICKETS: usize = 100;
 macro_rules! help {
     () => {
         concat!(
-            "  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --clear-tickets\n",
+            "  --ticket \"<reference> <title>\" (repeat; the flags are the whole ordered list) | --unticketed | --clear-tickets\n",
             "  --ticket-status <reference>=<pending|in-progress|done> (repeat)\n"
         )
     };
@@ -35,13 +35,16 @@ pub(crate) struct TicketsUpdate {
     /// The whole ordered ticket list; null removes it.
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub(crate) tickets: FieldUpdate<Vec<NewTicket>>,
+    /// Explicitly declares Build is unticketed and replaces any listed plan.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) unticketed: bool,
     /// New statuses by ticket reference, applied after `tickets`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) ticket_status: BTreeMap<String, TicketStatus>,
 }
 
 impl TicketsUpdate {
-    /// Reads `--ticket`, `--clear-tickets` or `--ticket-status` and the values after it.
+    /// Reads `--ticket`, `--clear-tickets`, `--unticketed` or `--ticket-status` and the values after it.
     pub(super) fn parse_option<'a>(
         &mut self,
         flag: &str,
@@ -73,6 +76,12 @@ impl TicketsUpdate {
                 }
                 self.tickets = FieldUpdate::Clear;
             }
+            "--unticketed" => {
+                if self.unticketed {
+                    return Err(repeated(flag));
+                }
+                self.unticketed = true;
+            }
             _ => {
                 let value = *next_value()?;
                 let (reference, status) = value.rsplit_once('=').ok_or_else(|| {
@@ -95,6 +104,11 @@ impl TicketsUpdate {
 
     /// Checks the list limits, references and titles before anything is applied.
     pub(super) fn validate(&self) -> Result<(), String> {
+        if self.unticketed && (!self.tickets.is_keep() || !self.ticket_status.is_empty()) {
+            return Err(
+                "--unticketed cannot be combined with ticket list or status changes".into(),
+            );
+        }
         let FieldUpdate::Set(list) = &self.tickets else {
             return Ok(());
         };
@@ -122,35 +136,61 @@ impl TicketsUpdate {
 
     /// Replaces or clears the list, then sets the statuses.
     pub(super) fn apply(self, run: &mut Run) -> Result<(), String> {
+        if !self.tickets.is_keep() {
+            run.unticketed_attempt = None;
+        }
+        if self.unticketed {
+            run.tickets.clear();
+            if run.unticketed_attempt.is_none() {
+                run.unticketed_attempt = Some(run.allocate_work_attempt()?);
+            }
+        }
         match self.tickets {
             FieldUpdate::Keep => {}
             FieldUpdate::Clear => run.tickets.clear(),
             FieldUpdate::Set(list) => {
-                let old = std::mem::take(&mut run.tickets);
-                run.tickets = list
+                let mut old: BTreeMap<_, _> = std::mem::take(&mut run.tickets)
                     .into_iter()
-                    .map(|ticket| Ticket {
-                        status: old
-                            .iter()
-                            .find(|kept| kept.reference == ticket.reference)
-                            .map_or(TicketStatus::Pending, |kept| kept.status),
-                        reference: ticket.reference,
-                        title: ticket.title,
-                    })
+                    .map(|ticket| (ticket.reference.clone(), ticket))
                     .collect();
+                for ticket in list {
+                    let stored = match old.remove(&ticket.reference) {
+                        Some(kept) => Ticket {
+                            title: ticket.title,
+                            ..kept
+                        },
+                        None => Ticket {
+                            reference: ticket.reference,
+                            title: ticket.title,
+                            status: TicketStatus::Pending,
+                            work_attempt: run.allocate_work_attempt()?,
+                        },
+                    };
+                    run.tickets.push(stored);
+                }
             }
         }
         for (reference, status) in self.ticket_status {
-            let ticket = run
+            let index = run
                 .tickets
-                .iter_mut()
-                .find(|ticket| ticket.reference == reference)
+                .iter()
+                .position(|ticket| ticket.reference == reference)
                 .ok_or_else(|| {
                     format!(
                         "No ticket {reference} is listed on this run; list it with --ticket first"
                     )
                 })?;
-            ticket.status = status;
+            let previous = run.tickets[index].status;
+            if matches!(
+                (previous, status),
+                (
+                    TicketStatus::Done,
+                    TicketStatus::Pending | TicketStatus::InProgress
+                ) | (TicketStatus::InProgress, TicketStatus::Pending)
+            ) {
+                run.tickets[index].work_attempt = run.allocate_work_attempt()?;
+            }
+            run.tickets[index].status = status;
         }
         if run
             .tickets

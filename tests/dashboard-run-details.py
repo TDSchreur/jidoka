@@ -28,7 +28,7 @@ SHIPPED = {
     "mode": "balanced", "stage": "finish", "status": "done", "updated_at": AT, "activity": "Pull request merged",
     "spec": SPEC, "pr": PR, "pr_status": {"url": PR, "state": "merged", "checked_at": AT},
     "completion": {"kind": "merged", "url": PR},
-    "rework": 1, "current_ticket": None,
+    "rework": 1,
     "summaries": {"define": "Gift cards are bought at checkout and redeemed once.", "check": "One review finding fixed."},
     "tickets": [{"reference": T1, "title": "Redeem a card", "status": "done"}, {"reference": T2, "title": "Buy a card", "status": "done"}],
     "ticket_reports": [
@@ -86,10 +86,15 @@ STRAY = {
     ],
     "ticket_reports": [{"ticket": "local-404", "kind": "activity", "text": "Orphan ticket note", "stage": "build", "at": AT}],
 }
-CURRENT = {**ACTIVE, "id": "run-current", "title": "Current one", "current_ticket": "local-1",
-           "tickets": [{"reference": "local-1", "title": "Index in the background", "status": "pending"},
-                       {"reference": "local-2", "title": "Other", "status": "pending"}]}
-NO_CURRENT = {**{k: v for k, v in ACTIVE.items() if k != "current_ticket"}, "id": "run-no-current", "title": "No current one",
+CURRENT = {**ACTIVE, "id": "run-current", "title": "Current one",
+           "tickets": [{"reference": "local-1", "title": "Index in the background", "status": "in-progress", "work_attempt": 3},
+                       {"reference": "local-2", "title": "Other", "status": "pending", "work_attempt": 2}],
+           "gates": [
+               {"gate": "tickets-verified", "stage": "build", "ticket": "local-1", "work_attempt": 1, "passed": True, "commit": "1234567abcdef"},
+               {"gate": "tickets-verified", "stage": "build", "ticket": "local-1", "work_attempt": 3, "passed": True, "commit": "abcdef1234567"},
+           ]}
+
+NO_CURRENT = {**ACTIVE, "id": "run-no-current", "title": "No current one",
               "tickets": [{"title": "Unreferenced work", "status": "pending"}]}
 def finding(id, state, rework, at, **extra):
     return {"id": id, "check": "code-review", "location": "src/a.rs:1", "text": f"Problem {id} in a very long_unbroken_path_name_that_must_wrap", "reviewed_commit": "abcdef1234567",
@@ -210,7 +215,6 @@ const snap = async (id) => {
     activity: text(dialog.querySelector('.detail-activity')),
     statusRow: text(dialog.querySelector('.status-row')),
     otherReports: text(dialog.querySelector('.other-reports')),
-    detailTicket: text(dialog.querySelector('.detail-ticket')),
     prReason: text(dialog.querySelector('.pr-reason')),
     prReasonColor: dialog.querySelector('.pr-reason') ? getComputedStyle(dialog.querySelector('.pr-reason')).color : null,
     statusRowColor: getComputedStyle(dialog.querySelector('.status-row')).color,
@@ -438,16 +442,19 @@ return labels;
         tickets = self.stop(self.current, "Build")["tickets"]
         self.assertTrue(tickets[0].startswith("In progress"))
         self.assertTrue(tickets[1].startswith("Pending"))
-        self.assertIsNone(self.current["detailTicket"])
+        self.assertIn("Verification recorded at abcdef1", tickets[0])
+        self.assertNotIn("1234567", tickets[0])
 
     def test_pending_ticket_without_reference_is_not_in_progress_when_the_run_has_no_current_ticket(self):
         tickets = self.stop(self.no_current, "Build")["tickets"]
         self.assertEqual(len(tickets), 1)
         self.assertTrue(tickets[0].startswith("Pending"))
 
-    def test_current_ticket_missing_from_the_list_shows_under_the_title(self):
-        self.assertEqual(self.stray["detailTicket"], "Current ticket: local-9")
-        self.assertIsNone(self.active["detailTicket"])
+    def test_legacy_current_ticket_does_not_override_listed_statuses(self):
+        tickets = self.stop(self.stray, "Build")["tickets"]
+        self.assertTrue(tickets[0].startswith("Done"))
+        self.assertTrue(tickets[1].startswith("Pending"))
+        self.assertNotIn("local-9", self.stop(self.stray, "Build")["full"])
 
     def test_unknown_pr_state_reason_is_visible_text(self):
         self.assertIn("state unknown: gh is not signed in", self.stray["statusRow"])

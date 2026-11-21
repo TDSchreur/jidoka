@@ -15,6 +15,7 @@ fn run(mode: Mode, stage: Stage, routing: Option<ModelRouting>) -> Run {
         reference: "ticket".into(),
         title: "A ticket".into(),
         status: TicketStatus::Pending,
+        work_attempt: 0,
     });
     run.mode = Some(mode);
     run.stage = stage;
@@ -153,6 +154,7 @@ fn next_shows_recorded_results_and_only_open_review_gates() {
         evidence: Some("reviewed".into()),
         commit: None,
         ticket: None,
+        work_attempt: None,
         check: Some("code-review".into()),
         skipped_checks: Vec::new(),
     });
@@ -212,7 +214,11 @@ fn next_supplies_only_current_stage_and_routing_when_selected() {
 fn build_instructions_are_focused_and_full_explains_each_ticket_gate() {
     let output = build(&run(Mode::Full, Stage::Build, Some(routing())), &[]).unwrap();
     assert!(output.instructions.contains("tickets-verified pass"));
-    assert!(output.instructions.contains("--current-ticket"));
+    assert!(
+        output
+            .instructions
+            .contains("--ticket-status <reference>=in-progress")
+    );
     assert!(!output.instructions.contains("## Committing for Check"));
     assert!(!output.instructions.contains("## Reworks"));
     assert!(!output.instructions.contains("On Copilot CLI"));
@@ -370,6 +376,7 @@ fn past_check_gate_uses_completed_snapshot_not_one_individual_result() {
         evidence: Some("only one check".into()),
         commit: Some("abc".into()),
         ticket: None,
+        work_attempt: None,
         check: Some("code-review".into()),
         skipped_checks: vec![],
     });
@@ -404,6 +411,7 @@ fn past_check_gate_uses_completed_snapshot_not_one_individual_result() {
 fn merged_pull_request_is_not_ci_evidence() {
     let mut run = run(Mode::Fast, Stage::Finish, None);
     run.tickets.clear();
+    run.unticketed_attempt = Some(1);
     run.status = RunStatus::Done;
     run.pr_status = Some(crate::pr_state::PrStatus {
         url: "https://example.test/pr/1".into(),

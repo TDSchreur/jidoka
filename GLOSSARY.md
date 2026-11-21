@@ -58,6 +58,10 @@
 
 **Run cleanup**: Removing a run's Workspace once its pull request is merged: `jidoka run cleanup <id>` removes the worktree and the local feature branch, never discarding uncommitted changes or commits that were not in the merged pull request, and clears them from the run context.
 
+**Ticket plan**: The ordered list of tickets for Build, or the explicit declaration that Build is unticketed. The listed ticket marked in progress is the active ticket.
+
+**Work attempt**: An identity for a listed ticket's current work or for an unticketed Build plan. Reopening a ticket or dropping it and then listing it again starts a new attempt. Full records the verified commit against the attempt.
+
 **Ticket report**: A short, agent-reported skill or activity associated with a ticket in a run. Reports may be incomplete and are not independent proof of the work.
 
 **Run report**: A short skill or activity associated with a run rather than a particular ticket. The agent reports activities and skills; Jidoka adds the workflow skill and the skills it finds in the agent's session logs. Reports may be incomplete and are not independent proof of the work.

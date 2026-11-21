@@ -430,9 +430,17 @@ mod tests {
                 .unwrap();
             server.runs()[1].clone()
         };
-        let before = update(&["--activity", "Implementing", "--current-ticket", ticket]);
+        let before = update(&[
+            "--activity",
+            "Implementing",
+            "--ticket",
+            &format!("{ticket} Verify the slice"),
+            "--ticket-status",
+            &format!("{ticket}=in-progress"),
+        ]);
         assert_eq!(before["activity"], "Implementing");
-        assert_eq!(before["current_ticket"], ticket);
+        assert_eq!(before["tickets"][0]["reference"], ticket);
+        assert_eq!(before["tickets"][0]["status"], "in-progress");
         lifecycle(&server, &id, "block", &["--reason", "Need credentials"]);
         let blocked = update(&["--activity", "Working on another task"]);
         assert_eq!(blocked["status"], "blocked");
@@ -448,18 +456,19 @@ mod tests {
         assert_eq!(resumed["status"], "running");
         assert_eq!(resumed["events"][1]["reason"], "User supplied credentials");
         assert!(resumed["blocking_reason"].is_null());
-        assert_eq!(resumed["current_ticket"], ticket);
+        assert_eq!(resumed["tickets"][0]["status"], "in-progress");
         let finished = &update(&[
             "--summary",
             "finish=Shipped",
             "--activity",
             "Opened PR",
-            "--clear-current-ticket",
+            "--ticket-status",
+            &format!("{ticket}=done"),
         ]);
         assert_eq!(finished["stage"], "define");
         assert_eq!(finished["status"], "running");
         assert_eq!(finished["activity"], "Opened PR");
-        assert!(finished["current_ticket"].is_null());
+        assert_eq!(finished["tickets"][0]["status"], "done");
         assert!(finished["updated_at"].as_u64().unwrap() >= before["updated_at"].as_u64().unwrap());
 
         lifecycle(&server, "42", "block", &["--reason", "Legacy run"]);
