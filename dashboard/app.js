@@ -756,6 +756,8 @@ function Detail({ run, now, onClose, onDelete, onSynced, group }) {
   const total = usageTotal(run);
   const listed = Array.isArray(run.tickets) && run.tickets.some((t) => t.reference === run.current_ticket);
   const { stops, other } = runHistory(run, now);
+  // The facts column holds what is true of the Run as a whole; the route column holds what happened along the way.
+  const hasFacts = Boolean(Array.isArray(gateData?.stage_gates) && gateData.stage_gates.some((stage) => stage.gates.length) || gateData?.checks_unavailable || gateData?.checks?.skipped?.length || gateData?.recorded_skipped_checks?.length || gateData?.model_route?.stages?.length);
   return html`<dialog
     ref=${dialog}
     class="detail"
@@ -794,43 +796,49 @@ function Detail({ run, now, onClose, onDelete, onSynced, group }) {
         ${ts !== null ? html`<span class="status-item status-updated">Updated${' '}<${SheetTime} at=${ts} now=${now} /></span>` : null}
         ${blocked && run.blocking_reason ? html`<p class="status-reason">${run.blocking_reason}</p>` : null}
       </div>
-      ${Array.isArray(gateData?.stage_gates) && gateData.stage_gates.some((stage) => stage.gates.length) ? html`
-        <section class="stage-gates" aria-labelledby="gate-heading">
-          <h3 id="gate-heading">Stage gates</h3>
-          ${gateData.stage_gates.filter((stage) => stage.gates.length).map((stage) => html`
-            <div class="gate-stage"><h4>${STATION_NAME[stage.stage] ?? stage.stage}</h4>
-              <ul>${stage.gates.map((gate) => html`<li class="gate">
-                <div class="gate-title"><span class="gate-name">${gate.name}:</span> <span class="gate-status">${gate.status === 'recorded-pass' ? 'Recorded pass' : gate.status === 'unknown' ? 'Unknown' : gate.status}</span></div>
-                <p class="gate-description">${gate.description}${gate.rework ? html`<span> · Rework ${gate.rework}</span>` : null}</p>
-                ${gate.evidence ? html`<p class="gate-evidence">Evidence: ${gate.evidence}</p>` : null}
-              </li>`)}</ul>
-            </div>`)}
-        </section>` : null}
-      ${gateData?.checks_unavailable ? html`<p role="status">Check selection unavailable: ${gateData.checks_unavailable}</p>` : null}
-      ${gateData?.checks?.skipped?.length ? html`<section aria-labelledby="skipped-heading">
-        <h3 id="skipped-heading">Checks currently skipped</h3>
-        <ul>${gateData.checks.skipped.map((check) => html`<li>${check.name}: ${check.reason}</li>`)}</ul>
-      </section>` : null}
-      ${gateData?.recorded_skipped_checks?.length ? html`<section aria-labelledby="recorded-skipped-heading">
-        <h3 id="recorded-skipped-heading">Checks skipped when recorded${gateData.recorded_skipped_rework ? ` · Rework ${gateData.recorded_skipped_rework}` : ''}</h3>
-        <ul>${gateData.recorded_skipped_checks.map((check) => html`<li>${check.name}: ${check.reason}</li>`)}</ul>
-      </section>` : null}
-      <ol class="route" aria-label="Route">
-        ${stops.map((stop, index) => html`<${Stop} key=${index} run=${run} stop=${stop} now=${now} />`)}
-      </ol>
-      <${UnstartedTickets} run=${run} tickets=${other.tickets} now=${now} />
-      <${OtherReports} reports=${other.reports} events=${other.events} summaries=${other.summaries} now=${now} />
-      ${gateData?.model_route?.stages?.length ? html`<${ModelRoute} route=${gateData.model_route} />` : null}
-      ${run.usage
-        ? html`<details class="usage" open=${active}>
-            <summary>
-              Token usage${total !== null ? html`<span class="usage-total">${tokenCount(total)}${' fresh'}</span>` : null}${run.usage.cost
-                ? html`<span class="usage-total">${'Est. cost '}${costText(run.usage.cost, true)}</span>`
-                : null}
-            </summary>
-            <${UsageDetail} usage=${run.usage} />
-          </details>`
-        : null}
+      <div class="detail-layout">
+        ${hasFacts ? html`<aside class="detail-facts" aria-label="Run facts">
+          ${Array.isArray(gateData?.stage_gates) && gateData.stage_gates.some((stage) => stage.gates.length) ? html`
+            <section class="stage-gates" aria-labelledby="gate-heading">
+              <h3 id="gate-heading">Stage gates</h3>
+              ${gateData.stage_gates.filter((stage) => stage.gates.length).map((stage) => html`
+                <div class="gate-stage"><h4>${STATION_NAME[stage.stage] ?? stage.stage}</h4>
+                  <ul>${stage.gates.map((gate) => html`<li class="gate">
+                    <div class="gate-title"><span class="gate-name">${gate.name}:</span> <span class="gate-status">${gate.status === 'recorded-pass' ? 'Recorded pass' : gate.status === 'unknown' ? 'Unknown' : gate.status}</span></div>
+                    <p class="gate-description">${gate.description}${gate.rework ? html`<span> · Rework ${gate.rework}</span>` : null}</p>
+                    ${gate.evidence ? html`<p class="gate-evidence">Evidence: ${gate.evidence}</p>` : null}
+                  </li>`)}</ul>
+                </div>`)}
+            </section>` : null}
+          ${gateData?.checks_unavailable ? html`<p role="status">Check selection unavailable: ${gateData.checks_unavailable}</p>` : null}
+          ${gateData?.checks?.skipped?.length ? html`<section aria-labelledby="skipped-heading">
+            <h3 id="skipped-heading">Checks currently skipped</h3>
+            <ul>${gateData.checks.skipped.map((check) => html`<li>${check.name}: ${check.reason}</li>`)}</ul>
+          </section>` : null}
+          ${gateData?.recorded_skipped_checks?.length ? html`<section aria-labelledby="recorded-skipped-heading">
+            <h3 id="recorded-skipped-heading">Checks skipped when recorded${gateData.recorded_skipped_rework ? ` · Rework ${gateData.recorded_skipped_rework}` : ''}</h3>
+            <ul>${gateData.recorded_skipped_checks.map((check) => html`<li>${check.name}: ${check.reason}</li>`)}</ul>
+          </section>` : null}
+          ${gateData?.model_route?.stages?.length ? html`<${ModelRoute} route=${gateData.model_route} />` : null}
+        </aside>` : null}
+        <div class="detail-route">
+          <ol class="route" aria-label="Route">
+            ${stops.map((stop, index) => html`<${Stop} key=${index} run=${run} stop=${stop} now=${now} />`)}
+          </ol>
+          <${UnstartedTickets} run=${run} tickets=${other.tickets} now=${now} />
+          <${OtherReports} reports=${other.reports} events=${other.events} summaries=${other.summaries} now=${now} />
+          ${run.usage
+            ? html`<details class="usage" open=${active}>
+                <summary>
+                  Token usage${total !== null ? html`<span class="usage-total">${tokenCount(total)}${' fresh'}</span>` : null}${run.usage.cost
+                    ? html`<span class="usage-total">${'Est. cost '}${costText(run.usage.cost, true)}</span>`
+                    : null}
+                </summary>
+                <${UsageDetail} usage=${run.usage} />
+              </details>`
+            : null}
+        </div>
+      </div>
       <div class="detail-foot">
         <dl class="ids">
           ${run.repository

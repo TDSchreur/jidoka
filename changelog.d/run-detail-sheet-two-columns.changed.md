@@ -1,0 +1,1 @@
+The run detail sheet is wider on screens of 1280 px and up and shows two columns: the route on the left and a sticky column with the stage gates, check selection and model routing on the right. Narrower sheets keep one column, with that information above the route.

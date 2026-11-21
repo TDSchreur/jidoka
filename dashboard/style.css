@@ -244,7 +244,7 @@ p { color: var(--color-slate); margin: var(--space-2) 0; }
 .detail::backdrop { background: var(--color-overlay); }
 body:has(.detail[open]) { overflow: hidden; }
 body:has(.confirm[open]) { overflow: hidden; }
-.detail-body { box-sizing: border-box; display: flex; flex-direction: column; min-height: 100%; padding: var(--space-7) var(--space-8); }
+.detail-body { container-type: inline-size; box-sizing: border-box; display: flex; flex-direction: column; min-height: 100%; padding: var(--space-7) var(--space-8); }
 .detail-bar { display: flex; justify-content: flex-end; margin-bottom: var(--space-5); }
 .detail h2 { margin: 0 0 var(--space-2); font-size: var(--text-l); line-height: var(--leading-l); font-weight: var(--weight-strong); overflow-wrap: anywhere; }
 .links { margin: var(--space-2) 0 0; font-size: var(--text-xs); line-height: var(--leading-xs); }
@@ -258,6 +258,17 @@ body:has(.confirm[open]) { overflow: hidden; }
 .usage-note { color: var(--color-muted); font-size: var(--text-xs); line-height: var(--leading-xs); }
 .summaries { margin: 0; padding-left: var(--space-7); }
 .detail-close-compact { display: none; }
+/* The sheet's body is two columns once it is wide enough: the route on the left, the facts of the Run on the right.
+   In the DOM the facts come first, so one column (and a screen reader) reads them before the route. */
+.detail-layout { display: block; }
+.detail-facts { margin: 0 0 var(--space-8); }
+.detail-facts > :last-child { margin-bottom: 0; }
+.detail-route { min-width: 0; }
+@container (min-width: 60rem) {
+  .detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(20rem, 26rem); grid-template-areas: "route facts"; gap: var(--space-8) var(--space-8); align-items: start; }
+  .detail-route { grid-area: route; }
+  .detail-facts { grid-area: facts; position: sticky; top: var(--space-7); max-height: calc(100vh - 2 * var(--space-7)); max-height: calc(100dvh - 2 * var(--space-7)); margin: 0; padding-left: var(--space-8); overflow-y: auto; border-left: var(--stroke-thin) solid var(--color-rule); }
+}
 /* The route card: header, a status row, the route of stations or stage passes, token usage and a footer. Boldness is in the route. */
 .detail-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--space-6); margin: 0 0 var(--space-4); color: var(--color-muted); }
 .detail-sub > span:not(:first-child)::before { content: ""; display: inline-block; width: var(--stroke-thin); height: var(--space-5); margin-right: var(--space-6); vertical-align: middle; background: var(--color-rule); }
@@ -368,6 +379,10 @@ body:has(.confirm[open]) { overflow: hidden; }
 .foot-line .note { margin: 0; color: var(--color-muted); }
 .foot-line .detail-delete { margin-left: auto; }
 main:focus { outline: none; }
+/* From 1280 px the sheet grows to hold two columns, and leaves a strip of the line on the left so the backdrop can still be clicked. */
+@media (min-width: 1280px) {
+  .detail { width: min(88rem, calc(100% - 10rem)); }
+}
 /* Up to 1024 px, as in compact mode: the sheet is the whole screen and the button says Back. */
 @media (max-width: 1024px) {
   .detail { width: 100%; }
