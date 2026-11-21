@@ -3,9 +3,9 @@
 
 use crate::{
     inspect::shown,
-    pr_state::{self, PrState},
+    pr_host::{PrHost, ToolProblem},
+    pr_state::PrState,
     pr_sync::Git,
-    pr_wait::{Gh, ToolProblem},
     run_begin::{first_line, valid_branch_name},
     run_check::canonical_dir,
 };
@@ -61,7 +61,7 @@ fn git_problem(what: &str, error: &str) -> ToolProblem {
 )]
 pub(crate) fn cleanup(
     run: &Recorded,
-    gh: &dyn Gh,
+    host: &dyn PrHost,
     git: &dyn Git,
     cwd: &Path,
 ) -> Result<Cleaned, ToolProblem> {
@@ -76,11 +76,11 @@ pub(crate) fn cleanup(
             "The run has no pull request recorded, so nothing shows its work is merged. Nothing was removed.",
         );
     };
-    let state = pr_state::read(gh, url)?;
-    if state != PrState::Merged {
+    let pull_request = host.head(url)?;
+    if pull_request.state != PrState::Merged {
         return refuse(format!(
             "The pull request is not merged (it is {}). Nothing was removed.",
-            state.label()
+            pull_request.state.label()
         ));
     }
     if run.worktree.is_some() && run.branch.is_none() {
@@ -109,15 +109,14 @@ pub(crate) fn cleanup(
             if !valid_branch_name(branch) {
                 return refuse("The recorded branch name is not valid. Nothing was removed.");
             }
-            let head = pr_state::head(gh, url)?;
-            if head.branch != branch {
+            if pull_request.branch != branch {
                 return refuse(format!(
                     "The pull request comes from branch {}, not the run's branch {}. Nothing was removed.",
-                    shown(&head.branch),
+                    shown(&pull_request.branch),
                     shown(branch)
                 ));
             }
-            Some(head)
+            Some(pull_request)
         }
     };
 

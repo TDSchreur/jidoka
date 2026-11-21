@@ -2,8 +2,8 @@ use crate::{
     current_build,
     document::{self, DocumentError},
     groups::{Group, GroupError, GroupStore, GroupView, NewGroup, Target, valid_group_id},
+    pr_host::{Hosts, PrHost, RealTools},
     pr_state,
-    pr_wait::{self, RealGh},
     run::{NewRun, Run, RunStore, UpdateRun},
     usage::{UsageSettings, collect_and_store},
 };
@@ -454,8 +454,7 @@ fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
         });
     }
     if let Some(snapshot) = run.stage_exits.iter().rev().find(|exit| {
-        exit.stage == crate::run::Stage::Check
-            && exit.outcome == crate::run_gate::ExitOutcome::Accepted
+        exit.stage == crate::run::Stage::Check && exit.outcome == crate::run::ExitOutcome::Accepted
     }) {
         value["recorded_skipped_checks"] = serde_json::to_value(&snapshot.skipped_checks)?;
         value["recorded_skipped_rework"] = serde_json::to_value(snapshot.rework)?;
@@ -562,8 +561,11 @@ fn record_gate(
     record: Json<crate::run_gate::Record>,
     store: &State<RunStore>,
 ) -> Result<&'static str, (HttpStatus, String)> {
+    let record = record.into_inner();
     store
-        .record_gate(id, record.into_inner(), &crate::pr_sync::RealGit)
+        .record_gate(id, |run| {
+            crate::run_gate::record(run, record, &crate::pr_sync::RealGit)
+        })
         .map_err(|error| (HttpStatus::BadRequest, error))?;
     Ok("Gate recorded")
 }
@@ -574,13 +576,12 @@ fn advance_run(
     id: &str,
     request: Json<crate::run_gate::AdvanceRequest>,
     store: &State<RunStore>,
+    tool: &State<PrTool>,
     collector: &State<Collector>,
 ) -> Result<&'static str, (HttpStatus, String)> {
-    let request = request.into_inner();
-    store
-        .change_gate_with_activity(id, request.activity.clone(), |run| {
-            request.apply(run, &crate::pr_sync::RealGit, &crate::pr_wait::RealGh)
-        })
+    request
+        .into_inner()
+        .advance(store, id, &crate::pr_sync::RealGit, tool.0.as_ref())
         .map_err(|error| (HttpStatus::BadRequest, error))?;
     collector.after_update(store, id);
     Ok("Run advanced")
@@ -1192,8 +1193,8 @@ impl Collector {
     }
 }
 
-/// The tool that reads pull requests from their hosts, shared by the background pass and the sync endpoint.
-struct PrTool(std::sync::Arc<dyn pr_wait::Gh + Send + Sync>);
+/// The host that pull requests are read from, shared by the background pass and the sync endpoint.
+struct PrTool(std::sync::Arc<dyn PrHost + Send + Sync>);
 
 #[cfg(test)]
 pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> {
@@ -1202,7 +1203,7 @@ pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> 
         port,
         Collector::new(None),
         new_tokens()?,
-        std::sync::Arc::new(RealGh),
+        std::sync::Arc::new(Hosts::new(RealTools)),
     )
 }
 
@@ -1210,7 +1211,7 @@ pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> 
 fn build_rocket_with_tool(
     path: &Path,
     port: u16,
-    tool: std::sync::Arc<dyn pr_wait::Gh + Send + Sync>,
+    tool: std::sync::Arc<dyn PrHost + Send + Sync>,
 ) -> io::Result<Rocket<Build>> {
     build_rocket_with_tokens(path, port, Collector::new(None), new_tokens()?, tool)
 }
@@ -1240,7 +1241,7 @@ pub(crate) fn build_rocket_with(
         port,
         collector,
         new_tokens()?,
-        std::sync::Arc::new(RealGh),
+        std::sync::Arc::new(Hosts::new(RealTools)),
     )
 }
 
@@ -1256,7 +1257,7 @@ fn build_rocket_with_tokens(
     port: u16,
     collector: Collector,
     (session_token, cli_token): (SessionToken, String),
-    tool: std::sync::Arc<dyn pr_wait::Gh + Send + Sync>,
+    tool: std::sync::Arc<dyn PrHost + Send + Sync>,
 ) -> io::Result<Rocket<Build>> {
     let config = Figment::from(rocket::Config::default())
         .merge(("address", LOOPBACK_HOST))
@@ -1380,7 +1381,7 @@ const PR_STATE_PASS: std::time::Duration = std::time::Duration::from_secs(20);
 /// a slow or missing tool never holds up a request. Merged pull requests are not read again.
 fn watch_pr_states(
     store: RunStore,
-    tool: std::sync::Arc<dyn pr_wait::Gh + Send + Sync>,
+    tool: std::sync::Arc<dyn PrHost + Send + Sync>,
     pass: std::time::Duration,
 ) -> rocket::tokio::task::JoinHandle<()> {
     rocket::tokio::spawn(async move {
@@ -1430,6 +1431,26 @@ fn watch_pauses(
     })
 }
 
+/// Collects, once at startup and on a blocking thread, the recent done runs whose usage was not tracked, so
+/// a dashboard started in the agents' environment recovers runs an earlier dashboard could not read.
+fn collect_missed_once(store: RunStore, settings: UsageSettings) {
+    rocket::tokio::spawn(async move {
+        let joined = rocket::tokio::task::spawn_blocking(move || {
+            let result = crate::run::updated_now()
+                .and_then(|now| crate::usage::collect_missed(&store, &settings, now));
+            if let Err(error) = result {
+                eprintln!("Usage of finished runs was not collected again: {error}");
+            }
+        })
+        .await;
+        if let Err(error) = joined {
+            eprintln!(
+                "Usage of finished runs was not collected again: the collection stopped: {error}"
+            );
+        }
+    });
+}
+
 /// Serves the dashboard on `port` (0 lets the operating system pick one). `url` turns the bound port into the
 /// address printed to the user. Returns `Ok` without serving when another dashboard is already running.
 pub(crate) fn serve(
@@ -1451,7 +1472,7 @@ pub(crate) fn serve(
             port,
             Collector::new(Some(usage)),
             tokens,
-            std::sync::Arc::new(RealGh),
+            std::sync::Arc::new(Hosts::new(RealTools)),
         )
         .map_err(|error| {
             io::Error::new(error.kind(), format!("could not open run storage: {error}"))
@@ -1473,6 +1494,7 @@ pub(crate) fn serve(
                     if let (Some(store), Some(tool)) =
                         (rocket.state::<RunStore>(), rocket.state::<PrTool>())
                     {
+                        collect_missed_once(store.clone(), pause_settings.clone());
                         watch_pauses(store.clone(), pause_settings, PAUSE_PASS);
                         watch_pr_states(store.clone(), tool.0.clone(), PR_STATE_PASS);
                     }

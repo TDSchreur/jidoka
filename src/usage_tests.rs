@@ -111,8 +111,19 @@ fn claude_line(
     .to_string()
 }
 
+/// A Copilot message whose bash call runs a command that names the run.
+fn copilot_mention(run_id: &str) -> String {
+    json!({"type": "assistant.message", "timestamp": iso(0), "data": {"apiCallId": "m", "content": "", "toolRequests": [
+        {"toolCallId": "t", "name": "bash", "arguments": {"command": format!("jidoka run update {run_id} build running")}}]}})
+    .to_string()
+}
+
+/// A virtual line, a command run from inside a script tool: it claims the run and is no response.
 fn mention(run_id: &str) -> String {
-    json!({"type": "user", "message": {"content": format!("jidoka run update {run_id} build running --activity SECRET prompt")}}).to_string()
+    json!({"type": "assistant", "isVirtual": true, "timestamp": iso(0), "message": {"model": "<synthetic>",
+        "content": [{"type": "tool_use", "name": "Bash", "input": {"command": format!("jidoka run update {run_id} build running --activity SECRET prompt")}}],
+        "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}})
+    .to_string()
 }
 
 /// A Claude Code response line that also records the reasoning effort of its turn.
@@ -445,7 +456,7 @@ fn copilot_cache_reads_and_writes_are_taken_out_of_input() {
     world.write(
         "copilot/session-state/cop-session-1/events.jsonl",
         &[
-            mention(RUN_A),
+            copilot_mention(RUN_A),
             copilot_usage(10, "call-1", "gpt-copilot", 1000, 700, 100, 40, false),
             copilot_usage(10, "call-1", "gpt-copilot", 1000, 700, 100, 40, false),
             copilot_usage(20, "call-2", "gpt-copilot", 50, 0, 0, 5, true),
@@ -652,6 +663,121 @@ fn missing_unreadable_or_unrecognised_logs_are_not_tracked_with_a_reason_never_z
 }
 
 #[test]
+fn recorded_sessions_in_an_unscanned_folder_get_their_own_reason() {
+    let world = World::new();
+    let target = run(
+        RUN_A,
+        &[(0, "build", None, None)],
+        Some(100),
+        &["elsewhere"],
+    );
+    // No log folder at all.
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert_eq!(usage.status, UsageStatus::NotTracked);
+    let reason = usage.reason.unwrap();
+    assert!(
+        reason.starts_with(crate::requests::RECORDED_NOT_FOUND),
+        "{reason}"
+    );
+
+    // An unrelated log exists.
+    world.write(
+        "claude/projects/-w/S9.jsonl",
+        &[claude_line(
+            "S9",
+            10,
+            "m",
+            "r",
+            "m-1",
+            (1, 0, 0, 1),
+            0,
+            false,
+        )],
+    );
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert_eq!(usage.status, UsageStatus::NotTracked);
+    let reason = usage.reason.unwrap();
+    assert!(
+        reason.starts_with(crate::requests::RECORDED_NOT_FOUND),
+        "{reason}"
+    );
+    assert!(reason.contains("elsewhere"), "{reason}");
+    assert!(reason.contains("CLAUDE_CONFIG_DIR"), "{reason}");
+}
+
+#[test]
+fn a_run_is_read_from_the_agent_home_it_recorded_instead_of_the_dashboards() {
+    let world = World::new();
+    let cases = [
+        (
+            "claude",
+            "projects/-w/S1.jsonl",
+            vec![
+                mention(RUN_A),
+                claude_line("S1", 10, "m", "r", "m-1", (3, 0, 0, 1), 0, false),
+            ],
+        ),
+        (
+            "codex",
+            "sessions/2026/11/05/rollout-2026-11-05T10-00-00-abc.jsonl",
+            vec![
+                codex_meta_line("root-1", None),
+                codex_context("gpt-test"),
+                codex_command(RUN_A),
+                codex_usage(10, "resp-1", 100, 0, 0, 5, 0),
+            ],
+        ),
+        (
+            "copilot",
+            "session-state/cop-1/events.jsonl",
+            vec![
+                copilot_mention(RUN_A),
+                copilot_usage(10, "call-1", "gpt-copilot", 100, 0, 0, 5, false),
+            ],
+        ),
+    ];
+    for (agent, log, lines) in cases {
+        // The agent ran with another home than the dashboard's, such as CLAUDE_CONFIG_DIR=~/.claude-work.
+        let home = world.dir.path().join(format!("profile-{agent}"));
+        world.write(&format!("profile-{agent}/{log}"), &lines);
+        let mut target = run(RUN_A, &[(0, "build", None, None)], Some(100), &[]);
+        let unrecorded = world.collect(&target, std::slice::from_ref(&target));
+        assert_eq!(unrecorded.status, UsageStatus::NotTracked, "{agent}");
+
+        target
+            .agent_homes
+            .insert(agent.into(), home.to_str().unwrap().into());
+        let usage = world.collect(&target, std::slice::from_ref(&target));
+        assert_ne!(usage.status, UsageStatus::NotTracked, "{agent}: {usage:?}");
+        assert_eq!(usage.sessions.len(), 1, "{agent}");
+        fs::remove_dir_all(&home).unwrap();
+    }
+}
+
+#[test]
+fn recorded_sessions_missing_from_the_recorded_home_name_that_home() {
+    let world = World::new();
+    let home = world.dir.path().join("claude-work");
+    let mut target = run(
+        RUN_A,
+        &[(0, "build", None, None)],
+        Some(100),
+        &["elsewhere"],
+    );
+    target
+        .agent_homes
+        .insert("claude".into(), home.to_str().unwrap().into());
+    let reason = world
+        .collect(&target, std::slice::from_ref(&target))
+        .reason
+        .unwrap();
+    assert!(
+        reason.contains(&format!("scanned folders: {},", home.display())),
+        "{reason}"
+    );
+}
+
+#[test]
 fn a_run_from_before_usage_tracking_is_not_tracked_and_a_late_timeline_is_partial() {
     let world = World::new();
     world.write(
@@ -738,6 +864,31 @@ fn a_usage_limit_with_no_later_activity_is_an_unresumed_pause_and_is_not_a_model
             .notes
             .iter()
             .any(|note| note.contains("no usable model"))
+    );
+}
+
+#[test]
+fn a_recorded_codex_log_that_is_too_large_gets_a_note() {
+    let world = World::new();
+    let path = world
+        .dir
+        .path()
+        .join("codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-cdx1.jsonl");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // A sparse file: larger than the reader's limit without writing it.
+    fs::File::create(path)
+        .unwrap()
+        .set_len(65 * 1024 * 1024)
+        .unwrap();
+    let target = run(RUN_A, &[(0, "build", None, None)], None, &["cdx1"]);
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert!(
+        usage
+            .notes
+            .iter()
+            .any(|note| note.contains("larger than 64 MiB")),
+        "{:?}",
+        usage.notes
     );
 }
 
@@ -1160,7 +1311,6 @@ mod auto_block {
 
         // Done runs are not collected at all.
         let done = Fixture::new();
-        done.store.set_stage(&done.id, Stage::Finish);
         done.store
             .update(
                 &done.id,
@@ -1168,13 +1318,64 @@ mod auto_block {
                     .unwrap(),
             )
             .unwrap();
-        done.store
-            .change_gate(&done.id, |run| {
-                crate::run_gate::advance_forced(run, "CI service unavailable")
-            })
-            .unwrap();
+        crate::test_support::advance_to(&done.store, &done.id, Stage::Finish);
+        crate::test_support::force_advance(&done.store, &done.id, None);
         collect_active(&done.store, &done.settings, now).unwrap();
         assert!(done.run().usage.is_none());
+    }
+
+    #[test]
+    fn startup_collects_a_recent_done_run_whose_recorded_sessions_were_not_found() {
+        let f = Fixture::new();
+        let session = "0a1b2c3d-session";
+        f.store
+            .update(
+                &f.id,
+                crate::run::parse_update(&[
+                    "--mode",
+                    "fast",
+                    "--summary",
+                    "finish=Completed",
+                    "--session",
+                    session,
+                ])
+                .unwrap(),
+            )
+            .unwrap();
+        crate::test_support::advance_to(&f.store, &f.id, Stage::Finish);
+        crate::test_support::force_advance(&f.store, &f.id, None);
+        // The dashboard that saw the run finish could not find its log.
+        collect_and_store(&f.store, &f.id, &f.settings).unwrap();
+        assert_eq!(f.run().usage.unwrap().status, UsageStatus::NotTracked);
+
+        // A dashboard started where the log can be read collects the run once more.
+        let mut line: serde_json::Value = serde_json::from_str(&claude_line(
+            session,
+            0,
+            "m",
+            "r",
+            "m-1",
+            (3, 0, 0, 1),
+            0,
+            false,
+        ))
+        .unwrap();
+        line["timestamp"] = json!(iso_timestamp(f.began + 1_000));
+        f.world.write(
+            &format!("claude/projects/-w/{session}.jsonl"),
+            &[line.to_string()],
+        );
+        let now = crate::run::updated_now().unwrap();
+        // The watching pass leaves done runs alone.
+        collect_active(&f.store, &f.settings, now).unwrap();
+        assert_eq!(f.run().usage.unwrap().status, UsageStatus::NotTracked);
+        // So does a startup long after the run was last updated.
+        collect_missed(&f.store, &f.settings, now + 8 * 24 * 60 * 60 * 1000).unwrap();
+        assert_eq!(f.run().usage.unwrap().status, UsageStatus::NotTracked);
+        collect_missed(&f.store, &f.settings, now).unwrap();
+        let usage = f.run().usage.unwrap();
+        assert_ne!(usage.status, UsageStatus::NotTracked, "{usage:?}");
+        assert_eq!(usage.sessions, [session]);
     }
 }
 
@@ -1293,10 +1494,9 @@ fn completed_routed_stage_with_only_coordinator_usage_adds_no_model_warning() {
     };
     collect_and_store(&store, RUN_A, &settings).unwrap();
     assert!(store.get(RUN_A).unwrap().unwrap().run_reports.is_empty());
-    store.set_stage(RUN_A, Stage::Check);
-    store
-        .update(RUN_A, crate::run::UpdateRun::default())
-        .unwrap();
+    crate::test_support::advance_to(&store, RUN_A, Stage::Check);
+    // Moving on records the mode and the forced advance; collecting adds nothing to them.
+    let advanced = store.get(RUN_A).unwrap().unwrap().run_reports;
     collect_and_store(&store, RUN_A, &settings).unwrap();
     collect_and_store(&store, RUN_A, &settings).unwrap();
     let reopened = crate::run::RunStore::open(&path)
@@ -1304,7 +1504,10 @@ fn completed_routed_stage_with_only_coordinator_usage_adds_no_model_warning() {
         .get(RUN_A)
         .unwrap()
         .unwrap();
-    assert!(reopened.run_reports.is_empty());
+    assert_eq!(
+        serde_json::to_value(&reopened.run_reports).unwrap(),
+        serde_json::to_value(&advanced).unwrap()
+    );
 }
 
 // --- skills ------------------------------------------------------------------------------------------

@@ -1,13 +1,13 @@
 //! `jidoka run requests --all`: the model requests of many runs pooled, with how they spread over the runs.
 
 use crate::{
+    agent_logs::Roots,
     inspect::shown,
     request_logs::Category,
     requests::{Counts, RunRequests, analyze, cells},
     run::{Run, RunStatus},
     stats::{number, table_with},
     usage::UsageStatus,
-    usage_logs::Roots,
 };
 use serde::Serialize;
 use std::{collections::BTreeMap, time::Instant};

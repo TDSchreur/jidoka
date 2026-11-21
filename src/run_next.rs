@@ -5,8 +5,11 @@ use crate::{
     inspect::shown,
     pr_sync::Git,
     routing::{ModelChoice, ModelRouting, RoutingAgent},
-    run::{Mode, Run, RunStatus, Stage, Ticket, TicketStatus},
-    run_gate::{self, Evaluation, ExitOutcome, GateStatus, StageExit},
+    run::{
+        Evaluation, ExitOutcome, GateResult, GateStatus, Mode, Run, RunStatus, Stage, StageExit,
+        Ticket, TicketStatus,
+    },
+    run_gate,
     stages::{self, Destination, Gate},
 };
 use serde::Serialize;
@@ -105,7 +108,7 @@ pub(crate) struct Next {
     instructions: String,
     /// The gates still open on the move to the next Stage.
     gates: Vec<OpenGate>,
-    gate_results: Vec<run_gate::GateResult>,
+    gate_results: Vec<GateResult>,
     stage_exits: Vec<StageExit>,
     checks_unavailable: Option<String>,
     moves: Vec<Move>,
@@ -383,7 +386,7 @@ fn rework_move(run: &Run, mode: Mode) -> Option<Move> {
     })
 }
 
-fn recorded_gate_results(run: &Run) -> Vec<crate::run_gate::GateResult> {
+fn recorded_gate_results(run: &Run) -> Vec<GateResult> {
     run.gates
         .iter()
         .filter(|r| {
@@ -688,7 +691,7 @@ pub(crate) fn render(next: &Next) -> String {
     out
 }
 
-fn render_result(out: &mut String, result: &run_gate::GateResult, indent: &str) {
+fn render_result(out: &mut String, result: &GateResult, indent: &str) {
     out.push_str(&format!(
         "{indent}{}  {}{}{}{}{}{}\n",
         if result.passed { "pass" } else { "fail" },

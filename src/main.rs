@@ -1,8 +1,7 @@
+mod agent_logs;
 mod attention;
 mod checks;
 mod client;
-mod codex_requests;
-mod copilot_requests;
 mod cost;
 mod discovery;
 mod doctor;
@@ -15,6 +14,7 @@ mod install;
 mod install_record;
 mod knowledge;
 mod plans;
+mod pr_host;
 mod pr_open;
 mod pr_state;
 mod pr_sync;
@@ -32,13 +32,14 @@ mod run_gate;
 mod run_next;
 mod server;
 mod setup;
+mod shell_commands;
 mod stages;
 mod stats;
 mod token;
 mod usage;
-mod usage_logs;
 
 use client::{fetch_run, fetch_runs, start_run};
+use pr_host::PrHost;
 use run::UPDATE_HELP;
 use server::{DEFAULT_PORT, serve};
 use std::{env, io, path::PathBuf, process::ExitCode};
@@ -127,7 +128,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                     title,
                     &dir.display().to_string(),
                     repository,
-                    current_sessions().into_iter().next(),
+                    current_agent_sessions().first(),
                     resolution.selection
                 )?
             );
@@ -193,7 +194,9 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             }
             let mut parsed = run_gate::parse_advance_options(options)
                 .map_err(|error| format!("{error}\n{HELP}"))?;
-            parsed.request.sessions = current_sessions();
+            let sessions = current_agent_sessions();
+            parsed.request.sessions = sessions.iter().map(|session| session.id.clone()).collect();
+            parsed.request.agent_homes = run_begin::agent_homes(&sessions);
             client::api_post(
                 &cli_address()?,
                 &cli_token_file()?,
@@ -244,7 +247,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 .map_err(|error| format!("{error}\n{HELP}"))?;
             let runs = fetch_runs(&cli_address()?)?;
             let roots =
-                usage_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
+                agent_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
             let result = requests_pool::pool(
                 &runs,
                 &roots,
@@ -267,7 +270,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             let target = fetch_run_cli(id)?;
             let runs = fetch_runs(&cli_address()?)?;
             let roots =
-                usage_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
+                agent_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
             let result = requests::analyze(
                 &target,
                 &runs,
@@ -337,8 +340,14 @@ fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
         base_commit: run.base_commit.clone(),
         pr_state: run.pr_status.as_ref().map(|status| status.state),
     };
-    let opened = pr_open::open(&info, &parsed, &pr_open::RealGh, &ServerApi)
-        .map_err(|problem| inspect::shown(&problem.0))?;
+    let opened = pr_open::open(
+        &info,
+        &parsed,
+        &pr_host::Hosts::new(pr_host::RealTools),
+        &pr_sync::RealGit,
+        &ServerApi,
+    )
+    .map_err(|problem| inspect::shown(&problem.0))?;
     if parsed.json {
         println!("{}", serde_json::to_string_pretty(&opened)?);
     } else {
@@ -377,8 +386,9 @@ fn run_sync_command(id: &str, json: bool) -> Result<u8, Box<dyn std::error::Erro
         return Err("The run has no pull request recorded. Record it with `jidoka run update <id> --pr <url>`.".into());
     };
     let checked_at = run::updated_now()?;
-    let state =
-        pr_state::read(&pr_wait::RealGh, url).map_err(|problem| inspect::shown(&problem.0))?;
+    let state = pr_host::Hosts::new(pr_host::RealTools)
+        .state(url)
+        .map_err(|problem| inspect::shown(&problem.0))?;
     let changed = apply_pr_state(id, url, state, checked_at)?;
     if json {
         println!(
@@ -437,8 +447,13 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
         pr: run.pr.clone(),
     };
     let cwd = std::env::current_dir()?;
-    let cleaned = run_cleanup::cleanup(&recorded, &pr_wait::RealGh, &pr_sync::RealGit, &cwd)
-        .map_err(|problem| inspect::shown(&problem.0))?;
+    let cleaned = run_cleanup::cleanup(
+        &recorded,
+        &pr_host::Hosts::new(pr_host::RealTools),
+        &pr_sync::RealGit,
+        &cwd,
+    )
+    .map_err(|problem| inspect::shown(&problem.0))?;
     print!("{}", run_cleanup::render(&recorded, cleaned));
     if cleaned.needs_update() {
         report_to_dashboard(
@@ -486,11 +501,10 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     let (mut wait_options, json) =
         pr_wait::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
     client::check_run_id(id)?;
-    let gh = pr_wait::RealGh;
     let run = fetch_run_cli(id)?;
-    if !run.pr.as_deref().is_some_and(pr_wait::is_azure_pr_url) {
-        pr_wait::check_gh(&gh).map_err(|problem| problem.0)?;
-    }
+    let url = run.pr.as_deref().ok_or(
+        "The run has no pull request recorded. Open it, record it with `jidoka run update <id> --pr <url>`, and try again.",
+    )?;
     // The run's activity follows the wait, keeping its status. Only a running run is updated.
     let running = matches!(run.status, run::RunStatus::Running);
     let mut reported_failure = false;
@@ -503,32 +517,21 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
             eprintln!("The run's activity could not be updated: {error}");
         }
     };
-    // Only GitHub can lag behind a push in what it reports; the Azure wait does not use the hint.
-    let github = !run.pr.as_deref().is_some_and(pr_wait::is_azure_pr_url);
-    if let (true, Some(worktree), Some(branch)) = (github, &run.worktree, &run.branch) {
+    if let (Some(worktree), Some(branch)) = (&run.worktree, &run.branch) {
         wait_options.pushed_head = pr_wait::pushed_head(std::path::Path::new(worktree), branch);
     }
     let clock = pr_wait::RealClock(std::time::Instant::now());
-    let waited = pr_wait::wait(
-        run.pr.as_deref(),
-        &wait_options,
-        &gh,
-        &clock,
-        &mut activity,
-        &mut |text| eprintln!("{text}"),
-    )
-    .map_err(|problem| problem.0)?;
-    if waited.outcome == pr_wait::Outcome::NotOpen
-        && let Some(url) = run.pr.as_deref()
-    {
+    let waited = pr_host::Hosts::new(pr_host::RealTools)
+        .watch(url, &wait_options, &clock, &mut activity, &mut |text| {
+            eprintln!("{text}")
+        })
+        .map_err(|problem| problem.0)?;
+    if waited.outcome == pr_wait::Outcome::NotOpen {
         // The wait only reports that the pull request is gone; the run follows what happened to it.
         let checked_at = run::updated_now()?;
-        match pr_state::read(&gh, url) {
-            Ok(state) => match apply_pr_state(id, url, state, checked_at) {
-                Ok(changed) => eprint!("{}", pr_state::describe(state, changed)),
-                Err(error) => eprintln!("The run could not be updated: {error}"),
-            },
-            Err(problem) => eprintln!("The run was not updated: {}", inspect::shown(&problem.0)),
+        match apply_pr_state(id, url, waited.state, checked_at) {
+            Ok(changed) => eprint!("{}", pr_state::describe(waited.state, changed)),
+            Err(error) => eprintln!("The run could not be updated: {error}"),
         }
     }
     if json {
@@ -561,7 +564,7 @@ impl run_begin::RunApi for ServerApi {
         title: &str,
         project: &str,
         repository: Option<String>,
-        session: Option<String>,
+        session: Option<&run_begin::AgentSession>,
         routing: Option<routing::ModelRouting>,
     ) -> Result<String, String> {
         let token = cli_token_file().map_err(|e| e.to_string())?;
@@ -687,12 +690,13 @@ fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::erro
     }
 }
 
-/// `options` followed by `--session <id>` for each agent session this command runs in, so the update
-/// records the session and its token usage can be attributed to the run.
+/// `options` followed by `--session <id>` for each agent session this command runs in, and
+/// `--agent-home <agent>=<path>` for its agent, so the update records the session and its token usage can
+/// be read from the agent's own logs and attributed to the run.
 fn with_sessions(options: &[impl AsRef<str>]) -> Vec<String> {
     let mut all: Vec<String> = options.iter().map(|o| o.as_ref().to_owned()).collect();
-    for session in current_sessions() {
-        all.extend(["--session".to_owned(), session]);
+    for session in current_agent_sessions() {
+        all.extend(session.update_options());
     }
     all
 }
@@ -758,45 +762,76 @@ fn group_guidance(id: &str) -> Result<Option<run_next::GroupGuidance>, Box<dyn s
     Ok(run_next::GroupGuidance::from_view(&view, id))
 }
 
-/// The ids of the agent sessions this command runs in, when the agent exposes them: Claude Code sets
-/// `CLAUDE_CODE_SESSION_ID`; Codex sets `CODEX_SESSION_ID` (the root session) and `CODEX_THREAD_ID`; Copilot CLI sets `COPILOT_AGENT_SESSION_ID`.
-fn current_sessions() -> Vec<String> {
-    sessions_from(&|name| env::var_os(name))
-}
-
-fn sessions_from(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<String> {
-    agent_sessions_from(var)
-        .into_iter()
-        .map(|session| session.id)
-        .collect()
-}
-
-/// Like `current_sessions`, with the agent each session id belongs to.
+/// The agent sessions this command runs in, when the agent exposes them, with the agent each belongs to and
+/// that agent's home folder: Claude Code sets `CLAUDE_CODE_SESSION_ID`; Codex sets `CODEX_SESSION_ID` (the
+/// root session) and `CODEX_THREAD_ID`; Copilot CLI sets `COPILOT_AGENT_SESSION_ID`. A warning is printed
+/// for a home that is not recorded because the dashboard would refuse it.
 fn current_agent_sessions() -> Vec<run_begin::AgentSession> {
-    agent_sessions_from(&|name| env::var_os(name))
+    let (sessions, warnings) = agent_sessions_from(
+        &|name| env::var_os(name),
+        install::home_dir().ok().as_deref(),
+    );
+    for warning in warnings {
+        eprintln!("{warning}");
+    }
+    sessions
 }
 
+/// The agent sessions `var` names, each with the home folder `jidoka install` would use for its agent
+/// (honoring `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `COPILOT_HOME`), and a warning for each agent home the
+/// dashboard would refuse. Such a home is left out, so it cannot fail the command; a relative one, because
+/// the dashboard cannot tell what it is relative to.
 fn agent_sessions_from(
     var: &dyn Fn(&str) -> Option<std::ffi::OsString>,
-) -> Vec<run_begin::AgentSession> {
+    user_home: Option<&std::path::Path>,
+) -> (Vec<run_begin::AgentSession>, Vec<String>) {
     let mut sessions: Vec<run_begin::AgentSession> = Vec::new();
-    for (name, agent) in [
-        ("CLAUDE_CODE_SESSION_ID", "claude"),
-        ("CODEX_SESSION_ID", "codex"),
-        ("CODEX_THREAD_ID", "codex"),
-        ("COPILOT_AGENT_SESSION_ID", "copilot"),
+    let mut warnings: Vec<String> = Vec::new();
+    for (name, agent, home_var) in [
+        ("CLAUDE_CODE_SESSION_ID", "claude", "CLAUDE_CONFIG_DIR"),
+        ("CODEX_SESSION_ID", "codex", "CODEX_HOME"),
+        ("CODEX_THREAD_ID", "codex", "CODEX_HOME"),
+        ("COPILOT_AGENT_SESSION_ID", "copilot", "COPILOT_HOME"),
     ] {
         let Some(id) = var(name).and_then(|value| value.into_string().ok()) else {
             continue;
         };
-        if run::check_session_id(&id).is_ok() && !sessions.iter().any(|known| known.id == id) {
-            sessions.push(run_begin::AgentSession {
-                id,
-                agent: Some(agent),
-            });
+        if run::check_session_id(&id).is_err() || sessions.iter().any(|known| known.id == id) {
+            continue;
         }
+        let home_var_value = var(home_var).filter(|value| !value.is_empty());
+        let agent_home = match user_home {
+            Some(user_home) => install::agent_home(agent, user_home, var).ok(),
+            // Without a home directory, only the agent's own variable can name its home.
+            None => home_var_value.clone().map(std::path::PathBuf::from),
+        };
+        let mut home = None;
+        if let Some(agent_home) = agent_home {
+            match agent_home.into_os_string().into_string() {
+                Ok(path) if run::is_valid_agent_home(&path) => home = Some(path),
+                _ => {
+                    let source = if home_var_value.is_some() {
+                        home_var
+                    } else {
+                        "the home directory"
+                    };
+                    let warning = format!(
+                        "Warning: the {agent} home from {source} is not an absolute path the dashboard accepts, \
+                         so this run's {agent} usage is read from the dashboard's own {agent} home."
+                    );
+                    if !warnings.contains(&warning) {
+                        warnings.push(warning);
+                    }
+                }
+            }
+        }
+        sessions.push(run_begin::AgentSession {
+            id,
+            agent: Some(agent),
+            home,
+        });
     }
-    sessions
+    (sessions, warnings)
 }
 
 /// `[--port <port>] [--no-usage]` in any order. Usage collection is on unless `--no-usage` or `JIDOKA_USAGE=off`.
@@ -897,7 +932,7 @@ fn dashboard(requested: Option<u16>, usage: bool) -> Result<(), Box<dyn std::err
     let home = install::home_dir()?;
     let settings = usage::UsageSettings {
         enabled: usage,
-        roots: usage_logs::Roots::from_home(&home, &|name| env::var_os(name))?,
+        roots: agent_logs::Roots::from_home(&home, &|name| env::var_os(name))?,
         budget: DASHBOARD_USAGE_BUDGET,
         settle: usage::UsageSettings::default_settle(),
     };
@@ -995,11 +1030,71 @@ fn runs_path_in(var: &impl Fn(&str) -> Option<std::ffi::OsString>) -> io::Result
 
 #[cfg(test)]
 mod test_support {
+    use crate::run::{AdvanceMetadata, Exit, NewRun, Run, RunStore, Stage, parse_update};
+
     pub(crate) struct TestDir(pub(crate) tempfile::TempDir);
     impl TestDir {
         pub(crate) fn new() -> Self {
             Self(tempfile::tempdir().unwrap())
         }
+    }
+
+    /// Creates a run titled `title` in `store`, for a worktree of `/work/repo`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the store cannot create the run, for example because its data folder is not writable.
+    pub(crate) fn new_run(store: &RunStore, title: &str) -> Run {
+        store
+            .create(NewRun {
+                title: title.into(),
+                project: "/work/repo.worktrees/feature".into(),
+                repository: Some("/work/repo".into()),
+                session: None,
+                agent_homes: Default::default(),
+                model_routing: None,
+            })
+            .unwrap()
+    }
+
+    /// Moves a stored run forward to `stage` through `RunStore::advance` with Override exits.
+    ///
+    /// The run moves one Stage at a time, as in production. A run without a mode gets the balanced mode
+    /// first, as an Override needs one; record another mode before calling this when the test needs it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the run does not exist or cannot reach `stage`, for example because it is already past it.
+    pub(crate) fn advance_to(store: &RunStore, id: &str, stage: Stage) {
+        let run = store.get(id).unwrap().expect("test run exists");
+        if run.mode.is_none() {
+            store
+                .update(id, parse_update(&["--mode", "balanced"]).unwrap())
+                .unwrap();
+        }
+        while store.get(id).unwrap().unwrap().stage != stage {
+            force_advance(store, id, None);
+        }
+    }
+
+    /// Leaves the stored run's current Stage with an Override exit, saving `activity` along with it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the run does not exist or cannot leave its Stage, for example because it has no mode.
+    pub(crate) fn force_advance(store: &RunStore, id: &str, activity: Option<&str>) -> Run {
+        let metadata = AdvanceMetadata {
+            activity: activity.map(str::to_owned),
+            ..AdvanceMetadata::default()
+        };
+        store
+            .advance(id, metadata, |_| {
+                Ok(Exit::Override {
+                    reason: "Test moves the run on".into(),
+                })
+            })
+            .unwrap_or_else(|error| panic!("cannot advance run {id}: {error}"));
+        store.get(id).unwrap().expect("test run exists")
     }
 }
 
@@ -1035,10 +1130,84 @@ mod tests {
         }
     }
 
+    fn sessions_from(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<String> {
+        agent_sessions_from(var, None)
+            .0
+            .into_iter()
+            .map(|session| session.id)
+            .collect()
+    }
+
+    #[test]
+    fn each_session_is_sent_with_its_agent_home() {
+        let id = "019e1f00-aaaa-7bbb-8ccc-000000000001";
+        let user = std::env::temp_dir().join("user");
+        let profile = std::env::temp_dir().join("claude-work");
+        let profile_text = profile.to_str().unwrap();
+        let options = |pairs: &[(&str, &str)]| -> Vec<String> {
+            agent_sessions_from(&lookup(pairs), Some(&user))
+                .0
+                .iter()
+                .flat_map(run_begin::AgentSession::update_options)
+                .collect()
+        };
+        // CLAUDE_CONFIG_DIR wins over the home directory, as it does for install.
+        assert_eq!(
+            options(&[
+                ("CLAUDE_CODE_SESSION_ID", id),
+                ("CLAUDE_CONFIG_DIR", profile_text)
+            ]),
+            [
+                "--session".to_owned(),
+                id.to_owned(),
+                "--agent-home".to_owned(),
+                format!("claude={profile_text}")
+            ]
+        );
+        let codex = user.join(".codex");
+        assert_eq!(
+            options(&[("CODEX_THREAD_ID", id)])[3],
+            format!("codex={}", codex.display())
+        );
+        let copilot = user.join(".copilot");
+        assert_eq!(
+            options(&[("COPILOT_AGENT_SESSION_ID", id)])[3],
+            format!("copilot={}", copilot.display())
+        );
+        // A relative home is not sent: the dashboard could not tell what it is relative to.
+        assert_eq!(
+            options(&[("CLAUDE_CODE_SESSION_ID", id), ("CLAUDE_CONFIG_DIR", "rel")]),
+            ["--session", id]
+        );
+        // It is named in one warning, even when two sessions of the agent share it.
+        let (_, warnings) = agent_sessions_from(
+            &lookup(&[
+                ("CODEX_SESSION_ID", id),
+                ("CODEX_THREAD_ID", "019e1f00-aaaa-7bbb-8ccc-000000000002"),
+                ("CODEX_HOME", "rel"),
+            ]),
+            Some(&user),
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("CODEX_HOME"), "{warnings:?}");
+        let homes = run_begin::agent_homes(
+            &agent_sessions_from(
+                &lookup(&[
+                    ("CLAUDE_CODE_SESSION_ID", id),
+                    ("CLAUDE_CONFIG_DIR", profile_text),
+                ]),
+                None,
+            )
+            .0,
+        );
+        assert_eq!(homes.get("claude").map(String::as_str), Some(profile_text));
+    }
+
     #[test]
     fn each_session_variable_names_its_agent() {
         let agents = |pairs: &[(&str, &str)]| -> Vec<Option<&'static str>> {
-            agent_sessions_from(&lookup(pairs))
+            agent_sessions_from(&lookup(pairs), None)
+                .0
                 .into_iter()
                 .map(|session| session.agent)
                 .collect()

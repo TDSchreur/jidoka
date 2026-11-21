@@ -167,13 +167,13 @@ impl RunApi for FakeApi {
         title: &str,
         project: &str,
         repository: Option<String>,
-        session: Option<String>,
+        session: Option<&AgentSession>,
         _routing: Option<ModelRouting>,
     ) -> Result<String, String> {
         self.created
             .borrow_mut()
             .push((title.to_string(), project.to_string(), repository));
-        *self.created_session.borrow_mut() = session;
+        *self.created_session.borrow_mut() = session.map(|session| session.id.clone());
         Ok("100".into())
     }
 
@@ -238,7 +238,10 @@ fn a_fresh_run_gets_a_worktree_from_the_fetched_base_and_records_it() {
         &project.repo,
         &opts,
         &api,
-        Some(session("sess-1", None)),
+        Some(AgentSession {
+            home: Some("/home/user/.claude-work".into()),
+            ..session("sess-1", Some("claude"))
+        }),
         None,
     )
     .unwrap();
@@ -281,6 +284,10 @@ fn a_fresh_run_gets_a_worktree_from_the_fetched_base_and_records_it() {
         Some("Workspace ready")
     );
     assert_eq!(value_after(args, "--session").as_deref(), Some("sess-1"));
+    assert_eq!(
+        value_after(args, "--agent-home").as_deref(),
+        Some("claude=/home/user/.claude-work")
+    );
     // The run was created for the project folder, with the main checkout as its repository.
     let created = api.created.borrow();
     assert_eq!(created[0].0, "Add a thing");
@@ -716,6 +723,7 @@ fn session(id: &str, agent: Option<&'static str>) -> AgentSession {
     AgentSession {
         id: id.into(),
         agent,
+        home: None,
     }
 }
 

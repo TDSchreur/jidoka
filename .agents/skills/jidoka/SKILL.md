@@ -5,7 +5,7 @@ description: Assess a software change and select the appropriate jidoka executio
 
 # Jidoka workflow selection
 
-In Codex, when requesting escalation for any Jidoka command eligible for reusable approval, set the tool’s `prefix_rule` to the specific command verb, for example `["jidoka", "run", "check"]`. Keep run IDs and other changing arguments in the command itself.
+Codex only: when requesting escalation for any Jidoka command eligible for reusable approval, set the tool’s `prefix_rule` to the specific command verb, for example `["jidoka", "run", "check"]`. Keep run IDs and other changing arguments in the command itself.
 
 Start each run in a fresh agent session (`/clear` in Claude Code, `/new` in Codex, `/clear` in Copilot CLI). A long session re-reads its whole context on every turn, which makes later runs expensive. When `jidoka run begin` prints a session warning, stop and follow the Workspace procedure instead of carrying on.
 

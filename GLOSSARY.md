@@ -6,15 +6,21 @@
 
 **Gate**: A condition that must hold before a run may leave a Stage, such as all tickets done, verification passed on the head commit, a review recorded, or CI passed. Agents record manual Gate results with `jidoka run gate`. The CLI and dashboard share the same evaluation for local Gates. Advance evaluates live CI when required. Each accepted exit preserves its gate evidence for that stage pass.
 
+**Stage exit**: How a run left one Pass through a Stage: gates accepted, an override with its reason, an observed merge, or a Rework with its Finding. It keeps the evidence as it was at that moment, and is the only way a Stage changes.
+
 **Needs you**: A run that is blocked and waiting for the user. The dashboard lists it in the andon strip, marks its row on the line amber, sorts it first and counts it in the page title.
 
 **Andon strip**: The top of the dashboard. It says that nothing needs you, or turns amber and lists every run that needs you, with its project and status reason. Named after the signal board above a factory line.
 
 **The line**: The dashboard's list of active runs (every run that is not done), one row each, with a rail of the four Stages that shows where the run is.
 
-**Done** means Jidoka ended work on a run. Done runs appear under Completed in the dashboard. The run's completion reason and its pull request state are recorded separately.
+**Done** means Jidoka ended work on a run. Done runs appear under Completed in the dashboard. The run's Completion and its pull request state are recorded separately.
+
+**Completion**: How Jidoka ended work on a done run: CI passed on the pull request's head (or the project has no CI), the pull request was seen merged, or an override with its reason. A run that finished before Completions were recorded may have none.
 
 **Pull request state**: Whether a run's pull request is open, a draft, merged or closed. The dashboard server reads it from GitHub with `gh` or from Azure Repos with `az`, keeps it on the run and reads it again about once a minute until it is merged. When it cannot be read, it is unknown, with the reason; it is never guessed.
+
+**Pull request host**: Where a run's pull request lives: GitHub (including GitHub Enterprise) or Azure Repos. It is chosen from the pull request's URL, or for a pull request not opened yet from the origin remote and the `jidoka.prProvider` setting. Both hosts offer the same things: reading a pull request's state and head, finding or opening a branch's pull request, and watching its checks to one CI outcome.
 
 **Rework**: A return from Check to Build to fix actionable Findings, followed by another Check. A Rework starts only together with at least one new open Finding, which records why the run was sent back. `jidoka-full` and `jidoka-balanced` allow at most three per run; after the second, findings that change only wording or documentation are fixed without asking and the user decides only on findings that change behaviour; after the third, the user decides whether to do another Rework, finish with the findings listed in the pull request, or stop. Findings alone never block a run; the run is `blocked` only while it waits for that decision.
 
@@ -22,7 +28,11 @@
 
 **Workflow mode**: The workflow skill that carries a run: `jidoka-full` (quality), `jidoka-balanced`, or `jidoka-fast` (speed). Modes differ in how much Define, Build, and Check do.
 
-**Model routing**: Choosing the model and effort each Stage's agents run on, independently of the workflow mode. The coordinating session keeps its own model; a routed Stage hands its work to agents started on the Stage's model, while conversation with the user stays in the coordinating session. It is not the same as workflow selection, which `/jidoka` does. A run records its model-routing selection when it starts.
+**Model routing**: Choosing the model and effort each Stage's agents run on, independently of the workflow mode. The Coordinator keeps its own model; a routed Stage hands its work to agents started on the Stage's model, while conversation with the user stays with the Coordinator. It is not the same as workflow selection, which `/jidoka` does. A run records its model-routing selection when it starts.
+
+**Coordinator**: The agent session that carries a run through its Stages. It talks with the user, records the run, hands routed work to other agents and checks what they return. Do not call it the coordinating session or the main agent.
+
+**Small change**: A small, clear request planned in the conversation, without a spec or tickets. Its Define stays with the Coordinator instead of being routed, as it does in `jidoka-fast`.
 
 **Model routing policy**: The user-owned file that describes model routing: for each agent (Claude Code, Codex, Copilot CLI), a model and optional effort per Stage. A Stage left out keeps the session's model. A run starts in one agent and records only that agent's part. Jidoka reads the file once, when a run starts.
 
@@ -47,6 +57,10 @@
 **Estimated cost**: The cost of a run's token usage in USD, computed when it is shown as a token-based estimate at API list prices, not subscription charges, from Jidoka's built-in price table (per million tokens, Claude and OpenAI models) for each row, model, stage and run. A model without a price is `unknown`, never zero; a total that includes one is partial (`>= $X`). It is not stored.
 
 **Pause**: A moment the agent's Claude Code log shows work stopped: a usage limit or a context compaction. The dashboard keeps its kind and time, blocks a running run with the matching reason until later activity appears, and shows it on the run's timeline. A stretch of over 10 minutes with no activity that no pause explains is an idle gap. Codex and Copilot logs are not checked: Copilot's `events.jsonl` writes no usage-limit or compaction events.
+
+**Session claim**: Which agent sessions belong to a run: a session does when it executed a Jidoka command that names the run (`run update`, `run sync`, `run inspect`, `run check`, `run stats`, `pr open`, `pr sync` or `pr wait` followed by the run id), including one run from inside a script tool, or when the run recorded the session's id. Only the session's own commands claim; a subagent's commands never do, and its logs count with the session that started it. Commands are read from the agent's tool calls, so a run id in tool output, a prompt or a file the agent read never counts. The rule is the same for Claude Code, Codex and Copilot, and Token usage and the request analysis both use it.
+
+**Agent home**: An agent's own folder, where it keeps its skills and session logs: `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `COPILOT_HOME` as the agent's environment sets it, otherwise `~/.claude`, `~/.codex` or `~/.copilot`. When the CLI records a session on a run, it records that agent's home with it, and Token usage and the request analysis read that agent's logs of the run there. The latest one recorded for an agent replaces the earlier one. A run without one is read from the agent home of the dashboard's or CLI's own environment.
 
 **Model request**: One response from the model, counted once however many times its agent's log repeats it. It is the unit of the request analysis; user turns and individual tool calls are different units.
 
@@ -73,6 +87,8 @@
 **Pass**: One pass through a Stage on a run's Timeline, from its first mark to the next Stage's mark. Consecutive Build marks of the same Rework form one Pass, which lists the tickets worked on in it. A Rework adds a Build Pass and a Check Pass.
 
 **Station**: One of the route's stops in the dashboard's run sheet. A run with a Timeline shows one Pass per stop; a run with no Timeline shows one Station per Stage, with its reports placed by Stage.
+
+**Knowledge repo**: One ordinary repository per user that holds a platform's shared knowledge (which repositories exist, how they relate, conventions and learnings) and the specs of changes that need several repositories. It is a per-user setting, never worked through a run: agents read it in Define, record learnings in Finish and push to it directly.
 
 **Change group**: A set of ordinary runs, in one or more repositories, linked to one shared spec for a change that needs several pull requests. A group has an ID (`g` and digits), a title and a spec, owns its membership, and never changes a member run's stages, gates or cleanup. A run is in at most one group. The dashboard server stores groups in `groups.json`.
 

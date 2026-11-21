@@ -353,54 +353,50 @@ fn the_checks_stop_the_command_before_anything_changes() {
             .contains("uncommitted")
     );
     assert_eq!(project.head(), head);
+}
 
-    // The base branch, a wrong branch, a name that is not safe, no worktree, a worktree that is gone.
+/// The Workspace check that `pr sync` and `pr open` share.
+#[test]
+fn the_workspace_check_refuses_a_workspace_that_cannot_be_merged_or_pushed() {
     let project = Project::new();
+    let git = TestGit::default();
+    let refused = |run: &PrRun, base: Option<&str>| match check_workspace(run, base, &git) {
+        Ok(_) => panic!("the check passed"),
+        Err(problem) => problem.0,
+    };
+
+    // A usable Workspace; without --base the base is origin's default branch.
+    let workspace = check_workspace(&run_of(&project), None, &git).unwrap();
+    assert_eq!(
+        (workspace.branch.as_str(), workspace.base.as_str()),
+        ("feature", "develop")
+    );
+    assert_eq!(workspace.dir, project.wt);
+
+    // The branch is the base.
+    assert!(refused(&run_of(&project), Some("feature")).contains("base branch"));
+    // The run records another branch.
     let mut run = run_of(&project);
     run.branch = Some("other".into());
+    let problem = refused(&run, None);
     assert!(
-        sync(&run, &options(), &TestGit::default(), &FakeApi::default())
-            .unwrap_err()
-            .0
-            .contains("other")
+        problem.contains("other") && problem.contains("feature"),
+        "{problem}"
     );
-    let mut base = options();
-    base.base = Some("feature".into());
-    assert!(
-        sync(
-            &run_of(&project),
-            &base,
-            &TestGit::default(),
-            &FakeApi::default()
-        )
-        .unwrap_err()
-        .0
-        .contains("base branch")
-    );
+    // No worktree, or one that is gone.
     let mut run = run_of(&project);
     run.worktree = None;
-    assert!(
-        sync(&run, &options(), &TestGit::default(), &FakeApi::default())
-            .unwrap_err()
-            .0
-            .contains("no worktree")
-    );
+    assert!(refused(&run, None).contains("no worktree"));
     run.worktree = Some(project.wt.join("gone").display().to_string());
-    assert!(
-        sync(&run, &options(), &TestGit::default(), &FakeApi::default())
-            .unwrap_err()
-            .0
-            .contains("does not exist")
-    );
-    run_git(&project.wt, &["branch", "-m", "+feature"]);
+    assert!(refused(&run, None).contains("does not exist"));
+    // A detached HEAD.
+    run_git(&project.wt, &["checkout", "-q", "--detach"]);
+    assert!(refused(&run_of(&project), None).contains("detached"));
+    // A name git could read as a forced refspec.
+    run_git(&project.wt, &["checkout", "-q", "-b", "+feature"]);
     let mut run = run_of(&project);
     run.branch = Some("+feature".into());
-    assert!(
-        sync(&run, &options(), &TestGit::default(), &FakeApi::default())
-            .unwrap_err()
-            .0
-            .contains("name")
-    );
+    assert!(refused(&run, None).contains("name"));
 }
 
 // --- rework 1 ---------------------------------------------------------------------------------------

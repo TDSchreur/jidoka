@@ -2,10 +2,11 @@
 
 The smell baseline and the cross-platform checklist for the Standards axis of a review. Code review and self-review in Build use the same list.
 
-On top of whatever the repo documents, the Standards axis always carries the **smell baseline** below: a fixed set of Fowler code smells (_Refactoring_, ch.3) that applies even when a repo documents nothing. Two rules bind it:
+On top of whatever the repo documents, the Standards axis always carries the **smell baseline** below: a fixed set of Fowler code smells (_Refactoring_, ch.3) that applies even when a repo documents nothing. Three rules bind it:
 
-- **The repo overrides.** A documented repo standard always wins; where it endorses something the baseline would flag, suppress the smell.
+- **The repo overrides.** A documented repo standard always wins; where it endorses something the baseline would flag, suppress the smell. A documented "keep it simple" or "avoid abstractions without a concrete benefit" standard likewise suppresses smells whose fix adds a type or an extraction (Primitive Obsession, Duplicated Code, Data Clumps, Repeated Switches), unless you name the concrete harm below.
 - **Always a judgement call.** Each smell is a labelled heuristic ("possible Feature Envy"), never a hard violation. Like any standard here, skip anything tooling already enforces.
+- **Only with a concrete harm.** Report a smell only when you can name the concrete harm it causes in this diff: a bug risk, a reader being misled, or duplicated logic in the diff that one future change would have to edit in several places. Leave out a smell without a named harm, one you would call weak or minor, and one the repo suppresses; do not mention it as a note either.
 
 Each smell reads *what it is* → *how to fix*; match it against the diff:
 
@@ -22,7 +23,7 @@ Each smell reads *what it is* → *how to fix*; match it against the diff:
 - **Middle Man**: a class or function that mostly just delegates onward. → cut it, call the real target direct.
 - **Refused Bequest**: a subclass or implementer that ignores or overrides most of what it inherits. → drop the inheritance, use composition.
 
-The Standards axis also carries a **cross-platform checklist**, with the same two rules, applied only when the project targets more than one platform (more than one operating system, or a platform-gated build). Match it against the diff:
+The Standards axis also carries a **cross-platform checklist**, with the same three rules (a finding needs a concrete harm, usually a failure on another platform), applied only when the project targets more than one platform (more than one operating system, or a platform-gated build). Match it against the diff:
 
 - **Paths**: hard-coded separators or paths built by string concatenation instead of per component; absolute or home-relative paths assumed to exist.
 - **Permissions**: file modes, executable bits, symlinks, or Unix-only APIs used without a guard or an equivalent on the other platforms.

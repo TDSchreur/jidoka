@@ -160,7 +160,7 @@ impl FindingsUpdate {
     /// Records the new Findings and applies the outcomes.
     pub(super) fn apply(self, run: &mut Run, ctx: &FindingsContext) -> Result<(), String> {
         let FindingsContext { stage, at, git } = *ctx;
-        let head = |run: &Run| crate::run_gate::head(run, git);
+        let head = |run: &Run| run.worktree_head(git);
         if !self.new.is_empty() {
             let late_rework_finding = stage == Stage::Build && run.rework.is_some();
             if stage != Stage::Check && !late_rework_finding {
@@ -249,8 +249,10 @@ impl FindingsUpdate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run::{NewRun, RunStore, parse_update};
-    use crate::test_support::TestDir;
+    use crate::run::{
+        parse_update,
+        tests::{finding, sample_run},
+    };
     use std::path::Path;
 
     struct FixedGit;
@@ -261,17 +263,7 @@ mod tests {
     }
 
     fn run_in(stage: Stage) -> Run {
-        let dir = TestDir::new();
-        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let mut run = store
-            .create(NewRun {
-                title: "task".into(),
-                project: "/work/repo".into(),
-                repository: None,
-                session: None,
-                model_routing: None,
-            })
-            .unwrap();
+        let mut run = sample_run();
         run.stage = stage;
         run.worktree = Some("/work/wt".into());
         run
@@ -294,22 +286,6 @@ mod tests {
                 git: &FixedGit,
             },
         )
-    }
-
-    fn finding(id: &str) -> Finding {
-        Finding {
-            id: id.into(),
-            check: "security".into(),
-            location: None,
-            text: "Leak".into(),
-            reviewed_commit: "abc1234".into(),
-            rework: None,
-            state: FindingState::Open,
-            reason: None,
-            fix_commit: None,
-            at: 1,
-            resolved_at: None,
-        }
     }
 
     #[test]
@@ -419,10 +395,12 @@ mod tests {
         run.findings = vec![finding("F1"), fixed];
         let update = parsed(&["--finding", "security", "-", "Another"]);
         apply(update, &mut run, Stage::Check).unwrap();
-        run.start_rework(
-            "F1".into(),
-            crate::run::FindingClassification::Wording,
-            None,
+        run.leave(
+            crate::run::Exit::Rework {
+                finding: "F1".into(),
+                classification: crate::run::FindingClassification::Wording,
+                decision: None,
+            },
             10,
         )
         .unwrap();

@@ -18,15 +18,17 @@ use tickets::TicketsUpdate;
 
 mod findings;
 mod lifecycle;
-#[cfg(test)]
 use lifecycle::FindingClassification;
-pub(crate) use lifecycle::{
-    LifecycleRequest, LifecycleSource, ReworkRecord, next_rework, parse_lifecycle,
-};
+pub(crate) use lifecycle::{LifecycleRequest, LifecycleSource, parse_lifecycle};
 mod model_routing;
 mod reports;
+mod stage_exit;
+pub(crate) use stage_exit::{
+    CiEvidence, Evaluation, Exit, ExitOutcome, GateResult, GateStatus, MAX_GATE_RESULTS,
+    ReworkRecord, SkippedCheck, StageExit, next_rework,
+};
 mod store;
-pub(crate) use store::PrResult;
+pub(crate) use store::{AdvanceMetadata, PrResult};
 mod summaries;
 mod tickets;
 
@@ -37,6 +39,7 @@ pub(crate) const UPDATE_HELP: &str = concat!(
     reports::help!(),
     summaries::help!(),
     "  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n",
+    "  --agent-home <codex|claude|copilot>=<absolute-path> (the agent's home folder, whose session logs are read for this run)\n",
     model_routing::help!(),
     "Omitted fields are preserved; clear flags remove them."
 );
@@ -73,9 +76,9 @@ pub(crate) struct Run {
     /// In-memory generation of changes that invalidate gate validation.
     #[serde(skip)]
     gate_generation: u64,
-    pub(crate) gates: Vec<crate::run_gate::GateResult>,
+    pub(crate) gates: Vec<GateResult>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) stage_exits: Vec<crate::run_gate::StageExit>,
+    pub(crate) stage_exits: Vec<StageExit>,
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) project: String,
@@ -151,6 +154,10 @@ pub(crate) struct Run {
     /// Ids of the agent sessions recorded for this run.
     #[serde(default)]
     pub(crate) sessions: Vec<String>,
+    /// The home folder of each agent (`claude`, `codex`, `copilot`) whose session was recorded, as the CLI
+    /// resolved it in the agent's environment. Usage collection reads that agent's logs there.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) agent_homes: BTreeMap<String, String>,
     #[serde(default)]
     pub(crate) usage: Option<Usage>,
     /// The state of the pull request, read from its host by the dashboard server. Callers cannot set it.
@@ -211,22 +218,19 @@ impl Run {
         Ok(self.last_work_attempt)
     }
 
-    /// Completes Finish with evidence, retaining the summary or supplying one for a merge.
-    pub(crate) fn complete(&mut self, completion: Completion) -> Result<(), String> {
-        if self.stage != Stage::Finish || self.status == RunStatus::Done {
-            return Err("Only an unfinished run in Finish can be completed".into());
-        }
-        if matches!(completion, Completion::Merged { .. }) && self.check_finish_summary().is_err() {
-            self.summaries
-                .insert(Stage::Finish, "Pull request merged".into());
-        }
-        self.check_finish_summary()?;
-        self.status = RunStatus::Done;
-        self.completion = Some(completion);
-        self.activity = None;
-        self.blocking_reason = None;
-        self.block_source = None;
-        Ok(())
+    /// The worktree's current HEAD commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the run has no worktree or git cannot read its HEAD.
+    pub(crate) fn worktree_head(&self, git: &dyn crate::pr_sync::Git) -> Result<String, String> {
+        let path = self
+            .worktree
+            .as_ref()
+            .ok_or("Record the run's worktree first")?;
+        git.git(Path::new(path), &["rev-parse", "HEAD"])
+            .map(|s| s.trim().to_owned())
+            .map_err(|e| format!("Could not read the worktree HEAD: {e}"))
     }
 
     pub(crate) fn check_finish_summary(&self) -> Result<(), String> {
@@ -406,6 +410,9 @@ pub(crate) struct NewRun {
     /// The agent session the run is started from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) session: Option<String>,
+    /// The home folder of the agent the session belongs to, keyed by agent.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) agent_homes: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) model_routing: Option<ModelRouting>,
 }
@@ -431,6 +438,7 @@ impl NewRun {
         if let Some(session) = &self.session {
             check_session_id(session).map_err(io_invalid)?;
         }
+        validate_agent_homes(&self.agent_homes).map_err(io_invalid)?;
         if let Some(routing) = &self.model_routing {
             routing.validate().map_err(io_invalid)?;
         }
@@ -475,6 +483,9 @@ pub(crate) struct UpdateRun {
     /// Agent sessions to attribute to this run, added to the ones already recorded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) sessions: Vec<String>,
+    /// Agent home folders keyed by agent; each replaces the one recorded for that agent.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) agent_homes: BTreeMap<String, String>,
     #[serde(flatten)]
     pub(crate) routing: RoutingUpdate,
 }
@@ -689,8 +700,34 @@ impl UpdateRun {
         self.reports.validate()?;
         self.findings.validate()?;
         self.summaries.validate()?;
-        validate_sessions(&self.sessions)
+        validate_sessions(&self.sessions)?;
+        validate_agent_homes(&self.agent_homes)
     }
+}
+
+/// Agent homes keyed by a known agent, each an absolute path on this system of at most `MAX_PATH_BYTES`
+/// without control characters. The dashboard reads logs there, so nothing else is accepted.
+pub(crate) fn validate_agent_homes(homes: &BTreeMap<String, String>) -> Result<(), String> {
+    for (agent, home) in homes {
+        if !crate::install::AGENTS.contains(&agent.as_str()) {
+            return Err(format!(
+                "Unknown agent for an agent home: {agent:?}; use {}",
+                crate::install::agent_list()
+            ));
+        }
+        if !is_valid_agent_home(home) {
+            return Err(format!(
+                "The {agent} agent home must be an absolute path of at most {MAX_PATH_BYTES} bytes without control characters"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `home` can be recorded as an agent home: an absolute path on this system of at most
+/// `MAX_PATH_BYTES` without control characters.
+pub(crate) fn is_valid_agent_home(home: &str) -> bool {
+    home.len() <= MAX_PATH_BYTES && !has_control(home) && Path::new(home).is_absolute()
 }
 
 pub(crate) fn validate_sessions(sessions: &[String]) -> Result<(), String> {
@@ -715,6 +752,11 @@ impl Run {
         if self.sessions.len() > KEEP_SESSIONS {
             self.sessions.drain(..self.sessions.len() - KEEP_SESSIONS);
         }
+    }
+
+    /// Records agent homes; the latest home of an agent replaces the one recorded before.
+    pub(crate) fn record_agent_homes(&mut self, homes: BTreeMap<String, String>) {
+        self.agent_homes.extend(homes);
     }
 }
 
@@ -779,6 +821,13 @@ pub(crate) fn parse_update(options: &[&str]) -> Result<UpdateRun, String> {
                 if !update.sessions.iter().any(|known| known == *id) {
                     update.sessions.push((*id).to_string());
                 }
+                continue;
+            }
+            "--agent-home" => {
+                let (agent, home) = split_pair(flag, next_value()?)?;
+                update
+                    .agent_homes
+                    .insert(agent.to_string(), home.to_string());
                 continue;
             }
             "--finding" | "--finding-status" => {

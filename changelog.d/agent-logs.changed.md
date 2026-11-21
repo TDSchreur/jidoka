@@ -1,0 +1,4 @@
+## Changed
+
+- Token usage and `jidoka run requests` now read the Claude Code, Codex and Copilot session logs the same way, so they agree on which sessions belong to a run and on the responses they count. A session belongs to a run when it executed a Jidoka command that names the run (`run update`, `run sync`, `run inspect`, `run check`, `run stats`, `pr open`, `pr sync` or `pr wait` followed by its id), or when the run recorded the session id. A run id that only appears in a prompt, in tool output or in a file the agent read no longer makes a Claude Code or Copilot session count for a run in the token usage, and a Codex or Copilot session that only ran `run inspect`, `run check` or `run stats` now counts.
+- A Codex response is counted in `jidoka run requests` only when its turn names a model, as it already was in the token usage. A Copilot response that a resumed session repeats counts once in the token usage too.

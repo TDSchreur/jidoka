@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     run::{Stage, load_runs},
-    test_support::TestDir,
+    test_support::{TestDir, advance_to},
 };
 use rocket::{http::Header, local::asynchronous::Client};
 use std::fs;
@@ -13,10 +13,7 @@ async fn client(dir: &TestDir) -> Client {
 }
 
 fn at_stage(api: &Client, id: &str, stage: Stage) {
-    api.rocket()
-        .state::<RunStore>()
-        .unwrap()
-        .set_stage(id, stage);
+    advance_to(api.rocket().state::<RunStore>().unwrap(), id, stage);
 }
 
 /// A run with the given worktree, repository, spec and ticket references, and its id.
@@ -34,6 +31,7 @@ fn document_run(
             project: repository.to_string_lossy().into_owned(),
             repository: Some(repository.to_string_lossy().into_owned()),
             session: None,
+            agent_homes: Default::default(),
             model_routing: None,
         })
         .unwrap();
@@ -315,7 +313,7 @@ async fn fetch(api: &Client, id: &str) -> (HttpStatus, Option<Run>) {
 
 /// A dashboard whose usage collection reads fixture logs under `home` instead of a user's own.
 async fn client_collecting(dir: &TestDir, home: &Path, enabled: bool) -> Client {
-    let roots = crate::usage_logs::Roots {
+    let roots = crate::agent_logs::Roots {
         claude: home.join("claude/projects"),
         codex: home.join("codex/sessions"),
         copilot: home.join("copilot/session-state"),
@@ -338,11 +336,13 @@ async fn client_collecting(dir: &TestDir, home: &Path, enabled: bool) -> Client 
     .unwrap()
 }
 
-/// A Claude transcript for a run: one line naming the run, one response at `ts` with `input` tokens.
+/// A Claude transcript for a run: one line running a command that names the run, one response at `ts` with `input` tokens.
 fn claude_fixture(home: &Path, session: &str, run_id: &str, response: &str, ts: u64, input: u64) {
     let line = serde_json::json!({"type": "assistant", "timestamp": crate::usage::iso_timestamp(ts), "requestId": response,
         "message": {"id": response, "model": "claude-test", "usage": {"input_tokens": input, "output_tokens": 1}}});
-    let mention = serde_json::json!({"type": "user", "message": {"content": format!("jidoka run update {run_id}")}});
+    let mention = serde_json::json!({"type": "assistant", "isVirtual": true, "timestamp": crate::usage::iso_timestamp(ts),
+        "message": {"model": "<synthetic>", "content": [{"type": "tool_use", "name": "Bash", "input": {"command": format!("jidoka run update {run_id}")}}],
+            "usage": {"input_tokens": 0, "output_tokens": 0}}});
     let path = home
         .join("claude/projects/-w")
         .join(format!("{session}.jsonl"));
@@ -390,7 +390,7 @@ async fn usage_is_collected_in_the_background_when_a_run_moves_on() {
     let holder = std::thread::spawn(move || {
         let settings = UsageSettings {
             enabled: false,
-            roots: crate::usage_logs::Roots {
+            roots: crate::agent_logs::Roots {
                 claude: Default::default(),
                 codex: Default::default(),
                 copilot: Default::default(),
@@ -426,8 +426,8 @@ async fn usage_is_collected_in_the_background_when_a_run_moves_on() {
     assert_eq!(usage.rows[0].tokens.input, Some(42));
 
     // Collecting again after finishing gives the same numbers, not double.
-    at_stage(&api, &run.id, Stage::Finish);
     report(&api, &run.id, r#"{"mode":"fast"}"#).await;
+    at_stage(&api, &run.id, Stage::Finish);
     let response = api
         .post(format!("/api/runs/{}/advance", run.id))
         .header(cli_token_header(&api))
@@ -609,11 +609,12 @@ async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
             project: "/work".into(),
             repository: None,
             session: None,
+            agent_homes: Default::default(),
             model_routing: None,
         })
         .unwrap();
     let pr = "https://github.com/o/r/pull/7";
-    store.set_stage(&run.id, Stage::Finish);
+    advance_to(&store, &run.id, Stage::Finish);
     store
         .update(
             &run.id,
@@ -667,22 +668,16 @@ async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
     assert_ne!(response.status(), HttpStatus::Ok);
 }
 
-/// Answers every `gh` call with a merged pull request.
-struct MergedGh;
-
-impl crate::pr_wait::Gh for MergedGh {
-    fn run(&self, _args: &[&str]) -> Result<crate::pr_wait::GhOutput, crate::pr_wait::GhError> {
-        Ok(crate::pr_wait::GhOutput {
-            code: Some(0),
-            stdout: r#"{"state":"MERGED","isDraft":false}"#.into(),
-            stderr: String::new(),
-        })
-    }
+/// A pull request host whose pull requests are all merged.
+fn merged_host() -> std::sync::Arc<crate::pr_host::FakeHost> {
+    std::sync::Arc::new(crate::pr_host::FakeHost::states(&[
+        crate::pr_state::PrState::Merged,
+    ]))
 }
 
 async fn client_with_pr_tool(
     dir: &TestDir,
-    tool: std::sync::Arc<dyn crate::pr_wait::Gh + Send + Sync>,
+    tool: std::sync::Arc<dyn crate::pr_host::PrHost + Send + Sync>,
 ) -> Client {
     Client::tracked(
         build_rocket_with_tool(&dir.0.path().join("runs.json"), DEFAULT_PORT, tool).unwrap(),
@@ -699,12 +694,13 @@ fn waiting_run(api: &Client, pr: Option<&str>) -> String {
             project: "/work".into(),
             repository: None,
             session: None,
+            agent_homes: Default::default(),
             model_routing: None,
         })
         .unwrap();
     let pr = pr.map_or(String::new(), |pr| format!(r#","pr":"{pr}""#));
     let update = format!(r#"{{"activity":"Waiting for CI"{pr}}}"#);
-    store.set_stage(&run.id, Stage::Finish);
+    advance_to(store, &run.id, Stage::Finish);
     store
         .update(&run.id, serde_json::from_str(&update).unwrap())
         .unwrap();
@@ -728,7 +724,7 @@ async fn sync<'a>(
 #[rocket::async_test]
 async fn syncing_a_run_reads_its_pull_request_and_follows_what_happened_to_it() {
     let dir = TestDir::new();
-    let api = client_with_pr_tool(&dir, std::sync::Arc::new(MergedGh)).await;
+    let api = client_with_pr_tool(&dir, merged_host()).await;
     let id = waiting_run(&api, Some("https://github.com/o/r/pull/7"));
     let token = session_token(&api).await;
     let response = sync(&api, &id, Some(&token)).await;
@@ -743,7 +739,7 @@ async fn syncing_a_run_reads_its_pull_request_and_follows_what_happened_to_it() 
 #[rocket::async_test]
 async fn syncing_needs_the_session_token_and_a_run_with_a_pull_request() {
     let dir = TestDir::new();
-    let api = client_with_pr_tool(&dir, std::sync::Arc::new(MergedGh)).await;
+    let api = client_with_pr_tool(&dir, merged_host()).await;
     let with_pr = waiting_run(&api, Some("https://github.com/o/r/pull/7"));
     let without_pr = waiting_run(&api, None);
     let token = session_token(&api).await;
@@ -922,6 +918,7 @@ async fn delete_removes_only_the_record_and_survives_restart() {
         project: "/work".into(),
         repository: None,
         session: None,
+        agent_homes: Default::default(),
         model_routing: None,
     };
     let kept = store.create(new("kept")).unwrap();
@@ -1229,7 +1226,7 @@ async fn stage_exits_preserve_passes_and_distinguish_refused_and_forced_advances
     assert_eq!(details.stage_exits[0], accepted[0]);
     assert_eq!(
         details.stage_exits[1].outcome,
-        crate::run_gate::ExitOutcome::Override {
+        crate::run::ExitOutcome::Override {
             reason: "Checks unavailable".into(),
         }
     );
@@ -1369,6 +1366,7 @@ async fn groups_are_managed_through_the_api_and_a_grouped_run_cannot_be_deleted(
             project: "/work".into(),
             repository: None,
             session: None,
+            agent_homes: Default::default(),
             model_routing: None,
         })
         .unwrap();

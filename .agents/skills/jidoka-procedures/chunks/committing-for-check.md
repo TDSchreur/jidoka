@@ -19,6 +19,10 @@ Fix actionable findings in Reworks 1 and 2. In Rework 3, wording fixes can proce
 
 After Rework 3, or when a finding cannot be resolved, block and ask the user whether to do one more Rework, list the findings in the pull request and finish, or stop.
 
-After any of these decisions, leave the run blocked if the user chose to stop. Otherwise use `jidoka run resume <id> --source "<user's decision>"`. Defer the findings the user chose to leave for the pull request using `--finding-status <finding-id>=deferred:<reason>` on `run update`. Include `--decision "<user's authorization>"` on the Rework command if the user approved behavior fixes in Rework 3 or authorized any later Rework.
+After any of these decisions, leave the run blocked if the user chose to stop. Otherwise do these steps in this order, because the Rework takes every Finding that is still open:
+
+1. Resume with `jidoka run resume <id> --source "<user's decision>"`.
+2. Defer the findings the user chose to leave for the pull request with `--finding-status <finding-id>=deferred:<reason>` on `run update`.
+3. If the user chose another Rework, start it with `jidoka run rework`. Include `--decision "<user's authorization>"` if the user approved behavior fixes in Rework 3 or authorized any later Rework.
 
 While fixing in Build, commit each fix and mark the Findings it resolves with `jidoka run update <id> --finding-status <finding-id>=fixed` (repeat for several). Jidoka records the commit. The next Check can reopen a Finding with `--finding-status <finding-id>=open` or record new Findings.

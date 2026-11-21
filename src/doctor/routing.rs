@@ -5,7 +5,8 @@
 
 use super::{Check, Machine, find_program, read_doc};
 use crate::routing::{
-    COPILOT_EFFORTS, Coverage, Host, ModelRouting, Policy, RoutingAgent, policy_path_in, read,
+    COPILOT_EFFORTS, Coverage, Host, ModelChoice, ModelRouting, Policy, RoutingAgent,
+    policy_path_in, read,
 };
 use std::path::Path;
 
@@ -67,8 +68,8 @@ pub(super) fn checks(root: &Path, machine: &Machine, agent: Option<&str>) -> Vec
 fn agent_checks(selection: &ModelRouting, root: &Path, machine: &Machine) -> Vec<Check> {
     match selection.agent {
         RoutingAgent::Claude => claude_checks(selection, root, machine),
-        RoutingAgent::Codex => codex_checks(machine),
-        RoutingAgent::Copilot => copilot_checks(selection, machine),
+        RoutingAgent::Codex => codex_checks(selection, machine),
+        RoutingAgent::Copilot => copilot_checks(selection, root, machine),
     }
 }
 
@@ -126,23 +127,164 @@ fn host_check(agent: &'static str, machine: &Machine, minimum: Option<(u32, u32,
     }
 }
 
-fn codex_checks(machine: &Machine) -> Vec<Check> {
+fn codex_checks(selection: &ModelRouting, machine: &Machine) -> Vec<Check> {
+    let catalog = codex_catalog(machine);
     vec![
         host_check("codex", machine, None),
+        codex_model_check(selection, &catalog),
+        codex_effort_check(selection, &catalog),
         Check::skipped(
-            "model",
-            "Codex models and efforts are not checked: Jidoka keeps no list of them",
+            "overrides",
+            "Codex has no known setting that replaces the model or effort passed to a subagent, so there is nothing to check",
         ),
-        Check::skipped("overrides", "Codex configuration is not checked"),
     ]
 }
 
-fn copilot_checks(selection: &ModelRouting, machine: &Machine) -> Vec<Check> {
+/// A model in the Codex catalog. An empty `efforts` means the catalog does not say which efforts it supports.
+struct CodexModel {
+    slug: String,
+    efforts: Vec<String>,
+}
+
+/// The models Codex lists in its own cache, or why they are unknown.
+/// The cache is an internal file of Codex, not a stable interface, so any surprise means "unknown".
+type CodexCatalog = Result<Vec<CodexModel>, String>;
+
+fn codex_catalog(machine: &Machine) -> CodexCatalog {
+    let home =
+        crate::install::agent_home("codex", &machine.home, machine.var).map_err(|error| {
+            format!("could not find the Codex folder, so models_cache.json was not read: {error}")
+        })?;
+    let path = home.join("models_cache.json");
+    let shown = path.display();
+    let text = read_doc(&path).map_err(|error| format!("could not read {shown}: {error}"))?;
+    let unexpected = || format!("{shown} is not in the expected shape");
+    let json: serde_json::Value = serde_json::from_str(&text).map_err(|_| unexpected())?;
+    let models = json["models"].as_array().ok_or_else(unexpected)?;
+    models
+        .iter()
+        .map(|model| {
+            let slug = model["slug"].as_str().ok_or_else(unexpected)?;
+            let efforts = model["supported_reasoning_levels"]
+                .as_array()
+                .map(|levels| {
+                    levels
+                        .iter()
+                        .filter_map(|level| level["effort"].as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(CodexModel {
+                slug: slug.to_string(),
+                efforts,
+            })
+        })
+        .collect()
+}
+
+/// The routed choices, labelled by Stage name; a complex choice is "build (complex)".
+fn routed_choices(selection: &ModelRouting) -> Vec<(String, &ModelChoice)> {
+    let stages = selection
+        .stages
+        .iter()
+        .map(|(stage, choice)| (stage.name().to_string(), choice));
+    let complex = selection
+        .complex
+        .iter()
+        .map(|(stage, choice)| (format!("{} (complex)", stage.name()), choice));
+    stages.chain(complex).collect()
+}
+
+fn codex_model_check(selection: &ModelRouting, catalog: &CodexCatalog) -> Check {
+    let models = match catalog {
+        Ok(models) => models,
+        Err(reason) => {
+            return Check::skipped("model", format!("{reason}, so the models were not checked"));
+        }
+    };
+    let unknown: Vec<String> = routed_choices(selection)
+        .into_iter()
+        .filter(|(_, choice)| !models.iter().any(|model| model.slug == choice.model))
+        .map(|(label, choice)| format!("{label}: {}", choice.model))
+        .collect();
+    if unknown.is_empty() {
+        return Check::pass(
+            "model",
+            "every routed stage uses a model in the Codex model catalog",
+        );
+    }
+    Check::warning(
+        "model",
+        format!(
+            "not in the Codex model catalog (models_cache.json), so Codex may run them on the session's model: {}",
+            unknown.join(", ")
+        ),
+        "Use a model Codex lists, or run Codex once so it refreshes its catalog.",
+    )
+}
+
+fn codex_effort_check(selection: &ModelRouting, catalog: &CodexCatalog) -> Check {
+    let models = match catalog {
+        Ok(models) => models,
+        Err(reason) => {
+            return Check::skipped(
+                "effort",
+                format!("{reason}, so the efforts were not checked"),
+            );
+        }
+    };
+    let (mut unsupported, mut unset) = (Vec::new(), Vec::new());
+    for (label, choice) in routed_choices(selection) {
+        // A model missing from the catalog is reported by the model check only.
+        let Some(model) = models.iter().find(|model| model.slug == choice.model) else {
+            continue;
+        };
+        let supported = &model.efforts;
+        match choice.effort.as_deref() {
+            None => unset.push(label),
+            // An empty list means the catalog does not say, so there is nothing to compare with.
+            Some(effort) if !supported.is_empty() && !supported.iter().any(|s| s == effort) => {
+                unsupported.push(format!(
+                    "{label}: {effort} ({} supports {})",
+                    choice.model,
+                    supported.join(", ")
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    let mut problems = Vec::new();
+    if !unsupported.is_empty() {
+        problems.push(format!(
+            "effort not supported by the model: {}",
+            unsupported.join("; ")
+        ));
+    }
+    if !unset.is_empty() {
+        problems.push(format!(
+            "no effort set, so the model's own default applies, and defaults differ between models: {}",
+            unset.join(", ")
+        ));
+    }
+    if problems.is_empty() {
+        return Check::pass(
+            "effort",
+            "every routed stage has an effort its model supports in the Codex model catalog",
+        );
+    }
+    Check::warning(
+        "effort",
+        problems.join("; "),
+        "Set an effort the model supports for each routed stage.",
+    )
+}
+
+fn copilot_checks(selection: &ModelRouting, root: &Path, machine: &Machine) -> Vec<Check> {
     vec![
         host_check("copilot", machine, None),
         copilot_model_check(selection),
         effort_check(selection, "Copilot CLI", &COPILOT_EFFORTS),
-        Check::skipped("overrides", "Copilot configuration is not checked"),
+        copilot_overrides_check(root, machine),
     ]
 }
 
@@ -168,13 +310,11 @@ fn claude_checks(selection: &ModelRouting, root: &Path, machine: &Machine) -> Ve
 }
 
 fn claude_model_check(selection: &ModelRouting) -> Check {
-    let wrong: Vec<String> = selection
-        .stages
-        .iter()
-        .chain(selection.complex.iter())
-        .filter_map(|(stage, choice)| {
+    let wrong: Vec<String> = routed_choices(selection)
+        .into_iter()
+        .filter_map(|(label, choice)| {
             let model = &choice.model;
-            (!CLAUDE_MODELS.contains(&model.as_str())).then(|| format!("{}: {model}", stage.name()))
+            (!CLAUDE_MODELS.contains(&model.as_str())).then(|| format!("{label}: {model}"))
         })
         .collect();
     if wrong.is_empty() {
@@ -196,11 +336,11 @@ fn claude_model_check(selection: &ModelRouting) -> Check {
 
 fn effort_check(selection: &ModelRouting, host: &str, accepted: &[&str]) -> Check {
     let (mut unsupported, mut unset) = (Vec::new(), Vec::new());
-    for (stage, choice) in selection.stages.iter().chain(selection.complex.iter()) {
+    for (label, choice) in routed_choices(selection) {
         match choice.effort.as_deref() {
-            None => unset.push(stage.name().to_string()),
+            None => unset.push(label),
             Some(effort) if !accepted.contains(&effort) => {
-                unsupported.push(format!("{}: {effort}", stage.name()));
+                unsupported.push(format!("{label}: {effort}"));
             }
             Some(_) => {}
         }
@@ -252,6 +392,77 @@ fn settings_files(root: &Path, machine: &Machine) -> Vec<(String, std::path::Pat
         root.join(".claude/settings.local.json"),
     ));
     files
+}
+
+/// Copilot CLI settings can pin a subagent's model and effort: `subagents.agents.<name>.model` and `.effortLevel`.
+/// Whether a pin beats what the `task` tool passes is not verified, so a pin is a warning that it can.
+fn copilot_overrides_check(root: &Path, machine: &Machine) -> Check {
+    let mut files = Vec::new();
+    if let Ok(home) = crate::install::agent_home("copilot", &machine.home, machine.var) {
+        files.push(home.join("settings.json"));
+    }
+    files.push(root.join(".github/copilot/settings.json"));
+    files.push(root.join(".github/copilot/settings.local.json"));
+    let (mut pins, mut unreadable) = (Vec::new(), Vec::new());
+    for path in files {
+        let text = match read_doc(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                unreadable.push(path.display().to_string());
+                continue;
+            }
+        };
+        // Copilot's settings files may start with `//` comment lines.
+        let json: String = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let Ok(settings) = serde_json::from_str::<serde_json::Value>(&json) else {
+            unreadable.push(path.display().to_string());
+            continue;
+        };
+        let Some(agents) = settings["subagents"]["agents"].as_object() else {
+            continue;
+        };
+        for (name, agent) in agents {
+            for key in ["model", "effortLevel"] {
+                if let Some(value) = agent[key]
+                    .as_str()
+                    .filter(|v| !v.is_empty() && *v != "inherit")
+                {
+                    pins.push(format!(
+                        "subagents.agents.{name}.{key}={value} in {}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+    if !pins.is_empty() {
+        return Check::warning(
+            "overrides",
+            format!(
+                "{} can replace the model or effort the policy routes for that subagent",
+                pins.join("; ")
+            ),
+            "Set these to \"inherit\", or remove them, while you use model routing.",
+        );
+    }
+    if !unreadable.is_empty() {
+        return Check::skipped(
+            "overrides",
+            format!(
+                "could not read {}, so subagent settings there were not checked",
+                unreadable.join(", ")
+            ),
+        );
+    }
+    Check::pass(
+        "overrides",
+        "no Copilot CLI settings file pins a subagent's model or effort",
+    )
 }
 
 fn claude_overrides_check(root: &Path, machine: &Machine) -> Check {
