@@ -6,6 +6,8 @@
 
 **Gate**: A condition that must hold before a run may leave a Stage, such as all tickets done, verification passed on the head commit, a review recorded, or CI passed. Agents record manual Gate results with `jidoka run gate`. The CLI and dashboard share the same evaluation for local Gates. Advance evaluates live CI when required. Each accepted exit preserves its gate evidence for that stage pass.
 
+**Stage exit**: How a run left one Pass through a Stage: gates accepted, an override with its reason, an observed merge, or a Rework with its Finding. It keeps the evidence as it was at that moment, and is the only way a Stage changes.
+
 **Needs you**: A run that is blocked and waiting for the user. The dashboard lists it in the andon strip, marks its row on the line amber, sorts it first and counts it in the page title.
 
 **Andon strip**: The top of the dashboard. It says that nothing needs you, or turns amber and lists every run that needs you, with its project and status reason. Named after the signal board above a factory line.
