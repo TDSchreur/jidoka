@@ -14,7 +14,9 @@
 
 **The line**: The dashboard's list of active runs (every run that is not done), one row each, with a rail of the four Stages that shows where the run is.
 
-**Done** means Jidoka ended work on a run. Done runs appear under Completed in the dashboard. The run's completion reason and its pull request state are recorded separately.
+**Done** means Jidoka ended work on a run. Done runs appear under Completed in the dashboard. The run's Completion and its pull request state are recorded separately.
+
+**Completion**: How Jidoka ended work on a done run: CI passed on the pull request's head (or the project has no CI), the pull request was seen merged, or an override with its reason. A run that finished before Completions were recorded may have none.
 
 **Pull request state**: Whether a run's pull request is open, a draft, merged or closed. The dashboard server reads it from GitHub with `gh` or from Azure Repos with `az`, keeps it on the run and reads it again about once a minute until it is merged. When it cannot be read, it is unknown, with the reason; it is never guessed.
 
@@ -26,7 +28,11 @@
 
 **Workflow mode**: The workflow skill that carries a run: `jidoka-full` (quality), `jidoka-balanced`, or `jidoka-fast` (speed). Modes differ in how much Define, Build, and Check do.
 
-**Model routing**: Choosing the model and effort each Stage's agents run on, independently of the workflow mode. The coordinating session keeps its own model; a routed Stage hands its work to agents started on the Stage's model, while conversation with the user stays in the coordinating session. It is not the same as workflow selection, which `/jidoka` does. A run records its model-routing selection when it starts.
+**Model routing**: Choosing the model and effort each Stage's agents run on, independently of the workflow mode. The Coordinator keeps its own model; a routed Stage hands its work to agents started on the Stage's model, while conversation with the user stays with the Coordinator. It is not the same as workflow selection, which `/jidoka` does. A run records its model-routing selection when it starts.
+
+**Coordinator**: The agent session that carries a run through its Stages. It talks with the user, records the run, hands routed work to other agents and checks what they return. Do not call it the coordinating session or the main agent.
+
+**Small change**: A small, clear request planned in the conversation, without a spec or tickets. Its Define stays with the Coordinator instead of being routed, as it does in `jidoka-fast`.
 
 **Model routing policy**: The user-owned file that describes model routing: for each agent (Claude Code, Codex, Copilot CLI), a model and optional effort per Stage. A Stage left out keeps the session's model. A run starts in one agent and records only that agent's part. Jidoka reads the file once, when a run starts.
 
@@ -81,6 +87,8 @@
 **Pass**: One pass through a Stage on a run's Timeline, from its first mark to the next Stage's mark. Consecutive Build marks of the same Rework form one Pass, which lists the tickets worked on in it. A Rework adds a Build Pass and a Check Pass.
 
 **Station**: One of the route's stops in the dashboard's run sheet. A run with a Timeline shows one Pass per stop; a run with no Timeline shows one Station per Stage, with its reports placed by Stage.
+
+**Knowledge repo**: One ordinary repository per user that holds a platform's shared knowledge (which repositories exist, how they relate, conventions and learnings) and the specs of changes that need several repositories. It is a per-user setting, never worked through a run: agents read it in Define, record learnings in Finish and push to it directly.
 
 **Change group**: A set of ordinary runs, in one or more repositories, linked to one shared spec for a change that needs several pull requests. A group has an ID (`g` and digits), a title and a spec, owns its membership, and never changes a member run's stages, gates or cleanup. A run is in at most one group. The dashboard server stores groups in `groups.json`.
 
