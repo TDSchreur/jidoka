@@ -235,7 +235,7 @@ trait Adapter {
     }
 }
 
-/// The most CI runs whose failed log is fetched per failed wait.
+/// Limit log lookups to three CI runs so a failing matrix does not delay the outcome.
 const MAX_LOGS: usize = 3;
 /// Keep the end of the failed log, where the cause is likely to be.
 const LOG_LINES: usize = 40;

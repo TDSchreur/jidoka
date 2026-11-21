@@ -9,7 +9,7 @@ use std::cell::RefCell;
 /// Answers the calls from a script and records them, as `gh <args>` or `az <args>`. An error answer
 /// stands for a tool that is not installed.
 /// How a script answers a call; an error stands for a tool that is not installed.
-type Answer = Box<dyn Fn(&str) -> Result<ToolOutput, String>>;
+type Answer = Box<dyn Fn(&str, &[&str]) -> Result<ToolOutput, String>>;
 
 struct Script {
     answer: Answer,
@@ -28,7 +28,7 @@ impl Script {
     /// Answers every call with `answer`.
     fn answering(answer: Result<ToolOutput, String>) -> Self {
         Self {
-            answer: Box::new(move |_| answer.clone()),
+            answer: Box::new(move |_, _| answer.clone()),
             calls: RefCell::new(Vec::new()),
         }
     }
@@ -36,7 +36,7 @@ impl Script {
     /// Answers each call with what `print` gives for it.
     fn printing_for(print: impl Fn(&str) -> String + 'static) -> Self {
         Self {
-            answer: Box::new(move |call| {
+            answer: Box::new(move |call, _| {
                 Ok(ToolOutput {
                     code: Some(0),
                     stdout: print(call),
@@ -52,8 +52,8 @@ impl Script {
         Self::answering(Err(String::new()))
     }
 
-    fn reply(&self, call: String) -> Result<ToolOutput, ToolError> {
-        let answer = (self.answer)(&call);
+    fn reply(&self, call: String, args: &[&str]) -> Result<ToolOutput, ToolError> {
+        let answer = (self.answer)(&call, args);
         self.calls.borrow_mut().push(call);
         answer.map_err(|_| ToolError::NotInstalled)
     }
@@ -62,13 +62,16 @@ impl Script {
 impl Tools for Script {
     fn gh(&self, dir: Option<&Path>, args: &[&str]) -> Result<ToolOutput, ToolError> {
         match dir {
-            Some(dir) => self.reply(format!("gh (in {}) {}", dir.display(), args.join(" "))),
-            None => self.reply(format!("gh {}", args.join(" "))),
+            Some(dir) => self.reply(
+                format!("gh (in {}) {}", dir.display(), args.join(" ")),
+                args,
+            ),
+            None => self.reply(format!("gh {}", args.join(" ")), args),
         }
     }
 
     fn az(&self, args: &[&str]) -> Result<ToolOutput, ToolError> {
-        self.reply(format!("az {}", args.join(" ")))
+        self.reply(format!("az {}", args.join(" ")), args)
     }
 }
 
@@ -564,49 +567,12 @@ fn azure_counts_a_build_only_for_the_current_iteration() {
 
 #[test]
 fn azure_watch_reports_a_bounded_failed_task_log_and_keeps_checks_without_logs() {
-    let mut azure = AzureWatch::new(&[("External scan", "fail")]);
-    let rejected = |name: &str, build_id: u64| {
-        let mut policy = azure_policy(name, "2026-01-01T00:00:01Z");
-        policy["status"] = json!("rejected");
-        policy["context"] = json!({"buildId": build_id});
-        policy
-    };
-    azure.policies = json!([
-        rejected("Compile", 42),
-        rejected("Compile again", 42),
-        rejected("Integration", 43),
-        rejected("Package", 44),
-        rejected("Publish", 45),
-        rejected("Cancelled build", 46),
-    ]);
-
-    azure.iteration_statuses["value"][0]["targetUrl"] =
-        json!("https://dev.azure.com/org/Proj/_build/results?buildId=47");
-
-    let tools = Script {
-        answer: Box::new(move |call| {
-            let output = if call.contains("--area build ") {
-                failed_azure_log_output(call)
-            } else if call.starts_with("az pipelines runs show") {
-                let result = if call.contains("--id 46 ") {
-                    "canceled"
-                } else {
-                    "failed"
-                };
-                success(json!({"status": "completed", "result": result}).to_string())
-            } else {
-                success(azure.print(call))
-            };
-            Ok(output)
-        }),
-        calls: RefCell::new(Vec::new()),
-    };
-    let clock = crate::pr_wait::RealClock(std::time::Instant::now());
+    let tools = failed_azure_watch_tools();
     let waited = Hosts::new(&tools)
         .watch(
             AZURE_PR,
             &Options::default(),
-            &clock,
+            &ImmediateClock,
             &mut |_| {},
             &mut |_| {},
         )
@@ -637,25 +603,113 @@ fn azure_watch_reports_a_bounded_failed_task_log_and_keeps_checks_without_logs()
         "https://dev.azure.com/org/Proj/_build/results?buildId=43"
     );
     assert_eq!(failures[5].link, AZURE_PR);
-    let excerpt = failures[0].excerpt.as_deref().unwrap();
-    assert!(excerpt.len() <= 4096);
-    assert!(excerpt.ends_with("compiler exited with code 1"));
-    let line_limited = failures[3].excerpt.as_deref().unwrap();
-    assert_eq!(line_limited.lines().count(), 40);
-    assert!(line_limited.starts_with("output 1\n"));
-    assert!(line_limited.ends_with("output 40"));
+    let excerpt = failures[0]
+        .excerpt
+        .as_deref()
+        .expect("the Compile failure must have a task log");
+    assert!(
+        excerpt.len() <= 4096,
+        "a long log line exceeded the byte cap: {} bytes",
+        excerpt.len()
+    );
+    assert!(
+        excerpt.ends_with("compiler exited with code 1"),
+        "log lost the failure: {excerpt:?}"
+    );
+    assert!(
+        excerpt.starts_with('🦀'),
+        "excerpt cut through the first UTF-8 character"
+    );
+    let line_limited = failures[3]
+        .excerpt
+        .as_deref()
+        .expect("the Package failure must have a task log");
+    assert_eq!(
+        line_limited.lines().count(),
+        40,
+        "excerpt exceeded the line cap"
+    );
+    assert!(
+        line_limited.starts_with("output 1\n"),
+        "excerpt retained an older line: {line_limited:?}"
+    );
+    assert!(
+        line_limited.ends_with("output 40"),
+        "excerpt omitted the final line: {line_limited:?}"
+    );
     for index in [1, 2, 4, 5] {
-        assert_eq!(failures[index].excerpt, None);
+        assert_eq!(
+            failures[index].excerpt, None,
+            "{} must be reported without a log",
+            failures[index].name
+        );
     }
-    assert!(crate::pr_wait::render(&waited).contains("compiler exited with code 1"));
+    assert!(
+        crate::pr_wait::render(&waited).contains("compiler exited with code 1"),
+        "text output did not show the failed task log"
+    );
     let calls = tools.calls.borrow();
     assert_eq!(
         calls
             .iter()
             .filter(|call| call.contains("--resource timeline "))
             .count(),
-        3
+        3,
+        "the wait attempted unexpected build log lookups: {calls:?}"
     );
+}
+
+/// Scripts a mix of failed, duplicate, inaccessible, canceled and posted checks.
+fn failed_azure_watch_tools() -> Script {
+    let mut azure = AzureWatch::new(&[("External scan", "fail")]);
+    let rejected = |name: &str, build_id: u64| {
+        let mut policy = azure_policy(name, "2026-01-01T00:00:01Z");
+        policy["status"] = json!("rejected");
+        policy["context"] = json!({"buildId": build_id});
+        policy
+    };
+    azure.policies = json!([
+        rejected("Compile", 42),
+        rejected("Compile again", 42),
+        rejected("Integration", 43),
+        rejected("Package", 44),
+        rejected("Publish", 45),
+        rejected("Cancelled build", 46),
+    ]);
+    azure.iteration_statuses["value"][0]["targetUrl"] =
+        json!("https://dev.azure.com/org/Proj/_build/results?buildId=47");
+
+    Script {
+        answer: Box::new(move |call, args| {
+            let output = if call.contains("--area build ") {
+                failed_azure_log_output(call, args)
+            } else if call.starts_with("az pipelines runs show") {
+                let result = if call.contains("--id 46 ") {
+                    "canceled"
+                } else {
+                    "failed"
+                };
+                success(json!({"status": "completed", "result": result}).to_string())
+            } else {
+                success(azure.print(call))
+            };
+            Ok(output)
+        }),
+        calls: RefCell::new(Vec::new()),
+    }
+}
+
+/// A fully completed set of checks should never require waiting for another poll.
+struct ImmediateClock;
+
+impl Clock for ImmediateClock {
+    fn elapsed(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+
+    fn sleep(&self, duration: std::time::Duration) {
+        panic!("watch waited {duration:?} despite all checks being complete");
+    }
 }
 
 fn success(stdout: String) -> ToolOutput {
@@ -667,7 +721,7 @@ fn success(stdout: String) -> ToolOutput {
 }
 
 /// A build lookup for an inaccessible log or for a failed task with a large log.
-fn failed_azure_log_output(call: &str) -> ToolOutput {
+fn failed_azure_log_output(call: &str, args: &[&str]) -> ToolOutput {
     if call.contains("buildId=43 ") {
         return ToolOutput {
             code: Some(1),
@@ -688,14 +742,23 @@ fn failed_azure_log_output(call: &str) -> ToolOutput {
         ]})
     } else if call.contains("--resource logs ") && call.contains(" logId=8 ") {
         assert!(
-            call.contains("--query-parameters startLine=160 endLine=200 "),
+            call.contains(
+                "--query-parameters startLine=161 endLine=200 --accept-media-type text/plain "
+            ),
             "{call}"
         );
         let mut lines: Vec<_> = (0..=40).map(|line| format!("output {line}")).collect();
         if long_line {
             lines[40] = format!("{} compiler exited with code 1", "🦀".repeat(1500));
         }
-        json!({"value": lines})
+        let file = args
+            .windows(2)
+            .find(|pair| pair[0] == "--out-file")
+            .map(|pair| pair[1])
+            .expect("request must name an output file");
+        std::fs::write(file, format!("{}\r\n", lines.join("\r\n")))
+            .expect("Azure CLI fixture must write the task log");
+        return success(String::new());
     } else {
         assert!(
             call.contains("--resource logs ") && !call.contains("logId="),
