@@ -1,6 +1,6 @@
 //! The GitHub adapter: reads pull requests on GitHub and GitHub Enterprise with `gh`.
 
-use super::{Adapter, Head, ToolError, ToolOutput, ToolProblem, Tools, unsupported};
+use super::{Adapter, Head, NewPr, OpenPr, ToolError, ToolOutput, ToolProblem, Tools, unsupported};
 use crate::{inspect::shown, pr_state::PrState};
 use std::path::Path;
 
@@ -53,6 +53,92 @@ fn view(tools: &dyn Tools, url: &str, fields: &str) -> Result<serde_json::Value,
     })
 }
 
+/// The first open pull request of `branch` in the repository of `dir`.
+///
+/// `gh pr list --head` matches by branch name only, so a pull request from a fork that happens to use the
+/// same name is skipped.
+pub(super) fn find_open(
+    tools: &dyn Tools,
+    dir: &Path,
+    branch: &str,
+) -> Result<Option<OpenPr>, ToolProblem> {
+    let args = [
+        "pr",
+        "list",
+        "--head",
+        branch,
+        "--state",
+        "open",
+        "--json",
+        "url,baseRefName,isCrossRepository",
+    ];
+    let output = run_gh(tools, Some(dir), &args)?;
+    if output.code != Some(0) {
+        return Err(problem("pr list", &output));
+    }
+    let list: Vec<serde_json::Value> =
+        serde_json::from_str(output.stdout.trim()).map_err(|error| {
+            ToolProblem(format!(
+                "`gh pr list` gave output that is not JSON: {error}"
+            ))
+        })?;
+    let Some(item) = list
+        .iter()
+        .find(|item| item["isCrossRepository"].as_bool() != Some(true))
+    else {
+        return Ok(None);
+    };
+    let url = item["url"].as_str().ok_or_else(|| {
+        ToolProblem(
+            "`gh pr list` gave an open pull request without a URL, so it was not reused.".into(),
+        )
+    })?;
+    Ok(Some(OpenPr {
+        url: url.to_string(),
+        base: item["baseRefName"]
+            .as_str()
+            .filter(|base| !base.is_empty())
+            .map(str::to_string),
+    }))
+}
+
+/// Opens `pr` with `gh pr create` in the repository of `dir` and returns its URL.
+pub(super) fn create(tools: &dyn Tools, dir: &Path, pr: &NewPr) -> Result<String, ToolProblem> {
+    let body = pr.body_file.display().to_string();
+    let output = run_gh(
+        tools,
+        Some(dir),
+        &[
+            "pr",
+            "create",
+            "--base",
+            pr.base,
+            "--head",
+            pr.branch,
+            "--title",
+            pr.title,
+            "--body-file",
+            &body,
+        ],
+    )?;
+    if output.code != Some(0) {
+        return Err(problem("pr create", &output));
+    }
+    let url = output
+        .stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| line.starts_with("https://") || line.starts_with("http://"))
+        .ok_or_else(|| {
+            ToolProblem(format!(
+                "`gh pr create` did not print the pull request's URL: {}",
+                shown(first_line(&output.stdout))
+            ))
+        })?;
+    Ok(url.to_string())
+}
+
 /// The GitHub (or GitHub Enterprise) pull request a link points to, as `<repository>/pull/<number>`: a link to
 /// one of its tabs (`/files`) or comments (`#issuecomment-1`) is cut back to the pull request. None for a link
 /// that is not a pull request.
@@ -80,11 +166,7 @@ pub(crate) fn run_gh(
 }
 
 /// What `gh` printed, or a problem that says what to do when it could not be started.
-///
-/// # Errors
-///
-/// Returns the problem when `result` says `gh` is not installed or did not start.
-pub(crate) fn started(result: Result<ToolOutput, ToolError>) -> Result<ToolOutput, ToolProblem> {
+fn started(result: Result<ToolOutput, ToolError>) -> Result<ToolOutput, ToolProblem> {
     result.map_err(|error| match error {
         ToolError::NotInstalled => ToolProblem(
             "The GitHub CLI (`gh`) is not installed or not on PATH. Install it from https://cli.github.com, run `gh auth login`, and try again."

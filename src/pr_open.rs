@@ -2,42 +2,12 @@
 
 use crate::{
     inspect::shown,
-    pr_host::{
-        AzureRepo, Host, Origin, RealTools, ToolError, ToolOutput, ToolProblem, Tools, az_parsed,
-        detect_host, problem, started,
-    },
-    run_begin::{first_line, git, last_line, valid_branch_name},
+    pr_host::{NewPr, PrHost, ToolProblem, check_origin, detect_host, push_problem},
+    pr_sync::Git,
+    run_begin::{first_line, valid_branch_name},
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-
-/// Runs `gh` in a folder, so that it finds the repository from the git remotes there. Tests answer from a
-/// script.
-pub(crate) trait Gh {
-    fn run(&self, dir: &Path, args: &[&str]) -> Result<ToolOutput, ToolError>;
-
-    fn az(&self, _dir: &Path, _args: &[&str]) -> Result<ToolOutput, ToolError> {
-        Err(ToolError::NotInstalled)
-    }
-
-    /// Runs git in a folder. Tests override this to keep the user's own git settings out.
-    fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
-        git(dir, args)
-    }
-}
-
-/// The real `gh` and `az`, started through the pull request host's tools.
-pub(crate) struct RealGh;
-
-impl Gh for RealGh {
-    fn az(&self, _dir: &Path, args: &[&str]) -> Result<ToolOutput, ToolError> {
-        RealTools.az(args)
-    }
-
-    fn run(&self, dir: &Path, args: &[&str]) -> Result<ToolOutput, ToolError> {
-        RealTools.gh(Some(dir), args)
-    }
-}
 
 /// The Jidoka server, as far as this command needs it.
 pub(crate) trait RunApi {
@@ -64,8 +34,6 @@ impl PrRun {
     }
 }
 
-/// Azure DevOps rejects a pull request description longer than this many characters.
-const AZURE_DESCRIPTION_LIMIT: usize = 4000;
 /// A title longer than this is rejected, which keeps it a short one-line heading.
 const MAX_TITLE_CHARS: usize = 256;
 /// A body file larger than this is rejected, so the whole file is never read into memory.
@@ -147,309 +115,17 @@ pub(crate) struct Opened {
     pub(crate) recorded: bool,
 }
 
-fn run_gh(gh: &dyn Gh, dir: &Path, args: &[&str]) -> Result<ToolOutput, ToolProblem> {
-    started(gh.run(dir, args))
-}
-
-/// A rejected or failed push as a message that says what to do.
-fn push_problem(branch: &str, error: &str) -> ToolProblem {
-    let lower = error.to_lowercase();
-    let detail = shown(last_line(error));
-    if lower.contains("rejected")
-        || lower.contains("non-fast-forward")
-        || lower.contains("fetch first")
-    {
-        return ToolProblem(format!(
-            "origin rejected the push of {branch}: it has commits this branch does not. Merge the remote branch or the base into it with a normal merge, never a force-push, and try again. ({detail})"
-        ));
-    }
-    if lower.contains("authentication failed")
-        || lower.contains("could not read username")
-        || lower.contains("permission denied")
-        || lower.contains("publickey")
-    {
-        // Git prints a failing credential helper's complaint before the final `fatal:` line, so show every line.
-        let all_lines = error
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>()
-            .join(" / ");
-        return ToolProblem(format!(
-            "git is not allowed to push to origin. Read git's output below first: a credential helper that crashes is not fixed by signing in. Otherwise sign in (for example `gh auth login`, or set up your SSH key or credential helper; `git config --show-origin --get-all credential.helper` lists the helpers git uses) and try again. ({})",
-            shown(&all_lines)
-        ));
-    }
-    if lower.contains("could not resolve host") || lower.contains("unable to access") {
-        return ToolProblem(format!(
-            "Could not reach origin. Check your network connection and try again. ({detail})"
-        ));
-    }
-    ToolProblem(format!("Pushing {branch} to origin failed: {detail}"))
-}
-
-/// An open pull request of the branch.
-struct Existing {
-    url: String,
-    /// Its base branch, when `gh` said.
-    base: Option<String>,
-}
-
-/// The first open pull request of `branch` in this repository. `gh pr list --head` matches by branch name
-/// only, so a pull request from a fork that happens to use the same name is skipped.
-fn open_pull_request(
-    gh: &dyn Gh,
-    dir: &Path,
-    branch: &str,
-) -> Result<Option<Existing>, ToolProblem> {
-    let args = [
-        "pr",
-        "list",
-        "--head",
-        branch,
-        "--state",
-        "open",
-        "--json",
-        "url,baseRefName,isCrossRepository",
-    ];
-    let output = run_gh(gh, dir, &args)?;
-    if output.code != Some(0) {
-        return Err(problem("pr list", &output));
-    }
-    let list: Vec<serde_json::Value> =
-        serde_json::from_str(output.stdout.trim()).map_err(|error| {
-            ToolProblem(format!(
-                "`gh pr list` gave output that is not JSON: {error}"
-            ))
-        })?;
-    let Some(item) = list
-        .iter()
-        .find(|item| item["isCrossRepository"].as_bool() != Some(true))
-    else {
-        return Ok(None);
-    };
-    let url = item["url"].as_str().ok_or_else(|| {
-        ToolProblem(
-            "`gh pr list` gave an open pull request without a URL, so it was not reused.".into(),
-        )
-    })?;
-    Ok(Some(Existing {
-        url: url.to_string(),
-        base: item["baseRefName"]
-            .as_str()
-            .filter(|base| !base.is_empty())
-            .map(str::to_string),
-    }))
-}
-
-/// Windows runs `az.cmd` through `cmd.exe`, and Rust refuses arguments that `cmd.exe` would re-parse.
-/// Checking them before the push keeps a refusal from leaving a pushed branch without a pull request.
-fn check_az_text(what: &str, text: &str, windows: bool) -> Result<(), ToolProblem> {
-    if windows
-        && text
-            .chars()
-            .any(|c| matches!(c, '"' | '%') || c.is_control())
-    {
-        return Err(ToolProblem(format!(
-            "The {what} must not contain double quotes, percent signs or control characters; Azure CLI on Windows cannot take them."
-        )));
-    }
-    Ok(())
-}
-
-/// The `@<file>` value that makes `az` read an argument from a file. Canonical Windows paths carry a
-/// `\\?\` prefix that is dropped, so `\\?\UNC\server\share` becomes `\\server\share`.
-fn az_file_argument(path: &str) -> String {
-    let plain = match path.strip_prefix(r"\\?\UNC\") {
-        Some(rest) => format!(r"\\{rest}"),
-        None => path.strip_prefix(r"\\?\").unwrap_or(path).to_string(),
-    };
-    format!("@{plain}")
-}
-
-fn az_json(gh: &dyn Gh, dir: &Path, args: &[&str]) -> Result<serde_json::Value, ToolProblem> {
-    az_parsed(args, gh.az(dir, args))
-}
-
-fn azure_existing(
-    gh: &dyn Gh,
-    dir: &Path,
-    repo: &AzureRepo,
-    branch: &str,
-) -> Result<Option<Existing>, ToolProblem> {
-    let org = repo.org_url();
-    let data = az_json(
-        gh,
-        dir,
-        &[
-            "repos",
-            "pr",
-            "list",
-            "--organization",
-            &org,
-            "--project",
-            &repo.project,
-            "--repository",
-            &repo.repository,
-            "--source-branch",
-            branch,
-            "--status",
-            "active",
-            "--output",
-            "json",
-            "--detect",
-            "false",
-        ],
-    )?;
-    let list = data
-        .as_array()
-        .ok_or_else(|| ToolProblem("Azure PR list did not return an array.".into()))?;
-    for item in list {
-        // Cross-repository PRs with the same branch name must not be reused.
-        if !item["forkSource"].is_null() {
-            continue;
-        }
-        let id = item["pullRequestId"].as_u64().ok_or_else(|| {
-            ToolProblem("Azure PR list returned a pull request without an ID.".into())
-        })?;
-        let base = item["targetRefName"]
-            .as_str()
-            .and_then(|s| s.strip_prefix("refs/heads/"))
-            .map(str::to_string);
-        return Ok(Some(Existing {
-            url: repo.pr_url(id),
-            base,
-        }));
-    }
-    Ok(None)
-}
-
-struct PreparedPr {
-    branch: String,
-    base: String,
-    commit: String,
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "seven inputs; a struct for the Azure context would collapse these"
-)]
-fn open_azure(
-    run: &PrRun,
-    options: &Options,
-    gh: &dyn Gh,
-    api: &dyn RunApi,
-    dir: &Path,
-    repo: &AzureRepo,
-    prepared: PreparedPr,
-) -> Result<Opened, ToolProblem> {
-    let PreparedPr {
-        branch,
-        base,
-        commit,
-    } = prepared;
-    let existing = azure_existing(gh, dir, repo, &branch)?;
-    let description = if existing.is_none() {
-        let text = std::fs::read_to_string(&options.body_file)
-            .map_err(|_| ToolProblem("The pull request body could not be read as UTF-8.".into()))?;
-        let length = text.chars().count();
-        if length > AZURE_DESCRIPTION_LIMIT {
-            return Err(ToolProblem(format!(
-                "The pull request body has {length} characters; Azure allows at most {AZURE_DESCRIPTION_LIMIT}. Cut at least {}.",
-                length - AZURE_DESCRIPTION_LIMIT
-            )));
-        }
-        if text.contains('\0') {
-            return Err(ToolProblem(
-                "The pull request body must not contain NUL bytes.".into(),
-            ));
-        }
-        let file = az_file_argument(&options.body_file.to_string_lossy());
-        check_az_text("title", &options.title, cfg!(windows))?;
-        check_az_text("path of the body file", &file, cfg!(windows))?;
-        // `az` reads `@<file>` itself. A multi-line body cannot be an argument of `az.cmd` on Windows.
-        Some(file)
-    } else {
-        None
-    };
-    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-    gh.git(dir, &["push", "-u", "origin", &refspec]).map_err(|_| {
-        ToolProblem("Git could not push to the Azure repository. Check Git authentication and branch permissions.".into())
-    })?;
-    if let Some(found) = existing {
-        return finish(
-            run,
-            api,
-            branch,
-            found.base.unwrap_or(base),
-            commit,
-            found.url,
-            false,
-        );
-    }
-    let org = repo.org_url();
-    let Some(description) = description else {
-        return Err(ToolProblem(
-            "The new Azure pull request has no description.".into(),
-        ));
-    };
-    let result = az_json(
-        gh,
-        dir,
-        &[
-            "repos",
-            "pr",
-            "create",
-            "--organization",
-            &org,
-            "--project",
-            &repo.project,
-            "--repository",
-            &repo.repository,
-            "--source-branch",
-            &branch,
-            "--target-branch",
-            &base,
-            &format!("--title={}", options.title),
-            "--description",
-            &description,
-            "--output",
-            "json",
-            "--detect",
-            "false",
-        ],
-    );
-    let data = match result {
-        Ok(data) => data,
-        Err(error) => {
-            return match azure_existing(gh, dir, repo, &branch) {
-                Ok(Some(found)) => finish(
-                    run,
-                    api,
-                    branch,
-                    found.base.unwrap_or(base),
-                    commit,
-                    found.url,
-                    false,
-                ),
-                _ => Err(error),
-            };
-        }
-    };
-    let id = data["pullRequestId"].as_u64().ok_or_else(|| ToolProblem("Azure PR creation returned no pull request ID; check for an existing PR before retrying.".into()))?;
-    finish(run, api, branch, base, commit, repo.pr_url(id), true)
-}
-
 /// Pushes the run's branch and opens its pull request, or finds the open one, and records its URL on the run.
-/// Nothing is pushed unless the checks pass and `gh` can see the repository. It never forces a push.
+/// Nothing is pushed unless the checks pass and the host can see the repository. It never forces a push.
 #[expect(
     clippy::too_many_lines,
-    reason = "validates the worktree, pushes, finds or creates the PR for both providers"
+    reason = "validates the worktree, pushes, finds or creates the PR"
 )]
 pub(crate) fn open(
     run: &PrRun,
     options: &Options,
-    gh: &dyn Gh,
+    host: &dyn PrHost,
+    git: &dyn Git,
     api: &dyn RunApi,
 ) -> Result<Opened, ToolProblem> {
     let worktree = run.worktree.as_deref().ok_or_else(|| {
@@ -465,35 +141,11 @@ pub(crate) fn open(
             shown(worktree)
         )));
     }
-    let Origin { url: remote, host } = detect_host(&|args| gh.git(dir, args).ok())?;
-    let azure = match host {
-        Host::Azure(repo) => Some(repo),
-        Host::GitHub => None,
-        Host::Unknown => return Err(ToolProblem("Cannot identify the repository provider from origin; set git config jidoka.prProvider github for a GitHub Enterprise repository.".into())),
-    };
-    if let Some(selected) = &azure {
-        let push_urls = gh
-            .git(dir, &["remote", "get-url", "--push", "--all", "origin"])
-            .map_err(|_| ToolProblem("Cannot read the push destination of origin.".into()))?;
-        if push_urls.is_empty()
-            || push_urls
-                .lines()
-                .any(|url| match AzureRepo::from_remote(url) {
-                    Ok(Some(repo)) => &repo != selected,
-                    Ok(None) => url != remote,
-                    Err(_) => true,
-                })
-        {
-            return Err(ToolProblem(
-                "The push destination of origin does not match the Azure repository.".into(),
-            ));
-        }
-    }
-    if azure.is_none() {
-        run_gh(gh, dir, &["--version"])?;
-    }
+    let read = |args: &[&str]| git.git(dir, args).ok();
+    let origin = detect_host(&read)?;
+    check_origin(&origin, &read)?;
 
-    let branch = gh
+    let branch = git
         .git(dir, &["branch", "--show-current"])
         .map_err(|error| {
             ToolProblem(format!(
@@ -527,7 +179,7 @@ pub(crate) fn open(
     }
     let base = match &options.base {
         Some(base) => base.clone(),
-        None => gh
+        None => git
             .git(
                 dir,
                 &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
@@ -547,7 +199,7 @@ pub(crate) fn open(
             shown(&branch)
         )));
     }
-    let status = gh.git(dir, &["status", "--porcelain"]).map_err(|error| {
+    let status = git.git(dir, &["status", "--porcelain"]).map_err(|error| {
         ToolProblem(format!(
             "The status of {} could not be read: {}",
             shown(worktree),
@@ -560,7 +212,7 @@ pub(crate) fn open(
             status.lines().count()
         )));
     }
-    let ahead = gh
+    let ahead = git
         .git(
             dir,
             &["rev-list", "--count", &format!("refs/remotes/origin/{base}..HEAD")],
@@ -579,87 +231,42 @@ pub(crate) fn open(
             shown(&base)
         )));
     }
-    let commit = gh.git(dir, &["rev-parse", "HEAD"]).map_err(|error| {
+    let commit = git.git(dir, &["rev-parse", "HEAD"]).map_err(|error| {
         ToolProblem(format!(
             "HEAD could not be read: {}",
             shown(first_line(&error))
         ))
     })?;
 
-    // Look for the pull request before pushing: it also shows whether `gh` is signed in.
-    if let Some(azure) = azure {
-        return open_azure(
-            run,
-            options,
-            gh,
-            api,
-            dir,
-            &azure,
-            PreparedPr {
-                branch,
-                base,
-                commit,
-            },
-        );
+    // Look for the pull request before pushing: it also shows whether the host's tool is signed in.
+    let existing = host.find_open(dir, &origin, &branch)?;
+    let new = NewPr {
+        branch: &branch,
+        base: &base,
+        title: &options.title,
+        body_file: &options.body_file,
+    };
+    if existing.is_none() {
+        host.check_new(&origin, &new)?;
     }
-    let existing = open_pull_request(gh, dir, &branch)?;
     // The branch is pushed by its full name on both sides, so that no name is read as a refspec.
     let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-    gh.git(dir, &["push", "-u", "origin", &refspec])
-        .map_err(|error| push_problem(&branch, &error))?;
+    git.git(dir, &["push", "-u", "origin", &refspec])
+        .map_err(|error| push_problem(&origin, &branch, &error))?;
 
-    let (pull_request, created, base) = match existing {
-        Some(found) => (found.url, false, found.base.unwrap_or(base)),
-        None => {
-            let body = options.body_file.display().to_string();
-            let output = run_gh(
-                gh,
-                dir,
-                &[
-                    "pr",
-                    "create",
-                    "--base",
-                    &base,
-                    "--head",
-                    &branch,
-                    "--title",
-                    &options.title,
-                    "--body-file",
-                    &body,
-                ],
-            )?;
-            if output.code != Some(0) {
-                // Someone may have opened it between the look and now: use theirs.
-                return match open_pull_request(gh, dir, &branch) {
-                    Ok(Some(found)) => finish(
-                        run,
-                        api,
-                        branch,
-                        found.base.unwrap_or(base),
-                        commit,
-                        found.url,
-                        false,
-                    ),
-                    _ => Err(problem("pr create", &output)),
-                };
-            }
-            let url = output
-                .stdout
-                .lines()
-                .rev()
-                .map(str::trim)
-                .find(|line| line.starts_with("https://") || line.starts_with("http://"))
-                .ok_or_else(|| {
-                    ToolProblem(format!(
-                        "`gh pr create` did not print the pull request's URL: {}",
-                        shown(first_line(&output.stdout))
-                    ))
-                })?
-                .to_string();
-            (url, true, base)
-        }
+    let found = match existing {
+        Some(found) => found,
+        None => match host.create(dir, &origin, &new) {
+            Ok(url) => return finish(run, api, branch, base, commit, url, true),
+            // Someone may have opened it between the look and now: use theirs.
+            Err(problem) => match host.find_open(dir, &origin, &branch) {
+                Ok(Some(found)) => found,
+                _ => return Err(problem),
+            },
+        },
     };
-    finish(run, api, branch, base, commit, pull_request, created)
+    let base = found.base.unwrap_or(base);
+    finish(run, api, branch, base, commit, found.url, false)
 }
 
 /// Records the pull request on a running run and returns the result.

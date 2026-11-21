@@ -166,6 +166,32 @@ impl PrHost for ReplacingHost<'_> {
     fn head(&self, _url: &str) -> Result<Head, ToolProblem> {
         panic!("the refresh reads only the state")
     }
+
+    fn find_open(
+        &self,
+        _dir: &std::path::Path,
+        _origin: &crate::pr_host::Origin,
+        _branch: &str,
+    ) -> Result<Option<crate::pr_host::OpenPr>, ToolProblem> {
+        panic!("the refresh reads only the state")
+    }
+
+    fn check_new(
+        &self,
+        _origin: &crate::pr_host::Origin,
+        _pr: &crate::pr_host::NewPr,
+    ) -> Result<(), ToolProblem> {
+        panic!("the refresh reads only the state")
+    }
+
+    fn create(
+        &self,
+        _dir: &std::path::Path,
+        _origin: &crate::pr_host::Origin,
+        _pr: &crate::pr_host::NewPr,
+    ) -> Result<String, ToolProblem> {
+        panic!("the refresh reads only the state")
+    }
 }
 
 #[test]

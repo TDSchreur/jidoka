@@ -1,7 +1,8 @@
-//! `jidoka pr open` with real git in temporary repositories (a local bare remote) and a scripted `gh`.
+//! `jidoka pr open` with real git in temporary repositories (a local bare remote) and a fake host.
 
 use super::*;
-use std::{cell::RefCell, collections::VecDeque, fs, process::Command};
+use crate::pr_host::{FakeHost, Host, OpenPr, Origin};
+use std::{cell::RefCell, fs, process::Command};
 use tempfile::TempDir;
 
 /// The plain path form git prints; on Windows `canonicalize` gives a `\\?\` path that git reads as a URL.
@@ -116,73 +117,19 @@ impl Project {
     }
 }
 
+/// Real git with the user's own settings kept out, and origin's URLs answered as set.
 #[derive(Default)]
-struct FakeGh {
-    version: RefCell<Option<Result<ToolOutput, ToolError>>>,
-    list: RefCell<VecDeque<Result<ToolOutput, ToolError>>>,
-    create: RefCell<VecDeque<Result<ToolOutput, ToolError>>>,
-    calls: RefCell<Vec<(PathBuf, String)>>,
-    /// The arguments of every git command the code ran.
-    git_calls: RefCell<Vec<Vec<String>>>,
-    remote_url: RefCell<Option<String>>,
-    push_url: RefCell<Option<String>>,
-    az_missing: std::cell::Cell<bool>,
+struct FakeGit {
+    remote_url: Option<String>,
 }
 
-fn ok(stdout: &str) -> Result<ToolOutput, ToolError> {
-    Ok(ToolOutput {
-        code: Some(0),
-        stdout: stdout.into(),
-        stderr: String::new(),
-    })
-}
-
-fn failed(code: i32, stderr: &str) -> Result<ToolOutput, ToolError> {
-    Ok(ToolOutput {
-        code: Some(code),
-        stdout: String::new(),
-        stderr: stderr.into(),
-    })
-}
-
-fn pop(queue: &RefCell<VecDeque<Result<ToolOutput, ToolError>>>) -> Result<ToolOutput, ToolError> {
-    queue
-        .borrow_mut()
-        .pop_front()
-        .expect("the script has an answer")
-}
-
-impl Gh for FakeGh {
-    fn az(&self, dir: &Path, args: &[&str]) -> Result<ToolOutput, ToolError> {
-        if self.az_missing.get() {
-            return Err(ToolError::NotInstalled);
-        }
-        self.calls
-            .borrow_mut()
-            .push((dir.to_path_buf(), args.join(" ")));
-        match args {
-            ["repos", "pr", "list", ..] => pop(&self.list),
-            ["repos", "pr", "create", ..] => pop(&self.create),
-            other => panic!("unexpected az call {other:?}"),
-        }
-    }
-    /// The code under test runs git; the user's own git settings must not reach it.
+impl Git for FakeGit {
     fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
-        self.git_calls
-            .borrow_mut()
-            .push(args.iter().map(|a| a.to_string()).collect());
-        if args == ["remote", "get-url", "--push", "--all", "origin"] {
-            return Ok(self
-                .push_url
-                .borrow()
-                .clone()
-                .or_else(|| self.remote_url.borrow().clone())
-                .unwrap_or_else(|| "https://github.com/o/r.git".into()));
-        }
-        if args == ["remote", "get-url", "origin"] {
+        if args == ["remote", "get-url", "origin"]
+            || args == ["remote", "get-url", "--push", "--all", "origin"]
+        {
             return Ok(self
                 .remote_url
-                .borrow()
                 .clone()
                 .unwrap_or_else(|| "https://github.com/o/r.git".into()));
         }
@@ -198,41 +145,11 @@ impl Gh for FakeGh {
             Err(text(&output.stderr))
         }
     }
-
-    fn run(&self, dir: &Path, args: &[&str]) -> Result<ToolOutput, ToolError> {
-        self.calls
-            .borrow_mut()
-            .push((dir.to_path_buf(), args.join(" ")));
-        match args {
-            ["--version"] => match self.version.borrow().as_ref() {
-                Some(Err(ToolError::NotInstalled)) => Err(ToolError::NotInstalled),
-                _ => ok("gh version 2"),
-            },
-            ["pr", "list", ..] => pop(&self.list),
-            ["pr", "create", ..] => pop(&self.create),
-            other => panic!("unexpected gh call {other:?}"),
-        }
-    }
 }
 
-impl FakeGh {
-    /// No open pull request yet, and creating one answers with `url`.
-    fn new_pr(url: &str) -> Self {
-        let gh = Self::default();
-        gh.list.borrow_mut().push_back(ok("[]"));
-        gh.create.borrow_mut().push_back(ok(&format!(
-            "Creating pull request for feature into develop\n\n{url}\n"
-        )));
-        gh
-    }
-
-    fn pr_calls(&self, what: &str) -> usize {
-        self.calls
-            .borrow()
-            .iter()
-            .filter(|(_, c)| c.starts_with(what))
-            .count()
-    }
+/// How many calls of `host` start with `what`.
+fn host_calls(host: &FakeHost, what: &str) -> usize {
+    host.calls().iter().filter(|c| c.starts_with(what)).count()
 }
 
 /// One call of `RunApi::update`: run and options.
@@ -283,9 +200,16 @@ const URL: &str = "https://github.com/o/r/pull/7";
 #[test]
 fn a_new_pull_request_is_pushed_opened_and_recorded() {
     let project = Project::new();
-    let gh = FakeGh::new_pr(URL);
+    let host = FakeHost::opening(URL);
     let api = FakeApi::default();
-    let opened = open(&run_of(&project), &options(&project), &gh, &api).unwrap();
+    let opened = open(
+        &run_of(&project),
+        &options(&project),
+        &host,
+        &FakeGit::default(),
+        &api,
+    )
+    .unwrap();
 
     assert_eq!(opened.pull_request, URL);
     assert!(opened.created);
@@ -298,16 +222,14 @@ fn a_new_pull_request_is_pushed_opened_and_recorded() {
         project.remote_branch("feature"),
         Some(opened.commit.clone())
     );
-    // The pull request was asked for in the worktree, against the base, with the title and body file.
-    let calls = gh.calls.borrow();
-    let (dir, create) = calls
-        .iter()
-        .find(|(_, c)| c.starts_with("pr create"))
-        .unwrap();
-    assert_eq!(dir, &project.wt);
-    assert!(
-        create.contains("--base develop --head feature --title Add the thing --body-file"),
-        "{create}"
+    // The host was asked for the pull request against the base, with the title.
+    assert_eq!(
+        host.calls(),
+        [
+            "find_open feature",
+            "check_new feature",
+            "create feature into develop: Add the thing"
+        ]
     );
     // The run records it, keeping its stage.
     let updates = api.updates.borrow();
@@ -319,16 +241,23 @@ fn a_new_pull_request_is_pushed_opened_and_recorded() {
 #[test]
 fn a_retry_finds_the_open_pull_request_and_does_not_make_a_second() {
     let project = Project::new();
-    let gh = FakeGh::default();
-    gh.list.borrow_mut().push_back(ok(&format!(
-        r#"[{{"url":"{URL}","baseRefName":"release"}}]"#
-    )));
+    let host = FakeHost::with_open(OpenPr {
+        url: URL.into(),
+        base: Some("release".into()),
+    });
     let api = FakeApi::default();
-    let opened = open(&run_of(&project), &options(&project), &gh, &api).unwrap();
+    let opened = open(
+        &run_of(&project),
+        &options(&project),
+        &host,
+        &FakeGit::default(),
+        &api,
+    )
+    .unwrap();
     assert_eq!(opened.pull_request, URL);
     assert!(!opened.created);
     assert_eq!(opened.base, "release", "the base of the open pull request");
-    assert_eq!(gh.pr_calls("pr create"), 0);
+    assert_eq!(host_calls(&host, "create"), 0);
     // New commits still reach the pull request, and the run records it again.
     assert!(project.remote_branch("feature").is_some());
     assert_eq!(api.updates.borrow().len(), 1);
@@ -342,7 +271,8 @@ fn nothing_is_pushed_when_a_check_fails_first() {
     let problem = open(
         &run_of(&project),
         &options(&project),
-        &FakeGh::new_pr(URL),
+        &FakeHost::opening(URL),
+        &FakeGit::default(),
         &FakeApi::default(),
     )
     .unwrap_err();
@@ -357,7 +287,8 @@ fn nothing_is_pushed_when_a_check_fails_first() {
     let problem = open(
         &run,
         &options(&project),
-        &FakeGh::new_pr(URL),
+        &FakeHost::opening(URL),
+        &FakeGit::default(),
         &FakeApi::default(),
     )
     .unwrap_err();
@@ -369,7 +300,8 @@ fn nothing_is_pushed_when_a_check_fails_first() {
     let problem = open(
         &run_of(&project),
         &options(&project),
-        &FakeGh::new_pr(URL),
+        &FakeHost::opening(URL),
+        &FakeGit::default(),
         &FakeApi::default(),
     )
     .unwrap_err();
@@ -383,7 +315,8 @@ fn nothing_is_pushed_when_a_check_fails_first() {
     let problem = open(
         &run,
         &options(&project),
-        &FakeGh::new_pr(URL),
+        &FakeHost::opening(URL),
+        &FakeGit::default(),
         &FakeApi::default(),
     )
     .unwrap_err();
@@ -401,7 +334,8 @@ fn nothing_is_pushed_when_a_check_fails_first() {
         open(
             &run,
             &options(&project),
-            &FakeGh::new_pr(URL),
+            &FakeHost::opening(URL),
+            &FakeGit::default(),
             &FakeApi::default()
         )
         .unwrap_err()
@@ -413,7 +347,8 @@ fn nothing_is_pushed_when_a_check_fails_first() {
         open(
             &run,
             &options(&project),
-            &FakeGh::new_pr(URL),
+            &FakeHost::opening(URL),
+            &FakeGit::default(),
             &FakeApi::default()
         )
         .unwrap_err()
@@ -441,11 +376,12 @@ fn a_rejected_push_says_to_merge_and_never_forces() {
     run_git(&other, &["push", "-q", "origin", "feature"]);
     let theirs = project.remote_branch("feature").unwrap();
 
-    let gh = FakeGh::new_pr(URL);
+    let host = FakeHost::opening(URL);
     let problem = open(
         &run_of(&project),
         &options(&project),
-        &gh,
+        &host,
+        &FakeGit::default(),
         &FakeApi::default(),
     )
     .unwrap_err();
@@ -459,27 +395,24 @@ fn a_rejected_push_says_to_merge_and_never_forces() {
         Some(theirs),
         "the remote branch is untouched"
     );
-    assert_eq!(gh.pr_calls("pr create"), 0);
+    assert_eq!(host_calls(&host, "create"), 0);
 }
 
 #[test]
 fn a_failed_creation_or_a_failed_record_says_what_happened_and_a_retry_is_safe() {
     let project = Project::new();
-    let gh = FakeGh::default();
     // Nothing is open before the creation, and still nothing is open after it failed.
-    gh.list.borrow_mut().push_back(ok("[]"));
-    gh.list.borrow_mut().push_back(ok("[]"));
-    gh.create
-        .borrow_mut()
-        .push_back(failed(1, "GraphQL: Something went wrong"));
+    let host = FakeHost::failing_create("`gh pr create` failed: GraphQL: Something went wrong");
     let problem = open(
         &run_of(&project),
         &options(&project),
-        &gh,
+        &host,
+        &FakeGit::default(),
         &FakeApi::default(),
     )
     .unwrap_err();
     assert!(problem.0.contains("Something went wrong"), "{}", problem.0);
+    assert_eq!(host_calls(&host, "find_open"), 2, "it looked again");
 
     // The pull request opened but the server did not take the record: the message names the URL.
     let api = FakeApi::default();
@@ -487,7 +420,8 @@ fn a_failed_creation_or_a_failed_record_says_what_happened_and_a_retry_is_safe()
     let problem = open(
         &run_of(&project),
         &options(&project),
-        &FakeGh::new_pr(URL),
+        &FakeHost::opening(URL),
+        &FakeGit::default(),
         &api,
     )
     .unwrap_err();
@@ -501,50 +435,47 @@ fn a_failed_creation_or_a_failed_record_says_what_happened_and_a_retry_is_safe()
     let mut run = run_of(&project);
     run.status = "done".into();
     let api = FakeApi::default();
-    open(&run, &options(&project), &FakeGh::new_pr(URL), &api).unwrap();
+    open(
+        &run,
+        &options(&project),
+        &FakeHost::opening(URL),
+        &FakeGit::default(),
+        &api,
+    )
+    .unwrap();
     assert!(api.updates.borrow().is_empty());
 }
 
 // --- rework 1 ---------------------------------------------------------------------------------------
 
 #[test]
-fn azure_remote_opens_pull_request_in_the_selected_repository() {
+fn an_azure_origin_opens_through_the_host_and_pushes() {
     let project = Project::new();
-    let gh = FakeGh::default();
-    *gh.remote_url.borrow_mut() =
-        Some("https://dev.azure.com/dutchworkz/Projects/_git/Kahoot".into());
-    gh.list.borrow_mut().push_back(ok("[]"));
-    gh.create.borrow_mut().push_back(ok(
-        r#"{"pullRequestId":17,"repository":{"id":"96a543bd-0277-4ba4-acc6-2e45294010fe"}}"#,
-    ));
+    let url = "https://dev.azure.com/dutchworkz/Projects/_git/Kahoot/pullrequest/17";
+    let git = FakeGit {
+        remote_url: Some("https://dev.azure.com/dutchworkz/Projects/_git/Kahoot".into()),
+    };
     let opened = open(
         &run_of(&project),
         &options(&project),
-        &gh,
+        &FakeHost::opening(url),
+        &git,
         &FakeApi::default(),
     )
     .unwrap();
-    assert_eq!(
-        opened.pull_request,
-        "https://dev.azure.com/dutchworkz/Projects/_git/Kahoot/pullrequest/17"
-    );
+    assert_eq!(opened.pull_request, url);
     assert!(opened.created);
     assert_eq!(project.remote_branch("feature"), Some(opened.commit));
-    let calls = gh.calls.borrow();
-    for (_, command) in calls.iter().filter(|(_, c)| c.starts_with("repos pr")) {
-        assert!(
-            command.contains("--organization https://dev.azure.com/dutchworkz"),
-            "{command}"
-        );
-        assert!(command.contains("--project Projects"), "{command}");
-        assert!(command.contains("--repository Kahoot"), "{command}");
-    }
 }
 
 #[test]
 fn a_failed_push_login_shows_the_credential_helper_lines_before_fatal() {
     let error = "You must install or update .NET to run this application.\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n";
-    let problem = push_problem("feature", error);
+    let origin = Origin {
+        url: "https://github.com/o/r.git".into(),
+        host: Host::GitHub,
+    };
+    let problem = push_problem(&origin, "feature", error);
     assert!(
         problem.0.contains("You must install or update .NET"),
         "{}",

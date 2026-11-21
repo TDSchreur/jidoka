@@ -5,7 +5,9 @@
 //! the source branch on completion, so Run cleanup can still match a merged pull request to its branch.
 //! Watching CI reads the live source branch ref instead (`AzurePr::live_head`), which shows a push at once.
 
-use super::{Adapter, Head, ToolError, ToolOutput, ToolProblem, Tools, encode_segment};
+use super::{
+    Adapter, Head, NewPr, OpenPr, ToolError, ToolOutput, ToolProblem, Tools, encode_segment,
+};
 use crate::pr_state::PrState;
 use serde_json::Value;
 
@@ -40,6 +42,151 @@ fn state_of(data: &Value) -> Result<PrState, ToolProblem> {
             "Azure reported an unknown pull request status: {status}"
         ))),
     }
+}
+
+/// Azure DevOps rejects a pull request description longer than this many characters.
+const DESCRIPTION_LIMIT: usize = 4000;
+
+/// The first active pull request from `branch` in `repo`, skipping pull requests from forks.
+pub(super) fn find_open(
+    tools: &dyn Tools,
+    repo: &AzureRepo,
+    branch: &str,
+) -> Result<Option<OpenPr>, ToolProblem> {
+    let org = repo.org_url();
+    let data = az_json(
+        tools,
+        &[
+            "repos",
+            "pr",
+            "list",
+            "--organization",
+            &org,
+            "--project",
+            &repo.project,
+            "--repository",
+            &repo.repository,
+            "--source-branch",
+            branch,
+            "--status",
+            "active",
+            "--output",
+            "json",
+            "--detect",
+            "false",
+        ],
+    )?;
+    let list = data
+        .as_array()
+        .ok_or_else(|| ToolProblem("Azure PR list did not return an array.".into()))?;
+    // A pull request from a fork with the same branch name must not be reused.
+    let Some(item) = list.iter().find(|item| item["forkSource"].is_null()) else {
+        return Ok(None);
+    };
+    let id = item["pullRequestId"].as_u64().ok_or_else(|| {
+        ToolProblem("Azure PR list returned a pull request without an ID.".into())
+    })?;
+    let base = item["targetRefName"]
+        .as_str()
+        .and_then(|s| s.strip_prefix("refs/heads/"))
+        .map(str::to_string);
+    Ok(Some(OpenPr {
+        url: repo.pr_url(id),
+        base,
+    }))
+}
+
+/// The `@<file>` argument that hands `az` the description of `pr`, after checking that Azure takes it.
+///
+/// # Errors
+///
+/// Returns a problem when the body is not UTF-8, too long or has NUL bytes, or when `az` on Windows
+/// cannot take the title or the file's path.
+pub(super) fn description(pr: &NewPr) -> Result<String, ToolProblem> {
+    let text = std::fs::read_to_string(pr.body_file)
+        .map_err(|_| ToolProblem("The pull request body could not be read as UTF-8.".into()))?;
+    let length = text.chars().count();
+    if length > DESCRIPTION_LIMIT {
+        return Err(ToolProblem(format!(
+            "The pull request body has {length} characters; Azure allows at most {DESCRIPTION_LIMIT}. Cut at least {}.",
+            length - DESCRIPTION_LIMIT
+        )));
+    }
+    if text.contains('\0') {
+        return Err(ToolProblem(
+            "The pull request body must not contain NUL bytes.".into(),
+        ));
+    }
+    let file = file_argument(&pr.body_file.to_string_lossy());
+    check_text("title", pr.title, cfg!(windows))?;
+    check_text("path of the body file", &file, cfg!(windows))?;
+    // `az` reads `@<file>` itself. A multi-line body cannot be an argument of `az.cmd` on Windows.
+    Ok(file)
+}
+
+/// Windows runs `az.cmd` through `cmd.exe`, and Rust refuses arguments that `cmd.exe` would re-parse.
+/// Checking them before the push keeps a refusal from leaving a pushed branch without a pull request.
+fn check_text(what: &str, text: &str, windows: bool) -> Result<(), ToolProblem> {
+    if windows
+        && text
+            .chars()
+            .any(|c| matches!(c, '"' | '%') || c.is_control())
+    {
+        return Err(ToolProblem(format!(
+            "The {what} must not contain double quotes, percent signs or control characters; Azure CLI on Windows cannot take them."
+        )));
+    }
+    Ok(())
+}
+
+/// The `@<file>` value that makes `az` read an argument from a file. Canonical Windows paths carry a
+/// `\\?\` prefix that is dropped, so `\\?\UNC\server\share` becomes `\\server\share`.
+fn file_argument(path: &str) -> String {
+    let plain = match path.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => path.strip_prefix(r"\\?\").unwrap_or(path).to_string(),
+    };
+    format!("@{plain}")
+}
+
+/// Opens `pr` in `repo` with `az repos pr create` and returns its canonical URL.
+pub(super) fn create(
+    tools: &dyn Tools,
+    repo: &AzureRepo,
+    pr: &NewPr,
+) -> Result<String, ToolProblem> {
+    let description = description(pr)?;
+    let org = repo.org_url();
+    let title = format!("--title={}", pr.title);
+    let data = az_json(
+        tools,
+        &[
+            "repos",
+            "pr",
+            "create",
+            "--organization",
+            &org,
+            "--project",
+            &repo.project,
+            "--repository",
+            &repo.repository,
+            "--source-branch",
+            pr.branch,
+            "--target-branch",
+            pr.base,
+            &title,
+            "--description",
+            &description,
+            "--output",
+            "json",
+            "--detect",
+            "false",
+        ],
+    )?;
+    let id = data["pullRequestId"].as_u64().ok_or_else(|| {
+        ToolProblem("Azure PR creation returned no pull request ID; check for an existing PR before retrying.".into())
+    })?;
+    Ok(repo.pr_url(id))
 }
 
 /// The branch name of a source ref such as `refs/heads/feature/x`.
@@ -347,15 +494,7 @@ pub(crate) fn az_json(tools: &dyn Tools, args: &[&str]) -> Result<Value, ToolPro
 
 /// The JSON that `az <args>` printed, as `result` holds it. Azure's own output is never echoed: it can
 /// contain credentials or other sensitive data.
-///
-/// # Errors
-///
-/// Returns a problem that names the operation and says what to do when `az` did not start, failed or
-/// printed no JSON.
-pub(crate) fn az_parsed(
-    args: &[&str],
-    result: Result<ToolOutput, ToolError>,
-) -> Result<Value, ToolProblem> {
+fn az_parsed(args: &[&str], result: Result<ToolOutput, ToolError>) -> Result<Value, ToolProblem> {
     let operation = match args {
         ["repos", "pr", "show", ..] => "read the pull request",
         ["repos", "pr", "list", ..] => "list pull requests",

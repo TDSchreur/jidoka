@@ -5,10 +5,10 @@
 mod azure;
 mod github;
 
-pub(crate) use azure::{AzurePr, AzureRepo, az_json, az_parsed, required};
-pub(crate) use github::{problem, run_gh, started};
+pub(crate) use azure::{AzurePr, AzureRepo, az_json, required};
+pub(crate) use github::{problem, run_gh};
 
-use crate::pr_state::PrState;
+use crate::{inspect::shown, pr_state::PrState, run_begin::last_line};
 use std::{io, path::Path, process::Command};
 
 /// A problem with the tools or the pull request, not an outcome. The message says what to do.
@@ -92,13 +92,46 @@ fn output(command: &mut Command) -> Result<ToolOutput, ToolError> {
     })
 }
 
-/// Reads pull requests on their host, whichever host that is.
+/// Reads and opens pull requests on their host, whichever host that is.
 pub(crate) trait PrHost {
     /// The state of the pull request at `url`.
     fn state(&self, url: &str) -> Result<PrState, ToolProblem>;
 
     /// The head of the pull request at `url` and its state, read in one call to the host.
     fn head(&self, url: &str) -> Result<Head, ToolProblem>;
+
+    /// The open pull request from `branch` in origin's repository, if there is one.
+    ///
+    /// A pull request from a fork that happens to use the same branch name is skipped. `dir` is the
+    /// worktree, where `gh` finds the repository from the git remotes.
+    fn find_open(
+        &self,
+        dir: &Path,
+        origin: &Origin,
+        branch: &str,
+    ) -> Result<Option<OpenPr>, ToolProblem>;
+
+    /// Checks that the host will take `pr`, so that a refusal comes before anything is pushed.
+    fn check_new(&self, origin: &Origin, pr: &NewPr) -> Result<(), ToolProblem>;
+
+    /// Opens `pr` in origin's repository and returns its URL. `dir` is the worktree.
+    fn create(&self, dir: &Path, origin: &Origin, pr: &NewPr) -> Result<String, ToolProblem>;
+}
+
+/// An open pull request of a branch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OpenPr {
+    pub(crate) url: String,
+    /// Its base branch, when the host said.
+    pub(crate) base: Option<String>,
+}
+
+/// A pull request to open: from `branch` into `base`, with the description in `body_file`.
+pub(crate) struct NewPr<'a> {
+    pub(crate) branch: &'a str,
+    pub(crate) base: &'a str,
+    pub(crate) title: &'a str,
+    pub(crate) body_file: &'a Path,
 }
 
 /// The head of a pull request: its last commit and the branch it comes from, with its state.
@@ -168,6 +201,35 @@ impl<T: Tools> PrHost for Hosts<T> {
             commit: commit.to_ascii_lowercase(),
             ..head
         })
+    }
+
+    fn find_open(
+        &self,
+        dir: &Path,
+        origin: &Origin,
+        branch: &str,
+    ) -> Result<Option<OpenPr>, ToolProblem> {
+        match &origin.host {
+            Host::GitHub => github::find_open(&self.tools, dir, branch),
+            Host::Azure(repo) => azure::find_open(&self.tools, repo, branch),
+            Host::Unknown => Err(unknown_origin()),
+        }
+    }
+
+    fn check_new(&self, origin: &Origin, pr: &NewPr) -> Result<(), ToolProblem> {
+        match &origin.host {
+            Host::GitHub => Ok(()),
+            Host::Azure(_) => azure::description(pr).map(drop),
+            Host::Unknown => Err(unknown_origin()),
+        }
+    }
+
+    fn create(&self, dir: &Path, origin: &Origin, pr: &NewPr) -> Result<String, ToolProblem> {
+        match &origin.host {
+            Host::GitHub => github::create(&self.tools, dir, pr),
+            Host::Azure(repo) => azure::create(&self.tools, repo, pr),
+            Host::Unknown => Err(unknown_origin()),
+        }
     }
 }
 
@@ -256,6 +318,84 @@ pub(crate) fn detect_host(git: &dyn Fn(&[&str]) -> Option<String>) -> Result<Ori
     Ok(Origin { url: remote, host })
 }
 
+fn unknown_origin() -> ToolProblem {
+    ToolProblem("Cannot identify the repository provider from origin; set git config jidoka.prProvider github for a GitHub Enterprise repository.".into())
+}
+
+/// Checks, before anything is pushed, that pull requests can be opened from `origin`.
+///
+/// Its host must be known, and an Azure origin must push to the repository it names. `git` answers a
+/// read-only git question in the repository, or `None` when git fails.
+///
+/// # Errors
+///
+/// Returns a problem that says what to fix when the host is unknown or the push destination differs.
+pub(crate) fn check_origin(
+    origin: &Origin,
+    git: &dyn Fn(&[&str]) -> Option<String>,
+) -> Result<(), ToolProblem> {
+    let selected = match &origin.host {
+        Host::GitHub => return Ok(()),
+        Host::Unknown => return Err(unknown_origin()),
+        Host::Azure(repo) => repo,
+    };
+    let push_urls = git(&["remote", "get-url", "--push", "--all", "origin"])
+        .ok_or_else(|| ToolProblem("Cannot read the push destination of origin.".into()))?;
+    let differs = |url: &str| match AzureRepo::from_remote(url) {
+        Ok(Some(repo)) => &repo != selected,
+        Ok(None) => url != origin.url,
+        Err(_) => true,
+    };
+    if push_urls.is_empty() || push_urls.lines().any(differs) {
+        return Err(ToolProblem(
+            "The push destination of origin does not match the Azure repository.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// A rejected or failed push of `branch` to `origin` as a message that says what to do.
+///
+/// Git's own output is not shown for an Azure origin, the same as Azure CLI output.
+pub(crate) fn push_problem(origin: &Origin, branch: &str, error: &str) -> ToolProblem {
+    if matches!(origin.host, Host::Azure(_)) {
+        return ToolProblem("Git could not push to the Azure repository. Check Git authentication and branch permissions.".into());
+    }
+    let lower = error.to_lowercase();
+    let detail = shown(last_line(error));
+    if lower.contains("rejected")
+        || lower.contains("non-fast-forward")
+        || lower.contains("fetch first")
+    {
+        return ToolProblem(format!(
+            "origin rejected the push of {branch}: it has commits this branch does not. Merge the remote branch or the base into it with a normal merge, never a force-push, and try again. ({detail})"
+        ));
+    }
+    if lower.contains("authentication failed")
+        || lower.contains("could not read username")
+        || lower.contains("permission denied")
+        || lower.contains("publickey")
+    {
+        // Git prints a failing credential helper's complaint before the final `fatal:` line, so show every line.
+        let all_lines = error
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" / ");
+        return ToolProblem(format!(
+            "git is not allowed to push to origin. Read git's output below first: a credential helper that crashes is not fixed by signing in. Otherwise sign in (for example `gh auth login`, or set up your SSH key or credential helper; `git config --show-origin --get-all credential.helper` lists the helpers git uses) and try again. ({})",
+            shown(&all_lines)
+        ));
+    }
+    if lower.contains("could not resolve host") || lower.contains("unable to access") {
+        return ToolProblem(format!(
+            "Could not reach origin. Check your network connection and try again. ({detail})"
+        ));
+    }
+    ToolProblem(format!("Pushing {branch} to origin failed: {detail}"))
+}
+
 fn is_github_remote(remote: &str) -> bool {
     if remote.starts_with("git@github.com:") {
         return true;
@@ -290,6 +430,10 @@ pub(crate) fn encode_segment(value: &str) -> String {
 #[cfg(test)]
 pub(crate) struct FakeHost {
     answers: std::sync::Mutex<Vec<Result<Head, String>>>,
+    /// The answers of `find_open`, in turn; the last one repeats.
+    open: std::sync::Mutex<Vec<Option<OpenPr>>>,
+    /// The URL `create` opens, or its problem.
+    created: Result<String, String>,
     calls: std::sync::Mutex<Vec<String>>,
 }
 
@@ -300,7 +444,32 @@ impl FakeHost {
     pub(crate) fn new(answers: Vec<Result<Head, String>>) -> Self {
         Self {
             answers: std::sync::Mutex::new(answers),
+            open: std::sync::Mutex::new(vec![None]),
+            created: Err("The fake host opens no pull request.".into()),
             calls: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// No pull request is open, and creating one opens `url`.
+    pub(crate) fn opening(url: &str) -> Self {
+        Self {
+            created: Ok(url.into()),
+            ..Self::new(Vec::new())
+        }
+    }
+
+    /// `open` is open already.
+    pub(crate) fn with_open(open: OpenPr) -> Self {
+        let host = Self::new(Vec::new());
+        *host.open.lock().expect("the answers are not poisoned") = vec![Some(open)];
+        host
+    }
+
+    /// No pull request is open, and creating one fails with `problem`.
+    pub(crate) fn failing_create(problem: &str) -> Self {
+        Self {
+            created: Err(problem.into()),
+            ..Self::new(Vec::new())
         }
     }
 
@@ -320,7 +489,8 @@ impl FakeHost {
         )
     }
 
-    /// The calls so far, as `state <url>` or `head <url>`.
+    /// The calls so far, as `state <url>`, `head <url>`, `find_open <branch>`, `check_new <branch>` or
+    /// `create <branch> into <base>: <title>`.
     pub(crate) fn calls(&self) -> Vec<String> {
         self.calls
             .lock()
@@ -328,21 +498,30 @@ impl FakeHost {
             .clone()
     }
 
-    fn answer(&self, call: &str, url: &str) -> Result<Head, ToolProblem> {
+    fn record(&self, call: String) {
         self.calls
             .lock()
             .expect("the call log is not poisoned")
-            .push(format!("{call} {url}"));
-        let mut answers = self.answers.lock().expect("the answers are not poisoned");
-        let answer = if answers.len() > 1 {
-            answers.remove(0)
-        } else {
-            answers
-                .first()
-                .expect("the fake host has an answer")
-                .clone()
-        };
-        answer.map_err(ToolProblem)
+            .push(call);
+    }
+
+    fn answer(&self, call: &str, url: &str) -> Result<Head, ToolProblem> {
+        self.record(format!("{call} {url}"));
+        next(&self.answers).map_err(ToolProblem)
+    }
+}
+
+/// The next of `answers`; the last one repeats.
+#[cfg(test)]
+fn next<T: Clone>(answers: &std::sync::Mutex<Vec<T>>) -> T {
+    let mut answers = answers.lock().expect("the answers are not poisoned");
+    if answers.len() > 1 {
+        answers.remove(0)
+    } else {
+        answers
+            .first()
+            .expect("the fake host has an answer")
+            .clone()
     }
 }
 
@@ -354,6 +533,29 @@ impl PrHost for FakeHost {
 
     fn head(&self, url: &str) -> Result<Head, ToolProblem> {
         self.answer("head", url)
+    }
+
+    fn find_open(
+        &self,
+        _dir: &Path,
+        _origin: &Origin,
+        branch: &str,
+    ) -> Result<Option<OpenPr>, ToolProblem> {
+        self.record(format!("find_open {branch}"));
+        Ok(next(&self.open))
+    }
+
+    fn check_new(&self, _origin: &Origin, pr: &NewPr) -> Result<(), ToolProblem> {
+        self.record(format!("check_new {}", pr.branch));
+        Ok(())
+    }
+
+    fn create(&self, _dir: &Path, _origin: &Origin, pr: &NewPr) -> Result<String, ToolProblem> {
+        self.record(format!(
+            "create {} into {}: {}",
+            pr.branch, pr.base, pr.title
+        ));
+        self.created.clone().map_err(ToolProblem)
     }
 }
 

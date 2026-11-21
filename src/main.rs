@@ -339,8 +339,14 @@ fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
         base_commit: run.base_commit.clone(),
         pr_state: run.pr_status.as_ref().map(|status| status.state),
     };
-    let opened = pr_open::open(&info, &parsed, &pr_open::RealGh, &ServerApi)
-        .map_err(|problem| inspect::shown(&problem.0))?;
+    let opened = pr_open::open(
+        &info,
+        &parsed,
+        &pr_host::Hosts::new(pr_host::RealTools),
+        &pr_sync::RealGit,
+        &ServerApi,
+    )
+    .map_err(|problem| inspect::shown(&problem.0))?;
     if parsed.json {
         println!("{}", serde_json::to_string_pretty(&opened)?);
     } else {
