@@ -6,12 +6,12 @@
 //! Watching CI reads the live source branch ref instead (`AzurePr::live_head`), which shows a push at once.
 
 use super::{
-    Adapter, Head, Host, NewPr, OpenPr, Origin, ToolError, ToolOutput, ToolProblem, Tools,
-    encode_segment, watch::Snapshot,
+    Adapter, Head, Host, LOG_LINES, MAX_LOGS, NewPr, OpenPr, Origin, ToolError, ToolOutput,
+    ToolProblem, Tools, encode_segment, excerpt, watch::Snapshot,
 };
 use crate::{
     pr_state::PrState,
-    pr_wait::{BaseState, CheckResult},
+    pr_wait::{BaseState, CheckResult, Failure},
 };
 use serde_json::Value;
 use std::{collections::BTreeMap, path::Path};
@@ -57,6 +57,30 @@ impl Adapter for Azure {
         })
     }
 
+    fn failures(&self, tools: &dyn Tools, checks: &[CheckResult]) -> Vec<Failure> {
+        let mut fetched = Vec::new();
+        checks
+            .iter()
+            .filter(|check| check.bucket == "fail")
+            .map(|check| {
+                let mut text = None;
+                if fetched.len() < MAX_LOGS
+                    && !fetched.contains(&check.link.as_str())
+                    && let Some(build) = Build::from_link(&check.link)
+                {
+                    fetched.push(check.link.as_str());
+                    // Log access is optional. A missing log still leaves the failed check and its link.
+                    text = build.failed_excerpt(tools);
+                }
+                Failure {
+                    name: check.name.clone(),
+                    link: check.link.clone(),
+                    excerpt: text,
+                }
+            })
+            .collect()
+    }
+
     fn find_open(
         &self,
         tools: &dyn Tools,
@@ -79,6 +103,87 @@ impl Adapter for Azure {
         pr: &NewPr,
     ) -> Result<String, ToolProblem> {
         create(tools, repo_of(origin)?, pr)
+    }
+}
+
+/// The Azure Pipelines build named by a failed check's link.
+struct Build<'a> {
+    org: &'a str,
+    project: String,
+    id: u64,
+}
+
+impl<'a> Build<'a> {
+    /// Reads the build-results link created from a policy evaluation's build ID.
+    ///
+    /// Posted statuses always link to the validated PR URL. Their target URLs never select a build.
+    fn from_link(link: &'a str) -> Option<Self> {
+        let (project_url, id) = link.split_once("/_build/results?buildId=")?;
+        let (org, project) = project_url.rsplit_once('/')?;
+        decode_segment(org.strip_prefix("https://dev.azure.com/")?)?;
+        let project = decode_segment(project)?;
+        let id = id.parse::<u64>().ok().filter(|id| *id > 0)?;
+        Some(Self { org, project, id })
+    }
+
+    /// Reads the tail of the first failed task log that the timeline references.
+    fn failed_excerpt(&self, tools: &dyn Tools) -> Option<String> {
+        let timeline = self.invoke(tools, "timeline", &[])?;
+        let log_id = timeline["records"]
+            .as_array()?
+            .iter()
+            .filter(|record| {
+                record["type"].as_str() == Some("Task")
+                    && record["result"].as_str() == Some("failed")
+            })
+            .find_map(|record| record["log"]["id"].as_u64().filter(|id| *id > 0))?;
+        let logs = self.invoke(tools, "logs", &[])?;
+        let line_count = logs["value"]
+            .as_array()?
+            .iter()
+            .find(|log| log["id"].as_u64() == Some(log_id))?["lineCount"]
+            .as_u64()
+            .filter(|count| *count > 0)?;
+
+        let log = format!("logId={log_id}");
+        let start = format!("startLine={}", line_count.saturating_sub(LOG_LINES as u64));
+        let end = format!("endLine={line_count}");
+        let response = self.invoke(tools, "logs", &[&log, "--query-parameters", &start, &end])?;
+        let lines = response["value"]
+            .as_array()?
+            .iter()
+            .map(Value::as_str)
+            .collect::<Option<Vec<_>>>()?;
+        excerpt(&lines.join("\n"))
+    }
+
+    /// Reads a Build API resource with the Azure CLI's existing sign-in.
+    fn invoke(&self, tools: &dyn Tools, resource: &str, extra: &[&str]) -> Option<Value> {
+        let project = format!("project={}", self.project);
+        let id = format!("buildId={}", self.id);
+        let mut args = vec![
+            "devops",
+            "invoke",
+            "--organization",
+            self.org,
+            "--area",
+            "build",
+            "--resource",
+            resource,
+            "--route-parameters",
+            &project,
+            &id,
+        ];
+        args.extend_from_slice(extra);
+        args.extend([
+            "--api-version",
+            "7.1",
+            "--output",
+            "json",
+            "--detect",
+            "false",
+        ]);
+        az_json(tools, &args).ok()
     }
 }
 

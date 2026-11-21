@@ -561,3 +561,147 @@ fn azure_counts_a_build_only_for_the_current_iteration() {
         check("Minimum number of reviewers", "pending")
     );
 }
+
+#[test]
+fn azure_watch_reports_a_bounded_failed_task_log_and_keeps_checks_without_logs() {
+    let mut azure = AzureWatch::new(&[("External scan", "fail")]);
+    let rejected = |name: &str, build_id: u64| {
+        let mut policy = azure_policy(name, "2026-01-01T00:00:01Z");
+        policy["status"] = json!("rejected");
+        policy["context"] = json!({"buildId": build_id});
+        policy
+    };
+    azure.policies = json!([
+        rejected("Compile", 42),
+        rejected("Compile again", 42),
+        rejected("Integration", 43),
+        rejected("Package", 44),
+        rejected("Publish", 45),
+        rejected("Cancelled build", 46),
+    ]);
+
+    azure.iteration_statuses["value"][0]["targetUrl"] =
+        json!("https://dev.azure.com/org/Proj/_build/results?buildId=47");
+
+    let tools = Script {
+        answer: Box::new(move |call| {
+            let output = if call.contains("--area build ") {
+                failed_azure_log_output(call)
+            } else if call.starts_with("az pipelines runs show") {
+                let result = if call.contains("--id 46 ") {
+                    "canceled"
+                } else {
+                    "failed"
+                };
+                success(json!({"status": "completed", "result": result}).to_string())
+            } else {
+                success(azure.print(call))
+            };
+            Ok(output)
+        }),
+        calls: RefCell::new(Vec::new()),
+    };
+    let clock = crate::pr_wait::RealClock(std::time::Instant::now());
+    let waited = Hosts::new(&tools)
+        .watch(
+            AZURE_PR,
+            &Options::default(),
+            &clock,
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap();
+
+    assert_eq!(waited.exit_code, 2);
+    let failures = &waited.failures;
+    assert_eq!(
+        failures
+            .iter()
+            .map(|failure| failure.name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "Compile",
+            "Compile again",
+            "Integration",
+            "Package",
+            "Publish",
+            "External scan"
+        ]
+    );
+    assert_eq!(
+        failures[0].link,
+        "https://dev.azure.com/org/Proj/_build/results?buildId=42"
+    );
+    assert_eq!(
+        failures[2].link,
+        "https://dev.azure.com/org/Proj/_build/results?buildId=43"
+    );
+    assert_eq!(failures[5].link, AZURE_PR);
+    let excerpt = failures[0].excerpt.as_deref().unwrap();
+    assert!(excerpt.len() <= 4096);
+    assert!(excerpt.ends_with("compiler exited with code 1"));
+    let line_limited = failures[3].excerpt.as_deref().unwrap();
+    assert_eq!(line_limited.lines().count(), 40);
+    assert!(line_limited.starts_with("output 1\n"));
+    assert!(line_limited.ends_with("output 40"));
+    for index in [1, 2, 4, 5] {
+        assert_eq!(failures[index].excerpt, None);
+    }
+    assert!(crate::pr_wait::render(&waited).contains("compiler exited with code 1"));
+    let calls = tools.calls.borrow();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call.contains("--resource timeline "))
+            .count(),
+        3
+    );
+}
+
+fn success(stdout: String) -> ToolOutput {
+    ToolOutput {
+        code: Some(0),
+        stdout,
+        stderr: String::new(),
+    }
+}
+
+/// A build lookup for an inaccessible log or for a failed task with a large log.
+fn failed_azure_log_output(call: &str) -> ToolOutput {
+    if call.contains("buildId=43 ") {
+        return ToolOutput {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: "Access denied".into(),
+        };
+    }
+    let long_line = call.contains("buildId=42 ");
+    assert!(
+        long_line || call.contains("buildId=44 "),
+        "unexpected build log request {call}"
+    );
+    let value = if call.contains("--resource timeline ") {
+        json!({"records": [
+            {"type": "Job", "result": "failed", "log": {"id": 2}},
+            {"type": "Task", "result": "succeeded", "log": {"id": 5}},
+            {"type": "Task", "result": "failed", "log": {"id": 8}}
+        ]})
+    } else if call.contains("--resource logs ") && call.contains(" logId=8 ") {
+        assert!(
+            call.contains("--query-parameters startLine=160 endLine=200 "),
+            "{call}"
+        );
+        let mut lines: Vec<_> = (0..=40).map(|line| format!("output {line}")).collect();
+        if long_line {
+            lines[40] = format!("{} compiler exited with code 1", "🦀".repeat(1500));
+        }
+        json!({"value": lines})
+    } else {
+        assert!(
+            call.contains("--resource logs ") && !call.contains("logId="),
+            "{call}"
+        );
+        json!({"value": [{"id": 2, "lineCount": 300}, {"id": 8, "lineCount": 200}]})
+    };
+    success(value.to_string())
+}

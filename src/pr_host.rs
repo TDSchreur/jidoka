@@ -235,6 +235,30 @@ trait Adapter {
     }
 }
 
+/// The most CI runs whose failed log is fetched per failed wait.
+const MAX_LOGS: usize = 3;
+/// Keep the end of the failed log, where the cause is likely to be.
+const LOG_LINES: usize = 40;
+/// Cap the excerpt at 4 KiB so an unusually long line cannot flood the wait output.
+const LOG_BYTES: usize = 4096;
+
+/// The end of a log: its last lines, cut to a size that fits a screen.
+fn excerpt(log: &str) -> Option<String> {
+    let lines: Vec<&str> = log.lines().collect();
+    let tail = lines[lines.len().saturating_sub(LOG_LINES)..].join("\n");
+    if tail.trim().is_empty() {
+        return None;
+    }
+    if tail.len() <= LOG_BYTES {
+        return Some(tail);
+    }
+    let mut start = tail.len() - LOG_BYTES;
+    while !tail.is_char_boundary(start) {
+        start += 1;
+    }
+    Some(tail[start..].to_string())
+}
+
 /// The real pull request host: picks the GitHub or the Azure Repos adapter from the pull request's URL,
 /// and starts their tools through `tools`.
 pub(crate) struct Hosts<T> {

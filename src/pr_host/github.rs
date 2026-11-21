@@ -1,8 +1,8 @@
 //! The GitHub adapter: reads pull requests on GitHub and GitHub Enterprise with `gh`.
 
 use super::{
-    Adapter, Head, NewPr, OpenPr, Origin, ToolError, ToolOutput, ToolProblem, Tools, unsupported,
-    watch::Snapshot,
+    Adapter, Head, MAX_LOGS, NewPr, OpenPr, Origin, ToolError, ToolOutput, ToolProblem, Tools,
+    excerpt, unsupported, watch::Snapshot,
 };
 use crate::{
     inspect::shown,
@@ -13,12 +13,6 @@ use std::path::Path;
 
 /// The fields of a pull request a watch reads.
 const WATCH_FIELDS: &str = "state,isDraft,headRefOid,mergeStateStatus";
-/// The most runs whose failed log is fetched.
-const MAX_LOGS: usize = 3;
-/// The most lines and bytes kept of a failed log: its end is where the cause is.
-const LOG_LINES: usize = 40;
-const LOG_BYTES: usize = 4096;
-
 pub(super) struct GitHub;
 
 impl Adapter for GitHub {
@@ -189,23 +183,6 @@ fn run_of_link(link: &str) -> Option<(&str, String)> {
         format!("{host}/{owner}/{repo}")
     };
     Some((id, repository))
-}
-
-/// The end of a log: its last lines, cut to a size that fits a screen.
-fn excerpt(log: &str) -> Option<String> {
-    let lines: Vec<&str> = log.lines().collect();
-    let tail = lines[lines.len().saturating_sub(LOG_LINES)..].join("\n");
-    if tail.trim().is_empty() {
-        return None;
-    }
-    if tail.len() <= LOG_BYTES {
-        return Some(tail);
-    }
-    let mut start = tail.len() - LOG_BYTES;
-    while !tail.is_char_boundary(start) {
-        start += 1;
-    }
-    Some(tail[start..].to_string())
 }
 
 fn state_of(data: &serde_json::Value) -> Result<PrState, ToolProblem> {
