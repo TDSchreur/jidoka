@@ -2,7 +2,7 @@
 
 use crate::{gitignore::ensure_ignored, inspect::shown, routing::ModelRouting};
 use serde::Serialize;
-use std::{path::Path, process::Command};
+use std::{collections::BTreeMap, path::Path, process::Command};
 
 /// The Jidoka server, as far as this command needs it. Tests answer from a script.
 pub(crate) trait RunApi {
@@ -12,7 +12,7 @@ pub(crate) trait RunApi {
         title: &str,
         project: &str,
         repository: Option<String>,
-        session: Option<String>,
+        session: Option<&AgentSession>,
         routing: Option<ModelRouting>,
     ) -> Result<String, String>;
     /// Reads a run that exists.
@@ -290,6 +290,27 @@ pub(crate) struct AgentSession {
     pub(crate) id: String,
     /// `claude`, `codex` or `copilot`.
     pub(crate) agent: Option<&'static str>,
+    /// The agent's home folder in the environment the command runs in, when it is an absolute path.
+    pub(crate) home: Option<String>,
+}
+
+impl AgentSession {
+    /// The `--session` option for this session, and `--agent-home` when its agent and home are known.
+    pub(crate) fn update_options(&self) -> Vec<String> {
+        let mut options = vec!["--session".to_owned(), self.id.clone()];
+        if let (Some(agent), Some(home)) = (self.agent, &self.home) {
+            options.extend(["--agent-home".to_owned(), format!("{agent}={home}")]);
+        }
+        options
+    }
+}
+
+/// The home folder of each agent the sessions belong to, keyed by agent, for the run record.
+pub(crate) fn agent_homes(sessions: &[AgentSession]) -> BTreeMap<String, String> {
+    sessions
+        .iter()
+        .filter_map(|session| Some((session.agent?.to_owned(), session.home.clone()?)))
+        .collect()
 }
 
 /// What to do in `agent` to get a fresh conversation, for the session warning.
@@ -372,7 +393,7 @@ pub(crate) fn begin(
                     &options.title,
                     &dir.display().to_string(),
                     Some(repository.clone()),
-                    session.as_ref().map(|session| session.id.clone()),
+                    session.as_ref(),
                     routing,
                 )
                 .map_err(BeginError::NoRun)?;
@@ -401,9 +422,11 @@ pub(crate) fn begin(
                 "--activity",
                 "Workspace ready",
             ]);
-            if let Some(session) = &session {
-                args.extend(["--session", &session.id]);
-            }
+            let session_options = session
+                .as_ref()
+                .map(AgentSession::update_options)
+                .unwrap_or_default();
+            args.extend(session_options.iter().map(String::as_str));
             match api.workspace_ready(&run, &args) {
                 Ok(()) => {
                     let (gitignore_added, gitignore_warning) =

@@ -25,6 +25,7 @@ impl Fixture {
                 project: "/work".into(),
                 repository: Some("/work".into()),
                 session: None,
+                agent_homes: Default::default(),
                 model_routing: None,
             })
             .unwrap()

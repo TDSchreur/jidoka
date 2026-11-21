@@ -7,12 +7,14 @@ use crate::{
     run::{
         AdvanceMetadata, CiEvidence, CiOutcome, Evaluation, Exit, GateResult, GateStatus,
         MAX_GATE_RESULTS, MAX_NOTE_BYTES, Mode, Run, RunStatus, RunStore, SkippedCheck, Stage,
-        SummariesUpdate, Ticket, TicketStatus, check_text, updated_now, validate_sessions,
+        SummariesUpdate, Ticket, TicketStatus, check_text, updated_now, validate_agent_homes,
+        validate_sessions,
     },
     stages::{self, Destination, Gate},
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     path::Path,
     time::{Duration, Instant},
 };
@@ -553,6 +555,8 @@ pub(crate) struct AdvanceRequest {
     summaries: SummariesUpdate,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) sessions: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) agent_homes: BTreeMap<String, String>,
 }
 
 impl AdvanceRequest {
@@ -562,7 +566,8 @@ impl AdvanceRequest {
             check_text("Activity", activity, MAX_NOTE_BYTES)?;
         }
         self.summaries.validate()?;
-        validate_sessions(&self.sessions)
+        validate_sessions(&self.sessions)?;
+        validate_agent_homes(&self.agent_homes)
     }
 
     /// Advances run `id` in `store`, forced or once the exit gates pass.
@@ -586,6 +591,7 @@ impl AdvanceRequest {
             activity: self.activity,
             summaries: self.summaries,
             sessions: self.sessions,
+            agent_homes: self.agent_homes,
         };
         store.advance(id, metadata, |run| match forced {
             Some(reason) => Ok(Exit::Override { reason }),

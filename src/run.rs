@@ -39,6 +39,7 @@ pub(crate) const UPDATE_HELP: &str = concat!(
     reports::help!(),
     summaries::help!(),
     "  --session <agent-session-id> (repeat; attributes that session's token usage to this run)\n",
+    "  --agent-home <codex|claude|copilot>=<absolute-path> (the agent's home folder, whose session logs are read for this run)\n",
     model_routing::help!(),
     "Omitted fields are preserved; clear flags remove them."
 );
@@ -153,6 +154,10 @@ pub(crate) struct Run {
     /// Ids of the agent sessions recorded for this run.
     #[serde(default)]
     pub(crate) sessions: Vec<String>,
+    /// The home folder of each agent (`claude`, `codex`, `copilot`) whose session was recorded, as the CLI
+    /// resolved it in the agent's environment. Usage collection reads that agent's logs there.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) agent_homes: BTreeMap<String, String>,
     #[serde(default)]
     pub(crate) usage: Option<Usage>,
     /// The state of the pull request, read from its host by the dashboard server. Callers cannot set it.
@@ -405,6 +410,9 @@ pub(crate) struct NewRun {
     /// The agent session the run is started from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) session: Option<String>,
+    /// The home folder of the agent the session belongs to, keyed by agent.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) agent_homes: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) model_routing: Option<ModelRouting>,
 }
@@ -430,6 +438,7 @@ impl NewRun {
         if let Some(session) = &self.session {
             check_session_id(session).map_err(io_invalid)?;
         }
+        validate_agent_homes(&self.agent_homes).map_err(io_invalid)?;
         if let Some(routing) = &self.model_routing {
             routing.validate().map_err(io_invalid)?;
         }
@@ -474,6 +483,9 @@ pub(crate) struct UpdateRun {
     /// Agent sessions to attribute to this run, added to the ones already recorded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) sessions: Vec<String>,
+    /// Agent home folders keyed by agent; each replaces the one recorded for that agent.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) agent_homes: BTreeMap<String, String>,
     #[serde(flatten)]
     pub(crate) routing: RoutingUpdate,
 }
@@ -688,8 +700,34 @@ impl UpdateRun {
         self.reports.validate()?;
         self.findings.validate()?;
         self.summaries.validate()?;
-        validate_sessions(&self.sessions)
+        validate_sessions(&self.sessions)?;
+        validate_agent_homes(&self.agent_homes)
     }
+}
+
+/// Agent homes keyed by a known agent, each an absolute path on this system of at most `MAX_PATH_BYTES`
+/// without control characters. The dashboard reads logs there, so nothing else is accepted.
+pub(crate) fn validate_agent_homes(homes: &BTreeMap<String, String>) -> Result<(), String> {
+    for (agent, home) in homes {
+        if !crate::install::AGENTS.contains(&agent.as_str()) {
+            return Err(format!(
+                "Unknown agent for an agent home: {agent:?}; use {}",
+                crate::install::agent_list()
+            ));
+        }
+        if !is_valid_agent_home(home) {
+            return Err(format!(
+                "The {agent} agent home must be an absolute path of at most {MAX_PATH_BYTES} bytes without control characters"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `home` can be recorded as an agent home: an absolute path on this system of at most
+/// `MAX_PATH_BYTES` without control characters.
+pub(crate) fn is_valid_agent_home(home: &str) -> bool {
+    home.len() <= MAX_PATH_BYTES && !has_control(home) && Path::new(home).is_absolute()
 }
 
 pub(crate) fn validate_sessions(sessions: &[String]) -> Result<(), String> {
@@ -714,6 +752,11 @@ impl Run {
         if self.sessions.len() > KEEP_SESSIONS {
             self.sessions.drain(..self.sessions.len() - KEEP_SESSIONS);
         }
+    }
+
+    /// Records agent homes; the latest home of an agent replaces the one recorded before.
+    pub(crate) fn record_agent_homes(&mut self, homes: BTreeMap<String, String>) {
+        self.agent_homes.extend(homes);
     }
 }
 
@@ -778,6 +821,13 @@ pub(crate) fn parse_update(options: &[&str]) -> Result<UpdateRun, String> {
                 if !update.sessions.iter().any(|known| known == *id) {
                     update.sessions.push((*id).to_string());
                 }
+                continue;
+            }
+            "--agent-home" => {
+                let (agent, home) = split_pair(flag, next_value()?)?;
+                update
+                    .agent_homes
+                    .insert(agent.to_string(), home.to_string());
                 continue;
             }
             "--finding" | "--finding-status" => {

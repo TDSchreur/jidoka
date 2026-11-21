@@ -68,6 +68,7 @@ pub(crate) struct AdvanceMetadata {
     pub(crate) activity: Option<String>,
     pub(crate) summaries: SummariesUpdate,
     pub(crate) sessions: Vec<String>,
+    pub(crate) agent_homes: BTreeMap<String, String>,
 }
 
 impl AdvanceMetadata {
@@ -77,6 +78,7 @@ impl AdvanceMetadata {
         }
         self.summaries.apply(run);
         run.record_sessions(self.sessions);
+        run.record_agent_homes(self.agent_homes);
     }
 }
 
@@ -189,6 +191,7 @@ impl RunStore {
             finished_at: None,
             completion: None,
             sessions: new.session.into_iter().collect(),
+            agent_homes: new.agent_homes,
             usage: None,
             pr_status: None,
             model_routing: new.model_routing,
@@ -392,6 +395,7 @@ impl RunStore {
                 next.check_finish_summary().map_err(io_invalid)?;
             }
             next.record_sessions(update.sessions);
+            next.record_agent_homes(update.agent_homes);
             if matches!(source, UpdateSource::WorkspaceReady)
                 && next.block_source == Some(LifecycleSource::Workspace)
             {

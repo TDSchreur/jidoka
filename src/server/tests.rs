@@ -31,6 +31,7 @@ fn document_run(
             project: repository.to_string_lossy().into_owned(),
             repository: Some(repository.to_string_lossy().into_owned()),
             session: None,
+            agent_homes: Default::default(),
             model_routing: None,
         })
         .unwrap();
@@ -608,6 +609,7 @@ async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
             project: "/work".into(),
             repository: None,
             session: None,
+            agent_homes: Default::default(),
             model_routing: None,
         })
         .unwrap();
@@ -692,6 +694,7 @@ fn waiting_run(api: &Client, pr: Option<&str>) -> String {
             project: "/work".into(),
             repository: None,
             session: None,
+            agent_homes: Default::default(),
             model_routing: None,
         })
         .unwrap();
@@ -915,6 +918,7 @@ async fn delete_removes_only_the_record_and_survives_restart() {
         project: "/work".into(),
         repository: None,
         session: None,
+        agent_homes: Default::default(),
         model_routing: None,
     };
     let kept = store.create(new("kept")).unwrap();
@@ -1362,6 +1366,7 @@ async fn groups_are_managed_through_the_api_and_a_grouped_run_cannot_be_deleted(
             project: "/work".into(),
             repository: None,
             session: None,
+            agent_homes: Default::default(),
             model_routing: None,
         })
         .unwrap();

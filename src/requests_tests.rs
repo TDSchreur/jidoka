@@ -828,6 +828,27 @@ fn recorded_sessions_in_an_unscanned_folder_get_their_own_note() {
 }
 
 #[test]
+fn a_run_is_read_from_the_claude_home_it_recorded() {
+    let world = World::new();
+    // The agent ran with CLAUDE_CONFIG_DIR set to another folder than the one this command reads.
+    let home = world.dir.path().join("claude-work");
+    world.file(
+        "claude-work/projects/slug/s1.jsonl",
+        &[one(10, "m1", bash("ls"))],
+    );
+    let mut target = run(RUN_A, 0, Some(100), &["s1"]);
+    let unrecorded = world.analyze(&target, std::slice::from_ref(&target));
+    assert_eq!(unrecorded.total.requests, 0);
+
+    target
+        .agent_homes
+        .insert("claude".into(), home.to_str().unwrap().into());
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    assert_eq!(result.total.requests, 1);
+    assert_eq!(result.sessions, ["s1"]);
+}
+
+#[test]
 fn recorded_sessions_get_their_note_even_when_no_log_folder_exists() {
     let world = World::new();
     let target = run(RUN_A, 0, Some(100), &["elsewhere"]);

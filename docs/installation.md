@@ -36,7 +36,7 @@ Stop the dashboard before upgrading when you can; the dashboard keeps running th
 
 Claude Code skills go to `$CLAUDE_CONFIG_DIR/skills` when `CLAUDE_CONFIG_DIR` is set (for example `~/.claude-work`), otherwise `~/.claude/skills`. Codex skills likewise honor `CODEX_HOME`, and Copilot skills honor `COPILOT_HOME` (otherwise `~/.copilot/skills`).
 
-The dashboard and `jidoka run requests` use the same home directories to find session logs. Skill refresh also resolves these directories from the current environment.
+The dashboard and `jidoka run requests` use the same home directories to find session logs. When a Jidoka command records an agent session on a run, it also records that agent's home folder from the agent's environment, and the run's logs are read there. So a dashboard started without `CLAUDE_CONFIG_DIR` still finds the logs of a run whose Claude Code session used `~/.claude-work`. Skill refresh also resolves these directories from the current environment.
 
 ## Automatic skills setup and refresh
 

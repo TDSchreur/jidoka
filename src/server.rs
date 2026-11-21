@@ -1431,6 +1431,26 @@ fn watch_pauses(
     })
 }
 
+/// Collects, once at startup and on a blocking thread, the recent done runs whose usage was not tracked, so
+/// a dashboard started in the agents' environment recovers runs an earlier dashboard could not read.
+fn collect_missed_once(store: RunStore, settings: UsageSettings) {
+    rocket::tokio::spawn(async move {
+        let joined = rocket::tokio::task::spawn_blocking(move || {
+            let result = crate::run::updated_now()
+                .and_then(|now| crate::usage::collect_missed(&store, &settings, now));
+            if let Err(error) = result {
+                eprintln!("Usage of finished runs was not collected again: {error}");
+            }
+        })
+        .await;
+        if let Err(error) = joined {
+            eprintln!(
+                "Usage of finished runs was not collected again: the collection stopped: {error}"
+            );
+        }
+    });
+}
+
 /// Serves the dashboard on `port` (0 lets the operating system pick one). `url` turns the bound port into the
 /// address printed to the user. Returns `Ok` without serving when another dashboard is already running.
 pub(crate) fn serve(
@@ -1474,6 +1494,7 @@ pub(crate) fn serve(
                     if let (Some(store), Some(tool)) =
                         (rocket.state::<RunStore>(), rocket.state::<PrTool>())
                     {
+                        collect_missed_once(store.clone(), pause_settings.clone());
                         watch_pauses(store.clone(), pause_settings, PAUSE_PASS);
                         watch_pr_states(store.clone(), tool.0.clone(), PR_STATE_PASS);
                     }

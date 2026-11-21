@@ -148,6 +148,8 @@ pub(crate) fn analyze(
     };
     let window = RunWindow::new(target, runs, first.at);
     let tracked = &window.tracked;
+    // The run's own agent homes, when it recorded them, so the notes below name the folders scanned.
+    let roots = &roots.for_run(target);
     let read = read_sessions(roots, &window, deadline, ReadLimits::default());
     for note in &read.notes {
         if !result.notes.contains(&note.text) {
