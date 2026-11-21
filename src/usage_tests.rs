@@ -663,6 +663,49 @@ fn missing_unreadable_or_unrecognised_logs_are_not_tracked_with_a_reason_never_z
 }
 
 #[test]
+fn recorded_sessions_in_an_unscanned_folder_get_their_own_reason() {
+    let world = World::new();
+    let target = run(
+        RUN_A,
+        &[(0, "build", None, None)],
+        Some(100),
+        &["elsewhere"],
+    );
+    // No log folder at all.
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert_eq!(usage.status, UsageStatus::NotTracked);
+    let reason = usage.reason.unwrap();
+    assert!(
+        reason.starts_with(crate::requests::RECORDED_NOT_FOUND),
+        "{reason}"
+    );
+
+    // An unrelated log exists.
+    world.write(
+        "claude/projects/-w/S9.jsonl",
+        &[claude_line(
+            "S9",
+            10,
+            "m",
+            "r",
+            "m-1",
+            (1, 0, 0, 1),
+            0,
+            false,
+        )],
+    );
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    assert_eq!(usage.status, UsageStatus::NotTracked);
+    let reason = usage.reason.unwrap();
+    assert!(
+        reason.starts_with(crate::requests::RECORDED_NOT_FOUND),
+        "{reason}"
+    );
+    assert!(reason.contains("elsewhere"), "{reason}");
+    assert!(reason.contains("CLAUDE_CONFIG_DIR"), "{reason}");
+}
+
+#[test]
 fn a_run_from_before_usage_tracking_is_not_tracked_and_a_late_timeline_is_partial() {
     let world = World::new();
     world.write(

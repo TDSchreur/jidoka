@@ -638,12 +638,14 @@ fn collect_limited(
         .filter(|s| s.belongs_to(target))
         .collect();
     if claimed.is_empty() {
-        let reason = if read.roots_found == 0 {
+        let reason = if read.roots_found == 0 && target.sessions.is_empty() {
             "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()
         } else if read.timed_out {
             "reading the session logs took too long".to_string()
         } else if read.truncated {
             "reading the session logs stopped at its limit on their number and size".to_string()
+        } else if !target.sessions.is_empty() {
+            crate::requests::recorded_not_found_note(target, roots)
         } else {
             "no session log names this run and none was recorded for it; its agent may not write logs this tool reads, or its session id was never recorded".to_string()
         };
