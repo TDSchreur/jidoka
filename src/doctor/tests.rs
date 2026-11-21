@@ -508,7 +508,7 @@ fn checking_all_agents_reports_each_configured_entry_tagged_with_its_agent() {
     assert_eq!(claude, ["host", "model", "effort", "overrides"]);
     // Codex has its own checks, which skip what Jidoka cannot judge.
     let codex = tagged(&report, "codex");
-    assert_eq!(codex.len(), 3);
+    assert_eq!(codex.len(), 4);
     assert!(
         codex
             .iter()
@@ -725,6 +725,115 @@ fn a_codex_policy_reports_what_it_can_and_skips_the_rest() {
 
     let missing = World::ready().with_policy(policy).report(None);
     assert_eq!(routing_check(&missing, "host").status, Status::Warning);
+}
+
+const CODEX_POLICY: &str = r#"{"agents":{"codex":{"stages":{
+    "build":{"model":"gpt-6.2-sol","effort":"medium"},
+    "check":{"model":"gpt-9","effort":"high"}}}}}"#;
+
+const CODEX_CATALOG: &str = r#"{"models":[
+    {"slug":"gpt-6.2-sol","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]}]}"#;
+
+fn codex_world(catalog: Option<&str>) -> World {
+    let world = World::ready()
+        .with_agent("codex")
+        .with_version("codex", "codex-cli 0.99.1")
+        .with_policy(CODEX_POLICY);
+    if let Some(catalog) = catalog {
+        let dir = world.home.path().join(".codex");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("models_cache.json"), catalog).unwrap();
+    }
+    world
+}
+
+#[test]
+fn codex_models_and_efforts_are_checked_against_the_catalog() {
+    let report = codex_world(Some(CODEX_CATALOG)).report(None);
+    let model = routing_check(&report, "model");
+    assert_eq!(model.status, Status::Warning);
+    assert!(model.message.contains("check: gpt-9"), "{}", model.message);
+    assert!(!model.message.contains("build"), "{}", model.message);
+    // build asks for medium, which gpt-6.2-sol does not list; check's model is unknown.
+    let effort = routing_check(&report, "effort");
+    assert_eq!(effort.status, Status::Warning);
+    assert!(
+        effort.message.contains("build: medium"),
+        "{}",
+        effort.message
+    );
+    assert!(!effort.message.contains("check"), "{}", effort.message);
+
+    let fits = r#"{"models":[
+        {"slug":"gpt-6.2-sol","supported_reasoning_levels":[{"effort":"medium"}]},
+        {"slug":"gpt-9","supported_reasoning_levels":[{"effort":"high"}]}]}"#;
+    let report = codex_world(Some(fits)).report(None);
+    assert_eq!(routing_check(&report, "model").status, Status::Pass);
+    assert_eq!(routing_check(&report, "effort").status, Status::Pass);
+}
+
+#[test]
+fn codex_checks_are_skipped_without_a_readable_catalog() {
+    for catalog in [None, Some("not json"), Some(r#"{"models":"x"}"#)] {
+        let report = codex_world(catalog).report(None);
+        for id in ["model", "effort"] {
+            let check = routing_check(&report, id);
+            assert_eq!(check.status, Status::Skipped);
+            assert!(
+                check.message.contains("models_cache.json"),
+                "{}",
+                check.message
+            );
+        }
+        assert_eq!(routing_check(&report, "overrides").status, Status::Skipped);
+    }
+}
+
+#[test]
+fn a_pinned_copilot_subagent_is_a_warning_and_inherit_is_not() {
+    let policy = r#"{"agents":{"copilot":{"stages":{"build":{"model":"claude-sonnet-5.5","effort":"high"}}}}}"#;
+    let world = || {
+        World::ready()
+            .with_agent("copilot")
+            .with_version("copilot", "GitHub Copilot CLI 1.0.0")
+            .with_policy(policy)
+    };
+    let clean = world().report(None);
+    assert_eq!(routing_check(&clean, "overrides").status, Status::Pass);
+
+    let pinned = world();
+    let dir = pinned.project.path().join(".github/copilot");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("settings.json"),
+        "// comment\n{\"subagents\":{\"agents\":{\"reviewer\":{\"model\":\"gpt-5\",\"effortLevel\":\"inherit\"}}}}",
+    )
+    .unwrap();
+    let report = pinned.report(None);
+    let check = routing_check(&report, "overrides");
+    assert_eq!(check.status, Status::Warning);
+    assert!(
+        check
+            .message
+            .contains("subagents.agents.reviewer.model=gpt-5")
+            && check.message.contains("settings.json"),
+        "{}",
+        check.message
+    );
+    assert!(!check.message.contains("effortLevel"), "{}", check.message);
+
+    let inherit = world();
+    let dir = inherit.home.path().join(".copilot");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("settings.json"),
+        r#"{"subagents":{"agents":{"reviewer":{"model":"inherit"}}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        routing_check(&inherit.report(None), "overrides").status,
+        Status::Pass
+    );
 }
 
 #[test]
