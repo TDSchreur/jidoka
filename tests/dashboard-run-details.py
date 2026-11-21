@@ -481,6 +481,28 @@ return [...dialog.querySelectorAll('.route .stop')].map(text);
         self.assertIn("Unticketed work", labels[2])
         self.assertNotIn("Archived work", labels[2])
 
+    def test_live_rework_build_counts_the_full_current_plan(self):
+        a = {"reference": "local-1", "title": "Reopened work", "status": "done", "work_attempt": 1}
+        b = {"reference": "local-2", "title": "Verified work", "status": "done", "work_attempt": 2}
+        fixture = {**ACTIVE, "stage": "build", "rework": 1,
+            "tickets": [{**a, "status": "in-progress", "work_attempt": 3}, b],
+            "timeline": [{"stage": "build", "at": AT, "ticket": "local-1"},
+                         {"stage": "build", "at": AT + 100, "ticket": "local-2"},
+                         {"stage": "check", "at": AT + 1000},
+                         {"stage": "build", "rework": 1, "at": AT + 2000, "ticket": "local-1"}],
+            "stage_exits": [{"stage": "build", "at": AT + 1000, "outcome": "accepted",
+                             "build_plan": {"kind": "ticketed", "tickets": [a, b]}, "gates": []}],
+            "gates": [{"gate": "tickets-verified", "stage": "build", "ticket": "local-2",
+                       "work_attempt": 2, "passed": True, "commit": "1234567abcdef"}]}
+        labels = drive("""
+const dialog = await openRun('run-active');
+return [...dialog.querySelectorAll('.route .stop')].map(text);
+""", runs=[fixture])
+        self.assertIn("2 of 2 tickets done", labels[0])
+        self.assertIn("1 of 2 tickets done", labels[2])
+        self.assertIn("Verified work", labels[2])
+        self.assertIn("Verification recorded at 1234567", labels[2])
+
     def test_pending_ticket_without_reference_is_not_in_progress_when_the_run_has_no_current_ticket(self):
         tickets = self.stop(self.no_current, "Build")["tickets"]
         self.assertEqual(len(tickets), 1)

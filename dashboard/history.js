@@ -94,8 +94,9 @@ function timelinePasses(run, now) {
   }
   if (!passes.length) return { passes, unstartedTickets: [] };
   const finished = run.status === 'done' ? (Number.isFinite(run.finished_at) ? run.finished_at : timestamp(run)) : now;
+  const exits = listOf(run.stage_exits);
   for (const pass of passes.filter((pass) => pass.stage === 'build')) {
-    pass.exit = listOf(run.stage_exits).find((exit) => exit.stage === 'build' && reworkOf(exit.rework) === pass.rework);
+    pass.exit = exits.find((exit) => exit.stage === 'build' && reworkOf(exit.rework) === pass.rework);
   }
   const notStarted = allTickets.filter((ticket) => !passes.some((pass) => (
     pass.exit?.build_plan
@@ -104,17 +105,20 @@ function timelinePasses(run, now) {
   )));
   // Pending work belongs to the open Build pass. Keep the timeline placement for old runs without exit records.
   const lastPass = passes.at(-1);
-  const pendingBuild = lastPass.stage === 'build' && run.status !== 'done'
-    ? lastPass
-    : passes.find((pass) => pass.stage === 'build' && pass.rework === null && !pass.exit);
+  const liveBuild = lastPass.stage === 'build' && run.status !== 'done' ? lastPass : null;
+  const pendingBuild = liveBuild ?? passes.find((pass) => pass.stage === 'build' && pass.rework === null && !pass.exit);
   passes.forEach((pass, index) => {
     const next = passes[index + 1];
     const end = next ? next.start : finished;
     pass.duration = Number.isFinite(end) ? Math.max(0, end - pass.start) : null;
     pass.end = next ? next.start : Infinity;
-    pass.tickets = pass.exit?.build_plan
-      ? listOf(pass.exit.build_plan.tickets)
-      : allTickets.filter((ticket) => pass.refs.includes(ticket.reference) || (pass === pendingBuild && notStarted.includes(ticket)));
+    if (pass.exit?.build_plan) {
+      pass.tickets = listOf(pass.exit.build_plan.tickets);
+    } else if (pass === liveBuild && exits.length) {
+      pass.tickets = allTickets;
+    } else {
+      pass.tickets = allTickets.filter((ticket) => pass.refs.includes(ticket.reference) || (pass === pendingBuild && notStarted.includes(ticket)));
+    }
     pass.sentBack = pass.stage === 'check' && next?.stage === 'build' && next.rework !== null;
     pass.lastOfStage = !passes.slice(index + 1).some((later) => later.stage === pass.stage);
     pass.state = next ? 'done' : run.status === 'done' ? 'done' : run.status === 'blocked' ? 'blocked' : 'current';

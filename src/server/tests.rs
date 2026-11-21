@@ -1179,9 +1179,22 @@ async fn stage_exits_preserve_passes_and_distinguish_refused_and_forced_advances
     );
     assert_eq!(fs::read(&path).unwrap(), before);
     let unchanged = fetch(&api, "42").await.1.unwrap();
-    assert!(unchanged.stage_exits.is_empty());
-    assert!(unchanged.summaries.is_empty() && unchanged.sessions.is_empty());
-    assert!(unchanged.activity.is_none());
+    assert!(
+        unchanged.stage_exits.is_empty(),
+        "Refused advance recorded stage exits: {:?}",
+        unchanged.stage_exits
+    );
+    assert!(
+        unchanged.summaries.is_empty() && unchanged.sessions.is_empty(),
+        "Refused advance changed summaries or sessions: {:?}, {:?}",
+        unchanged.summaries,
+        unchanged.sessions
+    );
+    assert!(
+        unchanged.activity.is_none(),
+        "Refused advance recorded activity: {:?}",
+        unchanged.activity
+    );
 
     let plan = report(&api, "42", r#"{"unticketed":true}"#).await;
     assert_eq!(plan.status(), HttpStatus::Ok);

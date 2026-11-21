@@ -1335,8 +1335,14 @@ mod tests {
         let run = store.update_with("1", update, &git).unwrap().unwrap();
         let next = crate::run_next::build_with_git(&run, Ok(&[]), &git).unwrap();
         let text = crate::run_next::render(&next);
-        assert!(text.contains("Findings F1 are open"));
-        assert!(text.contains("Move to build (rework)"));
+        assert!(
+            text.contains("Findings F1 are open"),
+            "Missing open Finding in guidance: {text}"
+        );
+        assert!(
+            text.contains("Move to build (rework)"),
+            "Missing Rework move in guidance: {text}"
+        );
         let dashboard =
             serde_json::to_value(crate::run_next::stage_gates(&run, Ok(&[]), &git)).unwrap();
         assert!(dashboard.to_string().contains("Findings F1 are open"));
