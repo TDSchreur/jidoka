@@ -91,7 +91,7 @@ pub(super) fn watch(
         failures: Vec::new(),
         state: look.state,
     };
-    if !is_open(first.state) {
+    if !is_open(first.state) || (options.ready_only && first.state != PrState::Open) {
         let waited = ended(Outcome::NotOpen, first, BaseState::Unknown);
         activity(&activity_text(&waited));
         return Ok(waited);

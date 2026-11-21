@@ -670,6 +670,7 @@ fn ci_passed(run: &Run, git: &dyn Git, host: &dyn PrHost) -> Result<CiEvidence, 
     let options = pr_wait::Options {
         timeout: CI_TIMEOUT,
         pushed_head: None,
+        ready_only: true,
         ..Default::default()
     };
     let clock = pr_wait::RealClock(Instant::now());

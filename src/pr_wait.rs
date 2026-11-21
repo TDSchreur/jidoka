@@ -95,6 +95,9 @@ pub(crate) struct Options {
     /// The commit the run's branch has on origin, when its worktree is on that commit. Right after a push,
     /// the host can report the previous head for a few seconds; the wait gives it a short grace to catch up.
     pub(crate) pushed_head: Option<String>,
+    /// End the wait at once, as `not-open`, when the pull request is a draft, so a caller that needs a pull
+    /// request ready for review does not watch its checks first.
+    pub(crate) ready_only: bool,
 }
 
 impl Default for Options {
@@ -103,6 +106,7 @@ impl Default for Options {
             timeout: DEFAULT_TIMEOUT,
             fail_fast: false,
             pushed_head: None,
+            ready_only: false,
         }
     }
 }

@@ -290,6 +290,33 @@ fn a_merged_or_closed_pull_request_is_not_watched_and_its_state_is_reported() {
 }
 
 #[test]
+fn a_draft_is_watched_unless_only_a_ready_pull_request_counts() {
+    let snapshots = || {
+        vec![
+            in_state(PrState::Draft, "aaa"),
+            open("aaa", &[("build", "pass")]),
+        ]
+    };
+    let watched = run(snapshots(), &Options::default());
+    assert_eq!(
+        (watched.waited.outcome, watched.waited.state),
+        (Outcome::Passed, PrState::Open)
+    );
+
+    let ready_only = Options {
+        ready_only: true,
+        ..Options::default()
+    };
+    let watched = run(snapshots(), &ready_only);
+    let waited = &watched.waited;
+    assert_eq!(
+        (waited.outcome, waited.state),
+        (Outcome::NotOpen, PrState::Draft)
+    );
+    assert!(sleeps(&watched).is_empty());
+}
+
+#[test]
 fn a_just_pushed_commit_is_waited_for_before_its_checks_are_watched() {
     // Right after a push the host still reports the old head; it shows the pushed one on the next ask.
     let options = Options {
