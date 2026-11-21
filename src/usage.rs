@@ -6,12 +6,12 @@
 //! never shown as zero: a field a log does not report is absent.
 
 use crate::{
+    agent_logs::{ReadLimits, Roots, RunSession, RunWindow, read_sessions},
     run::{Run, Stage},
-    usage_logs::{ReadLimits, Roots, RunSession, read_sessions},
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet},
     time::Instant,
 };
 
@@ -647,22 +647,9 @@ fn collect_limited(
     };
     // Only runs whose time overlaps the target's can contest its entries, so only they are looked for;
     // this also keeps the scan from reaching back to the oldest run there is.
-    let tracked: Vec<&Run> = runs
-        .iter()
-        .filter(|run| run.id == target.id || (!run.timeline.is_empty() && overlaps(target, run)))
-        .collect();
-    let ids: HashSet<&str> = tracked.iter().map(|run| run.id.as_str()).collect();
-    let recorded: HashSet<&str> = tracked
-        .iter()
-        .flat_map(|run| run.sessions.iter().map(String::as_str))
-        .collect();
-    let from = tracked
-        .iter()
-        .filter_map(|run| run.timeline.first())
-        .map(|mark| mark.at)
-        .min()
-        .unwrap_or(first.at);
-    let read = read_sessions(roots, &ids, &recorded, from, deadline, limits);
+    let window = RunWindow::new(target, runs, first.at);
+    let tracked = &window.tracked;
+    let read = read_sessions(roots, &window, deadline, limits);
     let claimed: Vec<&RunSession> = read.sessions.iter().filter(|s| claims(target, s)).collect();
     if claimed.is_empty() {
         let reason = if read.roots_found == 0 {
@@ -676,7 +663,7 @@ fn collect_limited(
         };
         return Usage::not_tracked(reason, now);
     }
-    let skills = used_skills(target, &tracked, &claimed);
+    let skills = used_skills(target, tracked, &claimed);
     let (rows, unattributed, counted) = attribute(target, runs, &read.sessions, now);
     let (pauses, idle) = derive_pauses(target, &read.sessions, now);
     // Each session is evaluated on its own signals: another session cannot answer its request.

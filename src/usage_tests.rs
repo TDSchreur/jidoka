@@ -111,8 +111,12 @@ fn claude_line(
     .to_string()
 }
 
+/// A virtual line, a command run from inside a script tool: it claims the run and is no response.
 fn mention(run_id: &str) -> String {
-    json!({"type": "user", "message": {"content": format!("jidoka run update {run_id} build running --activity SECRET prompt")}}).to_string()
+    json!({"type": "assistant", "isVirtual": true, "timestamp": iso(0), "message": {"model": "<synthetic>",
+        "content": [{"type": "tool_use", "name": "Bash", "input": {"command": format!("jidoka run update {run_id} build running --activity SECRET prompt")}}],
+        "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}})
+    .to_string()
 }
 
 /// A Claude Code response line that also records the reasoning effort of its turn.

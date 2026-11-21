@@ -1,18 +1,24 @@
-//! Readers for the session logs of Claude Code, Codex and Copilot. Each keeps only the model, the
-//! reasoning effort (Claude Code and Codex record it), the token counts and the timestamp of a response, the names and times of the skills the agent used, plus which run ids and session ids a log names. No conversation
-//! text, prompt, tool output or credential leaves this module. Claude Code logs also give the moments of
-//! pause markers (usage limit, compaction) and of activity, as timestamps only.
+//! Readers for the session logs of Claude Code, Codex and Copilot, for Token usage and for the request
+//! analysis alike. A response keeps only its model, reasoning effort (Claude Code and Codex record it), token
+//! counts, timestamp and the Bash commands of its tool calls, which the request analysis classifies and
+//! drops; a session keeps the names and times of the skills the agent used and which run ids its executed
+//! Jidoka commands name (the Session claim in the glossary). No conversation text, prompt, tool output or
+//! credential leaves this module. Claude Code logs also give the moments of pause markers (usage limit,
+//! compaction) and of activity, as timestamps only.
 //!
 //! Formats (see the README for what is validated): Claude Code transcripts and their subagent transcripts,
-//! Codex rollout files, and Copilot `events.jsonl` files.
+//! Codex rollout files, and Copilot `events.jsonl` files. Claude Code is read by one adapter that both
+//! reports share; Codex and Copilot move behind the same interface next.
 
 use crate::{
     install::agent_home,
-    usage::{Entry, PauseKind, Tokens, parse_timestamp},
+    request_logs::{Variables, is_real_dir, result_bytes, run_claims, truncate},
+    run::Run,
+    usage::{Entry, PauseKind, Tokens, overlaps, parse_timestamp},
 };
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     ffi::OsString,
     fs, io,
     path::{Path, PathBuf},
@@ -353,30 +359,199 @@ fn skills_read_by(command: &str) -> Vec<String> {
 
 // --- Claude Code ------------------------------------------------------------------------------------
 
-/// Claude Code writes a response once per content block with the same usage, so a response counts once.
-/// `input_tokens` excludes the cache; thinking tokens are inside `output_tokens`.
-fn parse_claude(text: &str, session: &str, subagent_file: bool) -> LogUsage {
-    let mut parsed = LogUsage::default();
+/// One response of a session, reduced to what usage and the request analysis need.
+#[derive(Clone, Debug)]
+pub(crate) struct Response {
+    pub(crate) session: String,
+    /// Milliseconds since the Unix epoch.
+    pub(crate) ts: u64,
+    pub(crate) model: String,
+    /// The reasoning effort the log recorded for the call, when it recorded one.
+    pub(crate) effort: Option<String>,
+    pub(crate) tokens: Tokens,
+    /// Whether a subagent made the call.
+    pub(crate) subagent: bool,
+    /// The Bash commands of its tool calls, for the request analysis to classify. Nothing else of a tool
+    /// call is kept.
+    pub(crate) commands: Vec<String>,
+    /// It called a tool that is not Bash.
+    pub(crate) other_tool: bool,
+    pub(crate) any_tool: bool,
+    /// The bytes of text its tool calls returned; unknown when the log does not say.
+    pub(crate) tool_output_bytes: Option<u64>,
+}
+
+/// A session that executed a Jidoka command naming a run, or was recorded for one.
+#[derive(Debug)]
+pub(crate) struct LogSession {
+    pub(crate) id: String,
+    /// Whether the session has subagent logs. Without them its figures cover the coordinator only.
+    pub(crate) has_subagent_logs: bool,
+    /// The run ids an executed Jidoka command in this session names.
+    pub(crate) claims: HashSet<String>,
+    /// De-duplicated, sorted by time.
+    pub(crate) responses: Vec<Response>,
+    pub(crate) pauses: Vec<(PauseKind, u64)>,
+    pub(crate) activity: Vec<u64>,
+    pub(crate) attention: Vec<(u64, crate::attention::Signal)>,
+    pub(crate) skills: Vec<(u64, String)>,
+}
+
+/// What one adapter read.
+#[derive(Debug, Default)]
+pub(crate) struct LogRead {
+    pub(crate) sessions: Vec<LogSession>,
+    pub(crate) notes: Vec<Note>,
+    /// Whether the agent's log folder exists.
+    pub(crate) root_found: bool,
+    pub(crate) timed_out: bool,
+    pub(crate) truncated: bool,
+}
+
+/// The runs whose sessions one reading looks for, and since when: the target and the runs that overlap its
+/// time, because only they can contest its sessions. Usage and the request analysis both read the logs
+/// with the same window.
+pub(crate) struct RunWindow<'a> {
+    pub(crate) tracked: Vec<&'a Run>,
+    pub(crate) ids: HashSet<&'a str>,
+    /// The session ids the tracked runs recorded.
+    pub(crate) recorded: HashSet<&'a str>,
+    /// The earliest start of a tracked run, in milliseconds.
+    pub(crate) from: u64,
+}
+
+impl<'a> RunWindow<'a> {
+    /// `first` is the start of `target`'s timeline.
+    pub(crate) fn new(target: &'a Run, runs: &'a [Run], first: u64) -> Self {
+        let tracked: Vec<&Run> = runs
+            .iter()
+            .filter(|run| {
+                run.id == target.id || (!run.timeline.is_empty() && overlaps(target, run))
+            })
+            .collect();
+        let ids = tracked.iter().map(|run| run.id.as_str()).collect();
+        let recorded = tracked
+            .iter()
+            .flat_map(|run| run.sessions.iter().map(String::as_str))
+            .collect();
+        let from = tracked
+            .iter()
+            .filter_map(|run| run.timeline.first())
+            .map(|mark| mark.at)
+            .min()
+            .unwrap_or(first);
+        Self {
+            tracked,
+            ids,
+            recorded,
+            from,
+        }
+    }
+}
+
+/// What one Claude Code log file gave. Lines that looked like a response but could not be used are
+/// counted, so the notes can say so instead of silently looking complete.
+#[derive(Default)]
+struct ClaudeLog {
+    /// Responses by key; Claude Code writes one per content block, so a response counts once.
+    responses: BTreeMap<String, Response>,
+    claims: HashSet<String>,
+    /// Lines that were not valid JSON.
+    malformed: usize,
+    /// Valid lines that held no usable model, time or counts.
+    unusable: usize,
+    /// Responses that carry no id, so a repeat of them cannot be told from a new call.
+    unidentified: usize,
+}
+
+/// The tool calls of one Claude Code line.
+struct ToolCalls {
+    /// The Bash commands, truncated.
+    commands: Vec<String>,
+    /// The ids of the calls, to match their results.
+    ids: Vec<String>,
+    any_tool: bool,
+    other_tool: bool,
+}
+
+/// The tool calls in a line's content blocks. When `claiming`, the run ids their Bash commands name are
+/// added to `claims`: a coordinator's executed command claims, a subagent's does not.
+fn tool_calls(
+    blocks: &[Value],
+    claiming: bool,
+    claims: &mut HashSet<String>,
+    ids: &HashSet<&str>,
+    variables: &mut Variables,
+) -> ToolCalls {
+    let mut calls = ToolCalls {
+        commands: Vec::new(),
+        ids: Vec::new(),
+        any_tool: false,
+        other_tool: false,
+    };
+    for block in blocks.iter().filter(|b| b["type"] == "tool_use") {
+        calls.any_tool = true;
+        if let Some(id) = block["id"].as_str() {
+            calls.ids.push(id.to_string());
+        }
+        let command = (block["name"] == "Bash")
+            .then(|| block["input"]["command"].as_str())
+            .flatten();
+        match command {
+            Some(command) => {
+                let command = truncate(command);
+                if claiming {
+                    claims.extend(run_claims(command, ids, variables));
+                }
+                calls.commands.push(command.to_string());
+            }
+            None => calls.other_tool = true,
+        }
+    }
+    calls
+}
+
+/// The responses and claims of one Claude Code log file. `input_tokens` excludes the cache; thinking tokens
+/// are inside `output_tokens`. A usage-limit message and a virtual line (a tool called from inside a script
+/// tool) carry zero usage under a made-up model: they are not responses. A virtual line's Bash command was
+/// still executed, so it can claim a run.
+fn parse_claude(text: &str, session: &str, subagent_file: bool, ids: &HashSet<&str>) -> ClaudeLog {
+    let mut parsed = ClaudeLog::default();
+    let mut variables = Variables::new();
+    // Which response made the call a result answers; each call's result counts once.
+    let mut owners: HashMap<String, String> = HashMap::new();
     for (number, line) in text
         .lines()
         .enumerate()
-        .filter(|(_, line)| line.contains("\"usage\""))
+        .filter(|(_, line)| line.contains("\"usage\"") || line.contains("\"tool_result\""))
     {
         let Ok(data) = serde_json::from_str::<Value>(line) else {
             parsed.malformed += 1;
             continue;
         };
-        // A usage-limit message and a virtual tool-call line (a tool called from inside a script tool)
-        // carry zero usage under a made-up model: not a response.
-        if data["isApiErrorMessage"].as_bool() == Some(true)
-            || data["isVirtual"].as_bool() == Some(true)
-        {
-            continue;
-        }
+        let subagent = subagent_file || data["isSidechain"].as_bool() == Some(true);
         let message = &data["message"];
+        let blocks = message["content"].as_array().map_or(&[][..], Vec::as_slice);
+        for block in blocks.iter().filter(|b| b["type"] == "tool_result") {
+            if let Some(key) = block["tool_use_id"]
+                .as_str()
+                .and_then(|id| owners.remove(id))
+                && let Some(response) = parsed.responses.get_mut(&key)
+            {
+                response.tool_output_bytes = Some(
+                    response
+                        .tool_output_bytes
+                        .unwrap_or(0)
+                        .saturating_add(result_bytes(&block["content"])),
+                );
+            }
+        }
+        let not_a_response = data["isApiErrorMessage"].as_bool() == Some(true)
+            || data["isVirtual"].as_bool() == Some(true);
+        let calls = tool_calls(blocks, !subagent, &mut parsed.claims, ids, &mut variables);
         let usage = &message["usage"];
-        if !usage.is_object() {
-            // Another kind of line that mentions "usage", such as a task's totals: not a response.
+        // Another kind of line that mentions "usage", such as a task's totals, is not a response either.
+        if not_a_response || !usage.is_object() {
             continue;
         }
         let (Some(model), Some(ts)) = (
@@ -397,24 +572,35 @@ fn parse_claude(text: &str, session: &str, subagent_file: bool) -> LogUsage {
             parsed.unusable += 1;
             continue;
         }
-        let id = message["id"]
-            .as_str()
-            .or(data["uuid"].as_str())
-            .map(|id| format!("{id}|{}", data["requestId"].as_str().unwrap_or("")));
-        let subagent = subagent_file || data["isSidechain"].as_bool() == Some(true);
-        parsed.push(
-            id,
-            number,
-            "claude",
-            Entry {
+        let key = match message["id"].as_str().or(data["uuid"].as_str()) {
+            Some(id) => format!("claude|{id}|{}", data["requestId"].as_str().unwrap_or("")),
+            None => {
+                parsed.unidentified += 1;
+                format!("claude|{session}|line {number}")
+            }
+        };
+        let response = parsed
+            .responses
+            .entry(key.clone())
+            .or_insert_with(|| Response {
                 session: session.to_string(),
                 ts,
                 model,
-                tokens,
-                subagent,
                 effort: effort_name(&data["effort"]),
-            },
-        );
+                tokens: Tokens::default(),
+                subagent,
+                commands: Vec::new(),
+                other_tool: false,
+                any_tool: false,
+                tool_output_bytes: Some(0),
+            });
+        merge_largest(&mut response.tokens, &tokens);
+        response.commands.extend(calls.commands);
+        response.other_tool |= calls.other_tool;
+        response.any_tool |= calls.any_tool;
+        for id in calls.ids {
+            owners.insert(id, key.clone());
+        }
     }
     parsed
 }
@@ -475,55 +661,182 @@ fn claude_skills(text: &str, parsed: &mut LogUsage) {
     }
 }
 
-fn read_claude(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
-    for slug in sub_dirs(root) {
+/// Whether a log's own file or folder name is safe to keep as a session id: a plain one.
+fn plain_id(id: &str) -> bool {
+    (1..=MAX_NAME_LEN).contains(&id.len())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+}
+
+/// Reads the Claude Code logs under `root`: every session that executed a Jidoka command naming a run in
+/// the window, or was recorded for one, together with the logs of its subagents.
+#[expect(
+    clippy::too_many_lines,
+    reason = "walks the session folders, parses each log with its subagents and merges the responses in one pass"
+)]
+pub(crate) fn read_claude(
+    root: &Path,
+    window: &RunWindow,
+    deadline: Instant,
+    limits: ReadLimits,
+) -> LogRead {
+    let mut out = LogRead {
+        root_found: root.is_dir(),
+        ..LogRead::default()
+    };
+    if !out.root_found {
+        return out;
+    }
+    let mut pass = ReadPass::new(window, deadline, limits);
+    // The reading flags and notes of the shared helpers; moved into `out` at the end.
+    let mut state = ReadResult::default();
+    // A response that two session files hold (a resumed session copies its history) counts once.
+    let mut seen: BTreeMap<String, Response> = BTreeMap::new();
+    let mut kept: BTreeMap<String, LogUsage> = BTreeMap::new();
+    let mut claims: BTreeMap<String, (HashSet<String>, bool)> = BTreeMap::new();
+    'logs: for slug in sub_dirs(root) {
         for file in files_in(&slug.path()) {
             let path = file.path();
             let Some(stem) = path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .and_then(|n| n.strip_suffix(".jsonl"))
+                .map(str::to_string)
             else {
                 continue;
             };
-            if pass.over_limit(out) {
-                return;
+            if pass.over_limit(&mut state) {
+                break 'logs;
             }
             if pass.stale(&path) {
                 continue;
             }
-            let stem = stem.to_string();
-            let Some(text) = pass.load(&path, &stem, out) else {
+            let Some(text) = pass.load(&path, &stem, &mut state) else {
                 continue;
             };
-            let mentions = mentioned_runs(&text, pass.ids);
-            if mentions.is_empty() && !pass.recorded.contains(stem.as_str()) {
+            let mut parsed = parse_claude(&text, &stem, false, &window.ids);
+            if parsed.claims.is_empty() && !window.recorded.contains(stem.as_str()) {
                 continue;
             }
-            let mut parsed = parse_claude(&text, &stem, false);
-            claude_pauses(&text, &mut parsed);
-            claude_skills(&text, &mut parsed);
-            parsed.attention = crate::attention::signals(crate::attention::Agent::Claude, &text);
+            let mut markers = LogUsage::default();
+            claude_pauses(&text, &mut markers);
+            claude_skills(&text, &mut markers);
+            markers.attention = crate::attention::signals(crate::attention::Agent::Claude, &text);
             drop(text);
-            // The subagents of a session are in its own folder; the same response is never counted twice.
-            for sub in files_in(&slug.path().join(&stem).join("subagents")) {
-                let sub_path = sub.path();
-                if sub_path.extension().is_none_or(|e| e != "jsonl") {
-                    continue;
-                }
-                if pass.over_limit(out) {
-                    break;
-                }
-                if let Some(sub_text) = pass.load(&sub_path, &stem, out) {
-                    let mut sub = parse_claude(&sub_text, &stem, true);
-                    claude_pauses(&sub_text, &mut sub);
-                    claude_skills(&sub_text, &mut sub);
-                    parsed.absorb(sub);
+            // The subagents of a session are in its own folder, which is not followed if it is a link.
+            let session_dir = slug.path().join(&stem);
+            let subagent_dir = session_dir.join("subagents");
+            let mut has_subagent_logs = false;
+            if is_real_dir(&session_dir) && is_real_dir(&subagent_dir) {
+                for sub in files_in(&subagent_dir) {
+                    let sub_path = sub.path();
+                    if sub_path.extension().is_none_or(|e| e != "jsonl") {
+                        continue;
+                    }
+                    has_subagent_logs = true;
+                    if pass.over_limit(&mut state) {
+                        break;
+                    }
+                    if let Some(sub_text) = pass.load(&sub_path, &stem, &mut state) {
+                        let more = parse_claude(&sub_text, &stem, true, &window.ids);
+                        parsed.malformed += more.malformed;
+                        parsed.unusable += more.unusable;
+                        parsed.unidentified += more.unidentified;
+                        for (key, response) in more.responses {
+                            parsed.responses.entry(key).or_insert(response);
+                        }
+                        let mut sub_markers = LogUsage::default();
+                        claude_pauses(&sub_text, &mut sub_markers);
+                        claude_skills(&sub_text, &mut sub_markers);
+                        markers.absorb(sub_markers);
+                    }
                 }
             }
-            pass.add(&stem, mentions, parsed, "Claude Code", out);
+            if !plain_id(&stem) {
+                continue;
+            }
+            let mut note = |text: String| {
+                state.notes.push(Note {
+                    session: Some(stem.clone()),
+                    text,
+                });
+            };
+            if parsed.malformed > 0 {
+                note(format!(
+                    "{} malformed Claude Code log line(s) were skipped",
+                    parsed.malformed
+                ));
+            }
+            if parsed.unusable > 0 {
+                note(format!(
+                    "{} Claude Code usage line(s) had no usable model, time or count and were skipped",
+                    parsed.unusable
+                ));
+            }
+            if parsed.unidentified > 0 {
+                note(format!(
+                    "{} Claude Code usage entr(ies) have no response id, so a repeat of them cannot be detected",
+                    parsed.unidentified
+                ));
+            }
+            if parsed.responses.is_empty() {
+                note(
+                    "a Claude Code session log held no usage entries in a recognised format".into(),
+                );
+            }
+            for (key, response) in parsed.responses {
+                match seen.get_mut(&key) {
+                    Some(existing) => {
+                        merge_largest(&mut existing.tokens, &response.tokens);
+                        existing.commands.extend(response.commands);
+                        existing.other_tool |= response.other_tool;
+                        existing.any_tool |= response.any_tool;
+                        existing.tool_output_bytes =
+                            existing.tool_output_bytes.max(response.tool_output_bytes);
+                    }
+                    None => {
+                        seen.insert(key, response);
+                    }
+                }
+            }
+            let entry = claims.entry(stem.clone()).or_default();
+            entry.0.extend(parsed.claims);
+            entry.1 |= has_subagent_logs;
+            kept.entry(stem).or_default().absorb(markers);
         }
     }
+    let mut by_session: BTreeMap<String, Vec<Response>> = BTreeMap::new();
+    for response in seen.into_values() {
+        by_session
+            .entry(response.session.clone())
+            .or_default()
+            .push(response);
+    }
+    for (id, (claims, has_subagent_logs)) in claims {
+        let mut responses = by_session.remove(&id).unwrap_or_default();
+        responses.sort_by_key(|response| response.ts);
+        let mut markers = kept.remove(&id).unwrap_or_default();
+        markers.pauses.sort_by_key(|(_, at)| *at);
+        markers.activity.sort_unstable();
+        markers.activity.dedup();
+        markers.skills.sort();
+        markers.skills.dedup();
+        out.sessions.push(LogSession {
+            id,
+            has_subagent_logs,
+            claims,
+            responses,
+            pauses: markers.pauses,
+            activity: markers.activity,
+            attention: markers.attention,
+            skills: markers.skills,
+        });
+    }
+    out.notes = state.notes;
+    out.timed_out = state.timed_out;
+    out.truncated = state.truncated;
+    out
 }
 
 // --- Codex ------------------------------------------------------------------------------------------
@@ -918,6 +1231,25 @@ struct ReadPass<'a> {
     skills: BTreeMap<String, Vec<(u64, String)>>,
 }
 
+impl<'a> ReadPass<'a> {
+    fn new(window: &'a RunWindow<'a>, deadline: Instant, limits: ReadLimits) -> Self {
+        Self {
+            ids: &window.ids,
+            recorded: &window.recorded,
+            from: window.from,
+            deadline,
+            limits,
+            files: 0,
+            bytes: 0,
+            entries: BTreeMap::new(),
+            sessions: BTreeMap::new(),
+            pauses: BTreeMap::new(),
+            attention: BTreeMap::new(),
+            skills: BTreeMap::new(),
+        }
+    }
+}
+
 impl ReadPass<'_> {
     /// Whether a log was last written well before the earliest run of interest, so it cannot hold its
     /// work. File times are coarse and clocks differ, so there is plenty of slack.
@@ -1037,36 +1369,20 @@ impl ReadPass<'_> {
     }
 }
 
-/// Reads every session log that names a run in `ids` or was recorded in `recorded`, within `deadline`.
-pub(crate) fn read_sessions(
+/// Reads the Codex and Copilot session logs that name a run in the window or were recorded for one.
+fn read_other_sessions(
     roots: &Roots,
-    ids: &HashSet<&str>,
-    recorded: &HashSet<&str>,
-    from: u64,
+    window: &RunWindow,
     deadline: Instant,
     limits: ReadLimits,
 ) -> ReadResult {
     let mut out = ReadResult::default();
-    let mut pass = ReadPass {
-        ids,
-        recorded,
-        from,
-        deadline,
-        limits,
-        files: 0,
-        bytes: 0,
-        entries: BTreeMap::new(),
-        sessions: BTreeMap::new(),
-        pauses: BTreeMap::new(),
-        attention: BTreeMap::new(),
-        skills: BTreeMap::new(),
-    };
+    let mut pass = ReadPass::new(window, deadline, limits);
     let sources = [
         (
-            &roots.claude,
-            read_claude as fn(&Path, &mut ReadPass, &mut ReadResult),
+            &roots.codex,
+            read_codex as fn(&Path, &mut ReadPass, &mut ReadResult),
         ),
-        (&roots.codex, read_codex),
         (&roots.copilot, read_copilot),
     ];
     for (root, read) in sources {
@@ -1108,5 +1424,52 @@ pub(crate) fn read_sessions(
             skills,
         });
     }
+    out
+}
+
+/// A Claude Code session as usage sees it.
+fn run_session(session: LogSession) -> RunSession {
+    RunSession {
+        id: session.id,
+        mentions: session.claims,
+        entries: session
+            .responses
+            .into_iter()
+            .map(|response| Entry {
+                session: response.session,
+                ts: response.ts,
+                model: response.model,
+                tokens: response.tokens,
+                subagent: response.subagent,
+                effort: response.effort,
+            })
+            .collect(),
+        pauses: session.pauses,
+        activity: session.activity,
+        attention: session.attention,
+        skills: session.skills,
+    }
+}
+
+/// Reads every session log that names a run in the window or was recorded for one, within `deadline`.
+pub(crate) fn read_sessions(
+    roots: &Roots,
+    window: &RunWindow,
+    deadline: Instant,
+    limits: ReadLimits,
+) -> ReadResult {
+    let claude = read_claude(&roots.claude, window, deadline, limits);
+    let mut out = if claude.timed_out || claude.truncated {
+        ReadResult::default()
+    } else {
+        read_other_sessions(roots, window, deadline, limits)
+    };
+    out.roots_found += usize::from(claude.root_found);
+    out.timed_out |= claude.timed_out;
+    out.truncated |= claude.truncated;
+    out.notes.extend(claude.notes);
+    out.sessions
+        .extend(claude.sessions.into_iter().map(run_session));
+    out.sessions.sort_by(|a, b| a.id.cmp(&b.id));
     out
 }

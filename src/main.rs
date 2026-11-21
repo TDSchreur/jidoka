@@ -1,3 +1,4 @@
+mod agent_logs;
 mod attention;
 mod checks;
 mod client;
@@ -37,7 +38,6 @@ mod stages;
 mod stats;
 mod token;
 mod usage;
-mod usage_logs;
 
 use client::{fetch_run, fetch_runs, start_run};
 use pr_host::PrHost;
@@ -246,7 +246,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 .map_err(|error| format!("{error}\n{HELP}"))?;
             let runs = fetch_runs(&cli_address()?)?;
             let roots =
-                usage_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
+                agent_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
             let result = requests_pool::pool(
                 &runs,
                 &roots,
@@ -269,7 +269,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             let target = fetch_run_cli(id)?;
             let runs = fetch_runs(&cli_address()?)?;
             let roots =
-                usage_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
+                agent_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
             let result = requests::analyze(
                 &target,
                 &runs,
@@ -899,7 +899,7 @@ fn dashboard(requested: Option<u16>, usage: bool) -> Result<(), Box<dyn std::err
     let home = install::home_dir()?;
     let settings = usage::UsageSettings {
         enabled: usage,
-        roots: usage_logs::Roots::from_home(&home, &|name| env::var_os(name))?,
+        roots: agent_logs::Roots::from_home(&home, &|name| env::var_os(name))?,
         budget: DASHBOARD_USAGE_BUDGET,
         settle: usage::UsageSettings::default_settle(),
     };

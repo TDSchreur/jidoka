@@ -1,20 +1,17 @@
 //! `jidoka run requests`: the model requests of a run per category, with their tokens.
 
 use crate::{
+    agent_logs::{ReadLimits, Roots, RunWindow},
     codex_requests::read_codex_requests,
     copilot_requests::read_copilot_requests,
     inspect::shown,
     request_logs::{Category, Request, SessionRequests, read_requests},
     run::Run,
     stats::{number, table_with},
-    usage::{FUTURE_SLACK_MS, Tokens, mark_at, overlaps},
-    usage_logs::{ReadLimits, Roots},
+    usage::{FUTURE_SLACK_MS, Tokens, mark_at},
 };
 use serde::Serialize;
-use std::{
-    collections::{BTreeMap, HashSet},
-    time::Instant,
-};
+use std::{collections::BTreeMap, time::Instant};
 
 /// Requests and tokens of one category.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -155,26 +152,13 @@ pub(crate) fn analyze(
             .push("the run has no stage timeline: it started before usage tracking existed".into());
         return result;
     };
-    // Only runs whose time overlaps the target's can contest its requests.
-    let tracked: Vec<&Run> = runs
-        .iter()
-        .filter(|run| run.id == target.id || (!run.timeline.is_empty() && overlaps(target, run)))
-        .collect();
-    let ids: HashSet<&str> = tracked.iter().map(|run| run.id.as_str()).collect();
-    let recorded: HashSet<&str> = tracked
-        .iter()
-        .flat_map(|run| run.sessions.iter().map(String::as_str))
-        .collect();
-    let from = tracked
-        .iter()
-        .filter_map(|run| run.timeline.first())
-        .map(|mark| mark.at)
-        .min()
-        .unwrap_or(first.at);
+    let window = RunWindow::new(target, runs, first.at);
+    let tracked = &window.tracked;
+    let (ids, recorded, from) = (&window.ids, &window.recorded, window.from);
     let limits = ReadLimits::default();
-    let read = read_requests(&roots.claude, &ids, &recorded, from, deadline, limits);
-    let codex = read_codex_requests(&roots.codex, &ids, &recorded, from, deadline, limits);
-    let copilot = read_copilot_requests(&roots.copilot, &ids, &recorded, from, deadline, limits);
+    let read = read_requests(&roots.claude, &window, deadline, limits);
+    let codex = read_codex_requests(&roots.codex, ids, recorded, from, deadline, limits);
+    let copilot = read_copilot_requests(&roots.copilot, ids, recorded, from, deadline, limits);
     let (timed_out, truncated) = (
         read.timed_out || codex.timed_out || copilot.timed_out,
         read.truncated || codex.truncated || copilot.truncated,

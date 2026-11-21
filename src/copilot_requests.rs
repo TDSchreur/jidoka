@@ -8,15 +8,15 @@
 //! classified: nothing but categories, flags and counts leaves this module.
 
 use crate::{
+    agent_logs::{
+        LogFile, MTIME_SLACK_MS, ReadLimits, copilot_tokens, mentioned_runs, merge_largest,
+        model_name, modified_ms, read_text, sub_dirs, timestamp,
+    },
     request_logs::{
         Category, Request, RequestRead, SessionRequests, Variables, classify, result_bytes,
         run_claims, truncate,
     },
     usage::Tokens,
-    usage_logs::{
-        LogFile, MTIME_SLACK_MS, ReadLimits, copilot_tokens, mentioned_runs, merge_largest,
-        model_name, modified_ms, read_text, sub_dirs, timestamp,
-    },
 };
 use serde_json::Value;
 use std::{

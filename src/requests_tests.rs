@@ -2,9 +2,9 @@
 //! analysis. Nothing here reads a real user's logs.
 
 use super::*;
-use crate::{request_logs::Category, run::Run, usage_logs::Roots};
+use crate::{agent_logs::Roots, request_logs::Category, run::Run};
 use serde_json::{Value, json};
-use std::{fs, time::Duration};
+use std::{collections::HashSet, fs, time::Duration};
 use tempfile::TempDir;
 
 /// 2026-11-05T10:00:00Z.
@@ -256,7 +256,7 @@ fn a_session_claims_a_run_only_through_an_executed_update_command() {
             one(20, "e2", text()),
         ],
     );
-    // The id appears only in a tool result, a prompt and an inspect command: no claim.
+    // The id appears only in a tool result, a prompt and commands that do not run jidoka: no claim.
     world.session(
         "mentioned",
         &[
@@ -264,14 +264,37 @@ fn a_session_claims_a_run_only_through_an_executed_update_command() {
                 {"type": "tool_result", "content": format!("jidoka run update {RUN_A} build running")}]}})
             .to_string(),
             json!({"type": "user", "timestamp": iso(6), "message": {"content": format!("jidoka run update {RUN_A}")}}).to_string(),
-            one(10, "n1", bash(&format!("jidoka run inspect {RUN_A}"))),
+            one(10, "n1", bash(&format!("echo jidoka run inspect {RUN_A}"))),
             one(20, "n2", bash(&format!("cat notes.md # jidoka run stats {RUN_A}"))),
         ],
     );
+    // Any executed command that names the run claims it, not only an update.
+    world.session(
+        "inspector",
+        &[one(
+            30,
+            "i1",
+            bash(&format!("jidoka run inspect {RUN_A} --json")),
+        )],
+    );
     let target = run(RUN_A, 0, Some(100), &[]);
     let result = world.analyze(&target, std::slice::from_ref(&target));
-    assert_eq!(result.sessions, ["executed"]);
-    assert_eq!(result.total.requests, 2);
+    assert_eq!(result.sessions, ["executed", "inspector"]);
+    assert_eq!(result.total.requests, 3);
+}
+
+#[test]
+fn a_command_run_from_inside_a_script_tool_claims_the_run_without_being_a_request() {
+    let world = World::new();
+    let script_call = json!({"type": "assistant", "isVirtual": true, "timestamp": iso(10),
+        "message": {"model": "<synthetic>", "content": [bash(&format!("jidoka run update {RUN_A} build running"))],
+            "usage": {"input_tokens": 0, "output_tokens": 0}}})
+    .to_string();
+    world.session("scripted", &[script_call, one(20, "r1", text())]);
+    let target = run(RUN_A, 0, Some(100), &[]);
+    let result = world.analyze(&target, std::slice::from_ref(&target));
+    assert_eq!(result.sessions, ["scripted"]);
+    assert_eq!(result.total.requests, 1);
 }
 
 #[test]
