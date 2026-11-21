@@ -1168,13 +1168,7 @@ mod auto_block {
             )
             .unwrap();
         crate::test_support::advance_to(&done.store, &done.id, Stage::Finish);
-        done.store
-            .advance(&done.id, crate::run::AdvanceMetadata::default(), |_| {
-                Ok(crate::run::Exit::Override {
-                    reason: "CI service unavailable".into(),
-                })
-            })
-            .unwrap();
+        crate::test_support::force_advance(&done.store, &done.id, None);
         collect_active(&done.store, &done.settings, now).unwrap();
         assert!(done.run().usage.is_none());
     }

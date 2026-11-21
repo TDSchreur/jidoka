@@ -58,9 +58,11 @@ pub(crate) struct PrStatus {
 }
 
 impl PrStatus {
-    /// Whether this state may replace `previous`, the one Pull request state rule: a state of another pull
-    /// request always does; a merged state is never overwritten; an older check loses; on an equal check
-    /// time only the same or a higher-ranked state (merged, then closed, then the rest) replaces.
+    /// Whether this state may replace `previous`: the one Pull request state rule.
+    ///
+    /// A state of another pull request always does; a merged state is never overwritten; an older check
+    /// loses; on an equal check time only the same or a higher-ranked state (merged, then closed, then the
+    /// rest) replaces.
     pub(crate) fn supersedes(&self, previous: &PrStatus) -> bool {
         if self.url != previous.url {
             return true;

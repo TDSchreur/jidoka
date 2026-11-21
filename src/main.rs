@@ -995,7 +995,7 @@ fn runs_path_in(var: &impl Fn(&str) -> Option<std::ffi::OsString>) -> io::Result
 
 #[cfg(test)]
 mod test_support {
-    use crate::run::{AdvanceMetadata, Exit, RunStore, Stage, parse_update};
+    use crate::run::{AdvanceMetadata, Exit, NewRun, Run, RunStore, Stage, parse_update};
 
     pub(crate) struct TestDir(pub(crate) tempfile::TempDir);
     impl TestDir {
@@ -1004,9 +1004,23 @@ mod test_support {
         }
     }
 
-    /// Moves a stored run forward to `stage` the way production does: through `RunStore::advance` with
-    /// Override exits, one Stage at a time. A run without a mode gets the balanced mode first, as an
-    /// Override needs one; record another mode before calling this when the test needs it.
+    /// Creates a run titled `title` in `store`, for a worktree of `/work/repo`.
+    pub(crate) fn new_run(store: &RunStore, title: &str) -> Run {
+        store
+            .create(NewRun {
+                title: title.into(),
+                project: "/work/repo.worktrees/feature".into(),
+                repository: Some("/work/repo".into()),
+                session: None,
+                model_routing: None,
+            })
+            .unwrap()
+    }
+
+    /// Moves a stored run forward to `stage` through `RunStore::advance` with Override exits.
+    ///
+    /// The run moves one Stage at a time, as in production. A run without a mode gets the balanced mode
+    /// first, as an Override needs one; record another mode before calling this when the test needs it.
     ///
     /// # Panics
     ///
@@ -1019,14 +1033,28 @@ mod test_support {
                 .unwrap();
         }
         while store.get(id).unwrap().unwrap().stage != stage {
-            store
-                .advance(id, AdvanceMetadata::default(), |_| {
-                    Ok(Exit::Override {
-                        reason: "Test moves the run on".into(),
-                    })
-                })
-                .unwrap_or_else(|error| panic!("cannot advance run {id} to {stage:?}: {error}"));
+            force_advance(store, id, None);
         }
+    }
+
+    /// Leaves the stored run's current Stage with an Override exit, saving `activity` along with it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the run does not exist or cannot leave its Stage, for example because it has no mode.
+    pub(crate) fn force_advance(store: &RunStore, id: &str, activity: Option<&str>) -> Run {
+        let metadata = AdvanceMetadata {
+            activity: activity.map(str::to_owned),
+            ..AdvanceMetadata::default()
+        };
+        store
+            .advance(id, metadata, |_| {
+                Ok(Exit::Override {
+                    reason: "Test moves the run on".into(),
+                })
+            })
+            .unwrap_or_else(|error| panic!("cannot advance run {id}: {error}"));
+        store.get(id).unwrap().expect("test run exists")
     }
 }
 

@@ -148,11 +148,15 @@ pub(crate) struct CiEvidence {
 /// Why a run leaves its current Stage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Exit {
-    /// Every exit gate passed. `ci` is the live CI result, needed only to leave Finish.
+    /// Every exit gate passed, so the run moves to the next Stage. Finish is left with `Finished` instead.
     Accepted {
         gates: Vec<Evaluation>,
         skipped_checks: Vec<SkippedCheck>,
-        ci: Option<CiEvidence>,
+    },
+    /// Every exit gate of Finish passed, live CI included, so the run is done. Recorded as accepted.
+    Finished {
+        gates: Vec<Evaluation>,
+        ci: CiEvidence,
     },
     /// The user moved the run on without checking the gates.
     Override { reason: String },
@@ -166,10 +170,19 @@ pub(crate) enum Exit {
     },
 }
 
+/// Where an exit leads and what its Stage exit record carries.
+struct Leaving {
+    to: Destination,
+    outcome: ExitOutcome,
+    gates: Vec<Evaluation>,
+    skipped_checks: Vec<SkippedCheck>,
+}
+
 impl Run {
-    /// Leaves the current Stage at `at`: the only way a run moves to another Stage or finishes. Checks the
-    /// exit's policy, records the Stage exit, and moves the run to the next Stage, or completes it with
-    /// `finished_at` set to `at`. Only a running run can leave a Stage, except a merge in Finish.
+    /// Leaves the current Stage at `at`: the only way a run moves to another Stage or finishes.
+    ///
+    /// Checks the exit's policy, records the Stage exit, and moves the run to the next Stage, or completes
+    /// it with `finished_at` set to `at`. Only a running run can leave a Stage, except a merge in Finish.
     ///
     /// # Errors
     ///
@@ -178,37 +191,71 @@ impl Run {
         let stage = self.stage;
         let rework = self.rework;
         let build_plan = (stage == Stage::Build).then(|| BuildPlan::from_run(self));
-        let (to, outcome, gates, skipped_checks) = match exit {
+        // Every exit but a merge follows the mode's Stage graph.
+        let mode = self.mode.ok_or("Record the run's mode first");
+        let Leaving {
+            to,
+            outcome,
+            gates,
+            skipped_checks,
+        } = match exit {
             Exit::Accepted {
-                mut gates,
+                gates,
                 skipped_checks,
-                ci,
             } => {
-                let to = self.accept(&mut gates, ci)?;
-                (to, ExitOutcome::Accepted, gates, skipped_checks)
+                let to = stages::next(mode?, stage, self.status)?.to;
+                if to == Destination::Done {
+                    return Err("Finish needs a live CI result".into());
+                }
+                Leaving {
+                    to,
+                    outcome: ExitOutcome::Accepted,
+                    gates,
+                    skipped_checks,
+                }
+            }
+            Exit::Finished { mut gates, ci } => {
+                if stages::next(mode?, stage, self.status)?.to != Destination::Done {
+                    return Err("Only an exit from Finish carries a CI result".into());
+                }
+                self.finish_with_ci(&mut gates, ci)?;
+                Leaving {
+                    to: Destination::Done,
+                    outcome: ExitOutcome::Accepted,
+                    gates,
+                    skipped_checks: Vec::new(),
+                }
             }
             Exit::Override { reason } => {
                 let reason = reason.trim().to_owned();
-                let (to, gates) = self.force(&reason, at)?;
-                (to, ExitOutcome::Override { reason }, gates, Vec::new())
-            }
-            Exit::Merged { url } => {
-                let gates = self.finish_from_merge(&url)?;
-                (
-                    Destination::Done,
-                    ExitOutcome::Merged { url },
+                let transition = stages::next(mode?, stage, self.status)?;
+                let gates = self.force(&reason, transition.gates, transition.to, at)?;
+                Leaving {
+                    to: transition.to,
+                    outcome: ExitOutcome::Override { reason },
                     gates,
-                    Vec::new(),
-                )
+                    skipped_checks: Vec::new(),
+                }
             }
+            Exit::Merged { url } => Leaving {
+                to: Destination::Done,
+                gates: self.finish_from_merge(&url)?,
+                outcome: ExitOutcome::Merged { url },
+                skipped_checks: Vec::new(),
+            },
             Exit::Rework {
                 finding,
                 classification,
                 decision,
             } => {
-                let (to, number) = self.start_rework(&finding, classification, decision, at)?;
-                let outcome = ExitOutcome::Rework { number, finding };
-                (to, outcome, Vec::new(), Vec::new())
+                let to = stages::rework(mode?, stage, self.status)?.to;
+                let number = self.start_rework(&finding, classification, decision, at)?;
+                Leaving {
+                    to,
+                    outcome: ExitOutcome::Rework { number, finding },
+                    gates: Vec::new(),
+                    skipped_checks: Vec::new(),
+                }
             }
         };
         self.stage_exits.push(StageExit {
@@ -231,25 +278,7 @@ impl Run {
         Ok(())
     }
 
-    /// Checks an accepted exit and, out of Finish, completes the run with its CI evidence.
-    fn accept(
-        &mut self,
-        gates: &mut [Evaluation],
-        ci: Option<CiEvidence>,
-    ) -> Result<Destination, String> {
-        let mode = self.mode.ok_or("Record the run's mode first")?;
-        let transition = stages::next(mode, self.stage, self.status)?;
-        match (transition.to, ci) {
-            (Destination::Done, Some(ci)) => self.finish_with_ci(gates, ci)?,
-            (Destination::Done, None) => return Err("Finish needs a live CI result".into()),
-            (Destination::Stage(_), Some(_)) => {
-                return Err("Only an exit from Finish carries a CI result".into());
-            }
-            (Destination::Stage(_), None) => {}
-        }
-        Ok(transition.to)
-    }
-
+    /// Completes the run out of Finish with its CI evidence, marking the CI gate passed.
     fn finish_with_ci(&mut self, gates: &mut [Evaluation], ci: CiEvidence) -> Result<(), String> {
         if self.gates.len() >= MAX_GATE_RESULTS {
             return Err(format!(
@@ -290,10 +319,14 @@ impl Run {
         Ok(())
     }
 
-    /// Checks a forced exit, records `reason` as a run report and returns the bypassed gates.
-    fn force(&mut self, reason: &str, at: u64) -> Result<(Destination, Vec<Evaluation>), String> {
-        let mode = self.mode.ok_or("Record the run's mode first")?;
-        let transition = stages::next(mode, self.stage, self.status)?;
+    /// Checks a forced exit to `to`, records `reason` as a run report and returns the bypassed `gates`.
+    fn force(
+        &mut self,
+        reason: &str,
+        gates: &[Gate],
+        to: Destination,
+        at: u64,
+    ) -> Result<Vec<Evaluation>, String> {
         if reason.is_empty() {
             return Err("Provide a reason for the forced advance".into());
         }
@@ -308,13 +341,12 @@ impl Run {
                 "A run can hold at most {MAX_REPORTS_PER_RUN} run reports"
             ));
         }
-        if transition.to == Destination::Done {
+        if to == Destination::Done {
             self.complete(Completion::Override {
                 reason: reason.into(),
             })?;
         }
-        let gates = transition
-            .gates
+        let gates = gates
             .iter()
             .map(|&gate| {
                 if gate == Gate::FinishSummary {
@@ -330,7 +362,7 @@ impl Run {
             stage: self.stage,
             at,
         });
-        Ok((transition.to, gates))
+        Ok(gates)
     }
 
     /// Completes a run in Finish whose pull request merged, even while it is blocked.
@@ -351,11 +383,7 @@ impl Run {
         classification: FindingClassification,
         decision: Option<String>,
         at: u64,
-    ) -> Result<(Destination, u32), String> {
-        let mode = self
-            .mode
-            .ok_or("Record the run's mode before starting a Rework")?;
-        let transition = stages::rework(mode, self.stage, self.status)?;
+    ) -> Result<u32, String> {
         let number = next_rework(self.rework)?;
         if let Some(decision) = &decision {
             check_text("Rework decision", decision, MAX_NOTE_BYTES)?;
@@ -393,7 +421,7 @@ impl Run {
             classification,
             decision,
         });
-        Ok((transition.to, number))
+        Ok(number)
     }
 
     /// Completes Finish with evidence, retaining the summary or supplying one for a merge.
@@ -422,6 +450,10 @@ impl Run {
 }
 
 /// The number of the next Rework, refused past the Rework limit.
+///
+/// # Errors
+///
+/// Returns a message when the run has already reached the Rework limit.
 pub(crate) fn next_rework(current: Option<u32>) -> Result<u32, String> {
     let count = current.unwrap_or_default();
     if count >= MAX_REWORK {
@@ -437,7 +469,10 @@ mod tests {
     use super::*;
     use crate::{
         pr_state::PrState,
-        run::{Finding, Mode, tests::sample_run},
+        run::{
+            Finding, Mode,
+            tests::{finding, sample_run},
+        },
     };
 
     const AT: u64 = 1_700_000_000_000;
@@ -451,19 +486,10 @@ mod tests {
         run
     }
 
-    fn finding(id: &str, state: FindingState) -> Finding {
+    fn fixed(id: &str) -> Finding {
         Finding {
-            id: id.into(),
-            check: "code-review".into(),
-            location: None,
-            text: "A bug".into(),
-            reviewed_commit: "abc1234".into(),
-            rework: None,
-            state,
-            reason: None,
-            fix_commit: None,
-            at: 1,
-            resolved_at: None,
+            state: FindingState::Fixed,
+            ..finding(id)
         }
     }
 
@@ -481,17 +507,16 @@ mod tests {
             checked_at: 5,
         };
         run.leave(
-            Exit::Accepted {
+            Exit::Finished {
                 gates: vec![
                     Evaluation::with_status(Gate::FinishSummary, GateStatus::Passed),
                     Evaluation::with_status(Gate::CiPassed, GateStatus::AwaitingLiveCheck),
                 ],
-                skipped_checks: Vec::new(),
-                ci: Some(CiEvidence {
+                ci: CiEvidence {
                     head: "abc1234def".into(),
                     outcome: CiOutcome::Passed,
                     pr_status: status.clone(),
-                }),
+                },
             },
             AT,
         )
@@ -533,17 +558,16 @@ mod tests {
         };
         run.pr_status = Some(merged.clone());
         run.leave(
-            Exit::Accepted {
+            Exit::Finished {
                 gates: vec![Evaluation::with_status(
                     Gate::CiPassed,
                     GateStatus::AwaitingLiveCheck,
                 )],
-                skipped_checks: Vec::new(),
-                ci: Some(CiEvidence {
+                ci: CiEvidence {
                     head: "abc1234".into(),
                     outcome: CiOutcome::Passed,
                     pr_status: observed,
-                }),
+                },
             },
             AT,
         )
@@ -605,7 +629,7 @@ mod tests {
         run.summaries.clear();
         run.block(
             "PR closed without merge",
-            super::super::LifecycleSource::PullRequest,
+            crate::run::LifecycleSource::PullRequest,
             1,
         )
         .unwrap();
@@ -628,11 +652,7 @@ mod tests {
     #[test]
     fn a_rework_returns_to_build_and_records_its_history() {
         let mut run = run_in(Stage::Check);
-        run.findings = vec![
-            finding("F1", FindingState::Open),
-            finding("F2", FindingState::Fixed),
-            finding("F3", FindingState::Open),
-        ];
+        run.findings = vec![finding("F1"), fixed("F2"), finding("F3")];
         run.leave(
             Exit::Rework {
                 finding: "F1".into(),
@@ -669,14 +689,11 @@ mod tests {
             decision: decision.map(str::to_owned),
         };
         let mut check = run_in(Stage::Check);
-        check.findings = vec![
-            finding("F1", FindingState::Open),
-            finding("F2", FindingState::Fixed),
-        ];
+        check.findings = vec![finding("F1"), fixed("F2")];
         check.rework = Some(WORDING_REWORK);
         let mut blocked = check.clone();
         blocked
-            .block("waiting", super::super::LifecycleSource::Agent, 1)
+            .block("waiting", crate::run::LifecycleSource::Agent, 1)
             .unwrap();
         let cases = [
             (check.clone(), rework("F2", Some("go")), "F2 is not open"),

@@ -51,9 +51,13 @@ enum UpdateSource {
 /// What an edit decided.
 enum Edit {
     Save,
-    /// A collector's edit that changed the lifecycle: stamped like a dashboard change (`updated_at`, gate
-    /// checks in flight invalidated) and marked on the Timeline, not as agent activity.
-    SaveLifecycle,
+    /// A collector's edit that changed the lifecycle at `at`, read by the collector.
+    ///
+    /// It is stamped like a dashboard change (`updated_at`, gate checks in flight invalidated) and marked
+    /// on the Timeline, not as agent activity.
+    SaveLifecycle {
+        at: u64,
+    },
     /// Nothing to change: the run is neither stamped nor saved.
     Skip,
 }
@@ -200,9 +204,11 @@ impl RunStore {
         Ok(run)
     }
 
-    /// Locks the store, applies `edit` to a copy of the run, stamps it, saves, and restores the stored
-    /// run when saving fails. `edit` gets the copy and the time of the change, read once for the whole
-    /// change; an error from it changes nothing. `Ok(None)` means there is no run with this id.
+    /// Locks the store, applies `edit` to a copy of the run, stamps it and saves it.
+    ///
+    /// `edit` gets the copy and the time of the change, read once for the whole change; collector changes
+    /// go through [`collect`](Self::collect) and read no time. An error from `edit` changes nothing, and a
+    /// failed save restores the stored run. `Ok(None)` means there is no run with this id.
     fn change(
         &self,
         id: &str,
@@ -230,13 +236,17 @@ impl RunStore {
         let Some(index) = runs.iter().position(|run| run.id == id) else {
             return Ok(None);
         };
-        let now = updated_now().map_err(ChangeError::Clock)?;
+        let now = match stamp {
+            // Collector edits come through `collect`, which hands them no time, so the clock is not read.
+            Stamp::Collector => 0,
+            _ => updated_now().map_err(ChangeError::Clock)?,
+        };
         let mut next = runs[index].clone();
-        let stamp = match edit(&mut next, now).map_err(ChangeError::Edit)? {
-            Edit::Save => stamp,
-            Edit::SaveLifecycle => {
-                mark(&mut next, now, None);
-                Stamp::Dashboard
+        let (stamp, now) = match edit(&mut next, now).map_err(ChangeError::Edit)? {
+            Edit::Save => (stamp, now),
+            Edit::SaveLifecycle { at } => {
+                mark(&mut next, at, None);
+                (Stamp::Dashboard, at)
             }
             Edit::Skip => return Ok(Some(runs[index].clone())),
         };
@@ -262,6 +272,17 @@ impl RunStore {
             return Err(ChangeError::Save(error));
         }
         Ok(Some(runs[index].clone()))
+    }
+
+    /// Stores what a background collector gathered: no stamp, and gate checks in flight stay valid.
+    ///
+    /// The edit gets no time; one that changes the lifecycle reads it and returns [`Edit::SaveLifecycle`].
+    fn collect(
+        &self,
+        id: &str,
+        edit: impl FnOnce(&mut Run) -> io::Result<Edit>,
+    ) -> io::Result<Option<Run>> {
+        self.change(id, Stamp::Collector, |run, _| edit(run))
     }
 
     /// For changes that need a slow check first: `check` runs unlocked on a snapshot of the run and returns
@@ -435,6 +456,11 @@ impl RunStore {
     }
 
     /// Records the gate result `check` returns for a snapshot, merging independent concurrent gate results.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the run is missing, `check` refuses, the run changed in a way that
+    /// invalidates the result, the run holds too many gate results, or it cannot be saved.
     pub(crate) fn record_gate(
         &self,
         id: &str,
@@ -464,6 +490,11 @@ impl RunStore {
     /// `metadata` applied (the Finish summary gate reads summaries) and never changes the stored run. Once
     /// the store is locked again and the run has not changed since the snapshot (see [`conflicts`]), the
     /// metadata and the exit are applied to the stored run, both at one clock reading.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the run is missing, `check` refuses, the run changed while checking, the run
+    /// cannot leave its Stage this way, or it cannot be saved.
     pub(crate) fn advance(
         &self,
         id: &str,
@@ -549,7 +580,7 @@ impl RunStore {
 
     /// Replaces the usage of a run. A failed save leaves the stored usage as it was.
     pub(crate) fn set_usage(&self, id: &str, usage: Usage) -> io::Result<()> {
-        self.change(id, Stamp::Collector, |run, _| {
+        self.collect(id, |run| {
             if let Some(routing) = &run.model_routing {
                 for row in &usage.rows {
                     let completed = run.status == RunStatus::Done
@@ -608,7 +639,7 @@ impl RunStore {
         if skills.is_empty() {
             return Ok(());
         }
-        self.change(id, Stamp::Collector, |run, _| {
+        self.collect(id, |run| {
             let mut added = false;
             for skill in skills {
                 added |= reports::observe_skill(run, &skill.name, skill.stage, skill.at);
@@ -622,7 +653,7 @@ impl RunStore {
     /// that changed it in the meantime wins. A failed save leaves the stored state as it was.
     #[cfg(test)]
     pub(crate) fn set_pr_status(&self, id: &str, status: PrStatus) -> io::Result<()> {
-        self.change(id, Stamp::Collector, |run, _| {
+        self.collect(id, |run| {
             if run.pr.as_deref() != Some(status.url.as_str()) {
                 return Ok(Edit::Skip);
             }
@@ -635,7 +666,7 @@ impl RunStore {
     /// Records a host result and its run transition together, only for the current pull request.
     pub(crate) fn record_pr_result(&self, id: &str, status: PrStatus) -> io::Result<PrResult> {
         let mut result = PrResult::Discarded;
-        let found = self.change(id, Stamp::Collector, |run, now| {
+        let found = self.collect(id, |run| {
             if run.pr.as_deref() != Some(status.url.as_str())
                 || run
                     .pr_status
@@ -644,11 +675,12 @@ impl RunStore {
             {
                 return Ok(Edit::Skip);
             }
+            let now = updated_now()?;
             let changed = crate::pr_state::follow_up(run, &status, now).map_err(io_invalid)?;
             result = PrResult::Accepted { changed };
             run.pr_status = Some(status);
             Ok(if changed {
-                Edit::SaveLifecycle
+                Edit::SaveLifecycle { at: now }
             } else {
                 Edit::Save
             })
@@ -684,15 +716,7 @@ mod tests {
 
     fn store_with_run(dir: &TestDir) -> (RunStore, String) {
         let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let run = store
-            .create(NewRun {
-                title: "task".into(),
-                project: "/work".into(),
-                repository: None,
-                session: None,
-                model_routing: None,
-            })
-            .unwrap();
+        let run = crate::test_support::new_run(&store, "task");
         (store, run.id)
     }
 
@@ -784,7 +808,7 @@ mod tests {
             |_| {
                 // A change a gate reads, without the generation bump.
                 store
-                    .change(&id, Stamp::Collector, |run, _| {
+                    .collect(&id, |run| {
                         run.title = "renamed".into();
                         Ok(Edit::Save)
                     })
@@ -828,6 +852,12 @@ mod tests {
                     )
                     .unwrap();
                 store.set_usage(&id, usage.clone()).unwrap();
+                let skill = crate::usage::UsedSkill {
+                    stage: Stage::Define,
+                    name: "grilling".into(),
+                    at: 7,
+                };
+                store.observe_skills(&id, &[skill]).unwrap();
                 Ok(Exit::Override {
                     reason: "Spec agreed by hand".into(),
                 })
@@ -838,6 +868,9 @@ mod tests {
         assert_eq!(run.activity.as_deref(), Some("Building"));
         assert_eq!(run.pr_status.unwrap().checked_at, 7);
         assert_eq!(run.usage, Some(usage));
+        // The skill report observed during the check is kept, ahead of the forced advance's report.
+        let observed = &run.run_reports[run.run_reports.len() - 2];
+        assert!(matches!(observed.kind, ReportKind::Skill) && observed.at == 7);
         assert_eq!(
             run.run_reports.last().unwrap().text,
             "Forced advance from define: Spec agreed by hand"

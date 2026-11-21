@@ -65,6 +65,11 @@ fn no_open_findings(run: &Run) -> Result<(), String> {
 }
 
 /// Checks `record` against the run and returns the gate result to store.
+///
+/// # Errors
+///
+/// Returns a message when the run is not running, the gate is checked automatically, or the evidence,
+/// check or worktree does not support the result.
 pub(crate) fn record(run: &Run, record: Record, git: &dyn Git) -> Result<GateResult, String> {
     if run.status != RunStatus::Running {
         return Err("Resume the run before recording a gate".into());
@@ -471,6 +476,10 @@ impl Gate {
 }
 
 /// Checks the exit gates of the current Stage, and CI when leaving Finish, and returns the accepted exit.
+///
+/// # Errors
+///
+/// Returns a message naming each failing gate and its remedy, or why CI has not passed.
 pub(crate) fn accepted_exit(
     run: &Run,
     git: &dyn Git,
@@ -517,27 +526,21 @@ fn accepted_exit_with_clock(
         return Err("The worktree HEAD changed while checking gates; try again".into());
     }
 
-    let ci = if transition.to == Destination::Done {
-        Some(ci_passed(run, git, tool, clock).map_err(|reason| {
+    if transition.to == Destination::Done {
+        let ci = ci_passed(run, git, tool, clock).map_err(|reason| {
             format!(
                 "Cannot advance:\n{}",
                 gate_failure(run, Gate::CiPassed, &reason)
             )
-        })?)
-    } else {
-        None
-    };
+        })?;
+        return Ok(Exit::Finished { gates, ci });
+    }
     Ok(Exit::Accepted {
         gates,
         skipped_checks: selection
             .as_ref()
             .map_or_else(|_| Vec::new(), skipped_snapshot),
-        ci,
     })
-}
-
-fn now() -> Result<u64, String> {
-    updated_now().map_err(|error| format!("Could not read the time: {error}"))
 }
 
 fn gate_failure(run: &Run, gate: Gate, reason: &str) -> String {
@@ -574,8 +577,14 @@ impl AdvanceRequest {
         validate_sessions(&self.sessions)
     }
 
-    /// Advances run `id` in `store` with this request's metadata: forced, or once the exit gates (and CI
-    /// out of Finish) pass.
+    /// Advances run `id` in `store`, forced or once the exit gates pass.
+    ///
+    /// The request's metadata is saved with the Stage exit; leaving Finish also needs passing CI.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the request is invalid, a gate or CI has not passed, the run is missing or
+    /// changed while checking, or the run cannot be saved.
     pub(crate) fn advance(
         self,
         store: &RunStore,
@@ -673,7 +682,7 @@ fn ci_passed(
     clock: &dyn pr_wait::Clock,
 ) -> Result<CiEvidence, String> {
     let url = run.pr.as_deref().ok_or("No pull request is recorded")?;
-    let checked_at = now()?;
+    let checked_at = updated_now().map_err(|error| format!("Could not read the time: {error}"))?;
     let state = pr_state::read(tool, url)
         .map_err(|error| format!("Could not read pull request state: {}", error.0))?;
     require(
@@ -733,14 +742,14 @@ mod tests {
     use std::cell::RefCell;
 
     /// Records a gate on a run value, as the store does with the result.
-    fn record(run: &mut Run, gate: Record, git: &dyn Git) -> Result<(), String> {
-        let result = super::record(run, gate, git)?;
+    fn record_on(run: &mut Run, gate: Record, git: &dyn Git) -> Result<(), String> {
+        let result = record(run, gate, git)?;
         run.gates.push(result);
         Ok(())
     }
 
     /// Leaves the Stage of a run value once its exit gates pass, as the store does with the exit.
-    fn advance(run: &mut Run, git: &dyn Git, tool: &dyn pr_wait::Gh) -> Result<(), String> {
+    fn advance_on(run: &mut Run, git: &dyn Git, tool: &dyn pr_wait::Gh) -> Result<(), String> {
         let exit = accepted_exit(run, git, tool)?;
         run.leave(exit, 1)
     }
@@ -951,20 +960,20 @@ mod tests {
             status: TicketStatus::Pending,
             work_attempt: 0,
         });
-        let error = advance(&mut run, &git, &host()).unwrap_err();
+        let error = advance_on(&mut run, &git, &host()).unwrap_err();
         assert!(error.contains("tickets-done") && error.contains("verified"));
-        record(&mut run, result(Gate::Verified, true), &git).unwrap();
+        record_on(&mut run, result(Gate::Verified, true), &git).unwrap();
         run.tickets[0].status = TicketStatus::Done;
         *git.0.borrow_mut() = "def5678".into();
         assert!(
-            advance(&mut run, &git, &host())
+            advance_on(&mut run, &git, &host())
                 .unwrap_err()
                 .contains("verified")
         );
-        record(&mut run, result(Gate::Verified, false), &git).unwrap();
-        assert!(advance(&mut run, &git, &host()).is_err());
-        record(&mut run, result(Gate::Verified, true), &git).unwrap();
-        advance(&mut run, &git, &host()).unwrap();
+        record_on(&mut run, result(Gate::Verified, false), &git).unwrap();
+        assert!(advance_on(&mut run, &git, &host()).is_err());
+        record_on(&mut run, result(Gate::Verified, true), &git).unwrap();
+        advance_on(&mut run, &git, &host()).unwrap();
         assert_eq!(run.stage, Stage::Finish);
     }
     #[test]
@@ -981,21 +990,21 @@ mod tests {
             });
         }
         assert!(
-            advance(&mut run, &git, &host())
+            advance_on(&mut run, &git, &host())
                 .unwrap_err()
                 .contains("tickets-verified")
         );
-        assert!(record(&mut run, result(Gate::TicketsVerified, true), &git).is_err());
+        assert!(record_on(&mut run, result(Gate::TicketsVerified, true), &git).is_err());
         run.tickets[0].status = TicketStatus::InProgress;
-        record(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
+        record_on(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
         run.tickets[0].status = TicketStatus::Done;
-        assert!(advance(&mut run, &git, &host()).is_err());
+        assert!(advance_on(&mut run, &git, &host()).is_err());
         run.tickets[1].status = TicketStatus::InProgress;
-        record(&mut run, result(Gate::TicketsVerified, false), &git).unwrap();
-        assert!(advance(&mut run, &git, &host()).is_err());
-        record(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
+        record_on(&mut run, result(Gate::TicketsVerified, false), &git).unwrap();
+        assert!(advance_on(&mut run, &git, &host()).is_err());
+        record_on(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
         run.tickets[1].status = TicketStatus::Done;
-        advance(&mut run, &git, &host()).unwrap();
+        advance_on(&mut run, &git, &host()).unwrap();
         assert_eq!(run.stage, Stage::Check);
     }
 
@@ -1015,7 +1024,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
         };
-        let gate = |record| store.record_gate("1", |run| super::record(run, record, &git));
+        let gate = |result| store.record_gate("1", |run| record(run, result, &git));
         let gh = FakeGh {
             head: "def5678",
             ..host()
@@ -1111,7 +1120,7 @@ mod tests {
             Gate::NoActionableFindings,
             Gate::Verified,
         ] {
-            record(&mut run, result(gate, true), &git).unwrap();
+            record_on(&mut run, result(gate, true), &git).unwrap();
         }
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("runs.json");
@@ -1156,7 +1165,7 @@ mod tests {
             }
             let mut failed = result(gate, false);
             failed.evidence = Some("Verification timed out".into());
-            record(&mut run, failed, &git).unwrap();
+            record_on(&mut run, failed, &git).unwrap();
             let views = |run: &Run| {
                 serde_json::to_value(crate::run_next::stage_gates(run, Ok(&[]), &git)).unwrap()
             };
@@ -1210,7 +1219,7 @@ mod tests {
         let advance = || advance_stored(&store, &git, &host());
         let pass = || {
             store.record_gate("1", |run| {
-                super::record(run, result(Gate::TicketsVerified, true), &git)
+                record(run, result(Gate::TicketsVerified, true), &git)
             })
         };
 
@@ -1246,7 +1255,7 @@ mod tests {
     fn merged_pull_request_advise_sync_instead_of_accepting_unchecked_ci() {
         let git = FakeGit(RefCell::new("abc1234".into()));
         let mut run = run(Stage::Finish);
-        let error = advance(
+        let error = advance_on(
             &mut run,
             &git,
             &FakeGh {
@@ -1278,7 +1287,7 @@ mod tests {
         }
         let git = FakeGit(RefCell::new("abc1234".into()));
         let mut run = run(Stage::Finish);
-        let error = advance(&mut run, &git, &MergedDuringWait).unwrap_err();
+        let error = advance_on(&mut run, &git, &MergedDuringWait).unwrap_err();
         assert!(error.contains("jidoka run sync 1"), "{error}");
         assert_eq!(run.status, RunStatus::Running);
     }
@@ -1300,10 +1309,10 @@ mod tests {
                 ..host()
             },
         ] {
-            assert!(advance(&mut run(Stage::Finish), &git, &host).is_err());
+            assert!(advance_on(&mut run(Stage::Finish), &git, &host).is_err());
         }
         let mut run = run(Stage::Finish);
-        advance(&mut run, &git, &host()).unwrap();
+        advance_on(&mut run, &git, &host()).unwrap();
         assert_eq!(run.status, RunStatus::Done);
     }
     #[test]
@@ -1322,33 +1331,33 @@ mod tests {
             });
             if mode == Mode::Full {
                 run.tickets[0].status = TicketStatus::InProgress;
-                record(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
+                record_on(&mut run, result(Gate::TicketsVerified, true), &git).unwrap();
                 run.tickets[0].status = TicketStatus::Done;
             }
-            advance(&mut run, &git, &host()).unwrap();
+            advance_on(&mut run, &git, &host()).unwrap();
             assert_eq!(run.stage, Stage::Check);
-            record(&mut run, result(Gate::ChecksRecorded, true), &git).unwrap();
-            record(&mut run, result(Gate::NoActionableFindings, true), &git).unwrap();
+            record_on(&mut run, result(Gate::ChecksRecorded, true), &git).unwrap();
+            record_on(&mut run, result(Gate::NoActionableFindings, true), &git).unwrap();
             assert!(
-                advance(&mut run, &git, &host())
+                advance_on(&mut run, &git, &host())
                     .unwrap_err()
                     .contains("verified")
             );
-            record(&mut run, result(Gate::Verified, true), &git).unwrap();
+            record_on(&mut run, result(Gate::Verified, true), &git).unwrap();
             *git.0.borrow_mut() = "def5678".into();
             assert!(
-                advance(&mut run, &git, &host())
+                advance_on(&mut run, &git, &host())
                     .unwrap_err()
                     .contains("verified")
             );
-            record(&mut run, result(Gate::Verified, true), &git).unwrap();
+            record_on(&mut run, result(Gate::Verified, true), &git).unwrap();
             assert!(
-                advance(&mut run, &git, &host())
+                advance_on(&mut run, &git, &host())
                     .unwrap_err()
                     .contains("checks-recorded")
             );
-            record(&mut run, result(Gate::ChecksRecorded, true), &git).unwrap();
-            advance(&mut run, &git, &host()).unwrap();
+            record_on(&mut run, result(Gate::ChecksRecorded, true), &git).unwrap();
+            advance_on(&mut run, &git, &host()).unwrap();
             assert_eq!(run.stage, Stage::Finish);
         }
     }
@@ -1391,7 +1400,7 @@ mod tests {
         let mut run = run(Stage::Finish);
         run.summaries.insert(Stage::Finish, "  ".into());
         assert!(
-            advance(&mut run, &git, &host())
+            advance_on(&mut run, &git, &host())
                 .unwrap_err()
                 .contains("--summary finish=")
         );
@@ -1505,13 +1514,13 @@ mod tests {
     fn failed_external_checks_report_the_cause_and_remedy() {
         let git = FakeGit(RefCell::new("abc1234".into()));
         let mut build = run(Stage::Build);
-        record(&mut build, result(Gate::Verified, true), &git).unwrap();
-        let error = advance(&mut build, &BrokenGit, &host()).unwrap_err();
+        record_on(&mut build, result(Gate::Verified, true), &git).unwrap();
+        let error = advance_on(&mut build, &BrokenGit, &host()).unwrap_err();
         assert!(
             error.contains("repository unavailable") && error.contains("jidoka run gate"),
             "{error}"
         );
-        let error = advance(&mut run(Stage::Finish), &git, &BrokenHost).unwrap_err();
+        let error = advance_on(&mut run(Stage::Finish), &git, &BrokenHost).unwrap_err();
         assert!(
             error.contains("host unavailable") && error.contains("jidoka pr wait"),
             "{error}"
@@ -1552,7 +1561,7 @@ mod tests {
         let git = FakeGit(RefCell::new("abc1234".into()));
         let mut run = run(Stage::Finish);
         run.pr = Some("https://dev.azure.com/org/Project/_git/Repo/pullrequest/535".into());
-        advance(&mut run, &git, &Azure).unwrap();
+        advance_on(&mut run, &git, &Azure).unwrap();
         assert_eq!(run.status, RunStatus::Done);
     }
     #[test]
@@ -1560,12 +1569,12 @@ mod tests {
         let git = FakeGit(RefCell::new("abc1234".into()));
         let mut run = run(Stage::Check);
         run.mode = Some(Mode::Balanced);
-        record(&mut run, result(Gate::ChecksRecorded, true), &git).unwrap();
-        record(&mut run, result(Gate::NoActionableFindings, false), &git).unwrap();
-        assert!(advance(&mut run, &git, &host()).is_err());
-        record(&mut run, result(Gate::NoActionableFindings, true), &git).unwrap();
-        record(&mut run, result(Gate::Verified, true), &git).unwrap();
-        advance(&mut run, &git, &host()).unwrap();
+        record_on(&mut run, result(Gate::ChecksRecorded, true), &git).unwrap();
+        record_on(&mut run, result(Gate::NoActionableFindings, false), &git).unwrap();
+        assert!(advance_on(&mut run, &git, &host()).is_err());
+        record_on(&mut run, result(Gate::NoActionableFindings, true), &git).unwrap();
+        record_on(&mut run, result(Gate::Verified, true), &git).unwrap();
+        advance_on(&mut run, &git, &host()).unwrap();
         assert_eq!(run.stage, Stage::Finish);
     }
     #[test]
@@ -1649,7 +1658,6 @@ mod tests {
             Exit::Accepted {
                 gates: Vec::new(),
                 skipped_checks: skipped_snapshot(&selection),
-                ci: None,
             },
             0,
         )
@@ -1686,14 +1694,14 @@ mod tests {
         let mut gate = result(Gate::ChecksRecorded, true);
         gate.check = None;
         assert!(
-            record(&mut run, gate, &git)
+            record_on(&mut run, gate, &git)
                 .unwrap_err()
                 .contains("--check")
         );
         let mut gate = result(Gate::ChecksRecorded, true);
         gate.check = Some("nonexistent".into());
         assert!(
-            record(&mut run, gate, &git)
+            record_on(&mut run, gate, &git)
                 .unwrap_err()
                 .contains("not applicable")
         );
@@ -1715,25 +1723,14 @@ mod tests {
         let steady = FakeGit(RefCell::new("old".into()));
         let mut run = run(Stage::Check);
         run.mode = Some(Mode::Balanced);
-        record(&mut run, result(Gate::ChecksRecorded, true), &steady).unwrap();
-        record(&mut run, result(Gate::NoActionableFindings, true), &steady).unwrap();
-        record(&mut run, result(Gate::Verified, true), &steady).unwrap();
-        let error = advance(&mut run, &MovingHead(std::cell::Cell::new(0)), &host()).unwrap_err();
+        record_on(&mut run, result(Gate::ChecksRecorded, true), &steady).unwrap();
+        record_on(&mut run, result(Gate::NoActionableFindings, true), &steady).unwrap();
+        record_on(&mut run, result(Gate::Verified, true), &steady).unwrap();
+        let error =
+            advance_on(&mut run, &MovingHead(std::cell::Cell::new(0)), &host()).unwrap_err();
         assert!(error.contains("HEAD changed"), "{error}");
         assert_eq!(run.stage, Stage::Check);
         assert!(run.stage_exits.is_empty());
-    }
-
-    fn stored_run(store: &crate::run::RunStore) -> Run {
-        store
-            .create(crate::run::NewRun {
-                title: "task".into(),
-                project: "/work/repo".into(),
-                repository: None,
-                session: None,
-                model_routing: None,
-            })
-            .unwrap()
     }
 
     #[test]
@@ -1758,7 +1755,7 @@ mod tests {
                 } else {
                     self.store
                         .record_gate(self.id, |run| {
-                            super::record(
+                            record(
                                 run,
                                 Record {
                                     gate: Gate::NoActionableFindings,
@@ -1776,7 +1773,7 @@ mod tests {
         }
         let dir = crate::test_support::TestDir::new();
         let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let run = stored_run(&store);
+        let run = crate::test_support::new_run(&store, "task");
         store
             .update(
                 &run.id,
@@ -1791,7 +1788,7 @@ mod tests {
         };
         store
             .record_gate(&run.id, |run| {
-                super::record(
+                record(
                     run,
                     verified(),
                     &Interleaved {
@@ -1820,7 +1817,7 @@ mod tests {
         );
         let error = store
             .record_gate(&run.id, |run| {
-                super::record(
+                record(
                     run,
                     verified(),
                     &Interleaved {
@@ -1858,7 +1855,7 @@ mod tests {
         }
         let dir = crate::test_support::TestDir::new();
         let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-        let run = stored_run(&store);
+        let run = crate::test_support::new_run(&store, "task");
         store
             .update(
                 &run.id,
@@ -1867,7 +1864,7 @@ mod tests {
             .unwrap();
         let error = store
             .record_gate(&run.id, |run| {
-                super::record(
+                record(
                     run,
                     Record {
                         gate: Gate::Verified,

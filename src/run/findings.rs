@@ -249,7 +249,10 @@ impl FindingsUpdate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run::{parse_update, tests::sample_run};
+    use crate::run::{
+        parse_update,
+        tests::{finding, sample_run},
+    };
     use std::path::Path;
 
     struct FixedGit;
@@ -283,22 +286,6 @@ mod tests {
                 git: &FixedGit,
             },
         )
-    }
-
-    fn finding(id: &str) -> Finding {
-        Finding {
-            id: id.into(),
-            check: "security".into(),
-            location: None,
-            text: "Leak".into(),
-            reviewed_commit: "abc1234".into(),
-            rework: None,
-            state: FindingState::Open,
-            reason: None,
-            fix_commit: None,
-            at: 1,
-            resolved_at: None,
-        }
     }
 
     #[test]

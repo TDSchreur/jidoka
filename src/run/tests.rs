@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{TestDir, advance_to};
+use crate::test_support::{TestDir, advance_to, force_advance, new_run};
 
 #[test]
 fn generic_updates_cannot_complete_finish_with_or_without_a_summary() {
@@ -296,23 +296,28 @@ fn update_refuses_lifecycle_options_and_initialized_mode_changes() {
     assert_eq!(store.get(&id).unwrap().unwrap().mode, Some(Mode::Balanced));
 }
 
-fn new_run(store: &RunStore, title: &str) -> Run {
-    store
-        .create(NewRun {
-            title: title.into(),
-            project: "/work/repo.worktrees/feature".into(),
-            repository: Some("/work/repo".into()),
-            session: None,
-            model_routing: None,
-        })
-        .unwrap()
-}
-
 /// A stored run for the unit tests of the update field groups, which need a `Run` but no store.
 pub(super) fn sample_run() -> Run {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     new_run(&store, "task")
+}
+
+/// An open Finding with id `id`, for unit tests that need recorded Findings.
+pub(super) fn finding(id: &str) -> Finding {
+    Finding {
+        id: id.into(),
+        check: "security".into(),
+        location: None,
+        text: "Leak".into(),
+        reviewed_commit: "abc1234".into(),
+        rework: None,
+        state: FindingState::Open,
+        reason: None,
+        fix_commit: None,
+        at: 1,
+        resolved_at: None,
+    }
 }
 
 fn selection() -> crate::routing::ModelRouting {
@@ -699,23 +704,8 @@ fn a_mark_records_the_activity_of_the_update_that_created_it() {
     store
         .update(&run.id, parse_update(&["--mode", "balanced"]).unwrap())
         .unwrap();
-    // Moves the run to its next Stage, with the activity given along with the advance.
-    let advance = |activity: Option<&str>| {
-        let metadata = AdvanceMetadata {
-            activity: activity.map(str::to_owned),
-            ..AdvanceMetadata::default()
-        };
-        store
-            .advance(&run.id, metadata, |_| {
-                Ok(Exit::Override {
-                    reason: "Test moves the run on".into(),
-                })
-            })
-            .unwrap();
-        store.get(&run.id).unwrap().unwrap()
-    };
     assert_eq!(run.timeline[0].activity, None);
-    let building = advance(Some("Writing the code"));
+    let building = force_advance(&store, &run.id, Some("Writing the code"));
     assert_eq!(
         building.timeline[1].activity.as_deref(),
         Some("Writing the code")
@@ -733,10 +723,34 @@ fn a_mark_records_the_activity_of_the_update_that_created_it() {
         same.timeline[1].activity.as_deref(),
         Some("Writing the code")
     );
+    // An update that makes a mark, here by starting a ticket, records the activity given with it.
+    store
+        .update(
+            &run.id,
+            parse_update(&["--ticket", "https://example.com/1 One"]).unwrap(),
+        )
+        .unwrap();
+    let ticket = store
+        .update(
+            &run.id,
+            parse_update(&[
+                "--ticket-status",
+                "https://example.com/1=in-progress",
+                "--activity",
+                "Writing ticket one",
+            ])
+            .unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        ticket.timeline[2].activity.as_deref(),
+        Some("Writing ticket one")
+    );
     // A mark made by an advance without an activity does not borrow the previous one.
-    let checking = advance(None);
+    let checking = force_advance(&store, &run.id, None);
     assert_eq!(checking.stage, Stage::Check);
-    assert_eq!(checking.timeline[2].activity, None);
+    assert_eq!(checking.timeline[3].activity, None);
 
     // The activity survives a reload from disk, and shows in the serialised run.
     let reloaded = RunStore::open(&path)
@@ -750,7 +764,7 @@ fn a_mark_records_the_activity_of_the_update_that_created_it() {
     );
     let json = serde_json::to_value(&reloaded).unwrap();
     assert_eq!(json["timeline"][1]["activity"], "Writing the code");
-    assert!(json["timeline"][2].get("activity").is_none());
+    assert!(json["timeline"][3].get("activity").is_none());
 }
 
 #[test]
@@ -765,14 +779,7 @@ fn finishing_a_run_closes_its_window_and_an_update_cannot_reopen_it() {
         )
         .unwrap();
     advance_to(&store, &run.id, Stage::Finish);
-    store
-        .advance(&run.id, AdvanceMetadata::default(), |_| {
-            Ok(Exit::Override {
-                reason: "CI service unavailable".into(),
-            })
-        })
-        .unwrap();
-    let done = store.get(&run.id).unwrap().unwrap();
+    let done = force_advance(&store, &run.id, None);
     assert!(done.finished_at.is_some());
     let update = store
         .update(
