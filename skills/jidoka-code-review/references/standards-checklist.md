@@ -4,9 +4,9 @@ The smell baseline and the cross-platform checklist for the Standards axis of a 
 
 On top of whatever the repo documents, the Standards axis always carries the **smell baseline** below: a fixed set of Fowler code smells (_Refactoring_, ch.3) that applies even when a repo documents nothing. Three rules bind it:
 
-- **The repo overrides.** A documented repo standard always wins; where it endorses something the baseline would flag, suppress the smell. A documented "keep it simple" or "avoid abstractions without a concrete benefit" standard likewise suppresses smells whose fix adds a type or an extraction (Primitive Obsession, Duplicated Code, Middle Man, Data Clumps, Repeated Switches), unless you name the concrete harm below.
+- **The repo overrides.** A documented repo standard always wins; where it endorses something the baseline would flag, suppress the smell. A documented "keep it simple" or "avoid abstractions without a concrete benefit" standard likewise suppresses smells whose fix adds a type or an extraction (Primitive Obsession, Duplicated Code, Data Clumps, Repeated Switches), unless you name the concrete harm below.
 - **Always a judgement call.** Each smell is a labelled heuristic ("possible Feature Envy"), never a hard violation. Like any standard here, skip anything tooling already enforces.
-- **Only with a concrete harm.** Report a smell only when you can name the concrete harm it causes in this diff: a bug risk, a reader being misled, or matching edits that one future change would need in several places that already exist in the diff. Leave out a smell without a named harm, one you would call weak or minor, and one the repo suppresses; do not mention it as a note either.
+- **Only with a concrete harm.** Report a smell only when you can name the concrete harm it causes in this diff: a bug risk, a reader being misled, or duplicated logic in the diff that one future change would have to edit in several places. Leave out a smell without a named harm, one you would call weak or minor, and one the repo suppresses; do not mention it as a note either.
 
 Each smell reads *what it is* → *how to fix*; match it against the diff:
 
