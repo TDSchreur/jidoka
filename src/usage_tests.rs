@@ -742,6 +742,31 @@ fn a_usage_limit_with_no_later_activity_is_an_unresumed_pause_and_is_not_a_model
 }
 
 #[test]
+fn a_virtual_tool_call_line_is_skipped_without_a_note_and_real_responses_still_count() {
+    let virtual_line = json!({"type": "assistant", "isVirtual": true, "isApiErrorMessage": false, "timestamp": iso(15),
+        "message": {"model": "<synthetic>", "content": [{"type": "tool_use", "name": "Bash"}],
+            "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}})
+    .to_string();
+    let real = claude_line(
+        "S1",
+        10,
+        "m1",
+        "r1",
+        "claude-opus-test",
+        (4, 0, 0, 6),
+        0,
+        false,
+    );
+    let (world, target) = pause_world(vec![real, virtual_line]);
+    let usage = world.collect(&target, std::slice::from_ref(&target));
+    let build = rows_of(&usage, Stage::Build);
+    assert_eq!(build.len(), 1);
+    assert_eq!(build[0].tokens.input, Some(4));
+    assert_eq!(build[0].tokens.output, Some(6));
+    assert!(usage.notes.is_empty(), "{:?}", usage.notes);
+}
+
+#[test]
 fn copilot_coordinator_response_needs_attention_until_the_user_replies() {
     let world = World::new();
     let target = run(RUN_A, &[(0, "build", None, None)], None, &["c1"]);

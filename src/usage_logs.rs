@@ -366,8 +366,11 @@ fn parse_claude(text: &str, session: &str, subagent_file: bool) -> LogUsage {
             parsed.malformed += 1;
             continue;
         };
-        // A usage-limit message carries zero usage under a made-up model: not a response.
-        if data["isApiErrorMessage"].as_bool() == Some(true) {
+        // A usage-limit message and a virtual tool-call line (a tool called from inside a script tool)
+        // carry zero usage under a made-up model: not a response.
+        if data["isApiErrorMessage"].as_bool() == Some(true)
+            || data["isVirtual"].as_bool() == Some(true)
+        {
             continue;
         }
         let message = &data["message"];
