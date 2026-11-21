@@ -173,6 +173,12 @@ const again = first.getAttribute('aria-expanded');
 const chips = [...document.querySelectorAll('.line-row')].map((row) => [text(row.querySelector('.line-open')), [...row.querySelectorAll('.chip')].map(text).filter((t) => t.startsWith('Group:'))]);
 document.querySelector('[data-run-key$="r-module"]').click();
 const detail = await wait(() => text(document.querySelector('.detail-sub')), 'the run detail');
+const section = text(document.querySelector('.detail-group'));
+const sheetRuns = [...document.querySelectorAll('.detail-group-runs li')].map((li) => [text(li), Boolean(li.querySelector('button'))]);
+// Another run of the group on this dashboard opens its own sheet; one that is not listed stays plain text.
+[...document.querySelectorAll('.detail-group-runs button')].find((b) => text(b) === 'Use module in infra').click();
+await wait(() => text(document.querySelector('#detail-title')) === 'Use module in infra', 'the other run sheet');
+const switched = {open: document.querySelectorAll('dialog[open]').length, group: text(document.querySelector('.detail-group'))};
 document.querySelector('.detail-close').click();
 await wait(() => !document.querySelector('dialog[open]'), 'the detail to close');
 // Group two, with the local spec, the replaced PR and the missing member.
@@ -180,7 +186,7 @@ toggles[1].click();
 const second = await wait(() => document.querySelector('.group-panel'), 'the second group');
 const specLink = document.querySelector('#groups-title').closest('section').querySelectorAll('.group-spec a');
 return {counts, rows, collapsed, keyboard, expanded, links, again, second: text(second), secondLinks: [...second.querySelectorAll('a')].map((a) => a.getAttribute('href')),
-  specLinks: [...specLink].map((a) => a.getAttribute('href')), chips, detail, heading: text(document.querySelector('#groups-title')),
+  specLinks: [...specLink].map((a) => a.getAttribute('href')), chips, detail, section, sheetRuns, switched, heading: text(document.querySelector('#groups-title')),
   headings: [...document.querySelectorAll('.groups h2, .groups h3, .groups h4')].map((h) => h.tagName)};
 """
 
@@ -203,8 +209,20 @@ class GroupsTest(unittest.TestCase):
         self.assertEqual(chips["Publish module"], ["Group: Bicep module v2.4.0"])
         self.assertEqual(chips["Use ADO module"], ["Group: ADO rollout"])
         self.assertEqual(chips["Shipped ADO API"] if "Shipped ADO API" in chips else [], [])
-        self.assertIn("Group: Bicep module v2.4.0", self.data["detail"])
+        self.assertNotIn("Group:", self.data["detail"])
         self.assertEqual(self.data["heading"], "Change groups (3)")
+
+    def test_run_sheet_shows_its_group_and_opens_other_runs(self):
+        data = self.data
+        self.assertIn("Change group Bicep module v2.4.0", data["section"])
+        self.assertIn("Spec: https://example.com/platform/changes/module-2-4", data["section"])
+        self.assertEqual([runs for runs, _ in data["sheetRuns"]], [
+            "Publish module (this run) module merged", "Use module in infra infra open", "Use module in API api a draft"])
+        self.assertEqual([button for _, button in data["sheetRuns"]], [False, True, True])
+        self.assertEqual(data["switched"]["open"], 1)
+        self.assertIn("Use module in infra (this run)", data["switched"]["group"])
+        self.assertIn("This run waits on", data["switched"]["group"])
+        self.assertIn("Milestones Bicep module v2.4.0 published: pending", data["switched"]["group"])
 
     def test_keyboard_expand_and_collapse(self):
         data = self.data
