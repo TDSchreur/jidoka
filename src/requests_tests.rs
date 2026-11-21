@@ -4,7 +4,7 @@
 use super::*;
 use crate::{agent_logs::Roots, request_logs::Category, run::Run};
 use serde_json::{Value, json};
-use std::{collections::HashSet, fs, time::Duration};
+use std::{fs, time::Duration};
 use tempfile::TempDir;
 
 /// 2026-11-05T10:00:00Z.
@@ -438,27 +438,6 @@ fn copilot_result(at: u64, id: &str, content: &str) -> String {
     json!({"type": "tool.execution_complete", "timestamp": iso(at), "data": {"toolCallId": id, "success": true,
         "result": {"content": content, "detailedContent": "not counted, the model never sees it"}}})
     .to_string()
-}
-
-#[test]
-fn copilot_logs_claim_a_run_through_a_shell_variable_but_not_through_a_prompt() {
-    let ids = HashSet::from([RUN_A]);
-    let via_variable = copilot_message(
-        1,
-        "c1",
-        &[copilot_call(
-            "t1",
-            "bash",
-            json!({"command": format!("id={RUN_A} && jidoka run update $id define running")}),
-        )],
-    );
-    assert_eq!(
-        crate::agent_logs::copilot::copilot_claims(&via_variable, &ids),
-        HashSet::from([RUN_A.to_string()])
-    );
-    let prompt_only =
-        json!({"type": "user.message", "data": {"content": format!("Run: {RUN_A}")}}).to_string();
-    assert!(crate::agent_logs::copilot::copilot_claims(&prompt_only, &ids).is_empty());
 }
 
 #[test]

@@ -7,12 +7,12 @@
 //! compaction) and of activity, as timestamps only.
 //!
 //! Formats (see the README for what is validated): Claude Code transcripts and their subagent transcripts,
-//! Codex rollout files, and Copilot `events.jsonl` files. Claude Code is read by one adapter that both
-//! reports share; Codex and Copilot move behind the same interface next.
+//! Codex rollout files, and Copilot `events.jsonl` files. Each agent has one adapter, and both reports read
+//! from it.
 
 mod claude;
 mod codex;
-pub(crate) mod copilot;
+mod copilot;
 
 pub(crate) use claude::read_claude;
 pub(crate) use codex::read_codex;
@@ -20,8 +20,8 @@ pub(crate) use copilot::read_copilot;
 
 use crate::{
     install::agent_home,
-    request_logs::{Variables, is_real_dir, result_bytes, run_claims, truncate},
     run::Run,
+    shell_commands::{MAX_COMMAND_BYTES, Variables, run_claims, truncate},
     usage::{PauseKind, Tokens, overlaps, parse_timestamp},
 };
 use serde_json::Value;
@@ -35,9 +35,12 @@ use std::{
 
 /// The largest log read: real session logs are a few megabytes, so a bigger one is skipped.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// A day. Codex keeps its rollouts in one folder per day, and a run may start late in the previous one.
 pub(crate) const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 /// The longest model name or session id kept from a log: real ones are far shorter, so a longer one is junk.
 const MAX_NAME_LEN: usize = 100;
+/// How long before a run started a log may still have been written for it: file times are coarse and clocks
+/// differ.
 pub(crate) const MTIME_SLACK_MS: u64 = 5 * 60 * 1000;
 /// Limits on one pass over the logs, so a huge or hostile log folder cannot exhaust memory or time.
 #[derive(Clone, Copy, Debug)]
@@ -46,6 +49,7 @@ pub(crate) struct ReadLimits {
     pub(crate) bytes: u64,
 }
 
+/// Real log folders hold a few thousand files of a few megabytes each, so these are far above any real one.
 impl Default for ReadLimits {
     fn default() -> Self {
         Self {
@@ -430,6 +434,25 @@ fn skipped_notes(
             "a {agent} session log held no usage entries in a recognised format"
         ));
     }
+}
+
+/// The bytes of text in a tool result, which is a string or a list of text blocks.
+pub(crate) fn result_bytes(content: &Value) -> u64 {
+    let bytes = match content {
+        Value::String(text) => text.len(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|block| block["text"].as_str())
+            .map(str::len)
+            .sum(),
+        _ => 0,
+    };
+    bytes as u64
+}
+
+/// Whether `path` is a folder itself, not a link to one.
+pub(crate) fn is_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
 }
 
 /// Whether a log's own file or folder name is safe to keep as a session id: a plain one.

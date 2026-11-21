@@ -5,7 +5,6 @@
 //! scanned for string literals and never run. The command text is handed on only to be classified.
 
 use super::*;
-use crate::request_logs::MAX_COMMAND_BYTES;
 
 /// The most of one JavaScript snippet that is read. A patch can carry whole files.
 const MAX_SNIPPET_CHARS: usize = 256 * 1024;
@@ -308,7 +307,7 @@ fn decode_string(chars: &[char], start: usize) -> Option<(String, usize)> {
     None
 }
 
-// --- the rollout files ------------------------------------------------------------------------------
+// --- the commands of a rollout ----------------------------------------------------------------------
 
 /// The tool calls of the response being read, until its `token_usage_record` closes it.
 #[derive(Default)]

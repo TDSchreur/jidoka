@@ -32,6 +32,7 @@ mod run_gate;
 mod run_next;
 mod server;
 mod setup;
+mod shell_commands;
 mod stages;
 mod stats;
 mod token;

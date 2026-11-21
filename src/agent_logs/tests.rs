@@ -123,3 +123,19 @@ fn usage_and_requests_count_the_same_responses_and_tokens_for_every_agent() {
         assert_eq!(usage.sessions, requests.sessions, "{agent}: same session");
     }
 }
+
+#[test]
+fn copilot_claims_a_run_through_a_shell_variable_but_not_through_a_prompt() {
+    let ids = HashSet::from([RUN]);
+    let via_variable = json!({"type": "assistant.message", "timestamp": iso(1), "data": {"apiCallId": "c1", "content": "",
+        "toolRequests": [{"toolCallId": "t1", "name": "bash",
+            "arguments": {"command": format!("id={RUN} && jidoka run update $id define running")}}]}})
+    .to_string();
+    assert_eq!(
+        copilot::copilot_claims(&via_variable, &ids),
+        HashSet::from([RUN.to_string()])
+    );
+    let prompt_only =
+        json!({"type": "user.message", "data": {"content": format!("Run: {RUN}")}}).to_string();
+    assert!(copilot::copilot_claims(&prompt_only, &ids).is_empty());
+}

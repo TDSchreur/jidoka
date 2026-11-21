@@ -213,7 +213,7 @@ fn parse_copilot(text: &str, session: &str, ids: &HashSet<&str>) -> CopilotLog {
 
 /// The run ids in `ids` that the commands of a Copilot log name.
 #[cfg(test)]
-pub(crate) fn copilot_claims(text: &str, ids: &HashSet<&str>) -> HashSet<String> {
+pub(super) fn copilot_claims(text: &str, ids: &HashSet<&str>) -> HashSet<String> {
     parse_copilot(text, "", ids).claims
 }
 
