@@ -244,14 +244,8 @@ fn a_summary_counts_attached_pull_requests_and_only_matching_statuses() {
             .update(id, serde_json::from_value(json).unwrap())
             .unwrap();
     };
-    update(
-        &a,
-        serde_json::json!({"status": "running", "pr": "https://example.com/pr/1"}),
-    );
-    update(
-        &b,
-        serde_json::json!({"status": "running", "pr": "https://example.com/pr/2"}),
-    );
+    update(&a, serde_json::json!({"pr": "https://example.com/pr/1"}));
+    update(&b, serde_json::json!({"pr": "https://example.com/pr/2"}));
     fx.runs
         .set_pr_status(
             &a,
@@ -312,8 +306,7 @@ impl Fixture {
         self.runs
             .update(
                 run,
-                serde_json::from_value(serde_json::json!({"status": "running", "pr": url}))
-                    .unwrap(),
+                serde_json::from_value(serde_json::json!({"pr": url})).unwrap(),
             )
             .unwrap();
     }

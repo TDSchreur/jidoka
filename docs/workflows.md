@@ -37,9 +37,9 @@ Each workflow skill is a short bootstrap: the agent starts the run with `jidoka 
 
 | Mode | Stages | Gates before leaving a Stage |
 | --- | --- | --- |
-| `/jidoka-fast` | Define, Build, Finish | Build: all tickets done and `verified` on the current HEAD. Finish: open pull request whose head matches the worktree, with CI passed or no checks. |
-| `/jidoka-balanced` | Define, Build, Check, Finish, with a Rework loop | Build: all tickets done. Check: `checks-recorded`, `no-actionable-findings` (otherwise Rework to Build) and `verified` on the reviewed HEAD. Finish: as above. |
-| `/jidoka-full` | Same as balanced | As balanced, plus a passing `tickets-verified` for each ticket before leaving Build. |
+| `/jidoka-fast` | Define, Build, Finish | Build: all listed tickets done or an explicit unticketed declaration and `verified` on the current HEAD. Finish: open pull request whose head matches the worktree, with CI passed or no checks. |
+| `/jidoka-balanced` | Define, Build, Check, Finish, with a Rework loop | Build: all listed tickets done or an explicit unticketed declaration. Check: `checks-recorded`, `no-actionable-findings` (otherwise Rework to Build) and `verified` on the reviewed HEAD. Finish: as above. |
+| `/jidoka-full` | Same as balanced | As balanced, plus a passing `tickets-verified` for each ticket attempt or the unticketed Build candidate. |
 
 In Check, `jidoka run next` lists the applicable checks and the skipped ones with a reason. A check applies when the mode always runs it or when a path changed since the run's base commit matches its triggers. Balanced and Full always run the code review; Fast has no Check stage. `run next` does not list the security review: in both modes the agent runs it when the change meaningfully affects a security boundary or sensitive data flow, and says why when it skips it.
 

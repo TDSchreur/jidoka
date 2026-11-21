@@ -20,8 +20,24 @@ pub(crate) enum Gate {
     ChecksRecorded,
     /// The recorded checks left no actionable findings; otherwise the run starts a Rework.
     NoActionableFindings,
+    /// Finish has a nonblank summary.
+    FinishSummary,
     /// CI passed on the pull request's head commit, or the project has no CI.
     CiPassed,
+}
+
+impl Gate {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::TicketsDone => "tickets-done",
+            Self::Verified => "verified",
+            Self::TicketsVerified => "tickets-verified",
+            Self::ChecksRecorded => "checks-recorded",
+            Self::NoActionableFindings => "no-actionable-findings",
+            Self::FinishSummary => "finish-summary",
+            Self::CiPassed => "ci-passed",
+        }
+    }
 }
 
 /// Where a run goes when it leaves a Stage.
@@ -112,7 +128,7 @@ fn exit_gates(mode: Mode, stage: Stage) -> &'static [Gate] {
             Gate::NoActionableFindings,
             Gate::Verified,
         ],
-        (_, Stage::Finish) => &[Gate::CiPassed],
+        (_, Stage::Finish) => &[Gate::FinishSummary, Gate::CiPassed],
     }
 }
 
@@ -186,7 +202,7 @@ mod tests {
         for mode in [Mode::Fast, Mode::Balanced, Mode::Full] {
             assert_eq!(
                 next(mode, Stage::Finish, RUNNING).unwrap().gates,
-                [Gate::CiPassed]
+                [Gate::FinishSummary, Gate::CiPassed]
             );
             assert!(next(mode, Stage::Define, RUNNING).unwrap().gates.is_empty());
         }

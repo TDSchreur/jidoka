@@ -25,7 +25,7 @@ function Flow({ reworkCap }) {
     ['Build', 'Implement it and run the project’s checks.'],
     ['Check', `Review the code. Findings go back to Build for a Rework, up to ${reworkCap} times.`],
     ['Finish', 'Open a pull request and watch its CI.'],
-    ['Shipped', 'The pull request is open and CI is green.'],
+    ['Done', 'Jidoka finished its work. The pull request has its own state.'],
   ];
   return html`<ol class="flow">
     ${steps.map(([name, text]) => html`<li key=${name}><strong>${name}</strong><span>${text}</span></li>`)}
@@ -194,20 +194,21 @@ function Stages({ reworkCap }) {
         branch it chose at the start. Then it watches the pull request’s CI until every check has finished. When a
         check fails it reads the log, fixes the cause in a new commit, verifies again and pushes. When another pull
         request lands first and leaves this one behind its base branch, the agent merges the base into the branch
-        with a normal commit and watches CI again. Neither the CI fixes nor the base updates are Reworks. The Run has
-        shipped when the pull request is open, up to date and CI is green, or when the project has no CI. If the
+        with a normal commit and watches CI again. Neither the CI fixes nor the base updates are Reworks. The agent
+        records a Finish summary and advances once CI passes on the matching pull request head or confirms there is no CI. If the
         failure cannot be fixed, such as an infrastructure problem or a missing permission, the Run is blocked with that
         reason.
       </p>
     <//>
-    <${Topic} title="Shipped">
+    <${Topic} title="Completed">
       <p>
-        Finished Runs leave the line and go to the Shipped list below it, whatever Stage they ended in. It is a table,
+        Done Runs leave the line and go to the Completed list below it. The detail shows how each Run completed
+        and the current state of its pull request. The list is a table,
         newest first, grouped by the day of the last update, with the project, the pull request and its state, the fresh tokens and
-        how long ago. Select a title to open the detail. <em>Clear shipped…</em> removes the records of all shipped
+        how long ago. Select a title to open the detail. <em>Clear completed…</em> removes the records of all completed
         Runs after you confirm, and <em>Delete run</em> in a Run's detail removes one. Deleting removes the record from
         the dashboard only: the worktree, the branch and the pull request stay as they are. In the command line and
-        the API a shipped Run has the status done.
+        the API a completed Run has the status done.
       </p>
     <//>
     <${Topic} title="Needs you">
@@ -486,7 +487,7 @@ function Dashboard({ reworkCap }) {
         is not done, with a rail of the four Stations (Define, Build, Check and Finish) that shows where the Run is. A
         blocked Run is marked amber and its position says so, such as Check, blocked. Runs waiting for you come first,
         then the most recently updated. Finished Runs are listed below the line. The board refreshes by itself every few
-        seconds. The toolbar, the andon strip and the line stay at the top while you scroll the Shipped list; on a narrow
+        seconds. The toolbar, the andon strip and the line stay at the top while you scroll the Completed list; on a narrow
         screen the toolbar scrolls away and the strip and the line stay. They take at most 60% of the window: with many
         Runs, the line and the list of waiting Runs scroll on their own.
       </p>
@@ -498,7 +499,7 @@ function Dashboard({ reworkCap }) {
       <p>
         When you have change groups (<${Code}>jidoka group create<//>), a Change groups section below the line lists
         each group with its spec and a summary. Select a group's title to list its Runs with their pull request state,
-        what each waits on and the group's milestones. The Runs stay on the line and in the Shipped list, and the
+        what each waits on and the group's milestones. The Runs stay on the line and in the Completed list, and the
         section does not change any count. It is hidden when there are no groups.
       </p>
       <p>
@@ -607,8 +608,8 @@ function Commands() {
         items=${[
           [html`<${Code}>jidoka run start "title"<//>`, 'Creates a Run and prints its id. Run it from the Run’s worktree.'],
           [
-            html`<${Code}>jidoka run update ${'<id>'} ${'<status>'}<//>`,
-            html`Stages are define, build, check and finish. Statuses are running, blocked and done. Options leave a field alone when omitted, and most have a <${Code}>--clear-${'<name>'}<//> form (tickets clear with <${Code}>--clear-tickets<//>, and a summary with <${Code}>--clear-summary<//> and a Stage name): <${Code}>--activity<//>, <${Code}>--blocking-reason<//>, <${Code}>--rework<//>, <${Code}>--mode<//>, <${Code}>--worktree<//>, <${Code}>--branch<//>, <${Code}>--base-commit<//>, <${Code}>--spec<//>, <${Code}>--pr<//>, <${Code}>--ticket<//>, <${Code}>--summary<//> and more. <${Code}>jidoka --help<//> lists them.`,
+            html`<${Code}>jidoka run update ${'<id>'}<//>`,
+            html`Reports activity and context while preserving status. Use <${Code}>jidoka run block<//>, <${Code}>jidoka run resume<//> and <${Code}>jidoka run rework<//> for those transitions. Use <${Code}>jidoka run advance<//> to leave a Stage or complete Finish. <${Code}>jidoka --help<//> lists the options.`,
           ],
         ]}
       />
@@ -687,7 +688,7 @@ function ModelRouting() {
         </li>
         <li>
           To give one Stage another model for one Run, use${' '}
-          <${Code}>jidoka run update ${'<id>'} ${'<status>'} --model-routing check=sonnet:medium<//>
+          <${Code}>jidoka run update ${'<id>'} --model-routing check=sonnet:medium<//>
           (<${Code}>${'<stage>'}=${'<model>'}[:${'<effort>'}]<//>).
         </li>
       </ul>

@@ -447,15 +447,17 @@ fn run_with_cost(run: &Run) -> serde_json::Result<serde_json::Value> {
 /// Enrich a single run with gate and check status. Diff and HEAD inspection is kept off list polling.
 fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
     let mut value = run_with_cost(run)?;
-    value["stage_gates"] = serde_json::to_value(crate::run_next::stage_gates(run))?;
     if let Some(routing) = &run.model_routing {
         value["model_route"] = serde_json::json!({
             "agent": routing.agent,
             "stages": crate::inspect::route_entries(routing, run.usage.as_ref(), run.rework),
         });
     }
-    if let Some(snapshot) = run.check_history.last() {
-        value["recorded_skipped_checks"] = serde_json::to_value(&snapshot.skipped)?;
+    if let Some(snapshot) = run.stage_exits.iter().rev().find(|exit| {
+        exit.stage == crate::run::Stage::Check
+            && exit.outcome == crate::run_gate::ExitOutcome::Accepted
+    }) {
+        value["recorded_skipped_checks"] = serde_json::to_value(&snapshot.skipped_checks)?;
         value["recorded_skipped_rework"] = serde_json::to_value(snapshot.rework)?;
     } else if let Some(result) = run.gates.iter().rev().find(|result| result.check.is_some()) {
         value["recorded_skipped_checks"] = serde_json::to_value(&result.skipped_checks)?;
@@ -466,6 +468,11 @@ fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
         Some(crate::run::Mode::Fast) => Ok(Vec::new()),
         Some(_) => crate::run_next::changed_paths(run, &crate::run_check::ReadOnlyGit),
     };
+    value["stage_gates"] = serde_json::to_value(crate::run_next::stage_gates(
+        run,
+        paths.as_deref().map_err(String::as_str),
+        &crate::run_check::ReadOnlyGit,
+    ))?;
     match paths {
         Ok(paths) => {
             value["checks"] = serde_json::to_value(crate::run_next::checks_for(
@@ -506,25 +513,46 @@ fn update_run(
     store: &State<RunStore>,
     collector: &State<Collector>,
 ) -> Result<Json<Run>, (HttpStatus, String)> {
-    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err((HttpStatus::BadRequest, "Invalid run id".into()));
-    }
+    client_run_id(id)?;
     let updated = store
         .update(id, update.into_inner())
-        .map_err(|error| match error.kind() {
-            // An inconsistent update (an unknown ticket, two tickets in progress) is the caller's to fix.
-            io::ErrorKind::InvalidInput => (HttpStatus::BadRequest, error.to_string()),
-            _ => {
-                eprintln!("Run storage error: {error}");
-                (
-                    HttpStatus::InternalServerError,
-                    "Internal server error".into(),
-                )
-            }
-        })?
+        .map_err(run_update_error)?
         .ok_or((HttpStatus::NotFound, "Not found".into()))?;
     collector.after_update(store, &updated.id);
     Ok(Json(updated))
+}
+
+fn client_run_id(id: &str) -> Result<(), (HttpStatus, String)> {
+    crate::client::check_run_id(id).map_err(|error| (HttpStatus::BadRequest, error.into()))
+}
+
+fn run_update_error(error: io::Error) -> (HttpStatus, String) {
+    if error.kind() == io::ErrorKind::InvalidInput {
+        (HttpStatus::BadRequest, error.to_string())
+    } else {
+        eprintln!("Run storage error: {error}");
+        (
+            HttpStatus::InternalServerError,
+            "Internal server error".into(),
+        )
+    }
+}
+
+#[rocket::post("/api/runs/<id>/lifecycle", data = "<request>")]
+fn transition_run(
+    _access: PostAccess,
+    id: &str,
+    request: Json<crate::run::LifecycleRequest>,
+    store: &State<RunStore>,
+    collector: &State<Collector>,
+) -> Result<Json<Run>, (HttpStatus, String)> {
+    client_run_id(id)?;
+    let run = store
+        .transition(id, request.into_inner())
+        .map_err(run_update_error)?
+        .ok_or((HttpStatus::NotFound, "Not found".into()))?;
+    collector.after_update(store, &run.id);
+    Ok(Json(run))
 }
 
 #[rocket::post("/api/runs/<id>/gate", data = "<record>")]
@@ -549,15 +577,9 @@ fn advance_run(
     collector: &State<Collector>,
 ) -> Result<&'static str, (HttpStatus, String)> {
     let request = request.into_inner();
-    let forced = request
-        .forced_reason()
-        .map_err(|error| (HttpStatus::BadRequest, error))?;
     store
-        .change_gate(id, |run| match forced {
-            Some(reason) => crate::run_gate::advance_forced(run, reason),
-            None => {
-                crate::run_gate::advance(run, &crate::pr_sync::RealGit, &crate::pr_wait::RealGh)
-            }
+        .change_gate_with_activity(id, request.activity.clone(), |run| {
+            request.apply(run, &crate::pr_sync::RealGit, &crate::pr_wait::RealGh)
         })
         .map_err(|error| (HttpStatus::BadRequest, error))?;
     collector.after_update(store, id);
@@ -1288,6 +1310,7 @@ fn build_rocket_with_tokens(
                 get_document,
                 create_run,
                 update_run,
+                transition_run,
                 record_gate,
                 advance_run,
                 sync_run,

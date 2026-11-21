@@ -574,10 +574,9 @@ mod tests {
             "--base-commit",
             "--spec",
             "--ticket",
-            "--ticket-status",
+            "--unticketed",
             "--summary",
             "--pr",
-            "--blocking-reason",
         ] {
             assert!(flags.contains(&flag), "the context does not record {flag}");
         }

@@ -45,7 +45,6 @@ fn document_run(
         .update(
             &run.id,
             serde_json::from_value(serde_json::json!({
-                "status": "running",
                 "worktree": worktree.to_string_lossy(),
                 "spec": spec,
                 "tickets": tickets,
@@ -151,8 +150,7 @@ fn plan_run(dir: &TestDir, own: bool) -> (String, String) {
         .unwrap()
         .update(
             &id,
-            serde_json::from_value(serde_json::json!({ "status": "running", "spec": plan }))
-                .unwrap(),
+            serde_json::from_value(serde_json::json!({ "spec": plan })).unwrap(),
         )
         .unwrap();
     (id, plan)
@@ -375,9 +373,7 @@ async fn usage_is_collected_in_the_background_when_a_run_moves_on() {
 
     // Every update collects, even one that changes neither the stage nor the ticket.
     assert_eq!(
-        report(&api, &run.id, r#"{"status":"running","activity":"x"}"#)
-            .await
-            .status(),
+        report(&api, &run.id, r#"{"activity":"x"}"#).await.status(),
         HttpStatus::Ok
     );
     collector.wait_idle().await;
@@ -412,7 +408,7 @@ async fn usage_is_collected_in_the_background_when_a_run_moves_on() {
         .unwrap();
     let response = rocket::tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        report(&api, &run.id, r#"{"status":"running"}"#),
+        report(&api, &run.id, "{}"),
     )
     .await;
     release_tx.send(()).unwrap();
@@ -431,12 +427,24 @@ async fn usage_is_collected_in_the_background_when_a_run_moves_on() {
 
     // Collecting again after finishing gives the same numbers, not double.
     at_stage(&api, &run.id, Stage::Finish);
-    report(
-        &api,
-        &run.id,
-        r#"{"status":"done","summaries":{"finish":"Shipped"}}"#,
-    )
-    .await;
+    report(&api, &run.id, r#"{"mode":"fast"}"#).await;
+    let response = api
+        .post(format!("/api/runs/{}/advance", run.id))
+        .header(cli_token_header(&api))
+        .header(Header::new("Host", "127.0.0.1:4311"))
+        .header(ContentType::JSON)
+        .body(r#"{"force":true,"reason":"CI service unavailable","summaries":{"finish":"Completed"}}"#)
+        .dispatch()
+        .await;
+    assert_eq!(response.status(), HttpStatus::Ok);
+    let completed = fetch(&api, &run.id).await.1.unwrap();
+    assert_eq!(completed.summaries[&Stage::Finish], "Completed");
+    assert_eq!(
+        completed.completion,
+        Some(crate::run::Completion::Override {
+            reason: "CI service unavailable".into()
+        })
+    );
     collector.wait_idle().await;
     let usage = fetch(&api, &run.id).await.1.unwrap().usage.unwrap();
     assert_eq!(
@@ -450,20 +458,13 @@ async fn usage_is_collected_in_the_background_when_a_run_moves_on() {
 }
 
 #[rocket::async_test]
-async fn finish_done_without_a_summary_is_a_bad_request() {
+async fn reporting_done_in_finish_is_a_bad_request() {
     let dir = TestDir::new();
     let api = client(&dir).await;
     let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
     at_stage(&api, &run.id, Stage::Finish);
     let response = report(&api, &run.id, r#"{"status":"done"}"#).await;
     assert_eq!(response.status(), HttpStatus::BadRequest);
-    assert!(
-        response
-            .into_string()
-            .await
-            .unwrap()
-            .contains("--summary finish=")
-    );
     let stored = fetch(&api, &run.id).await.1.unwrap();
     assert!(stored.finished_at.is_none());
 }
@@ -482,12 +483,12 @@ async fn run_context_goes_through_the_api_partially_and_is_readable_by_id() {
     let plain = start(&api, r#"{"title":"old client","project":"/work"}"#).await;
     assert!(plain.repository.is_none());
 
-    let body = r#"{"status":"running","mode":"jidoka-full","branch":"feature/x",
+    let body = r#"{"mode":"jidoka-full","branch":"feature/x",
         "tickets":[{"reference":"https://x.test/1","title":"One"},{"reference":"docs/2.md","title":"Two"}],
         "ticket_status":{"https://x.test/1":"in-progress"},"summaries":{"define":"Planned"}}"#;
     assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
     // Only the fields that are sent change; null clears one.
-    let body = r#"{"status":"running","branch":null,"summaries":{"build":"Started"}}"#;
+    let body = r#"{"branch":null,"summaries":{"build":"Started"}}"#;
     assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
 
     let (status, stored) = fetch(&api, &run.id).await;
@@ -584,9 +585,9 @@ async fn ticket_reports_are_recorded_and_rejected_atomically_via_api() {
     let dir = TestDir::new();
     let api = client(&dir).await;
     let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
-    let body = r#"{"status":"running","tickets":[{"reference":"local=42","title":"One"}],"ticket_reports":[{"ticket":"local=42","kind":"skill","text":"jidoka-tdd"}]}"#;
+    let body = r#"{"tickets":[{"reference":"local=42","title":"One"}],"ticket_reports":[{"ticket":"local=42","kind":"skill","text":"jidoka-tdd"}]}"#;
     assert_eq!(report(&api, &run.id, body).await.status(), HttpStatus::Ok);
-    let bad = r#"{"status":"running","ticket_reports":[{"ticket":"missing","kind":"activity","text":"oops"}]}"#;
+    let bad = r#"{"ticket_reports":[{"ticket":"missing","kind":"activity","text":"oops"}]}"#;
     assert_eq!(
         report(&api, &run.id, bad).await.status(),
         HttpStatus::BadRequest
@@ -617,13 +618,13 @@ async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
         .update(
             &run.id,
             serde_json::from_str(&format!(
-                r#"{{"status":"done","pr":"{pr}","summaries":{{"finish":"Shipped"}}}}"#
+                r#"{{"pr":"{pr}","summaries":{{"finish":"Completed"}}}}"#
             ))
             .unwrap(),
         )
         .unwrap();
     store
-        .set_pr_status(
+        .record_pr_result(
             &run.id,
             PrStatus {
                 url: pr.into(),
@@ -649,6 +650,11 @@ async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
         list[0]["pr_status"],
         serde_json::json!({"url": pr, "state": "merged", "checked_at": 42})
     );
+    assert_eq!(
+        list[0]["completion"],
+        serde_json::json!({"kind":"merged","url":pr})
+    );
+    assert_eq!(list[0]["summaries"]["finish"], "Completed");
     // An update through the API cannot set it.
     let response = api
         .post(format!("/api/runs/{}", run.id))
@@ -697,7 +703,7 @@ fn waiting_run(api: &Client, pr: Option<&str>) -> String {
         })
         .unwrap();
     let pr = pr.map_or(String::new(), |pr| format!(r#","pr":"{pr}""#));
-    let update = format!(r#"{{"status":"running","activity":"Waiting for CI"{pr}}}"#);
+    let update = format!(r#"{{"activity":"Waiting for CI"{pr}}}"#);
     store.set_stage(&run.id, Stage::Finish);
     store
         .update(&run.id, serde_json::from_str(&update).unwrap())
@@ -789,7 +795,7 @@ async fn create_update_and_restart_preserve_cli_json_contract() {
         .header(cli_token_header(&api))
         .header(Header::new("Host", "127.0.0.1:4311"))
         .header(ContentType::JSON)
-        .body(r#"{"status":"running"}"#)
+        .body("{}")
         .dispatch()
         .await;
     assert_eq!(response.status(), HttpStatus::Ok);
@@ -998,7 +1004,7 @@ async fn update_refuses_a_stage_field_and_done_outside_finish() {
     )
     .await;
     assert_eq!(response.status(), HttpStatus::BadRequest);
-    let response = report(&api, "42", r#"{"status":"running"}"#).await;
+    let response = report(&api, "42", "{}").await;
     let body: serde_json::Value = response.into_json().await.unwrap();
     assert_eq!(body["id"], "42");
     assert_eq!(body["stage"], "define");
@@ -1008,7 +1014,7 @@ async fn post_status(api: &Client, route: &str, token: Option<&str>) -> HttpStat
     let body = if route == "/api/runs" {
         r#"{"title":"x","project":"/work"}"#
     } else {
-        r#"{"status":"running"}"#
+        "{}"
     };
     let mut request = api
         .post(route.to_owned())
@@ -1135,7 +1141,7 @@ async fn run_api_exposes_gate_status_and_skipped_checks() {
         .find(|g| g["name"] == "verified")
         .unwrap();
     assert_eq!(verified["status"], "failed");
-    assert_eq!(verified["evidence"], "Tests failed");
+    assert_eq!(verified["results"][0]["evidence"], "Tests failed");
     assert_eq!(body["checks"]["skipped"][0]["name"], "code-review");
     assert!(
         body["checks"]["skipped"][0]["reason"]
@@ -1145,6 +1151,97 @@ async fn run_api_exposes_gate_status_and_skipped_checks() {
     );
     let finish = gates.iter().find(|s| s["stage"] == "finish").unwrap();
     assert_eq!(finish["gates"][0]["status"], "unknown");
+}
+
+#[rocket::async_test]
+async fn stage_exits_preserve_passes_and_distinguish_refused_and_forced_advances() {
+    let dir = TestDir::new();
+    fs::write(dir.0.path().join("runs.json"), r#"[{"id":"42","title":"t","project":"/work","mode":"balanced","stage":"build","status":"running","gates":[]}]"#).unwrap();
+    let api = client(&dir).await;
+    let advance = |body| {
+        api.post("/api/runs/42/advance")
+            .header(cli_token_header(&api))
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .header(ContentType::JSON)
+            .body(body)
+    };
+    let body = r#"{"activity":"Reviewing","summaries":{"build":"Built and verified"},"sessions":["new-session"]}"#;
+    let path = dir.0.path().join("runs.json");
+    let before = fs::read(&path).unwrap();
+    let refused = advance(body).dispatch().await;
+    assert_eq!(refused.status(), HttpStatus::BadRequest);
+    assert!(
+        refused
+            .into_string()
+            .await
+            .unwrap()
+            .contains("Build has no ticket plan")
+    );
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let unchanged = fetch(&api, "42").await.1.unwrap();
+    assert!(
+        unchanged.stage_exits.is_empty(),
+        "Refused advance recorded stage exits: {:?}",
+        unchanged.stage_exits
+    );
+    assert!(
+        unchanged.summaries.is_empty() && unchanged.sessions.is_empty(),
+        "Refused advance changed summaries or sessions: {:?}, {:?}",
+        unchanged.summaries,
+        unchanged.sessions
+    );
+    assert!(
+        unchanged.activity.is_none(),
+        "Refused advance recorded activity: {:?}",
+        unchanged.activity
+    );
+
+    let plan = report(&api, "42", r#"{"unticketed":true}"#).await;
+    assert_eq!(plan.status(), HttpStatus::Ok);
+    assert_eq!(advance(body).dispatch().await.status(), HttpStatus::Ok);
+    let after = fetch(&api, "42").await.1.unwrap();
+    assert_eq!(after.stage, Stage::Check);
+    assert_eq!(after.summaries[&Stage::Build], "Built and verified");
+    assert_eq!(after.sessions, ["new-session"]);
+    assert_eq!(after.activity.as_deref(), Some("Reviewing"));
+    assert_eq!(
+        after.timeline.last().unwrap().activity.as_deref(),
+        Some("Reviewing")
+    );
+    let accepted = after.stage_exits;
+    assert_eq!(accepted[0].gates[0].name, crate::stages::Gate::TicketsDone);
+
+    let ticket = report(
+        &api,
+        "42",
+        r#"{"tickets":[{"reference":"local-1","title":"Follow-up work"}]}"#,
+    )
+    .await;
+    assert_eq!(ticket.status(), HttpStatus::Ok);
+    assert_eq!(
+        advance(r#"{"force":true,"reason":"Checks unavailable"}"#)
+            .dispatch()
+            .await
+            .status(),
+        HttpStatus::Ok
+    );
+    let details = fetch(&api, "42").await.1.unwrap();
+    assert_eq!(details.stage_exits[0], accepted[0]);
+    assert_eq!(
+        details.stage_exits[1].outcome,
+        crate::run_gate::ExitOutcome::Override {
+            reason: "Checks unavailable".into(),
+        }
+    );
+    let dashboard = run_detail(&details).unwrap();
+    let passes = dashboard["stage_gates"].as_array().unwrap();
+    assert_eq!(passes[0]["gates"][0]["status"], "passed");
+    assert_eq!(passes[1]["gates"][0]["status"], "bypassed");
+    let finish = passes
+        .iter()
+        .find(|pass| pass["stage"] == "finish")
+        .unwrap();
+    assert_eq!(finish["gates"][1]["status"], "awaiting-live-check");
 }
 
 #[rocket::async_test]
@@ -1353,12 +1450,7 @@ async fn cli_pr_result_updates_the_cache_and_the_run_together() {
     let api = client(&dir).await;
     let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
     let pr = "https://github.com/o/r/pull/7";
-    report(
-        &api,
-        &run.id,
-        &format!(r#"{{"status":"running","pr":"{pr}"}}"#),
-    )
-    .await;
+    report(&api, &run.id, &format!(r#"{{"pr":"{pr}"}}"#)).await;
     let response = api
         .post(format!("/api/runs/{}/pr-status", run.id))
         .header(cli_token_header(&api))
@@ -1383,12 +1475,7 @@ async fn cli_pr_result_distinguishes_discarded_and_missing_runs() {
     let api = client(&dir).await;
     let run = start(&api, r#"{"title":"t","project":"/work"}"#).await;
     let pr = "https://github.com/o/r/pull/7";
-    report(
-        &api,
-        &run.id,
-        &format!(r#"{{"status":"running","pr":"{pr}"}}"#),
-    )
-    .await;
+    report(&api, &run.id, &format!(r#"{{"pr":"{pr}"}}"#)).await;
     for (id, url, expected) in [
         (
             &*run.id,

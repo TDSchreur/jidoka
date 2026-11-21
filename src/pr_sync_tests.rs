@@ -189,8 +189,8 @@ impl Project {
     }
 }
 
-/// One call of `RunApi::update`: run, stage, status and options.
-type Update = (String, String, Vec<String>);
+/// One call of `RunApi::update`: run and options.
+type Update = (String, Vec<String>);
 
 #[derive(Default)]
 struct FakeApi {
@@ -198,12 +198,10 @@ struct FakeApi {
 }
 
 impl RunApi for FakeApi {
-    fn update(&self, id: &str, status: &str, options: &[&str]) -> Result<(), String> {
-        self.updates.borrow_mut().push((
-            id.into(),
-            status.into(),
-            options.iter().map(|o| o.to_string()).collect(),
-        ));
+    fn update(&self, id: &str, options: &[&str]) -> Result<(), String> {
+        self.updates
+            .borrow_mut()
+            .push((id.into(), options.iter().map(|o| o.to_string()).collect()));
         Ok(())
     }
 }
@@ -213,7 +211,6 @@ fn run_of(project: &Project) -> PrRun {
         id: "100".into(),
         worktree: Some(project.wt.display().to_string()),
         branch: Some("feature".into()),
-        stage: "finish".into(),
         status: "running".into(),
         base_commit: None,
         pr_state: None,
@@ -250,8 +247,7 @@ fn a_clean_merge_that_touches_none_of_the_change_is_pushed() {
     );
     assert!(render(&synced).contains("jidoka pr wait"));
     let updates = api.updates.borrow();
-    let (_, status, args) = updates.last().unwrap();
-    assert_eq!(status.as_str(), "running");
+    let (_, args) = updates.last().unwrap();
     assert!(
         args.iter().any(|a| a == "Merged develop into the branch"),
         "{args:?}"
