@@ -55,7 +55,7 @@ The workflows' shared Pull request and CI procedure names the tool for each host
 | Outcome | Exit status | Meaning |
 | --- | ---: | --- |
 | `passed` | 0 | Every check of the current head commit passed or was skipped. |
-| `failed` | 2 | A check failed. Each failed check is listed with its link. The first failed check of each Actions run, for at most three runs, also carries the last 40 lines (at most 4 KiB) of that run's failed log; a log that cannot be fetched leaves the name and link. A failure wins over a cancel. |
+| `failed` | 2 | A check failed. Each failed check is listed with its link. The first failed check for each GitHub Actions run or Azure Pipelines build, for at most three runs or builds, also carries up to 40 lines and 4 KiB of failed log output. If a log is unavailable, the check still has its name and link. A failure wins over a cancel. |
 | `cancelled` | 3 | Checks were cancelled and none failed. |
 | `timeout` | 4 | Checks were still running at `--timeout` (default 30 minutes, from 1 second to 24 hours, written as `90s`, `30m` or `2h`). |
 | `head-changed` | 5 | The pull request got a new head commit while waiting. No check results are reported; run the command again. |
@@ -75,4 +75,4 @@ For Azure DevOps Services, record the canonical `https://dev.azure.com/<organiza
 - PR-wide statuses without an iteration cannot prove a result for the current head and remain pending, whatever state Azure reports for them. A newer status in the same context replaces an older one. So a pull request that has a PR-wide status, from any integration, never reaches `passed` or `failed`: the wait ends in `timeout`, or in `failed` with `--fail-fast` once another check fails.
 - Optional policies are shown but do not block. Disabled and not-applicable policies do not count as CI.
 
-Failure links point to the build when there is one, otherwise to the PR. Failed log excerpts are only available for GitHub Actions, and PRs from Azure forks are not supported.
+Failure links point to the build when there is one, otherwise to the PR. For a failed build, Jidoka reads the end of the first failed pipeline task with a log reference. Azure fork PRs are unsupported.

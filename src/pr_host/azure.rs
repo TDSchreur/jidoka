@@ -6,15 +6,20 @@
 //! Watching CI reads the live source branch ref instead (`AzurePr::live_head`), which shows a push at once.
 
 use super::{
-    Adapter, Head, Host, NewPr, OpenPr, Origin, ToolError, ToolOutput, ToolProblem, Tools,
-    encode_segment, watch::Snapshot,
+    Adapter, Head, Host, LOG_BYTES, LOG_LINES, MAX_LOGS, NewPr, OpenPr, Origin, ToolError,
+    ToolOutput, ToolProblem, Tools, encode_segment, excerpt, watch::Snapshot,
 };
 use crate::{
     pr_state::PrState,
-    pr_wait::{BaseState, CheckResult},
+    pr_wait::{BaseState, CheckResult, Failure},
 };
 use serde_json::Value;
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    io::{Read, Seek, SeekFrom},
+    path::Path,
+};
 
 pub(super) struct Azure;
 
@@ -57,6 +62,30 @@ impl Adapter for Azure {
         })
     }
 
+    fn failures(&self, tools: &dyn Tools, checks: &[CheckResult]) -> Vec<Failure> {
+        let mut fetched = Vec::new();
+        checks
+            .iter()
+            .filter(|check| check.bucket == "fail")
+            .map(|check| {
+                let mut text = None;
+                if fetched.len() < MAX_LOGS
+                    && !fetched.contains(&check.link.as_str())
+                    && let Some(build) = Build::from_link(&check.link)
+                {
+                    fetched.push(check.link.as_str());
+                    // Log access is optional. A missing log still leaves the failed check and its link.
+                    text = build.failed_excerpt(tools);
+                }
+                Failure {
+                    name: check.name.clone(),
+                    link: check.link.clone(),
+                    excerpt: text,
+                }
+            })
+            .collect()
+    }
+
     fn find_open(
         &self,
         tools: &dyn Tools,
@@ -80,6 +109,142 @@ impl Adapter for Azure {
     ) -> Result<String, ToolProblem> {
         create(tools, repo_of(origin)?, pr)
     }
+}
+
+/// The Azure Pipelines build named by a failed check's link.
+struct Build<'a> {
+    org: &'a str,
+    project: String,
+    id: u64,
+}
+
+impl<'a> Build<'a> {
+    /// Reads the build-results link created from a policy evaluation's build ID.
+    ///
+    /// Posted statuses always link to the validated PR URL. Their target URLs never select a build.
+    fn from_link(link: &'a str) -> Option<Self> {
+        let (project_url, id) = link.split_once("/_build/results?buildId=")?;
+        let (org, project) = project_url.rsplit_once('/')?;
+        decode_segment(org.strip_prefix("https://dev.azure.com/")?)?;
+        let project = decode_segment(project)?;
+        let id = id.parse::<u64>().ok().filter(|id| *id > 0)?;
+        Some(Self { org, project, id })
+    }
+
+    /// Reads the tail of the first failed task log that the timeline references.
+    fn failed_excerpt(&self, tools: &dyn Tools) -> Option<String> {
+        let timeline = self.invoke_json(tools, "timeline")?;
+        let log_id = timeline["records"]
+            .as_array()?
+            .iter()
+            .filter(|record| {
+                record["type"].as_str() == Some("Task")
+                    && record["result"].as_str() == Some("failed")
+            })
+            .find_map(|record| record["log"]["id"].as_u64().filter(|id| *id > 0))?;
+        let logs = self.invoke_json(tools, "logs")?;
+        let line_count = logs["value"]
+            .as_array()?
+            .iter()
+            .find(|log| log["id"].as_u64() == Some(log_id))?["lineCount"]
+            .as_u64()
+            .filter(|count| *count > 0)?;
+
+        let log = format!("logId={log_id}");
+        // The Build API's line range is one-indexed and inclusive.
+        let start_line = line_count.saturating_sub(LOG_LINES as u64 - 1).max(1);
+        let start = format!("startLine={start_line}");
+        let end = format!("endLine={line_count}");
+        // Azure serves task logs as plain text. The Azure CLI writes that response to a new file.
+        let dir = log_directory().ok()?;
+        let path = dir.path().join("task.log");
+        let destination = path.to_str()?;
+        check_text("log file path", destination, cfg!(windows)).ok()?;
+        self.invoke(
+            tools,
+            "logs",
+            &[
+                &log,
+                "--query-parameters",
+                &start,
+                &end,
+                "--accept-media-type",
+                "text/plain",
+                "--out-file",
+                destination,
+            ],
+        )?;
+        read_log_excerpt(&path)
+    }
+
+    /// Reads a Build API response that Azure returns as JSON.
+    fn invoke_json(&self, tools: &dyn Tools, resource: &str) -> Option<Value> {
+        let output = self.invoke(tools, resource, &[])?;
+        serde_json::from_str(&output.stdout).ok()
+    }
+
+    /// Reads a Build API resource with the Azure CLI's existing sign-in.
+    fn invoke(&self, tools: &dyn Tools, resource: &str, extra: &[&str]) -> Option<ToolOutput> {
+        let project = format!("project={}", self.project);
+        let id = format!("buildId={}", self.id);
+        let mut args = vec![
+            "devops",
+            "invoke",
+            "--organization",
+            self.org,
+            "--area",
+            "build",
+            "--resource",
+            resource,
+            "--route-parameters",
+            &project,
+            &id,
+        ];
+        args.extend_from_slice(extra);
+        args.extend([
+            "--api-version",
+            "7.1",
+            "--output",
+            "json",
+            "--detect",
+            "false",
+        ]);
+        tools.az(&args).ok().filter(|output| output.code == Some(0))
+    }
+}
+
+/// Creates a temporary directory for the Azure CLI to write the downloaded task log.
+fn log_directory() -> std::io::Result<tempfile::TempDir> {
+    #[cfg(unix)]
+    {
+        use std::{fs::Permissions, os::unix::fs::PermissionsExt};
+        // Build logs can contain private information. Only the directory owner needs access.
+        tempfile::Builder::new()
+            .permissions(Permissions::from_mode(0o700))
+            .tempdir()
+    }
+    // On Windows the temporary directory inherits its permissions from the user's temp directory.
+    #[cfg(not(unix))]
+    tempfile::tempdir()
+}
+
+/// Reads only the excerpt-sized end of a downloaded task log.
+fn read_log_excerpt(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let start = file.metadata().ok()?.len().saturating_sub(LOG_BYTES as u64);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.take(LOG_BYTES as u64).read_to_end(&mut bytes).ok()?;
+    // A byte offset inside a UTF-8 character omits the rest of that character.
+    let boundary = if start == 0 {
+        0
+    } else {
+        bytes
+            .iter()
+            .take_while(|byte| matches!(byte, 0x80..=0xbf))
+            .count()
+    };
+    excerpt(&String::from_utf8_lossy(&bytes[boundary..]))
 }
 
 /// Whether the pull request is still active; a pull request in a state Jidoka does not know is an error.
