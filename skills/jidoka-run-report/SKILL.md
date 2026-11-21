@@ -5,6 +5,8 @@ description: "Analyze a finished or stuck Jidoka run for Jidoka bugs and avoidab
 
 # Jidoka run report
 
+In Codex, when requesting escalation for any Jidoka command eligible for reusable approval, set the tool’s `prefix_rule` to the specific command verb, for example `["jidoka", "run", "check"]`. Keep run IDs and other changing arguments in the command itself.
+
 Analyze one Jidoka run for two kinds of problems and, when you find real ones, file them as GitHub issues in the Jidoka repository (<https://github.com/TDSchreur/jidoka>). Maintainers can only act on a report that proves the problem and lets them reproduce it, so the evidence matters more than the verdict.
 
 The two kinds, and nothing else:

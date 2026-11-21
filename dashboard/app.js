@@ -8,8 +8,7 @@ import { GROUPS, STATIONS, STATION_NAME, findingCount, runHistory, shortSha, tic
 const html = htm.bind(h);
 
 const STATUSES = ['running', 'blocked', 'done'];
-// A finished Run is called Shipped; its status stays `done` in the CLI, the API and runs.json.
-const STATUS_LABEL = { running: 'Running', blocked: 'Blocked', done: 'Shipped' };
+const STATUS_LABEL = { running: 'Running', blocked: 'Blocked', done: 'Done' };
 /** The status in sentence case; an unknown status shows as recorded. */
 const statusLabel = (status) => STATUS_LABEL[status] ?? String(status);
 const TICKET_STATUS = { pending: 'Pending', 'in-progress': 'In progress', done: 'Done' };
@@ -532,17 +531,22 @@ function EventLine({ event, now }) {
   </p>`;
 }
 
-function TicketList({ run, tickets, now }) {
+function TicketList({ run, tickets, now, gateResults = run.gates }) {
   return html`<ol class="ticket-list">
     ${tickets.map(({ ticket, reports }) => {
-      const current = ticket.status !== 'done' && run.current_ticket != null && run.current_ticket === ticket.reference;
+      const verification = gateResults?.findLast((result) => result.gate === 'tickets-verified'
+        && result.stage === 'build' && result.ticket === ticket.reference
+        && result.work_attempt != null && result.work_attempt === ticket.work_attempt);
       return html`<li key=${ticket.reference} class=${ticket.status === 'done' ? 'ticket done' : 'ticket'}>
         <p class="ticket-line">
-          <span class="ticket-status">${current ? TICKET_STATUS['in-progress'] : (TICKET_STATUS[ticket.status] ?? String(ticket.status))}</span>
+          <span class="ticket-status">${TICKET_STATUS[ticket.status] ?? String(ticket.status)}</span>
           <span class="ticket-name"><${TicketRef} value=${String(ticket.reference)} />${' '}${isReadable(ticket.reference)
             ? html`<${ReaderLink} run=${run} reference=${String(ticket.reference)}>${ticket.title}</${ReaderLink}>`
             : ticket.title}</span>
         </p>
+        ${verification?.passed && verification.commit
+          ? html`<p class="ticket-verification">Verification recorded at <code>${shortSha(verification.commit)}</code></p>`
+          : verification && !verification.passed ? html`<p class="ticket-verification">Verification failed</p>` : null}
         <${SkillChips} reports=${reports} />
         <${ReportList} reports=${reports} now=${now} />
       </li>`;
@@ -598,13 +602,15 @@ function Stop({ run, stop, now }) {
   const label = stop.kind === 'pass' && stop.rework !== null ? `${stop.name} · Rework ${stop.rework <= REWORK_CAP ? stop.rework : `${stop.rework} (past the cap of ${REWORK_CAP})`}` : stop.name;
   const classes = ['stop', stop.state, stop.kind === 'pass' && stop.rework !== null ? 'rework-pass' : '', stop.sentBack ? 'sent-back' : ''].filter(Boolean).join(' ');
   const { progress, tokens, cost } = stop;
+  const { unticketed } = stop;
   return html`<li class=${classes}>
     <span class="mark" aria-hidden="true"></span>
     <div class="stop-head">
       <h3>${label}<span class="visually-hidden">${`, ${STATION_STATE[stop.state]}`}</span></h3>
-      ${progress || tokens !== null || cost
+      ${progress || unticketed || tokens !== null || cost
         ? html`<span class="stop-meta">
             ${progress ? html`<span class="ticket-count">${progress.done} of ${progress.total} tickets done</span>` : null}
+            ${unticketed ? html`<span class="ticket-count">Unticketed work</span>` : null}
             ${tokens !== null ? html`<span class="stop-tokens">${compactTokens(tokens)}<span class="visually-hidden">${' fresh tokens'}</span></span>` : null}
             ${cost ? html`<span class="stop-cost"><span class="visually-hidden">Estimated cost </span>${costText(cost, true)}</span>` : null}
           </span>`
@@ -621,7 +627,7 @@ function Stop({ run, stop, now }) {
     ${stop.kind === 'station' && stop.rework !== null ? html`<p class="rework"><span class="chip">Rework${' '}${reworkLabel(stop.rework)}</span></p>` : null}
     <${SkillChips} reports=${stop.reports} />
     <${ReportList} reports=${stop.reports} now=${now} showTicket=${stop.kind === 'pass'} />
-    ${stop.tickets.length ? html`<${TicketList} run=${run} tickets=${stop.tickets} now=${now} />` : null}
+    ${stop.tickets.length ? html`<${TicketList} run=${run} tickets=${stop.tickets} now=${now} gateResults=${stop.verification} />` : null}
     <${StopFindings} findings=${stop.findings} />
   </li>`;
 }
@@ -661,6 +667,58 @@ function PrLink({ run }) {
   </span>`;
 }
 
+const GATE_STATUS = {
+  'awaiting-live-check': 'Awaiting live check',
+  unknown: 'Unknown',
+};
+
+function exitLabel(exit) {
+  switch (exit?.outcome) {
+    case 'accepted': return 'Accepted';
+    case 'override': return `Override (${exit.reason})`;
+    case 'merged': return 'PR merge observed';
+    case 'rework': return `Started Rework ${exit.number} (${exit.finding})`;
+    default: return null;
+  }
+}
+
+function GateEvidence({ result }) {
+  const parts = [result.check, result.ticket, result.work_attempt ? `attempt ${result.work_attempt}` : null,
+    result.commit ? `commit ${result.commit}` : null, result.evidence].filter(Boolean);
+  return parts.length ? html`<p class="gate-evidence">Evidence: ${parts.join(' · ')}</p>` : null;
+}
+
+function StageGates({ passes }) {
+  return html`<section class="stage-gates" aria-labelledby="gate-heading">
+    <h3 id="gate-heading">Stage gates</h3>
+    ${passes.map((pass) => html`
+      <div class="gate-stage">
+        <h4>${STATION_NAME[pass.stage] ?? pass.stage}${pass.rework ? ` · Rework ${pass.rework}` : ''}</h4>
+        <div>
+          ${pass.exit ? html`<p class="gate-exit">${exitLabel(pass.exit)}</p>` : null}
+          ${pass.gates.length ? html`<ul>${pass.gates.map((gate) => html`
+            <li class="gate">
+              <div class="gate-title"><span class="gate-name">${gate.name}:</span> <span class="gate-status">${GATE_STATUS[gate.status] ?? gate.status}</span></div>
+              <p class="gate-description">${gate.reason ?? gate.description}</p>
+              ${gate.detail ? html`<p class="gate-evidence">Evidence: ${gate.detail}</p>` : null}
+              ${gate.results?.map((result) => html`<${GateEvidence} result=${result} />`)}
+            </li>`)}</ul>` : null}
+        </div>
+      </div>`)}
+  </section>`;
+}
+
+function CompletionLabel({ run }) {
+  if (run.status !== 'done') return null;
+  const completion = run.completion;
+  const text = completion?.kind === 'ci'
+    ? `${completion.outcome === 'no-ci' ? 'No CI' : 'CI passed'} on ${completion.head}`
+    : completion?.kind === 'merged' ? 'PR merge observed'
+    : completion?.kind === 'override' ? `Override (${completion.reason})`
+    : 'Reason unavailable';
+  return html`<span class="status-item">Completion ${text}</span>`;
+}
+
 /** Asks the server to read the Run's pull request from its host now; the Run follows a merge or a close. */
 async function syncRun(id) {
   const response = await fetch(`/api/runs/${encodeURIComponent(id)}/sync`, {
@@ -681,8 +739,8 @@ const SYNC_RESULT = {
 /** Reads the pull request now instead of waiting for the next automatic check, and says what it found. */
 function CheckPrButton({ run, onSynced }) {
   const [check, setCheck] = useState({ busy: false, text: '' });
-  // A finished run has nothing to follow, unless this check just finished it and the result is still shown.
-  if (!run.pr || (run.status === 'done' && !check.text)) return null;
+  const merged = run.pr_status?.url === run.pr && run.pr_status?.state === 'merged';
+  if (!run.pr || (merged && !check.text)) return null;
   const start = async () => {
     setCheck({ busy: true, text: 'Checking the pull request…' });
     try {
@@ -796,15 +854,14 @@ function Detail({ run, runs, now, onClose, onDelete, onSynced, onOpenRun, group 
   const localSpec = run.spec && !spec ? String(run.spec) : null;
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
   const total = usageTotal(run);
-  const listed = Array.isArray(run.tickets) && run.tickets.some((t) => t.reference === run.current_ticket);
   const { stops, other } = runHistory(run, now);
   // The facts column holds what is true of the Run as a whole; the route column holds what happened along the way.
-  const hasGates = Array.isArray(gateData?.stage_gates) && gateData.stage_gates.some((stage) => stage.gates.length);
+  const gatePasses = gateData?.stage_gates?.filter((pass) => pass.gates.length || pass.exit) ?? [];
   const hasChecksUnavailable = Boolean(gateData?.checks_unavailable);
   const hasSkipped = Boolean(gateData?.checks?.skipped?.length);
   const hasRecordedSkipped = Boolean(gateData?.recorded_skipped_checks?.length);
   const hasModelRoute = Boolean(gateData?.model_route?.stages?.length);
-  const hasFacts = Boolean(group) || hasGates || hasChecksUnavailable || hasSkipped || hasRecordedSkipped || hasModelRoute;
+  const hasFacts = Boolean(group) || gatePasses.length > 0 || hasChecksUnavailable || hasSkipped || hasRecordedSkipped || hasModelRoute;
   return html`<dialog
     ref=${dialog}
     class="detail"
@@ -831,9 +888,9 @@ function Detail({ run, runs, now, onClose, onDelete, onSynced, onOpenRun, group 
         ${run.branch ? html`<span class="branch"><code>${run.branch}</code><${CopyButton} value=${run.branch} what="branch" /></span>` : null}
       </p>
       ${active && run.activity ? html`<p class="detail-activity">${run.activity}</p>` : null}
-      ${active && run.current_ticket && !listed ? html`<p class="detail-ticket">Current ticket: ${run.current_ticket}</p>` : null}
       <div class=${blocked ? 'status-row blocked' : 'status-row'}>
         <span class=${STATUSES.includes(run.status) ? `badge ${run.status}` : 'badge'}>${statusLabel(run.status)}</span>
+        <${CompletionLabel} run=${run} />
         <${PrLink} run=${run} />
         <${CheckPrButton} run=${run} onSynced=${onSynced} />
         ${spec ? html`<span class="status-item"><a href=${spec.href} target="_blank" rel="noopener noreferrer">Spec ${shortRef(spec)}</a></span>` : null}
@@ -845,18 +902,7 @@ function Detail({ run, runs, now, onClose, onDelete, onSynced, onOpenRun, group 
       <div class=${hasFacts ? 'detail-layout has-facts' : 'detail-layout'}>
         ${hasFacts ? html`<aside class="detail-facts" aria-label="Run facts">
           ${group ? html`<${DetailGroup} group=${group} run=${run} runs=${runs} now=${now} onOpenRun=${onOpenRun} />` : null}
-          ${hasGates ? html`
-            <section class="stage-gates" aria-labelledby="gate-heading">
-              <h3 id="gate-heading">Stage gates</h3>
-              ${gateData.stage_gates.filter((stage) => stage.gates.length).map((stage) => html`
-                <div class="gate-stage"><h4>${STATION_NAME[stage.stage] ?? stage.stage}</h4>
-                  <ul>${stage.gates.map((gate) => html`<li class="gate">
-                    <div class="gate-title"><span class="gate-name">${gate.name}:</span> <span class="gate-status">${gate.status === 'recorded-pass' ? 'Recorded pass' : gate.status === 'unknown' ? 'Unknown' : gate.status}</span></div>
-                    <p class="gate-description">${gate.description}${gate.rework ? html`<span> · Rework ${gate.rework}</span>` : null}</p>
-                    ${gate.evidence ? html`<p class="gate-evidence">Evidence: ${gate.evidence}</p>` : null}
-                  </li>`)}</ul>
-                </div>`)}
-            </section>` : null}
+          ${gatePasses.length ? html`<${StageGates} passes=${gatePasses} />` : null}
           ${hasChecksUnavailable ? html`<p role="status">Check selection unavailable: ${gateData.checks_unavailable}</p>` : null}
           ${hasSkipped ? html`<section aria-labelledby="skipped-heading">
             <h3 id="skipped-heading">Checks currently skipped</h3>
@@ -909,7 +955,7 @@ function localDateTime(date) {
   return date.toLocaleString('en-GB');
 }
 
-/** The day a Run shipped, by its last update: Today, Yesterday, the date, or Undated without a time. */
+/** The day a Run completed, by its last update: Today, Yesterday, the date, or Undated without a time. */
 function dayLabel(ts, now) {
   if (ts === null) return 'Undated';
   const day = (ms) => new Date(ms).setHours(0, 0, 0, 0);
@@ -919,7 +965,7 @@ function dayLabel(ts, now) {
   return new Date(ts).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 }
 
-/** Finished Runs in a compact table, newest first, grouped by day. Clear shipped removes their records after confirming. */
+/** Finished Runs in a compact table, newest first, grouped by day. Clear completed removes their records after confirming. */
 function ShippedLog({ entries, now, onOpen, onClear }) {
   const groups = [];
   for (const entry of entries) {
@@ -929,21 +975,21 @@ function ShippedLog({ entries, now, onOpen, onClear }) {
   }
   return html`<section class="shipped" aria-labelledby="shipped-title">
     <div class="shipped-head">
-      <h2 id="shipped-title">Shipped<span class="count">${` (${entries.length})`}</span></h2>
+      <h2 id="shipped-title">Completed<span class="count">${` (${entries.length})`}</span></h2>
       <button type="button" class="text-button" onClick=${onClear}>
-        Clear shipped…<span class="visually-hidden">${` ${entries.length} runs`}</span>
+        Clear completed…<span class="visually-hidden">${` ${entries.length} runs`}</span>
       </button>
     </div>
     <div class="table-scroll" role="region" aria-labelledby="shipped-title" tabindex="0">
       <table class="shipped-table">
-        <caption class="visually-hidden">Shipped runs, newest first, grouped by day</caption>
+        <caption class="visually-hidden">Completed runs, newest first, grouped by day</caption>
         <thead>
           <tr>
             <th scope="col">Run</th>
             <th scope="col">Project</th>
             <th scope="col">Pull request</th>
             <th scope="col">Fresh tokens</th>
-            <th scope="col">Shipped</th>
+            <th scope="col">Completed</th>
           </tr>
         </thead>
         ${groups.map(
@@ -1630,9 +1676,9 @@ function App() {
             title=${pending.project
               ? `Delete ${names.get(pending.project) ?? pending.project}?`
               : pending.shipped
-                ? `Clear ${pending.runs.length} shipped ${pending.runs.length === 1 ? 'run' : 'runs'}?`
+                ? `Clear ${pending.runs.length} completed ${pending.runs.length === 1 ? 'run' : 'runs'}?`
                 : 'Delete this run?'}
-            confirmLabel=${pending.shipped ? 'Clear shipped' : 'Delete'}
+            confirmLabel=${pending.shipped ? 'Clear completed' : 'Delete'}
             onConfirm=${confirmDelete}
             onCancel=${() => setPending(null)}
           >
@@ -1640,7 +1686,7 @@ function App() {
               ${pending.project
                 ? `This removes all ${pending.runs.length} run records for this project from the dashboard.`
                 : pending.shipped
-                  ? `This removes the records of the shipped runs from the dashboard.`
+                  ? `This removes the records of the completed runs from the dashboard.`
                   : html`This removes the record of <strong>${pending.runs[0].title}</strong> from the dashboard.`}
               The repository, worktrees, branches and pull requests stay as they are.
             </p>

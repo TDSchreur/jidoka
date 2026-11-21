@@ -90,8 +90,7 @@ fn run_with_pr(store: &RunStore, pr: &str) -> String {
             model_routing: None,
         })
         .unwrap();
-    let update: UpdateRun =
-        serde_json::from_str(&format!(r#"{{"status":"running","pr":"{pr}"}}"#)).unwrap();
+    let update: UpdateRun = serde_json::from_str(&format!(r#"{{"pr":"{pr}"}}"#)).unwrap();
     store.set_stage(&run.id, Stage::Finish);
     store.update(&run.id, update).unwrap();
     run.id
@@ -152,8 +151,7 @@ fn a_new_pull_request_url_is_checked_at_once_and_runs_without_one_are_left_alone
     assert_eq!(refresh(&store, &gh, 0).unwrap(), 1);
     // The Run now records another pull request: its stored state is for the old URL, so it is read again.
     let other = "https://github.com/o/r/pull/8";
-    let update: UpdateRun =
-        serde_json::from_str(&format!(r#"{{"status":"running","pr":"{other}"}}"#)).unwrap();
+    let update: UpdateRun = serde_json::from_str(&format!(r#"{{"pr":"{other}"}}"#)).unwrap();
     store.update(&id, update).unwrap();
     assert_eq!(refresh(&store, &gh, 1).unwrap(), 1);
     let status = stored(&store, &id).unwrap();
@@ -225,8 +223,7 @@ fn the_head_of_a_pull_request_is_its_commit_and_branch() {
 
 fn run_waiting_for_ci(store: &RunStore) -> String {
     let id = run_with_pr(store, PR);
-    let update: UpdateRun =
-        serde_json::from_str(r#"{"status":"running","activity":"Waiting for CI"}"#).unwrap();
+    let update: UpdateRun = serde_json::from_str(r#"{"activity":"Waiting for CI"}"#).unwrap();
     store.update(&id, update).unwrap();
     id
 }
@@ -249,6 +246,11 @@ fn a_merged_pull_request_finishes_the_run_and_clears_its_activity() {
     let run = the_run(&store, &id);
     assert_eq!((run.stage, run.status), (Stage::Finish, RunStatus::Done));
     assert_eq!(run.activity, None);
+    assert_eq!(run.summaries[&Stage::Finish], "Pull request merged");
+    assert_eq!(
+        run.completion,
+        Some(crate::run::Completion::Merged { url: PR.into() })
+    );
 }
 
 #[test]
@@ -275,8 +277,7 @@ struct ReplacingGh<'a> {
 impl Gh for ReplacingGh<'_> {
     fn run(&self, _args: &[&str]) -> Result<GhOutput, GhError> {
         let update: UpdateRun =
-            serde_json::from_str(r#"{"status":"running","pr":"https://github.com/o/r/pull/8"}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"pr":"https://github.com/o/r/pull/8"}"#).unwrap();
         self.store.update(self.id, update).unwrap();
         match &self.answer {
             Ok(output) => Ok(output.clone()),

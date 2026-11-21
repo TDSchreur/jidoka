@@ -1,6 +1,5 @@
 use crate::pr_state::PrStatus;
 use crate::routing::ModelRouting;
-use crate::stages::{self, Destination};
 use crate::usage::{Collection, Mark, Pause, PauseKind, Usage};
 use findings::{FindingsContext, FindingsUpdate};
 use model_routing::RoutingUpdate;
@@ -14,10 +13,16 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 pub(crate) use store::RunStore;
-use summaries::SummariesUpdate;
+pub(crate) use summaries::SummariesUpdate;
 use tickets::TicketsUpdate;
 
 mod findings;
+mod lifecycle;
+#[cfg(test)]
+use lifecycle::FindingClassification;
+pub(crate) use lifecycle::{
+    LifecycleRequest, LifecycleSource, ReworkRecord, next_rework, parse_lifecycle,
+};
 mod model_routing;
 mod reports;
 mod store;
@@ -26,7 +31,7 @@ mod summaries;
 mod tickets;
 
 pub(crate) const UPDATE_HELP: &str = concat!(
-    "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework (on a running run in Check, --rework <n> also moves it back to Build for a Rework and needs a new --finding in the same update; elsewhere it only sets the count)\n  --mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n",
+    "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast>\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n",
     tickets::help!(),
     findings::help!(),
     reports::help!(),
@@ -35,7 +40,7 @@ pub(crate) const UPDATE_HELP: &str = concat!(
     model_routing::help!(),
     "Omitted fields are preserved; clear flags remove them."
 );
-/// Highest Rework count a run can report.
+/// Highest Rework count to bound stored Rework history.
 pub(crate) const MAX_REWORK: u32 = 99;
 /// Sessions one update may attribute to a run; a run rarely spans more than a handful of agent sessions.
 const MAX_SESSIONS: usize = 20;
@@ -51,7 +56,7 @@ pub(crate) const MAX_TEXT_BYTES: usize = 500;
 /// Longest path, URL or reference, in bytes; the common 4096-byte `PATH_MAX`, which no real path exceeds.
 const MAX_PATH_BYTES: usize = 4096;
 /// Longest activity, blocking reason or stage summary, in bytes: a short paragraph.
-const MAX_NOTE_BYTES: usize = 2000;
+pub(crate) const MAX_NOTE_BYTES: usize = 2000;
 /// Longest git branch name, in bytes; git itself limits a ref name component to 255 bytes on common file systems.
 const MAX_BRANCH_BYTES: usize = 255;
 /// Shortest and longest agent session id, in characters: a UUID is 36, and 8 rules out accidental short values.
@@ -70,7 +75,7 @@ pub(crate) struct Run {
     gate_generation: u64,
     pub(crate) gates: Vec<crate::run_gate::GateResult>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) check_history: Vec<crate::run_gate::CheckSnapshot>,
+    pub(crate) stage_exits: Vec<crate::run_gate::StageExit>,
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) project: String,
@@ -78,14 +83,17 @@ pub(crate) struct Run {
     pub(crate) status: RunStatus,
     #[serde(default)]
     pub(crate) activity: Option<String>,
-    #[serde(default)]
-    pub(crate) current_ticket: Option<String>,
     /// Why the run is blocked; the dashboard shows it as the status reason.
     #[serde(default)]
     pub(crate) blocking_reason: Option<String>,
+    /// Who set the current block, when the run recorded an explicit source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) block_source: Option<LifecycleSource>,
     /// Number of the current or latest Rework: a return from Check to Build.
     #[serde(default)]
     pub(crate) rework: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) rework_history: Vec<ReworkRecord>,
     #[serde(default)]
     pub(crate) updated_at: Option<u64>,
     /// When the agent last updated the run. Unlike `updated_at`, the dashboard's own pause blocks and
@@ -111,6 +119,12 @@ pub(crate) struct Run {
     pub(crate) pr: Option<String>,
     #[serde(default)]
     pub(crate) tickets: Vec<Ticket>,
+    /// The attempt assigned when the run explicitly declared that Build has no listed tickets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) unticketed_attempt: Option<u64>,
+    /// Last attempt allocated to listed or unticketed work on this run.
+    #[serde(default)]
+    last_work_attempt: u64,
     #[serde(default)]
     pub(crate) ticket_reports: Vec<TicketReport>,
     #[serde(default)]
@@ -131,6 +145,9 @@ pub(crate) struct Run {
     /// When the run was marked done; usage after that is not the run's.
     #[serde(default)]
     pub(crate) finished_at: Option<u64>,
+    /// Evidence or an explicit reason for ending the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) completion: Option<Completion>,
     /// Ids of the agent sessions recorded for this run.
     #[serde(default)]
     pub(crate) sessions: Vec<String>,
@@ -147,6 +164,74 @@ pub(crate) struct Run {
         deserialize_with = "routing_or_none"
     )]
     pub(crate) model_routing: Option<ModelRouting>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub(crate) enum Completion {
+    Ci { head: String, outcome: CiOutcome },
+    Merged { url: String },
+    Override { reason: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CiOutcome {
+    Passed,
+    NoCi,
+}
+
+impl CiOutcome {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Passed => "CI passed",
+            Self::NoCi => "No CI",
+        }
+    }
+}
+
+impl Run {
+    pub(crate) fn open_findings(&self) -> impl Iterator<Item = &Finding> {
+        self.findings
+            .iter()
+            .filter(|finding| finding.state == FindingState::Open)
+    }
+
+    pub(crate) fn active_ticket(&self) -> Option<&Ticket> {
+        self.tickets
+            .iter()
+            .find(|ticket| ticket.status == TicketStatus::InProgress)
+    }
+
+    fn allocate_work_attempt(&mut self) -> Result<u64, String> {
+        self.last_work_attempt = self
+            .last_work_attempt
+            .checked_add(1)
+            .ok_or("This run has exhausted its work attempts")?;
+        Ok(self.last_work_attempt)
+    }
+
+    /// Completes Finish with evidence, retaining the summary or supplying one for a merge.
+    pub(crate) fn complete(&mut self, completion: Completion) -> Result<(), String> {
+        if self.stage != Stage::Finish || self.status == RunStatus::Done {
+            return Err("Only an unfinished run in Finish can be completed".into());
+        }
+        if matches!(completion, Completion::Merged { .. }) && self.check_finish_summary().is_err() {
+            self.summaries
+                .insert(Stage::Finish, "Pull request merged".into());
+        }
+        self.check_finish_summary()?;
+        self.status = RunStatus::Done;
+        self.completion = Some(completion);
+        self.activity = None;
+        self.blocking_reason = None;
+        self.block_source = None;
+        Ok(())
+    }
+
+    pub(crate) fn check_finish_summary(&self) -> Result<(), String> {
+        summaries::check_done(self)
+    }
 }
 
 /// Reads a stored selection, treating only the earlier shape (an object with `roles` or `tasks`) as absent.
@@ -233,6 +318,8 @@ pub(crate) struct Ticket {
     pub(crate) reference: String,
     pub(crate) title: String,
     pub(crate) status: TicketStatus,
+    #[serde(default)]
+    pub(crate) work_attempt: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -257,6 +344,8 @@ pub(crate) struct RunEvent {
     pub(crate) stage: Stage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<LifecycleSource>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -358,18 +447,11 @@ impl NewRun {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct UpdateRun {
-    pub(crate) status: RunStatus,
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub(crate) activity: FieldUpdate,
-    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
-    pub(crate) current_ticket: FieldUpdate,
-    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
-    pub(crate) blocking_reason: FieldUpdate,
-    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
-    pub(crate) rework: FieldUpdate<u32>,
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub(crate) mode: FieldUpdate<Mode>,
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
@@ -561,42 +643,10 @@ fn io_invalid(message: impl Into<String>) -> io::Error {
 }
 
 impl UpdateRun {
-    pub(crate) fn new(status: RunStatus) -> Self {
-        Self {
-            status,
-            activity: FieldUpdate::Keep,
-            current_ticket: FieldUpdate::Keep,
-            blocking_reason: FieldUpdate::Keep,
-            rework: FieldUpdate::Keep,
-            mode: FieldUpdate::Keep,
-            worktree: FieldUpdate::Keep,
-            branch: FieldUpdate::Keep,
-            base_commit: FieldUpdate::Keep,
-            spec: FieldUpdate::Keep,
-            pr: FieldUpdate::Keep,
-            tickets: TicketsUpdate::default(),
-            reports: ReportsUpdate::default(),
-            findings: FindingsUpdate::default(),
-            summaries: SummariesUpdate::default(),
-            sessions: Vec::new(),
-            routing: RoutingUpdate::default(),
-        }
-    }
-
     pub(crate) fn validate(&self) -> Result<(), String> {
         self.activity.validate(MAX_NOTE_BYTES)?;
-        self.blocking_reason.validate(MAX_NOTE_BYTES)?;
-        self.current_ticket.validate(MAX_PATH_BYTES)?;
-        if let FieldUpdate::Set(count) = self.rework
-            && !(1..=MAX_REWORK).contains(&count)
-        {
-            return Err("Rework must be a whole number from 1 to 99".into());
-        }
-        if let FieldUpdate::Set(value) = &self.current_ticket {
-            check_reference("Current ticket", value, MAX_PATH_BYTES)?;
-            if value.chars().any(char::is_whitespace) {
-                return Err("Current ticket reference must not contain spaces".into());
-            }
+        if matches!(self.mode, FieldUpdate::Clear) {
+            return Err("The workflow mode cannot be cleared".into());
         }
         if let FieldUpdate::Set(value) = &self.worktree {
             check_text("Worktree", value, MAX_PATH_BYTES)?;
@@ -639,15 +689,32 @@ impl UpdateRun {
         self.reports.validate()?;
         self.findings.validate()?;
         self.summaries.validate()?;
-        for session in &self.sessions {
-            check_session_id(session)?;
+        validate_sessions(&self.sessions)
+    }
+}
+
+pub(crate) fn validate_sessions(sessions: &[String]) -> Result<(), String> {
+    for session in sessions {
+        check_session_id(session)?;
+    }
+    if sessions.len() > MAX_SESSIONS {
+        return Err(format!(
+            "At most {MAX_SESSIONS} sessions can be given at once"
+        ));
+    }
+    Ok(())
+}
+
+impl Run {
+    pub(crate) fn record_sessions(&mut self, sessions: Vec<String>) {
+        for session in sessions {
+            if !self.sessions.contains(&session) {
+                self.sessions.push(session);
+            }
         }
-        if self.sessions.len() > MAX_SESSIONS {
-            return Err(format!(
-                "At most {MAX_SESSIONS} sessions can be given at once"
-            ));
+        if self.sessions.len() > KEEP_SESSIONS {
+            self.sessions.drain(..self.sessions.len() - KEEP_SESSIONS);
         }
-        Ok(())
     }
 }
 
@@ -662,9 +729,8 @@ fn repeated(flag: &str) -> String {
     format!("Repeated or conflicting run update option: {flag}")
 }
 
-pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, String> {
-    let mut update =
-        UpdateRun::new(serde_json::from_value(status.into()).map_err(|e| e.to_string())?);
+pub(crate) fn parse_update(options: &[&str]) -> Result<UpdateRun, String> {
+    let mut update = UpdateRun::default();
     let mut args = options.iter();
     while let Some(flag) = args.next() {
         let mut next_value = || {
@@ -681,35 +747,17 @@ pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, 
             Ok(value)
         };
         match *flag {
-            "--rework" | "--clear-rework" => {
-                if !update.rework.is_keep() {
-                    return Err(repeated(flag));
-                }
-                update.rework = if *flag == "--clear-rework" {
-                    FieldUpdate::Clear
-                } else {
-                    let count = next_value()?;
-                    FieldUpdate::Set(count.parse().map_err(|_| {
-                        format!("Invalid value for --rework: {count}; use a whole number from 1 to {MAX_REWORK}")
-                    })?)
-                };
-                continue;
-            }
-            "--mode" | "--clear-mode" => {
+            "--mode" => {
                 if !update.mode.is_keep() {
                     return Err(repeated(flag));
                 }
-                update.mode = if *flag == "--clear-mode" {
-                    FieldUpdate::Clear
-                } else {
-                    let mode = next_value()?;
-                    FieldUpdate::Set(serde_json::from_value(serde_json::Value::from(*mode)).map_err(|_| {
-                        format!("Invalid value for --mode: {mode}; use full, balanced or fast (also accepted: jidoka-full, jidoka-balanced, jidoka-fast)")
-                    })?)
-                };
+                let mode = next_value()?;
+                update.mode = FieldUpdate::Set(serde_json::from_value(serde_json::Value::from(*mode)).map_err(|_| {
+                    format!("Invalid value for --mode: {mode}; use full, balanced or fast (also accepted: jidoka-full, jidoka-balanced, jidoka-fast)")
+                })?);
                 continue;
             }
-            "--ticket" | "--clear-tickets" | "--ticket-status" => {
+            "--ticket" | "--clear-tickets" | "--unticketed" | "--ticket-status" => {
                 update.tickets.parse_option(flag, &mut next_value)?;
                 continue;
             }
@@ -741,8 +789,6 @@ pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, 
         }
         let field = match *flag {
             "--activity" | "--clear-activity" => &mut update.activity,
-            "--current-ticket" | "--clear-current-ticket" => &mut update.current_ticket,
-            "--blocking-reason" | "--clear-blocking-reason" => &mut update.blocking_reason,
             "--worktree" | "--clear-worktree" => &mut update.worktree,
             "--branch" | "--clear-branch" => &mut update.branch,
             "--base-commit" | "--clear-base-commit" => &mut update.base_commit,
@@ -763,28 +809,6 @@ pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, 
     Ok(update)
 }
 
-/// Logs a Blocked or Resumed event when the update changed whether the run is blocked.
-fn record_block_change(run: &mut Run, was_blocked: bool, at: u64) {
-    let is_blocked = matches!(run.status, RunStatus::Blocked);
-    if was_blocked == is_blocked || run.events.len() >= MAX_EVENTS {
-        return;
-    }
-    run.events.push(RunEvent {
-        at,
-        kind: if is_blocked {
-            RunEventKind::Blocked
-        } else {
-            RunEventKind::Resumed
-        },
-        stage: run.stage,
-        reason: if is_blocked {
-            run.blocking_reason.clone()
-        } else {
-            None
-        },
-    });
-}
-
 pub(crate) fn updated_now() -> io::Result<u64> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -803,12 +827,6 @@ impl FieldUpdate {
     }
 }
 
-/// Whether a run is blocked for a reason the dashboard sets for a pause, not one the agent gave.
-pub(crate) fn is_automatic_reason(status: RunStatus, reason: Option<&str>) -> bool {
-    status == RunStatus::Blocked
-        && reason.is_some_and(|reason| PauseKind::from_reason(reason).is_some())
-}
-
 /// Appends a mark when the stage, rework or ticket in progress differs from the last one. The mark keeps
 /// the activity given with the update that created it.
 fn mark(run: &mut Run, at: u64, activity: Option<String>) {
@@ -819,10 +837,7 @@ fn mark(run: &mut Run, at: u64, activity: Option<String>) {
         stage,
         rework: if building { run.rework } else { None },
         ticket: if building {
-            run.tickets
-                .iter()
-                .find(|t| t.status == TicketStatus::InProgress)
-                .map(|t| t.reference.clone())
+            run.active_ticket().map(|ticket| ticket.reference.clone())
         } else {
             None
         },

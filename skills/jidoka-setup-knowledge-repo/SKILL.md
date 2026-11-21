@@ -5,6 +5,8 @@ description: "Create or fill a knowledge repo: one ordinary repository per user 
 
 # Set up a knowledge repo
 
+In Codex, when requesting escalation for any Jidoka command eligible for reusable approval, set the tool’s `prefix_rule` to the specific command verb, for example `["jidoka", "run", "check"]`. Keep run IDs and other changing arguments in the command itself.
+
 A knowledge repo is an ordinary repository, one per user, with the platform's shared knowledge and the specs of cross-repo changes. Agents read it before a change and add what they learn. Jidoka change groups work without it; it only gives a new user a place to start.
 
 The knowledge repo is **not** worked through Jidoka runs. Updates are small and frequent, so a run, worktree and pull request per note would make it too costly to keep up. Commit and push directly to its default branch, following [Writing to the knowledge repo](#writing-to-the-knowledge-repo).

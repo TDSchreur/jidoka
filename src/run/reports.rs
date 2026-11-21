@@ -174,7 +174,7 @@ mod tests {
     use crate::run::{Stage, parse_update, tests::sample_run};
 
     fn parsed(options: &[&str]) -> Result<ReportsUpdate, String> {
-        Ok(parse_update("running", options)?.reports)
+        Ok(parse_update(options)?.reports)
     }
 
     #[test]
@@ -185,6 +185,7 @@ mod tests {
             reference: "a".into(),
             title: "A".into(),
             status: crate::run::TicketStatus::Pending,
+            work_attempt: 0,
         });
         parsed(&[
             "--ticket-report",

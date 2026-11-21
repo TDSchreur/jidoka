@@ -69,8 +69,6 @@ pub(crate) struct FindingsUpdate {
 pub(crate) struct FindingsContext<'a> {
     /// Where the update started.
     pub(crate) stage: Stage,
-    /// Whether the update started a Rework.
-    pub(crate) moved: bool,
     /// The update's timestamp, for new and resolved Findings.
     pub(crate) at: u64,
     pub(crate) git: &'a dyn crate::pr_sync::Git,
@@ -159,25 +157,9 @@ impl FindingsUpdate {
         Ok(())
     }
 
-    /// A Rework is the reason to go back to Build, so it needs a new Finding.
-    pub(super) fn check_rework(&self, starts_rework: bool) -> Result<(), String> {
-        if starts_rework && self.new.is_empty() {
-            return Err(
-                "A Rework needs a reason: add at least one --finding <check> <location|-> \"<text>\" to this update"
-                    .into(),
-            );
-        }
-        Ok(())
-    }
-
     /// Records the new Findings and applies the outcomes.
     pub(super) fn apply(self, run: &mut Run, ctx: &FindingsContext) -> Result<(), String> {
-        let FindingsContext {
-            stage,
-            moved,
-            at,
-            git,
-        } = *ctx;
+        let FindingsContext { stage, at, git } = *ctx;
         let head = |run: &Run| crate::run_gate::head(run, git);
         if !self.new.is_empty() {
             let late_rework_finding = stage == Stage::Build && run.rework.is_some();
@@ -207,7 +189,7 @@ impl FindingsUpdate {
                     location: finding.location,
                     text: finding.text,
                     reviewed_commit: reviewed_commit.clone(),
-                    rework: if moved || late_rework_finding {
+                    rework: if late_rework_finding {
                         run.rework
                     } else {
                         None
@@ -218,16 +200,6 @@ impl FindingsUpdate {
                     at,
                     resolved_at: None,
                 });
-            }
-        }
-        if moved {
-            // Open Findings recorded earlier in this Check pass sent the run back too.
-            for finding in run
-                .findings
-                .iter_mut()
-                .filter(|finding| finding.state == FindingState::Open && finding.rework.is_none())
-            {
-                finding.rework = run.rework;
             }
         }
         if self.statuses.is_empty() {
@@ -306,24 +278,18 @@ mod tests {
     }
 
     fn parsed(options: &[&str]) -> FindingsUpdate {
-        parse_update("running", options).unwrap().findings
+        parse_update(options).unwrap().findings
     }
 
     fn validated(options: &[&str]) -> Result<(), String> {
-        parse_update("running", options)?.findings.validate()
+        parse_update(options)?.findings.validate()
     }
 
-    fn apply(
-        update: FindingsUpdate,
-        run: &mut Run,
-        stage: Stage,
-        moved: bool,
-    ) -> Result<(), String> {
+    fn apply(update: FindingsUpdate, run: &mut Run, stage: Stage) -> Result<(), String> {
         update.apply(
             run,
             &FindingsContext {
                 stage,
-                moved,
                 at: 7,
                 git: &FixedGit,
             },
@@ -350,7 +316,7 @@ mod tests {
     fn findings_are_only_recorded_in_check() {
         let mut run = run_in(Stage::Build);
         let update = parsed(&["--finding", "security", "-", "Leak"]);
-        let error = apply(update, &mut run, Stage::Build, false).unwrap_err();
+        let error = apply(update, &mut run, Stage::Build).unwrap_err();
         assert!(error.contains("recorded in Check, or in Build during a Rework"));
     }
 
@@ -359,7 +325,7 @@ mod tests {
         let mut run = run_in(Stage::Build);
         run.rework = Some(1);
         let update = parsed(&["--finding", "security", "-", "Late"]);
-        apply(update, &mut run, Stage::Build, false).unwrap();
+        apply(update, &mut run, Stage::Build).unwrap();
         assert_eq!(run.findings[0].rework, Some(1));
         assert_eq!(run.findings[0].state, FindingState::Open);
         assert_eq!(run.stage, Stage::Build);
@@ -370,7 +336,7 @@ mod tests {
         let mut run = run_in(Stage::Check);
         run.findings = vec![finding("F1"), finding("F4")];
         let update = parsed(&["--finding", "security", "src/a.rs:1", "More"]);
-        apply(update, &mut run, Stage::Check, false).unwrap();
+        apply(update, &mut run, Stage::Check).unwrap();
         let added = &run.findings[2];
         assert_eq!(added.id, "F5");
         assert_eq!(added.location.as_deref(), Some("src/a.rs:1"));
@@ -396,7 +362,7 @@ mod tests {
         run.findings = (1..=MAX_FINDINGS_PER_RUN)
             .map(|number| finding(&format!("F{number}")))
             .collect();
-        let error = apply(new(1), &mut run, Stage::Check, false).unwrap_err();
+        let error = apply(new(1), &mut run, Stage::Check).unwrap_err();
         assert!(error.contains("at most"));
     }
 
@@ -414,27 +380,19 @@ mod tests {
     }
 
     #[test]
-    fn a_rework_needs_a_new_finding() {
-        assert!(parsed(&[]).check_rework(true).is_err());
-        assert!(parsed(&[]).check_rework(false).is_ok());
-        let update = parsed(&["--finding", "security", "-", "Leak"]);
-        assert!(update.check_rework(true).is_ok());
-    }
-
-    #[test]
     fn build_accepts_only_fixed_during_a_rework() {
         let mut run = run_in(Stage::Build);
         run.findings = vec![finding("F1")];
         let fixed = || parsed(&["--finding-status", "F1=fixed"]);
-        let error = apply(fixed(), &mut run, Stage::Build, false).unwrap_err();
+        let error = apply(fixed(), &mut run, Stage::Build).unwrap_err();
         assert!(error.contains("outcomes are set in Check"));
 
         run.rework = Some(1);
         let deferred = parsed(&["--finding-status", "F1=deferred:later"]);
-        let error = apply(deferred, &mut run, Stage::Build, false).unwrap_err();
+        let error = apply(deferred, &mut run, Stage::Build).unwrap_err();
         assert!(error.contains("only fixed"));
 
-        apply(fixed(), &mut run, Stage::Build, false).unwrap();
+        apply(fixed(), &mut run, Stage::Build).unwrap();
         assert_eq!(run.findings[0].state, FindingState::Fixed);
         assert_eq!(run.findings[0].fix_commit.as_deref(), Some("abc1234"));
         assert_eq!(run.findings[0].resolved_at, Some(7));
@@ -445,9 +403,9 @@ mod tests {
         let mut run = run_in(Stage::Check);
         run.findings = vec![finding("F1")];
         let missing = parsed(&["--finding-status", "F9=fixed"]);
-        assert!(apply(missing, &mut run, Stage::Check, false).is_err());
+        assert!(apply(missing, &mut run, Stage::Check).is_err());
         let deferred = parsed(&["--finding-status", "F1=deferred:not worth it"]);
-        apply(deferred, &mut run, Stage::Check, false).unwrap();
+        apply(deferred, &mut run, Stage::Check).unwrap();
         assert_eq!(run.findings[0].reason.as_deref(), Some("not worth it"));
         assert_eq!(run.findings[0].fix_commit, None);
     }
@@ -455,12 +413,19 @@ mod tests {
     #[test]
     fn a_rework_tags_earlier_open_findings_but_not_resolved_ones() {
         let mut run = run_in(Stage::Check);
-        run.rework = Some(1);
+        run.mode = Some(crate::run::Mode::Balanced);
         let mut fixed = finding("F2");
         fixed.state = FindingState::Fixed;
         run.findings = vec![finding("F1"), fixed];
         let update = parsed(&["--finding", "security", "-", "Another"]);
-        apply(update, &mut run, Stage::Check, true).unwrap();
+        apply(update, &mut run, Stage::Check).unwrap();
+        run.start_rework(
+            "F1".into(),
+            crate::run::FindingClassification::Wording,
+            None,
+            10,
+        )
+        .unwrap();
         let tagged: Vec<_> = run.findings.iter().map(|f| f.rework).collect();
         assert_eq!(tagged, [Some(1), None, Some(1)]);
     }
@@ -468,15 +433,14 @@ mod tests {
     #[test]
     fn json_keeps_its_field_names_and_rejects_unknown_keys() {
         let update: crate::run::UpdateRun = serde_json::from_str(
-            r#"{"status":"running","findings":[{"check":"security","text":"Leak"}],"finding_status":[{"id":"F1","state":"open"}]}"#,
+            r#"{"findings":[{"check":"security","text":"Leak"}],"finding_status":[{"id":"F1","state":"open"}]}"#,
         )
         .unwrap();
         assert_eq!(update.findings.new.len(), 1);
         assert_eq!(update.findings.statuses.len(), 1);
         let json = serde_json::to_value(&update).unwrap();
         assert!(json["findings"].is_array() && json["finding_status"].is_array());
-        let unknown =
-            serde_json::from_str::<crate::run::UpdateRun>(r#"{"status":"running","bogus":1}"#);
+        let unknown = serde_json::from_str::<crate::run::UpdateRun>(r#"{"bogus":1}"#);
         assert!(unknown.is_err());
     }
 }

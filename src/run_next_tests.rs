@@ -15,6 +15,7 @@ fn run(mode: Mode, stage: Stage, routing: Option<ModelRouting>) -> Run {
         reference: "ticket".into(),
         title: "A ticket".into(),
         status: TicketStatus::Pending,
+        work_attempt: 0,
     });
     run.mode = Some(mode);
     run.stage = stage;
@@ -59,20 +60,14 @@ fn fast_build_lists_gates_and_has_no_checks_or_rework() {
 }
 
 #[test]
-fn balanced_check_offers_advance_and_rework_with_applicable_checks() {
+fn balanced_check_offers_advance_with_applicable_checks() {
     let next = build(
         &run(Mode::Balanced, Stage::Check, None),
         &["src/a.rs".into()],
     )
     .unwrap();
     let kinds: Vec<_> = next.moves.iter().map(|m| (m.kind, m.to)).collect();
-    assert_eq!(
-        kinds,
-        [
-            ("stage", Some(Stage::Finish)),
-            ("rework", Some(Stage::Build))
-        ]
-    );
+    assert_eq!(kinds, [("stage", Some(Stage::Finish))]);
     let checks = next.checks.unwrap();
     assert_eq!(checks.applicable[0].name, "code-review");
 }
@@ -153,6 +148,7 @@ fn next_shows_recorded_results_and_only_open_review_gates() {
         evidence: Some("reviewed".into()),
         commit: None,
         ticket: None,
+        work_attempt: None,
         check: Some("code-review".into()),
         skipped_checks: Vec::new(),
     });
@@ -212,7 +208,11 @@ fn next_supplies_only_current_stage_and_routing_when_selected() {
 fn build_instructions_are_focused_and_full_explains_each_ticket_gate() {
     let output = build(&run(Mode::Full, Stage::Build, Some(routing())), &[]).unwrap();
     assert!(output.instructions.contains("tickets-verified pass"));
-    assert!(output.instructions.contains("--current-ticket"));
+    assert!(
+        output
+            .instructions
+            .contains("--ticket-status <reference>=in-progress")
+    );
     assert!(!output.instructions.contains("## Committing for Check"));
     assert!(!output.instructions.contains("## Reworks"));
     assert!(!output.instructions.contains("On Copilot CLI"));
@@ -360,7 +360,7 @@ fn git_diff_preserves_unusual_paths_and_both_sides_of_renames() {
 }
 
 #[test]
-fn past_check_gate_uses_completed_snapshot_not_one_individual_result() {
+fn forced_check_exit_is_distinct_from_a_recorded_review_pass() {
     let mut run = run(Mode::Balanced, Stage::Check, None);
     run.gates.push(crate::run_gate::GateResult {
         gate: Gate::ChecksRecorded,
@@ -370,79 +370,39 @@ fn past_check_gate_uses_completed_snapshot_not_one_individual_result() {
         evidence: Some("only one check".into()),
         commit: Some("abc".into()),
         ticket: None,
+        work_attempt: None,
         check: Some("code-review".into()),
         skipped_checks: vec![],
     });
     crate::run_gate::advance_forced(&mut run, "review incomplete").unwrap();
-    let status = |run: &Run| {
-        let stages = serde_json::to_value(stage_gates(run)).unwrap();
-        stages
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|s| s["stage"] == "check")
-            .unwrap()["gates"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|g| g["name"] == "checks-recorded")
-            .unwrap()
-            .clone()
-    };
-    assert_eq!(status(&run)["status"], "unknown");
-    assert!(status(&run)["evidence"].is_null());
-    run.check_history.push(crate::run_gate::CheckSnapshot {
-        rework: None,
-        skipped: vec![],
-    });
-    assert_eq!(status(&run)["status"], "recorded-pass");
-    run.rework = Some(1);
-    assert_eq!(status(&run)["status"], "unknown");
+    let next = build(&run, &[]).unwrap();
+    let json = serde_json::to_value(&next).unwrap();
+    assert_eq!(json["stage_exits"][0]["outcome"], "override");
+    let review = &json["stage_exits"][0]["gates"][0];
+    assert_eq!(review["name"], "checks-recorded");
+    assert_eq!(review["status"], "bypassed");
+    assert!(review.get("results").is_none());
+    assert!(render(&next).contains("Override (review incomplete)"));
 }
 
 #[test]
-fn finished_run_shows_merged_ci_and_done_tickets_as_recorded() {
+fn finish_guidance_waits_for_live_ci_even_with_a_stored_pr_state() {
     let mut run = run(Mode::Fast, Stage::Finish, None);
-    run.tickets.clear();
-    run.status = RunStatus::Done;
     run.pr_status = Some(crate::pr_state::PrStatus {
         url: "https://example.test/pr/1".into(),
         state: crate::pr_state::PrState::Merged,
         reason: None,
         checked_at: 0,
     });
-    let stages = serde_json::to_value(stage_gates(&run)).unwrap();
-    let gate = |stage: &str, name: &str| {
-        stages
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|s| s["stage"] == stage)
-            .unwrap()["gates"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|g| g["name"] == name)
-            .unwrap()
-            .clone()
-    };
-    let ci = gate("finish", "ci-passed");
-    assert_eq!(ci["status"], "recorded-pass");
-    assert_eq!(ci["evidence"], "Pull request merged");
-    assert_eq!(gate("build", "tickets-done")["status"], "recorded-pass");
-
-    // A stage the run has not reached yet stays unknown, even with every ticket done.
-    run.status = RunStatus::Running;
-    run.stage = Stage::Define;
-    let stages = serde_json::to_value(stage_gates(&run)).unwrap();
-    let build = stages
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|s| s["stage"] == "build")
-        .unwrap();
-    assert_eq!(build["gates"][0]["name"], "tickets-done");
-    assert_eq!(build["gates"][0]["status"], "unknown");
+    let next = build(&run, &[]).unwrap();
+    let json = serde_json::to_value(&next).unwrap();
+    assert_eq!(json["gates"][1]["name"], "ci-passed");
+    assert_eq!(json["gates"][1]["status"], "awaiting-live-check");
+    crate::run_gate::finish_from_merge(&mut run, "https://example.test/pr/1", 1).unwrap();
+    let next = build(&run, &[]).unwrap();
+    let json = serde_json::to_value(&next).unwrap();
+    assert_eq!(json["stage_exits"][0]["outcome"], "merged");
+    assert_eq!(json["stage_exits"][0]["gates"][1]["status"], "bypassed");
 }
 
 #[test]

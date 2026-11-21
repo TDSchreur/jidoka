@@ -27,7 +27,8 @@ SHIPPED = {
     "worktree": "/work/shop.worktrees/gift-card-checkout", "base_commit": "9f3c2b7d1e", "branch": "gift-card-checkout",
     "mode": "balanced", "stage": "finish", "status": "done", "updated_at": AT, "activity": "Pull request merged",
     "spec": SPEC, "pr": PR, "pr_status": {"url": PR, "state": "merged", "checked_at": AT},
-    "rework": 1, "current_ticket": None,
+    "completion": {"kind": "merged", "url": PR},
+    "rework": 1,
     "summaries": {"define": "Gift cards are bought at checkout and redeemed once.", "check": "One review finding fixed."},
     "tickets": [{"reference": T1, "title": "Redeem a card", "status": "done"}, {"reference": T2, "title": "Buy a card", "status": "done"}],
     "ticket_reports": [
@@ -85,10 +86,15 @@ STRAY = {
     ],
     "ticket_reports": [{"ticket": "local-404", "kind": "activity", "text": "Orphan ticket note", "stage": "build", "at": AT}],
 }
-CURRENT = {**ACTIVE, "id": "run-current", "title": "Current one", "current_ticket": "local-1",
-           "tickets": [{"reference": "local-1", "title": "Index in the background", "status": "pending"},
-                       {"reference": "local-2", "title": "Other", "status": "pending"}]}
-NO_CURRENT = {**{k: v for k, v in ACTIVE.items() if k != "current_ticket"}, "id": "run-no-current", "title": "No current one",
+CURRENT = {**ACTIVE, "id": "run-current", "title": "Current one",
+           "tickets": [{"reference": "local-1", "title": "Index in the background", "status": "in-progress", "work_attempt": 3},
+                       {"reference": "local-2", "title": "Other", "status": "pending", "work_attempt": 2}],
+           "gates": [
+               {"gate": "tickets-verified", "stage": "build", "ticket": "local-1", "work_attempt": 1, "passed": True, "commit": "1234567abcdef"},
+               {"gate": "tickets-verified", "stage": "build", "ticket": "local-1", "work_attempt": 3, "passed": True, "commit": "abcdef1234567"},
+           ]}
+
+NO_CURRENT = {**ACTIVE, "id": "run-no-current", "title": "No current one",
               "tickets": [{"title": "Unreferenced work", "status": "pending"}]}
 def finding(id, state, rework, at, **extra):
     return {"id": id, "check": "code-review", "location": "src/a.rs:1", "text": f"Problem {id} in a very long_unbroken_path_name_that_must_wrap", "reviewed_commit": "abcdef1234567",
@@ -209,7 +215,6 @@ const snap = async (id) => {
     activity: text(dialog.querySelector('.detail-activity')),
     statusRow: text(dialog.querySelector('.status-row')),
     otherReports: text(dialog.querySelector('.other-reports')),
-    detailTicket: text(dialog.querySelector('.detail-ticket')),
     prReason: text(dialog.querySelector('.pr-reason')),
     prReasonColor: dialog.querySelector('.pr-reason') ? getComputedStyle(dialog.querySelector('.pr-reason')).color : null,
     statusRowColor: getComputedStyle(dialog.querySelector('.status-row')).color,
@@ -299,13 +304,50 @@ return {chip, deferred: text(shippedRow), lists, hole: hole.borderTopColor, over
         self.assertTrue(r["overflow"])
         self.assertIn("1234567", r["codes"])
 
+    def test_completion_reason_and_pr_state_are_independent(self):
+        completed = [
+            {**SHIPPED, "id": "ci", "completion": {"kind": "ci", "outcome": "passed", "head": "abc1234"}},
+            {**SHIPPED, "id": "no-ci", "completion": {"kind": "ci", "outcome": "no-ci", "head": "def5678"}},
+            {**SHIPPED, "id": "override", "completion": {"kind": "override", "reason": "CI service unavailable"}},
+        ]
+        completed.append({**SHIPPED, "id": "merge", "stage_gates": [
+            {"stage": "finish", "exit": {"outcome": "merged"},
+             "gates": [{"name": "ci-passed", "status": "bypassed", "description": "CI passed"}]},
+        ]})
+        for run in completed[:3]:
+            run["pr_status"] = {"url": PR, "state": "open", "checked_at": AT}
+        body = """
+const labels = {};
+for (const id of ['ci', 'no-ci', 'override', 'merge']) {
+  const dialog = await openRun(id);
+  labels[id] = text(dialog.querySelector('.status-row'));
+  if (id === 'merge') {
+    const gates = await wait(() => dialog.querySelector('#gate-heading'), 'saved exit');
+    labels.mergeExit = text(gates.parentElement.querySelector('.gate-exit'));
+    labels.mergeCiStatus = text(gates.parentElement.querySelector('.gate-status'));
+  }
+  await closeRun();
+}
+return labels;
+"""
+        labels = drive(body, runs=completed)
+        self.assertIn("CI passed on abc1234", labels["ci"])
+        self.assertIn("No CI on def5678", labels["no-ci"])
+        self.assertIn("Override (CI service unavailable)", labels["override"])
+        self.assertIn("PR #233 merged", labels["merge"])
+        self.assertEqual(labels["mergeExit"], "PR merge observed")
+        self.assertEqual(labels["mergeCiStatus"], "bypassed")
+        for id in ("ci", "no-ci", "override"):
+            self.assertIn("PR #233 open", labels[id])
+
     def stop(self, snapshot, name):
         return next(s for s in snapshot["stops"] if s["name"] == name)
 
     def test_header_leads_with_status_pr_and_spec(self):
         s = self.shipped
         self.assertEqual(s["heading"], "Add a gift card checkout")
-        self.assertIn("Shipped", s["statusRow"])
+        self.assertIn("Done", s["statusRow"])
+        self.assertIn("Completion PR merge observed", s["statusRow"])
         self.assertEqual(s["prLink"], "PR #233")
         self.assertIn("PR #233 merged", s["statusRow"])
         self.assertEqual(s["specLink"], "Spec #230")
@@ -412,16 +454,65 @@ return {chip, deferred: text(shippedRow), lists, hole: hole.borderTopColor, over
         tickets = self.stop(self.current, "Build")["tickets"]
         self.assertTrue(tickets[0].startswith("In progress"))
         self.assertTrue(tickets[1].startswith("Pending"))
-        self.assertIsNone(self.current["detailTicket"])
+        self.assertIn("Verification recorded at abcdef1", tickets[0])
+        self.assertNotIn("1234567", tickets[0])
+
+    def test_build_history_keeps_its_ticket_plan_and_verification(self):
+        ticket = {"reference": "local-1", "title": "Archived work", "status": "done", "work_attempt": 1}
+        old_verification = {"gate": "tickets-verified", "stage": "build", "ticket": "local-1",
+                            "work_attempt": 1, "passed": True, "commit": "1234567abcdef"}
+        fixture = {**ACTIVE, "stage": "build", "rework": 1, "tickets": [], "unticketed_attempt": 2,
+            "timeline": [{"stage": "build", "at": AT, "ticket": "local-1"},
+                         {"stage": "check", "at": AT + 1000},
+                         {"stage": "build", "rework": 1, "at": AT + 2000}],
+            "stage_exits": [{"stage": "build", "at": AT + 1000, "outcome": "accepted",
+                             "build_plan": {"kind": "ticketed", "tickets": [ticket]},
+                             "gates": [{"name": "tickets-verified", "results": [old_verification]}]}],
+            "gates": [{**old_verification, "rework": 1, "commit": "abcdef1234567"}]}
+        labels = drive("""
+const dialog = await openRun('run-active');
+return [...dialog.querySelectorAll('.route .stop')].map(text);
+""", runs=[fixture])
+        self.assertIn("1 of 1 tickets done", labels[0])
+        self.assertIn("Archived work", labels[0])
+        self.assertIn("Verification recorded at 1234567", labels[0])
+        self.assertNotIn("abcdef1", labels[0])
+        self.assertNotIn("Unticketed work", labels[0])
+        self.assertIn("Unticketed work", labels[2])
+        self.assertNotIn("Archived work", labels[2])
+
+    def test_live_rework_build_counts_the_full_current_plan(self):
+        a = {"reference": "local-1", "title": "Reopened work", "status": "done", "work_attempt": 1}
+        b = {"reference": "local-2", "title": "Verified work", "status": "done", "work_attempt": 2}
+        fixture = {**ACTIVE, "stage": "build", "rework": 1,
+            "tickets": [{**a, "status": "in-progress", "work_attempt": 3}, b],
+            "timeline": [{"stage": "build", "at": AT, "ticket": "local-1"},
+                         {"stage": "build", "at": AT + 100, "ticket": "local-2"},
+                         {"stage": "check", "at": AT + 1000},
+                         {"stage": "build", "rework": 1, "at": AT + 2000, "ticket": "local-1"}],
+            "stage_exits": [{"stage": "build", "at": AT + 1000, "outcome": "accepted",
+                             "build_plan": {"kind": "ticketed", "tickets": [a, b]}, "gates": []}],
+            "gates": [{"gate": "tickets-verified", "stage": "build", "ticket": "local-2",
+                       "work_attempt": 2, "passed": True, "commit": "1234567abcdef"}]}
+        labels = drive("""
+const dialog = await openRun('run-active');
+return [...dialog.querySelectorAll('.route .stop')].map(text);
+""", runs=[fixture])
+        self.assertIn("2 of 2 tickets done", labels[0])
+        self.assertIn("1 of 2 tickets done", labels[2])
+        self.assertIn("Verified work", labels[2])
+        self.assertIn("Verification recorded at 1234567", labels[2])
 
     def test_pending_ticket_without_reference_is_not_in_progress_when_the_run_has_no_current_ticket(self):
         tickets = self.stop(self.no_current, "Build")["tickets"]
         self.assertEqual(len(tickets), 1)
         self.assertTrue(tickets[0].startswith("Pending"))
 
-    def test_current_ticket_missing_from_the_list_shows_under_the_title(self):
-        self.assertEqual(self.stray["detailTicket"], "Current ticket: local-9")
-        self.assertIsNone(self.active["detailTicket"])
+    def test_legacy_current_ticket_does_not_override_listed_statuses(self):
+        tickets = self.stop(self.stray, "Build")["tickets"]
+        self.assertTrue(tickets[0].startswith("Done"))
+        self.assertTrue(tickets[1].startswith("Pending"))
+        self.assertNotIn("local-9", self.stop(self.stray, "Build")["full"])
 
     def test_unknown_pr_state_reason_is_visible_text(self):
         self.assertIn("state unknown: gh is not signed in", self.stray["statusRow"])
@@ -581,16 +672,35 @@ return {
             self.assertGreaterEqual(result["panelRatio"], 3, result)
 
     def test_gate_and_skipped_check_text_is_accessible(self):
-        fixture = {**ACTIVE, "stage_gates": [{"stage": "build", "gates": [
-            {"name": "verified", "status": "failed", "description": "verification passed", "evidence": "Tests failed", "rework": 2},
-        ]}, {"stage": "finish", "gates": [{"name": "ci-passed", "status": "unknown", "description": "CI passed"}]}],
+        fixture = {**ACTIVE, "stage_gates": [
+            {"stage": "build", "exit": {"outcome": "accepted"}, "gates": [
+                {"name": "verified", "status": "passed", "description": "verification passed",
+                 "results": [{"commit": "abc1234", "evidence": "Checks passed"}]},
+            ]},
+            {"stage": "build", "rework": 2, "exit": {"outcome": "override", "reason": "Review service down"},
+             "gates": [{"name": "verified", "status": "bypassed", "description": "verification passed"}]},
+            {"stage": "check", "exit": {"outcome": "rework", "number": 2, "finding": "F1"}, "gates": []},
+            {"stage": "check", "rework": 2, "gates": [
+                {"name": "verified", "status": "failed", "description": "verification passed",
+                 "results": [{"evidence": "Tests failed"}]},
+                {"name": "no-actionable-findings", "status": "open", "reason": "Findings F1 are open"},
+            ]},
+            {"stage": "finish", "gates": [
+                {"name": "ci-passed", "status": "awaiting-live-check", "description": "CI passed"},
+            ]},
+        ],
             "checks": {"skipped": [{"name": "code-review", "reason": "fast has no check stage"}]},
             "recorded_skipped_checks": [{"name": "security", "reason": "no matching path"}],
             "recorded_skipped_rework": 2}
         result = drive("""
 const dialog = await openRun('run-active');
 await wait(() => dialog.querySelector('[aria-labelledby="gate-heading"]'), 'gate status');
-return {gates: text(dialog.querySelector('[aria-labelledby="gate-heading"]')),
+const gates = dialog.querySelector('[aria-labelledby="gate-heading"]');
+const exits = [...gates.querySelectorAll('.gate-stage')].map((stage) => ({
+  outcome: text(stage.querySelector('.gate-exit')),
+  statuses: [...stage.querySelectorAll('.gate-status')].map(text),
+}));
+return {gates: text(gates), exits,
         skipped: text(dialog.querySelector('[aria-labelledby="skipped-heading"]')),
         recorded: text(dialog.querySelector('[aria-labelledby="recorded-skipped-heading"]')),
         headings: [...dialog.querySelectorAll('h3, h4')].map(text)};
@@ -598,7 +708,12 @@ return {gates: text(dialog.querySelector('[aria-labelledby="gate-heading"]')),
         self.assertIn("verified: failed", result["gates"])
         self.assertIn("Evidence: Tests failed", result["gates"])
         self.assertIn("Rework 2", result["gates"])
-        self.assertIn("ci-passed: Unknown", result["gates"])
+        self.assertIn("ci-passed: Awaiting live check", result["gates"])
+        self.assertIn("Findings F1 are open", result["gates"])
+        self.assertIn({"outcome": "Accepted", "statuses": ["passed"]}, result["exits"])
+        self.assertIn("Evidence: commit abc1234 · Checks passed", result["gates"])
+        self.assertIn({"outcome": "Override (Review service down)", "statuses": ["bypassed"]}, result["exits"])
+        self.assertIn("Started Rework 2 (F1)", result["gates"])
         self.assertIn("code-review: fast has no check stage", result["skipped"])
         self.assertIn("Checks skipped when recorded · Rework 2", result["recorded"])
         self.assertIn("security: no matching path", result["recorded"])

@@ -7,13 +7,13 @@ use std::collections::BTreeMap;
 /// Help lines for the summary flags, as a macro so `UPDATE_HELP` can stay a `const` built with `concat!`.
 macro_rules! help {
     () => {
-        "  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat; `done` is only accepted in Finish and needs a Finish summary)\n"
+        "  --summary <define|build|check|finish>=<text> | --clear-summary <stage> (repeat)\n"
     };
 }
 pub(super) use help;
 
 /// What an update does to the run's stage summaries.
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct SummariesUpdate {
     /// Stage summaries to set; null removes that stage's summary. Other stages keep theirs.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -21,13 +21,8 @@ pub(crate) struct SummariesUpdate {
 }
 
 impl SummariesUpdate {
-    /// Sets the summary of `stage`; `None` removes it.
-    pub(crate) fn set(&mut self, stage: Stage, summary: Option<String>) {
-        self.summaries.insert(stage, summary);
-    }
-
     /// Reads `--summary` or `--clear-summary` and the value after it.
-    pub(super) fn parse_option<'a>(
+    pub(crate) fn parse_option<'a>(
         &mut self,
         flag: &str,
         next_value: &mut dyn FnMut() -> Result<&'a &'a str, String>,
@@ -49,7 +44,7 @@ impl SummariesUpdate {
     }
 
     /// Checks every summary text before anything is applied.
-    pub(super) fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         for summary in self.summaries.values().flatten() {
             check_text("Stage summary", summary, MAX_NOTE_BYTES)?;
         }
@@ -57,7 +52,7 @@ impl SummariesUpdate {
     }
 
     /// Sets and removes the summaries; other stages keep theirs.
-    pub(super) fn apply(self, run: &mut Run) {
+    pub(crate) fn apply(self, run: &mut Run) {
         for (stage, summary) in self.summaries {
             match summary {
                 Some(text) => {
@@ -71,7 +66,7 @@ impl SummariesUpdate {
     }
 }
 
-/// A run is marked done only with a Finish summary, so a reader can tell what shipped.
+/// A run is marked done only with a Finish summary, so a reader can tell what the run accomplished.
 pub(super) fn check_done(run: &Run) -> Result<(), String> {
     if run
         .summaries
@@ -79,7 +74,7 @@ pub(super) fn check_done(run: &Run) -> Result<(), String> {
         .is_none_or(|text| text.trim().is_empty())
     {
         return Err(
-            "Finish cannot be marked done without a Finish summary; add --summary finish=<what shipped>"
+            "Finish cannot be marked done without a Finish summary; add --summary finish=<summary>"
                 .into(),
         );
     }
@@ -92,7 +87,7 @@ mod tests {
     use crate::run::{parse_update, tests::sample_run};
 
     fn parsed(options: &[&str]) -> Result<SummariesUpdate, String> {
-        Ok(parse_update("running", options)?.summaries)
+        Ok(parse_update(options)?.summaries)
     }
 
     #[test]

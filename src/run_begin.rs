@@ -17,8 +17,8 @@ pub(crate) trait RunApi {
     ) -> Result<String, String>;
     /// Reads a run that exists.
     fn get(&self, id: &str) -> Result<RunSummary, String>;
-    /// Updates a run like `jidoka run update <id> <status> <options>`.
-    fn update(&self, id: &str, status: &str, options: &[&str]) -> Result<(), String>;
+    fn workspace_ready(&self, id: &str, options: &[&str]) -> Result<(), String>;
+    fn workspace_blocked(&self, id: &str, reason: &str) -> Result<(), String>;
     /// The id and title of every run, whatever its status, that records this agent session.
     fn runs_with_session(&self, session: &str) -> Result<Vec<(String, String)>, String>;
 }
@@ -404,7 +404,7 @@ pub(crate) fn begin(
             if let Some(session) = &session {
                 args.extend(["--session", &session.id]);
             }
-            match api.update(&run, "running", &args) {
+            match api.workspace_ready(&run, &args) {
                 Ok(()) => {
                     let (gitignore_added, gitignore_warning) =
                         ignore_run_folders(Path::new(&workspace.worktree));
@@ -444,9 +444,7 @@ fn blocked(
     reason: String,
 ) -> BeginError {
     let reason: String = reason.chars().take(MAX_REASON_CHARS).collect();
-    let marked = api
-        .update(run, "blocked", &["--blocking-reason", &reason])
-        .is_ok();
+    let marked = api.workspace_blocked(run, &reason).is_ok();
     BeginError::Blocked {
         run: run.to_string(),
         reason,

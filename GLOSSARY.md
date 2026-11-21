@@ -4,7 +4,7 @@
 
 **Stage**: The current part of a run: Define, Build, Check, or Finish. Which Stages a run goes through, and in what order, depends on its Workflow mode and is owned by the CLI: a run changes Stage only through `jidoka run advance`, or through Rework.
 
-**Gate**: A condition that must hold before a run may leave a Stage, such as all tickets done, verification passed on the head commit, a review recorded, or CI passed. The agent records a Gate result with `jidoka run gate`; the CLI checks what it can itself, and `jidoka run advance` refuses, listing each failing Gate, until they all pass.
+**Gate**: A condition that must hold before a run may leave a Stage, such as all tickets done, verification passed on the head commit, a review recorded, or CI passed. Agents record manual Gate results with `jidoka run gate`. The CLI and dashboard share the same evaluation for local Gates. Advance evaluates live CI when required. Each accepted exit preserves its gate evidence for that stage pass.
 
 **Needs you**: A run that is blocked and waiting for the user. The dashboard lists it in the andon strip, marks its row on the line amber, sorts it first and counts it in the page title.
 
@@ -12,7 +12,7 @@
 
 **The line**: The dashboard's list of active runs (every run that is not done), one row each, with a rail of the four Stages that shows where the run is.
 
-**Shipped**: The dashboard's name for a finished run, one with the status `done`. Shipped runs are listed below the line, grouped by day. The CLI, the API and `runs.json` keep the status `done`.
+**Done** means Jidoka ended work on a run. Done runs appear under Completed in the dashboard. The run's completion reason and its pull request state are recorded separately.
 
 **Pull request state**: Whether a run's pull request is open, a draft, merged or closed. The dashboard server reads it from GitHub with `gh` or from Azure Repos with `az`, keeps it on the run and reads it again about once a minute until it is merged. When it cannot be read, it is unknown, with the reason; it is never guessed.
 
@@ -57,6 +57,10 @@
 **Workspace**: A run's own git worktree and feature branch, created from the pull request base branch, which the run records as its worktree, branch and base commit. `jidoka run begin` creates it.
 
 **Run cleanup**: Removing a run's Workspace once its pull request is merged: `jidoka run cleanup <id>` removes the worktree and the local feature branch, never discarding uncommitted changes or commits that were not in the merged pull request, and clears them from the run context.
+
+**Ticket plan**: The ordered list of tickets for Build, or the explicit declaration that Build is unticketed. The listed ticket marked in progress is the active ticket.
+
+**Work attempt**: An identity for a listed ticket's current work or for an unticketed Build plan. Reopening a ticket or dropping it and then listing it again starts a new attempt. Full records the verified commit against the attempt.
 
 **Ticket report**: A short, agent-reported skill or activity associated with a ticket in a run. Reports may be incomplete and are not independent proof of the work.
 

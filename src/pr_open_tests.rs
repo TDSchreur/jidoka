@@ -235,8 +235,8 @@ impl FakeGh {
     }
 }
 
-/// One call of `RunApi::update`: run, stage, status and options.
-type Update = (String, String, Vec<String>);
+/// One call of `RunApi::update`: run and options.
+type Update = (String, Vec<String>);
 
 #[derive(Default)]
 struct FakeApi {
@@ -245,15 +245,13 @@ struct FakeApi {
 }
 
 impl RunApi for FakeApi {
-    fn update(&self, id: &str, status: &str, options: &[&str]) -> Result<(), String> {
+    fn update(&self, id: &str, options: &[&str]) -> Result<(), String> {
         if self.fail.get() {
             return Err("the server is not reachable".into());
         }
-        self.updates.borrow_mut().push((
-            id.into(),
-            status.into(),
-            options.iter().map(|o| o.to_string()).collect(),
-        ));
+        self.updates
+            .borrow_mut()
+            .push((id.into(), options.iter().map(|o| o.to_string()).collect()));
         Ok(())
     }
 }
@@ -263,7 +261,6 @@ fn run_of(project: &Project) -> PrRun {
         id: "100".into(),
         worktree: Some(project.wt.display().to_string()),
         branch: Some("feature".into()),
-        stage: "finish".into(),
         status: "running".into(),
         base_commit: None,
         pr_state: None,
@@ -314,8 +311,8 @@ fn a_new_pull_request_is_pushed_opened_and_recorded() {
     );
     // The run records it, keeping its stage.
     let updates = api.updates.borrow();
-    let (id, status, args) = updates.last().unwrap();
-    assert_eq!((id.as_str(), status.as_str()), ("100", "running"));
+    let (id, args) = updates.last().unwrap();
+    assert_eq!(id, "100");
     assert_eq!(args[..2], ["--pr".to_string(), URL.to_string()]);
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "jidoka"
-version = "0.19.2"
+version = "0.19.3"
 edition = "2024"
 description = "Jidoka — the AI software factory"
 license = "MIT"
