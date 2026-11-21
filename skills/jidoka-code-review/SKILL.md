@@ -37,7 +37,7 @@ Search the repo for every file that documents how code should be written. When `
 
 Also find the project's commit conventions (required trailers, attribution lines, message format) and its definition of a wording-only change to skills or docs, when it documents them. Add them to the sources.
 
-On top of whatever the repo documents, the Standards axis always carries the smell baseline and, for projects that target more than one platform, the cross-platform checklist, both in [standards-checklist.md](references/standards-checklist.md). The two rules in that file bind both: the repo overrides, and every finding is a judgement call.
+On top of whatever the repo documents, the Standards axis always carries the smell baseline and, for projects that target more than one platform, the cross-platform checklist, both in [standards-checklist.md](references/standards-checklist.md). The three rules in that file bind both: the repo overrides, every finding is a judgement call, and a smell or cross-platform item is reported only with a concrete harm.
 
 ### 4. Spawn both sub-agents in parallel
 
@@ -48,10 +48,10 @@ If the caller gives you a model and an effort for the review agents, start both 
 **Standards sub-agent prompt** should include:
 
 - The full diff command and commit list.
-- The list of standards-source files you found in step 3, **plus the content of `references/standards-checklist.md`** (smell baseline, cross-platform checklist and their two rules) pasted in full (the sub-agent has no other access to it).
+- The list of standards-source files you found in step 3, **plus the content of `references/standards-checklist.md`** (smell baseline, cross-platform checklist and their three rules) pasted in full (the sub-agent has no other access to it).
 - The project's commit conventions and wording-only definition from step 3, when documented. Tell the reviewer to judge commit messages and wording-only exemptions only against what is documented, and not to guess or report on undocumented conventions.
 - The agent-skill check, pasted in full: when the diff changes what an agent skill (a `SKILL.md` or a file it references) makes the agent do, decide, output or promise, and no commit carries a `Skill check:` line with eval or forward-test evidence, report it as a judgement call. Wording-only changes are exempt.
-- The brief: "Report, per file/hunk where relevant, (a) every place the diff violates a documented standard: cite the standard (file + the rule); (b) any baseline smell you spot: name it and quote the hunk; and (c) any agent-skill change without a `Skill check:` as described above. Distinguish hard violations from judgement calls: documented-standard breaches can be hard, but baseline smells, cross-platform findings and the agent-skill check are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling enforces. Give each finding once, briefly, without preamble."
+- The brief: "Report, per file/hunk where relevant, (a) every place the diff violates a documented standard: cite the standard (file + the rule); (b) any baseline smell that causes a concrete harm in this diff: name the smell, the harm and the hunk, and leave out every other smell without mentioning it; and (c) any agent-skill change without a `Skill check:` as described above. Distinguish hard violations from judgement calls: documented-standard breaches can be hard, but baseline smells, cross-platform findings and the agent-skill check are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling enforces. Give each finding once, briefly, without preamble."
 
 **Spec sub-agent prompt** should include:
 
