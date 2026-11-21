@@ -531,10 +531,10 @@ function EventLine({ event, now }) {
   </p>`;
 }
 
-function TicketList({ run, tickets, now }) {
+function TicketList({ run, tickets, now, gateResults = run.gates }) {
   return html`<ol class="ticket-list">
     ${tickets.map(({ ticket, reports }) => {
-      const verification = run.gates?.findLast((result) => result.gate === 'tickets-verified'
+      const verification = gateResults?.findLast((result) => result.gate === 'tickets-verified'
         && result.stage === 'build' && result.ticket === ticket.reference
         && result.work_attempt != null && result.work_attempt === ticket.work_attempt);
       return html`<li key=${ticket.reference} class=${ticket.status === 'done' ? 'ticket done' : 'ticket'}>
@@ -602,7 +602,7 @@ function Stop({ run, stop, now }) {
   const label = stop.kind === 'pass' && stop.rework !== null ? `${stop.name} · Rework ${stop.rework <= REWORK_CAP ? stop.rework : `${stop.rework} (past the cap of ${REWORK_CAP})`}` : stop.name;
   const classes = ['stop', stop.state, stop.kind === 'pass' && stop.rework !== null ? 'rework-pass' : '', stop.sentBack ? 'sent-back' : ''].filter(Boolean).join(' ');
   const { progress, tokens, cost } = stop;
-  const unticketed = stop.stage === 'build' && run.unticketed_attempt != null;
+  const { unticketed } = stop;
   return html`<li class=${classes}>
     <span class="mark" aria-hidden="true"></span>
     <div class="stop-head">
@@ -627,7 +627,7 @@ function Stop({ run, stop, now }) {
     ${stop.kind === 'station' && stop.rework !== null ? html`<p class="rework"><span class="chip">Rework${' '}${reworkLabel(stop.rework)}</span></p>` : null}
     <${SkillChips} reports=${stop.reports} />
     <${ReportList} reports=${stop.reports} now=${now} showTicket=${stop.kind === 'pass'} />
-    ${stop.tickets.length ? html`<${TicketList} run=${run} tickets=${stop.tickets} now=${now} />` : null}
+    ${stop.tickets.length ? html`<${TicketList} run=${run} tickets=${stop.tickets} now=${now} gateResults=${stop.verification} />` : null}
     <${StopFindings} findings=${stop.findings} />
   </li>`;
 }

@@ -300,12 +300,15 @@ impl RunStore {
     ) -> io::Result<Option<Run>> {
         update.validate().map_err(io_invalid)?;
         self.change(id, Stamp::Agent, |next, updated_at| {
-            if matches!(source, UpdateSource::WorkspaceReady)
-                && (next.status == RunStatus::Done || next.worktree.is_some())
-            {
-                return Err(io_invalid(
-                    "Only an unfinished run without a worktree can record a new workspace",
-                ));
+            if matches!(source, UpdateSource::WorkspaceReady) {
+                if next.status == RunStatus::Done || next.worktree.is_some() {
+                    return Err(io_invalid(
+                        "Only an unfinished run without a worktree can record a new workspace",
+                    ));
+                }
+                if !matches!(update.worktree, FieldUpdate::Set(_)) {
+                    return Err(io_invalid("Workspace ready requires a worktree"));
+                }
             }
             if let FieldUpdate::Set(mode) = update.mode {
                 if next.mode.is_some_and(|stored| stored != mode) {
@@ -345,14 +348,7 @@ impl RunStore {
             if next.completion.is_some() {
                 next.check_finish_summary().map_err(io_invalid)?;
             }
-            for session in update.sessions {
-                if !next.sessions.contains(&session) {
-                    next.sessions.push(session);
-                }
-            }
-            if next.sessions.len() > KEEP_SESSIONS {
-                next.sessions.drain(..next.sessions.len() - KEEP_SESSIONS);
-            }
+            next.record_sessions(update.sessions);
             if matches!(source, UpdateSource::WorkspaceReady)
                 && next.block_source == Some(LifecycleSource::Workspace)
             {
@@ -449,10 +445,20 @@ impl RunStore {
         )
     }
 
-    /// Atomically change a run and persist it, restoring the old value on save failure.
+    #[cfg(test)]
     pub(crate) fn change_gate(
         &self,
         id: &str,
+        change: impl FnOnce(&mut Run) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.change_gate_with_activity(id, None, change)
+    }
+
+    /// Atomically change a run and persist it, restoring the old value on save failure.
+    pub(crate) fn change_gate_with_activity(
+        &self,
+        id: &str,
+        activity: Option<String>,
         change: impl FnOnce(&mut Run) -> Result<(), String>,
     ) -> Result<(), String> {
         self.change_from_snapshot(
@@ -494,7 +500,7 @@ impl RunStore {
                 }
                 changed.usage = current.usage.clone();
                 *current = changed;
-                mark(current, now, None);
+                mark(current, now, activity);
                 if current.status == RunStatus::Done {
                     current.finished_at = Some(now);
                 }

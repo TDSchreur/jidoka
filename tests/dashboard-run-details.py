@@ -457,6 +457,30 @@ return labels;
         self.assertIn("Verification recorded at abcdef1", tickets[0])
         self.assertNotIn("1234567", tickets[0])
 
+    def test_build_history_keeps_its_ticket_plan_and_verification(self):
+        ticket = {"reference": "local-1", "title": "Archived work", "status": "done", "work_attempt": 1}
+        old_verification = {"gate": "tickets-verified", "stage": "build", "ticket": "local-1",
+                            "work_attempt": 1, "passed": True, "commit": "1234567abcdef"}
+        fixture = {**ACTIVE, "stage": "build", "rework": 1, "tickets": [], "unticketed_attempt": 2,
+            "timeline": [{"stage": "build", "at": AT, "ticket": "local-1"},
+                         {"stage": "check", "at": AT + 1000},
+                         {"stage": "build", "rework": 1, "at": AT + 2000}],
+            "stage_exits": [{"stage": "build", "at": AT + 1000, "outcome": "accepted",
+                             "build_plan": {"kind": "ticketed", "tickets": [ticket]},
+                             "gates": [{"name": "tickets-verified", "results": [old_verification]}]}],
+            "gates": [{**old_verification, "rework": 1, "commit": "abcdef1234567"}]}
+        labels = drive("""
+const dialog = await openRun('run-active');
+return [...dialog.querySelectorAll('.route .stop')].map(text);
+""", runs=[fixture])
+        self.assertIn("1 of 1 tickets done", labels[0])
+        self.assertIn("Archived work", labels[0])
+        self.assertIn("Verification recorded at 1234567", labels[0])
+        self.assertNotIn("abcdef1", labels[0])
+        self.assertNotIn("Unticketed work", labels[0])
+        self.assertIn("Unticketed work", labels[2])
+        self.assertNotIn("Archived work", labels[2])
+
     def test_pending_ticket_without_reference_is_not_in_progress_when_the_run_has_no_current_ticket(self):
         tickets = self.stop(self.no_current, "Build")["tickets"]
         self.assertEqual(len(tickets), 1)

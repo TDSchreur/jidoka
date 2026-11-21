@@ -124,13 +124,17 @@ fn findings_are_recorded_resolved_and_gate_the_rework() {
         update(&["--finding", "code-review", "-", "Another bug"]).unwrap();
         if decision.is_some() {
             let saved = std::fs::read(dir.0.path().join("runs.json")).unwrap();
+            let error = store
+                .transition(
+                    id,
+                    rework(finding.into(), FindingClassification::Behavior, None),
+                )
+                .unwrap_err();
             assert!(
-                store
-                    .transition(
-                        id,
-                        rework(finding.into(), FindingClassification::Behavior, None)
-                    )
-                    .is_err()
+                error
+                    .to_string()
+                    .contains(&format!("Rework {count} requires the user's decision")),
+                "{error}"
             );
             assert_eq!(
                 std::fs::read(dir.0.path().join("runs.json")).unwrap(),
@@ -963,7 +967,7 @@ fn event_store() -> (TestDir, RunStore, String) {
 
 #[test]
 fn workspace_retry_resumes_its_own_block() {
-    let (_dir, store, id) = event_store();
+    let (dir, store, id) = event_store();
     let ready = || LifecycleRequest::WorkspaceReady {
         update: Box::new(parse_update(&["--worktree", "/work/feature"]).unwrap()),
     };
@@ -977,6 +981,16 @@ fn workspace_retry_resumes_its_own_block() {
         .unwrap()
         .unwrap();
     assert_eq!(blocked.status, RunStatus::Blocked);
+    let saved = std::fs::read(dir.0.path().join("runs.json")).unwrap();
+    let incomplete = LifecycleRequest::WorkspaceReady {
+        update: Box::default(),
+    };
+    let error = store.transition(&id, incomplete).unwrap_err();
+    assert_eq!(error.to_string(), "Workspace ready requires a worktree");
+    assert_eq!(
+        std::fs::read(dir.0.path().join("runs.json")).unwrap(),
+        saved
+    );
     let resumed = store.transition(&id, ready()).unwrap().unwrap();
     assert_eq!(resumed.status, RunStatus::Running);
     assert_eq!(resumed.worktree.as_deref(), Some("/work/feature"));

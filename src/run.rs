@@ -13,7 +13,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 pub(crate) use store::RunStore;
-use summaries::SummariesUpdate;
+pub(crate) use summaries::SummariesUpdate;
 use tickets::TicketsUpdate;
 
 mod findings;
@@ -56,7 +56,7 @@ pub(crate) const MAX_TEXT_BYTES: usize = 500;
 /// Longest path, URL or reference, in bytes; the common 4096-byte `PATH_MAX`, which no real path exceeds.
 const MAX_PATH_BYTES: usize = 4096;
 /// Longest activity, blocking reason or stage summary, in bytes: a short paragraph.
-const MAX_NOTE_BYTES: usize = 2000;
+pub(crate) const MAX_NOTE_BYTES: usize = 2000;
 /// Longest git branch name, in bytes; git itself limits a ref name component to 255 bytes on common file systems.
 const MAX_BRANCH_BYTES: usize = 255;
 /// Shortest and longest agent session id, in characters: a UUID is 36, and 8 rules out accidental short values.
@@ -191,6 +191,12 @@ impl CiOutcome {
 }
 
 impl Run {
+    pub(crate) fn open_findings(&self) -> impl Iterator<Item = &Finding> {
+        self.findings
+            .iter()
+            .filter(|finding| finding.state == FindingState::Open)
+    }
+
     pub(crate) fn active_ticket(&self) -> Option<&Ticket> {
         self.tickets
             .iter()
@@ -683,15 +689,32 @@ impl UpdateRun {
         self.reports.validate()?;
         self.findings.validate()?;
         self.summaries.validate()?;
-        for session in &self.sessions {
-            check_session_id(session)?;
+        validate_sessions(&self.sessions)
+    }
+}
+
+pub(crate) fn validate_sessions(sessions: &[String]) -> Result<(), String> {
+    for session in sessions {
+        check_session_id(session)?;
+    }
+    if sessions.len() > MAX_SESSIONS {
+        return Err(format!(
+            "At most {MAX_SESSIONS} sessions can be given at once"
+        ));
+    }
+    Ok(())
+}
+
+impl Run {
+    pub(crate) fn record_sessions(&mut self, sessions: Vec<String>) {
+        for session in sessions {
+            if !self.sessions.contains(&session) {
+                self.sessions.push(session);
+            }
         }
-        if self.sessions.len() > MAX_SESSIONS {
-            return Err(format!(
-                "At most {MAX_SESSIONS} sessions can be given at once"
-            ));
+        if self.sessions.len() > KEEP_SESSIONS {
+            self.sessions.drain(..self.sessions.len() - KEEP_SESSIONS);
         }
-        Ok(())
     }
 }
 

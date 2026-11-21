@@ -4,8 +4,9 @@ use crate::{
     pr_sync::Git,
     pr_wait,
     run::{
-        CiOutcome, Completion, MAX_REPORTS_PER_RUN, MAX_TEXT_BYTES, Mode, ReportKind, Run,
-        RunReport, RunStatus, Stage, Ticket, TicketStatus, updated_now,
+        CiOutcome, Completion, MAX_NOTE_BYTES, MAX_REPORTS_PER_RUN, MAX_TEXT_BYTES, Mode,
+        ReportKind, Run, RunReport, RunStatus, Stage, SummariesUpdate, Ticket, TicketStatus,
+        check_text, updated_now, validate_sessions,
     },
     stages::{self, Destination, Gate},
 };
@@ -90,8 +91,33 @@ pub(crate) struct StageExit {
     #[serde(flatten)]
     pub(crate) outcome: ExitOutcome,
     pub(crate) gates: Vec<Evaluation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) build_plan: Option<BuildPlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) skipped_checks: Vec<SkippedCheck>,
+}
+
+/// Work recorded when a Build pass ended.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub(crate) enum BuildPlan {
+    Unplanned,
+    Unticketed { attempt: u64 },
+    Ticketed { tickets: Vec<Ticket> },
+}
+
+impl BuildPlan {
+    fn from_run(run: &Run) -> Self {
+        if let Some(attempt) = run.unticketed_attempt {
+            Self::Unticketed { attempt }
+        } else if run.tickets.is_empty() {
+            Self::Unplanned
+        } else {
+            Self::Ticketed {
+                tickets: run.tickets.clone(),
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +147,7 @@ pub(crate) fn save_exit(
         at,
         outcome,
         gates,
+        build_plan: (run.stage == Stage::Build).then(|| BuildPlan::from_run(run)),
         skipped_checks,
     });
 }
@@ -171,9 +198,7 @@ pub(crate) fn head(run: &Run, git: &dyn Git) -> Result<String, String> {
 /// Refuses while a Finding is open, naming the ids and how to resolve them.
 fn no_open_findings(run: &Run) -> Result<(), String> {
     let open: Vec<&str> = run
-        .findings
-        .iter()
-        .filter(|finding| finding.state == crate::run::FindingState::Open)
+        .open_findings()
         .map(|finding| finding.id.as_str())
         .collect();
     if open.is_empty() {
@@ -316,6 +341,16 @@ pub(crate) fn latest_ticket_verification<'a>(
     })
 }
 
+fn unticketed_verification(run: &Run, attempt: u64) -> Option<&GateResult> {
+    run.gates.iter().rev().find(|result| {
+        result.gate == Gate::TicketsVerified
+            && result.stage == Stage::Build
+            && result.rework == run.rework
+            && result.ticket.is_none()
+            && result.work_attempt == Some(attempt)
+    })
+}
+
 fn tickets_verified<'a>(
     run: &'a Run,
     git: &dyn Git,
@@ -323,17 +358,7 @@ fn tickets_verified<'a>(
 ) -> Result<Vec<&'a GateResult>, String> {
     ticket_plan_recorded(run)?;
     if let Some(attempt) = run.unticketed_attempt {
-        return run
-            .gates
-            .iter()
-            .rev()
-            .find(|result| {
-                result.gate == Gate::TicketsVerified
-                    && result.stage == Stage::Build
-                    && result.rework == run.rework
-                    && result.ticket.is_none()
-                    && result.work_attempt == Some(attempt)
-            })
+        return unticketed_verification(run, attempt)
             .filter(|result| result.passed && result.commit.as_deref() == Some(head))
             .map(|result| vec![result])
             .ok_or_else(|| {
@@ -465,6 +490,32 @@ pub(crate) fn candidate(
         .then(|| head(run, git))
 }
 
+/// Relevant recorded results for each subject in a failed or incomplete gate.
+fn gate_records<'a>(
+    run: &'a Run,
+    gate: Gate,
+    selection: Result<&crate::checks::Selection, &str>,
+) -> Vec<&'a GateResult> {
+    match gate {
+        Gate::ChecksRecorded => selection
+            .into_iter()
+            .flat_map(|selection| &selection.applicable)
+            .filter(|entry| entry.check.gate.gate() == gate)
+            .filter_map(|entry| latest_check(run, gate, entry.check.name))
+            .collect(),
+        Gate::TicketsVerified => match run.unticketed_attempt {
+            Some(attempt) => unticketed_verification(run, attempt).into_iter().collect(),
+            None => run
+                .tickets
+                .iter()
+                .filter_map(|ticket| latest_ticket_verification(run, ticket))
+                .collect(),
+        },
+        Gate::Verified | Gate::NoActionableFindings => latest(run, gate).into_iter().collect(),
+        Gate::TicketsDone | Gate::FinishSummary | Gate::CiPassed => Vec::new(),
+    }
+}
+
 fn evaluate_gate(
     run: &Run,
     gate: Gate,
@@ -473,14 +524,6 @@ fn evaluate_gate(
     selection: Result<&crate::checks::Selection, &str>,
 ) -> Evaluation {
     let mut evaluation = Evaluation::with_status(gate, GateStatus::Passed);
-    let recorded = match gate {
-        Gate::Verified | Gate::NoActionableFindings => latest(run, gate),
-        Gate::TicketsDone
-        | Gate::TicketsVerified
-        | Gate::ChecksRecorded
-        | Gate::FinishSummary
-        | Gate::CiPassed => None,
-    };
     let result = match gate {
         Gate::TicketsDone => tickets_done(run).map(|()| {
             evaluation.detail = run
@@ -499,7 +542,7 @@ fn evaluate_gate(
                 });
             Vec::new()
         }),
-        Gate::Verified => passing_record(recorded).and_then(|result| {
+        Gate::Verified => passing_record(latest(run, gate)).and_then(|result| {
             require(
                 result.commit.as_deref() == Some(candidate?),
                 "The verification commit does not match HEAD",
@@ -512,9 +555,8 @@ fn evaluate_gate(
         Gate::ChecksRecorded => selection
             .map_err(str::to_owned)
             .and_then(|selection| check_results(run, selection, gate, candidate?)),
-        Gate::NoActionableFindings => {
-            no_open_findings(run).and_then(|()| passing_record(recorded).map(|result| vec![result]))
-        }
+        Gate::NoActionableFindings => no_open_findings(run)
+            .and_then(|()| passing_record(latest(run, gate)).map(|result| vec![result])),
         Gate::FinishSummary => run.check_finish_summary().map(|()| {
             evaluation.detail = run.summaries.get(&Stage::Finish).cloned();
             Vec::new()
@@ -527,11 +569,17 @@ fn evaluate_gate(
         Ok(results) => evaluation.results = results.into_iter().cloned().collect(),
         Err(reason) => {
             evaluation.reason = Some(reason);
-            evaluation.status = GateStatus::Open;
-            if let Some(failed) = recorded.filter(|result| !result.passed) {
-                evaluation.status = GateStatus::Failed;
-                evaluation.results.push(failed.clone());
-            }
+            let failed: Vec<_> = gate_records(run, gate, selection)
+                .into_iter()
+                .filter(|result| !result.passed)
+                .cloned()
+                .collect();
+            evaluation.status = if failed.is_empty() {
+                GateStatus::Open
+            } else {
+                GateStatus::Failed
+            };
+            evaluation.results = failed;
         }
     }
     evaluation
@@ -707,7 +755,7 @@ fn finish_summary(run: &Run) -> Evaluation {
     summary
 }
 
-/// The body of `POST /api/runs/<id>/advance`: an optional forced advance with the reason for it.
+/// The requested stage transition and metadata to save with it.
 #[derive(Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AdvanceRequest {
@@ -715,9 +763,42 @@ pub(crate) struct AdvanceRequest {
     pub(crate) force: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) activity: Option<String>,
+    #[serde(flatten)]
+    summaries: SummariesUpdate,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) sessions: Vec<String>,
 }
 
 impl AdvanceRequest {
+    fn validate(&self) -> Result<(), String> {
+        self.forced_reason()?;
+        if let Some(activity) = &self.activity {
+            check_text("Activity", activity, MAX_NOTE_BYTES)?;
+        }
+        self.summaries.validate()?;
+        validate_sessions(&self.sessions)
+    }
+
+    pub(crate) fn apply(
+        mut self,
+        run: &mut Run,
+        git: &dyn Git,
+        host: &dyn pr_wait::Gh,
+    ) -> Result<(), String> {
+        self.validate()?;
+        if let Some(activity) = self.activity.take() {
+            run.activity = Some(activity);
+        }
+        std::mem::take(&mut self.summaries).apply(run);
+        run.record_sessions(std::mem::take(&mut self.sessions));
+        match self.forced_reason()? {
+            Some(reason) => advance_forced(run, reason),
+            None => advance(run, git, host),
+        }
+    }
+
     /// The reason for a forced advance, or `None` for a normal one.
     ///
     /// # Errors
@@ -738,8 +819,6 @@ impl AdvanceRequest {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct AdvanceOptions {
     pub(crate) request: AdvanceRequest,
-    /// Options for the `run update <id> running` call that records the stage report first; empty when none.
-    pub(crate) update: Vec<String>,
     pub(crate) json: bool,
 }
 
@@ -759,22 +838,26 @@ pub(crate) fn parse_advance_options(options: &[&str]) -> Result<AdvanceOptions, 
         }
         let mut value = || {
             rest.next()
-                .map(str::to_string)
+                .filter(|value| !value.starts_with("--") || value.contains(char::is_whitespace))
                 .ok_or_else(|| format!("{option} needs a value"))
         };
         match option {
-            "--summary" | "--activity" => {
-                let value = value()?;
-                parsed.update.extend([option.to_string(), value]);
+            "--summary" => {
+                let summary = value()?;
+                parsed
+                    .request
+                    .summaries
+                    .parse_option(option, &mut || Ok(&summary))?;
             }
-            "--reason" => parsed.request.reason = Some(value()?),
+            "--activity" => parsed.request.activity = Some(value()?.to_owned()),
+            "--reason" => parsed.request.reason = Some(value()?.to_owned()),
             "--force" => parsed.request.force = true,
             "--json" => parsed.json = true,
             _ => return Err(format!("Unknown option {option}")),
         }
         seen.push(option);
     }
-    parsed.request.forced_reason()?;
+    parsed.request.validate()?;
     Ok(parsed)
 }
 
@@ -1020,6 +1103,7 @@ mod tests {
         let request = |force, reason: Option<&str>| AdvanceRequest {
             force,
             reason: reason.map(String::from),
+            ..AdvanceRequest::default()
         };
         assert!(request(true, None).forced_reason().is_err());
         assert!(request(true, Some(" ")).forced_reason().is_err());
@@ -1042,17 +1126,17 @@ mod tests {
         ])
         .unwrap();
         assert!(parsed.json && !parsed.request.force);
-        assert_eq!(
-            parsed.update,
-            ["--activity", "Checking", "--summary", "build=Done",]
-        );
+        let body = serde_json::to_value(parsed.request).unwrap();
+        assert_eq!(body["activity"], "Checking");
+        assert_eq!(body["summaries"]["build"], "Done");
         assert_eq!(
             parse_advance_options(&["--force", "--reason", "why"])
                 .unwrap()
                 .request,
             AdvanceRequest {
                 force: true,
-                reason: Some("why".into())
+                reason: Some("why".into()),
+                ..AdvanceRequest::default()
             }
         );
         assert_eq!(
@@ -1250,7 +1334,9 @@ mod tests {
         let update = crate::run::parse_update(&["--finding", "code-review", "-", "Bug"]).unwrap();
         let run = store.update_with("1", update, &git).unwrap().unwrap();
         let next = crate::run_next::build_with_git(&run, Ok(&[]), &git).unwrap();
-        assert!(crate::run_next::render(&next).contains("Findings F1 are open"));
+        let text = crate::run_next::render(&next);
+        assert!(text.contains("Findings F1 are open"));
+        assert!(text.contains("Move to build (rework)"));
         let dashboard =
             serde_json::to_value(crate::run_next::stage_gates(&run, Ok(&[]), &git)).unwrap();
         assert!(dashboard.to_string().contains("Findings F1 are open"));
@@ -1259,6 +1345,61 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("Findings F1 are open"));
         assert!(store.get("1").unwrap().unwrap().stage_exits.is_empty());
+    }
+
+    #[test]
+    fn named_gate_failures_show_their_evidence_for_the_current_pass() {
+        let git = FakeGit(RefCell::new("abc1234".into()));
+        for (stage, gate, subject) in [
+            (Stage::Check, Gate::ChecksRecorded, "code-review"),
+            (Stage::Build, Gate::TicketsVerified, "local-1"),
+        ] {
+            let mut run = run(stage);
+            run.mode = Some(Mode::Full);
+            if stage == Stage::Build {
+                run.tickets.push(Ticket {
+                    reference: subject.into(),
+                    title: "Work".into(),
+                    status: TicketStatus::InProgress,
+                    work_attempt: 1,
+                });
+            }
+            let mut failed = result(gate, false);
+            failed.evidence = Some("Verification timed out".into());
+            record(&mut run, failed, &git).unwrap();
+            let views = |run: &Run| {
+                serde_json::to_value(crate::run_next::stage_gates(run, Ok(&[]), &git)).unwrap()
+            };
+            let evaluated = |views: serde_json::Value| {
+                views
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row["stage"] == stage.name())
+                    .unwrap()["gates"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|result| result["name"] == gate.name())
+                    .unwrap()
+                    .clone()
+            };
+            let result = evaluated(views(&run));
+            assert_eq!(result["status"], "failed");
+            let field = if stage == Stage::Build {
+                "ticket"
+            } else {
+                "check"
+            };
+            assert_eq!(result["results"][0][field], subject);
+            assert_eq!(result["results"][0]["evidence"], "Verification timed out");
+            if stage == Stage::Build {
+                run.tickets[0].work_attempt += 1;
+            } else {
+                run.rework = Some(1);
+            }
+            assert_eq!(evaluated(views(&run))["status"], "open");
+        }
     }
 
     #[test]
@@ -1288,7 +1429,12 @@ mod tests {
             error.contains("tickets-done") && error.contains("no ticket plan"),
             "{error}"
         );
-        assert!(pass().is_err());
+        let error = pass().unwrap_err();
+        assert!(
+            error.contains("Mark a listed ticket in progress")
+                && error.contains("declare unticketed work"),
+            "{error}"
+        );
         update(&["--unticketed"]);
         let error = advance().unwrap_err().to_string();
         assert!(

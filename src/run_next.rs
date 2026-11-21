@@ -371,6 +371,7 @@ pub(crate) fn changed_paths(run: &Run, git: &dyn Git) -> Result<Vec<String>, Str
 
 fn rework_move(run: &Run, mode: Mode) -> Option<Move> {
     let rework = stages::rework(mode, run.stage, run.status).ok()?;
+    run.open_findings().next()?;
     let Destination::Stage(stage) = rework.to else {
         return None;
     };

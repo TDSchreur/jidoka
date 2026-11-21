@@ -94,21 +94,32 @@ function timelinePasses(run, now) {
   }
   if (!passes.length) return { passes, unstartedTickets: [] };
   const finished = run.status === 'done' ? (Number.isFinite(run.finished_at) ? run.finished_at : timestamp(run)) : now;
-  const used = new Set(passes.flatMap((pass) => pass.refs).filter((ref) => ref != null));
-  // Tickets no Build pass has started yet are still pending work of the first Build pass, or stand apart without one.
-  const notStarted = allTickets.filter((ticket) => !used.has(ticket.reference));
-  const firstBuildPass = passes.find((pass) => pass.stage === 'build' && pass.rework === null);
+  for (const pass of passes.filter((pass) => pass.stage === 'build')) {
+    pass.exit = listOf(run.stage_exits).find((exit) => exit.stage === 'build' && reworkOf(exit.rework) === pass.rework);
+  }
+  const notStarted = allTickets.filter((ticket) => !passes.some((pass) => (
+    pass.exit?.build_plan
+      ? pass.exit.build_plan.tickets?.some((saved) => saved.reference === ticket.reference && saved.work_attempt === ticket.work_attempt)
+      : pass.refs.includes(ticket.reference)
+  )));
+  // Pending work belongs to the open Build pass. Keep the timeline placement for old runs without exit records.
+  const lastPass = passes.at(-1);
+  const pendingBuild = lastPass.stage === 'build' && run.status !== 'done'
+    ? lastPass
+    : passes.find((pass) => pass.stage === 'build' && pass.rework === null && !pass.exit);
   passes.forEach((pass, index) => {
     const next = passes[index + 1];
     const end = next ? next.start : finished;
     pass.duration = Number.isFinite(end) ? Math.max(0, end - pass.start) : null;
     pass.end = next ? next.start : Infinity;
-    pass.tickets = allTickets.filter((ticket) => pass.refs.includes(ticket.reference) || (pass === firstBuildPass && notStarted.includes(ticket)));
+    pass.tickets = pass.exit?.build_plan
+      ? listOf(pass.exit.build_plan.tickets)
+      : allTickets.filter((ticket) => pass.refs.includes(ticket.reference) || (pass === pendingBuild && notStarted.includes(ticket)));
     pass.sentBack = pass.stage === 'check' && next?.stage === 'build' && next.rework !== null;
     pass.lastOfStage = !passes.slice(index + 1).some((later) => later.stage === pass.stage);
     pass.state = next ? 'done' : run.status === 'done' ? 'done' : run.status === 'blocked' ? 'blocked' : 'current';
   });
-  return { passes, unstartedTickets: firstBuildPass ? [] : notStarted };
+  return { passes, unstartedTickets: pendingBuild ? [] : notStarted };
 }
 
 /**
@@ -158,11 +169,11 @@ function placeByTime(run, passes, unstartedTickets) {
   for (const report of listOf(run.ticket_reports)) {
     const at = passIndex(report);
     const listed = tickets.find((ticket) => ticket.reference === report.ticket);
+    const onPass = passes[at]?.tickets.some((ticket) => ticket.reference === report.ticket);
     const waiting = listed && unstartedTickets.includes(listed) && (at === -1 || !hasStage(report));
-    if (!listed) other.push(report);
-    else if (waiting) push(unstarted, listed.reference, report);
-    else if (at === -1) other.push(report);
-    else if (passes[at].tickets.includes(listed)) push(placed[at].byTicket, listed.reference, report);
+    if (onPass) push(placed[at].byTicket, report.ticket, report);
+    else if (waiting) push(unstarted, report.ticket, report);
+    else if (!listed || at === -1) other.push(report);
     else placed[at].reports.push(report);
   }
   const otherEvents = [];
@@ -221,6 +232,11 @@ function passStop(run, pass, placed) {
     sentBack: pass.sentBack,
     activities: pass.activities,
     progress: progressOf(pass.tickets),
+    unticketed: pass.exit ? pass.exit.build_plan?.kind === 'unticketed'
+      : pass.stage === 'build' && pass.state !== 'done' && run.unticketed_attempt != null,
+    verification: pass.state === 'done'
+      ? listOf(pass.exit?.gates).find((gate) => gate.name === 'tickets-verified')?.results ?? []
+      : run.gates,
     tickets: withReports(pass.tickets, (ref) => placed.byTicket.get(ref) ?? []),
     reports: placed.reports,
     events: placed.events,
@@ -246,6 +262,8 @@ function stationStop(run, id, at) {
     sentBack: false,
     activities: [],
     progress: progressOf(tickets),
+    unticketed: id === 'build' && run.stage === 'build' && run.status !== 'done' && run.unticketed_attempt != null,
+    verification: run.stage === 'build' && run.status !== 'done' ? run.gates : [],
     tickets: withReports(tickets, reports.byTicket),
     reports: reports.byStage(id),
     events: [],

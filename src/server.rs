@@ -577,15 +577,9 @@ fn advance_run(
     collector: &State<Collector>,
 ) -> Result<&'static str, (HttpStatus, String)> {
     let request = request.into_inner();
-    let forced = request
-        .forced_reason()
-        .map_err(|error| (HttpStatus::BadRequest, error))?;
     store
-        .change_gate(id, |run| match forced {
-            Some(reason) => crate::run_gate::advance_forced(run, reason),
-            None => {
-                crate::run_gate::advance(run, &crate::pr_sync::RealGit, &crate::pr_wait::RealGh)
-            }
+        .change_gate_with_activity(id, request.activity.clone(), |run| {
+            request.apply(run, &crate::pr_sync::RealGit, &crate::pr_wait::RealGh)
         })
         .map_err(|error| (HttpStatus::BadRequest, error))?;
     collector.after_update(store, id);

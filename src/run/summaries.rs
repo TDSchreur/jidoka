@@ -13,7 +13,7 @@ macro_rules! help {
 pub(super) use help;
 
 /// What an update does to the run's stage summaries.
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct SummariesUpdate {
     /// Stage summaries to set; null removes that stage's summary. Other stages keep theirs.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -22,7 +22,7 @@ pub(crate) struct SummariesUpdate {
 
 impl SummariesUpdate {
     /// Reads `--summary` or `--clear-summary` and the value after it.
-    pub(super) fn parse_option<'a>(
+    pub(crate) fn parse_option<'a>(
         &mut self,
         flag: &str,
         next_value: &mut dyn FnMut() -> Result<&'a &'a str, String>,
@@ -44,7 +44,7 @@ impl SummariesUpdate {
     }
 
     /// Checks every summary text before anything is applied.
-    pub(super) fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         for summary in self.summaries.values().flatten() {
             check_text("Stage summary", summary, MAX_NOTE_BYTES)?;
         }
@@ -52,7 +52,7 @@ impl SummariesUpdate {
     }
 
     /// Sets and removes the summaries; other stages keep theirs.
-    pub(super) fn apply(self, run: &mut Run) {
+    pub(crate) fn apply(self, run: &mut Run) {
         for (stage, summary) in self.summaries {
             match summary {
                 Some(text) => {

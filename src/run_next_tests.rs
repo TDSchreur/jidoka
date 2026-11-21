@@ -60,20 +60,14 @@ fn fast_build_lists_gates_and_has_no_checks_or_rework() {
 }
 
 #[test]
-fn balanced_check_offers_advance_and_rework_with_applicable_checks() {
+fn balanced_check_offers_advance_with_applicable_checks() {
     let next = build(
         &run(Mode::Balanced, Stage::Check, None),
         &["src/a.rs".into()],
     )
     .unwrap();
     let kinds: Vec<_> = next.moves.iter().map(|m| (m.kind, m.to)).collect();
-    assert_eq!(
-        kinds,
-        [
-            ("stage", Some(Stage::Finish)),
-            ("rework", Some(Stage::Build))
-        ]
-    );
+    assert_eq!(kinds, [("stage", Some(Stage::Finish))]);
     let checks = next.checks.unwrap();
     assert_eq!(checks.applicable[0].name, "code-review");
 }

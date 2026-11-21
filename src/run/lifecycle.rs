@@ -167,9 +167,7 @@ impl Run {
             ));
         }
         let findings: Vec<_> = self
-            .findings
-            .iter()
-            .filter(|finding| finding.state == FindingState::Open)
+            .open_findings()
             .map(|finding| finding.id.clone())
             .collect();
         if !findings.contains(&finding) {

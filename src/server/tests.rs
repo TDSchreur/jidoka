@@ -427,22 +427,18 @@ async fn usage_is_collected_in_the_background_when_a_run_moves_on() {
 
     // Collecting again after finishing gives the same numbers, not double.
     at_stage(&api, &run.id, Stage::Finish);
-    report(
-        &api,
-        &run.id,
-        r#"{"mode":"fast","summaries":{"finish":"Completed"}}"#,
-    )
-    .await;
+    report(&api, &run.id, r#"{"mode":"fast"}"#).await;
     let response = api
         .post(format!("/api/runs/{}/advance", run.id))
         .header(cli_token_header(&api))
         .header(Header::new("Host", "127.0.0.1:4311"))
         .header(ContentType::JSON)
-        .body(r#"{"force":true,"reason":"CI service unavailable"}"#)
+        .body(r#"{"force":true,"reason":"CI service unavailable","summaries":{"finish":"Completed"}}"#)
         .dispatch()
         .await;
     assert_eq!(response.status(), HttpStatus::Ok);
     let completed = fetch(&api, &run.id).await.1.unwrap();
+    assert_eq!(completed.summaries[&Stage::Finish], "Completed");
     assert_eq!(
         completed.completion,
         Some(crate::run::Completion::Override {
@@ -1169,7 +1165,10 @@ async fn stage_exits_preserve_passes_and_distinguish_refused_and_forced_advances
             .header(ContentType::JSON)
             .body(body)
     };
-    let refused = advance("{}").dispatch().await;
+    let body = r#"{"activity":"Reviewing","summaries":{"build":"Built and verified"},"sessions":["new-session"]}"#;
+    let path = dir.0.path().join("runs.json");
+    let before = fs::read(&path).unwrap();
+    let refused = advance(body).dispatch().await;
     assert_eq!(refused.status(), HttpStatus::BadRequest);
     assert!(
         refused
@@ -1178,12 +1177,25 @@ async fn stage_exits_preserve_passes_and_distinguish_refused_and_forced_advances
             .unwrap()
             .contains("Build has no ticket plan")
     );
-    assert!(fetch(&api, "42").await.1.unwrap().stage_exits.is_empty());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let unchanged = fetch(&api, "42").await.1.unwrap();
+    assert!(unchanged.stage_exits.is_empty());
+    assert!(unchanged.summaries.is_empty() && unchanged.sessions.is_empty());
+    assert!(unchanged.activity.is_none());
 
     let plan = report(&api, "42", r#"{"unticketed":true}"#).await;
     assert_eq!(plan.status(), HttpStatus::Ok);
-    assert_eq!(advance("{}").dispatch().await.status(), HttpStatus::Ok);
-    let accepted = fetch(&api, "42").await.1.unwrap().stage_exits;
+    assert_eq!(advance(body).dispatch().await.status(), HttpStatus::Ok);
+    let after = fetch(&api, "42").await.1.unwrap();
+    assert_eq!(after.stage, Stage::Check);
+    assert_eq!(after.summaries[&Stage::Build], "Built and verified");
+    assert_eq!(after.sessions, ["new-session"]);
+    assert_eq!(after.activity.as_deref(), Some("Reviewing"));
+    assert_eq!(
+        after.timeline.last().unwrap().activity.as_deref(),
+        Some("Reviewing")
+    );
+    let accepted = after.stage_exits;
     assert_eq!(accepted[0].gates[0].name, crate::stages::Gate::TicketsDone);
 
     let ticket = report(
