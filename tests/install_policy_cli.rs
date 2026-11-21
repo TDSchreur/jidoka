@@ -51,7 +51,7 @@ fn install_replaces_the_policy_with_defaults_for_all_agents() {
             [
                 ("define", "claude-sonnet-5.5", "medium"),
                 ("build", "claude-sonnet-5.5", "medium"),
-                ("check", "claude-sonnet-5.5", "medium"),
+                ("check", "gpt-6.2-astra", "medium"),
                 ("finish", "claude-haiku-4.5", "low"),
             ],
         ),

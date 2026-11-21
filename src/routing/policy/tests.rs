@@ -297,6 +297,22 @@ fn a_broken_policy_stops_a_run_in_any_agent() {
 // --- the starter ------------------------------------------------------------------------------------
 
 #[test]
+fn a_copilot_starter_reviews_on_another_model_and_offers_complex_choices() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("model-routing.json");
+    assert!(create_starter(&path, &[RoutingAgent::Copilot]).unwrap());
+    let recorded = load(&path, Some(Host::Copilot))
+        .unwrap()
+        .selection
+        .expect("the starter routes");
+    assert_eq!(
+        recorded.choice_for(Stage::Check).unwrap().model,
+        "gpt-6.2-astra"
+    );
+    assert_eq!(recorded.complex.len(), 2);
+}
+
+#[test]
 fn a_starter_for_both_agents_routes_every_stage() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("model-routing.json");
