@@ -141,6 +141,7 @@ fn parse_claude(text: &str, session: &str, subagent_file: bool, ids: &HashSet<&s
                 commands: Vec::new(),
                 other_tool: false,
                 any_tool: false,
+                calls_known: true,
                 tool_output_bytes: Some(0),
             });
         merge_largest(&mut response.tokens, &tokens);
@@ -158,7 +159,7 @@ fn parse_claude(text: &str, session: &str, subagent_file: bool, ids: &HashSet<&s
 /// A usage limit is an assistant line flagged `isApiErrorMessage` with error `rate_limit`; a compaction is
 /// a `compact_boundary` system line. Other lines of the user or the assistant are activity, except an
 /// error message and the summary a compaction writes.
-fn claude_pauses(text: &str, parsed: &mut LogUsage) {
+fn claude_pauses(text: &str, parsed: &mut Markers) {
     for line in text.lines().filter(|line| {
         line.contains("\"type\":\"user\"")
             || line.contains("\"type\":\"assistant\"")
@@ -188,7 +189,7 @@ fn claude_pauses(text: &str, parsed: &mut LogUsage) {
 }
 
 /// The skills a Claude Code transcript shows used: assistant `Skill` tool calls. Only names and times are kept.
-fn claude_skills(text: &str, parsed: &mut LogUsage) {
+fn claude_skills(text: &str, parsed: &mut Markers) {
     for line in text.lines().filter(|line| line.contains("\"Skill\"")) {
         let Ok(data) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -234,7 +235,7 @@ pub(crate) fn read_claude(
     let mut state = ReadResult::default();
     // A response that two session files hold (a resumed session copies its history) counts once.
     let mut seen: BTreeMap<String, Response> = BTreeMap::new();
-    let mut kept: BTreeMap<String, LogUsage> = BTreeMap::new();
+    let mut kept: BTreeMap<String, Markers> = BTreeMap::new();
     let mut claims: BTreeMap<String, (HashSet<String>, bool)> = BTreeMap::new();
     'logs: for slug in sub_dirs(root) {
         for file in files_in(&slug.path()) {
@@ -260,7 +261,7 @@ pub(crate) fn read_claude(
             if parsed.claims.is_empty() && !window.recorded.contains(stem.as_str()) {
                 continue;
             }
-            let mut markers = LogUsage::default();
+            let mut markers = Markers::default();
             claude_pauses(&text, &mut markers);
             claude_skills(&text, &mut markers);
             markers.attention = crate::attention::signals(crate::attention::Agent::Claude, &text);
@@ -285,7 +286,7 @@ pub(crate) fn read_claude(
                         for (key, response) in more.responses {
                             parsed.responses.entry(key).or_insert(response);
                         }
-                        let mut sub_markers = LogUsage::default();
+                        let mut sub_markers = Markers::default();
                         claude_pauses(&sub_text, &mut sub_markers);
                         claude_skills(&sub_text, &mut sub_markers);
                         markers.absorb(sub_markers);

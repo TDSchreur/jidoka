@@ -111,6 +111,13 @@ fn claude_line(
     .to_string()
 }
 
+/// A Copilot message whose bash call runs a command that names the run.
+fn copilot_mention(run_id: &str) -> String {
+    json!({"type": "assistant.message", "timestamp": iso(0), "data": {"apiCallId": "m", "content": "", "toolRequests": [
+        {"toolCallId": "t", "name": "bash", "arguments": {"command": format!("jidoka run update {run_id} build running")}}]}})
+    .to_string()
+}
+
 /// A virtual line, a command run from inside a script tool: it claims the run and is no response.
 fn mention(run_id: &str) -> String {
     json!({"type": "assistant", "isVirtual": true, "timestamp": iso(0), "message": {"model": "<synthetic>",
@@ -449,7 +456,7 @@ fn copilot_cache_reads_and_writes_are_taken_out_of_input() {
     world.write(
         "copilot/session-state/cop-session-1/events.jsonl",
         &[
-            mention(RUN_A),
+            copilot_mention(RUN_A),
             copilot_usage(10, "call-1", "gpt-copilot", 1000, 700, 100, 40, false),
             copilot_usage(10, "call-1", "gpt-copilot", 1000, 700, 100, 40, false),
             copilot_usage(20, "call-2", "gpt-copilot", 50, 0, 0, 5, true),

@@ -453,12 +453,12 @@ fn copilot_logs_claim_a_run_through_a_shell_variable_but_not_through_a_prompt() 
         )],
     );
     assert_eq!(
-        crate::copilot_requests::copilot_claims(&via_variable, &ids),
+        crate::agent_logs::copilot::copilot_claims(&via_variable, &ids),
         HashSet::from([RUN_A.to_string()])
     );
     let prompt_only =
         json!({"type": "user.message", "data": {"content": format!("Run: {RUN_A}")}}).to_string();
-    assert!(crate::copilot_requests::copilot_claims(&prompt_only, &ids).is_empty());
+    assert!(crate::agent_logs::copilot::copilot_claims(&prompt_only, &ids).is_empty());
 }
 
 #[test]

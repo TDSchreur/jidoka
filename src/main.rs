@@ -2,7 +2,6 @@ mod agent_logs;
 mod attention;
 mod checks;
 mod client;
-mod copilot_requests;
 mod cost;
 mod discovery;
 mod doctor;

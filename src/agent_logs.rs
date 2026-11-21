@@ -12,9 +12,11 @@
 
 mod claude;
 mod codex;
+pub(crate) mod copilot;
 
 pub(crate) use claude::read_claude;
 pub(crate) use codex::read_codex;
+pub(crate) use copilot::read_copilot;
 
 use crate::{
     install::agent_home,
@@ -173,61 +175,6 @@ pub(crate) fn read_text(path: &Path) -> io::Result<LogFile> {
     ))
 }
 
-/// The run ids a log names *in a command on the run*: a known run id right after `run update`,
-/// `run inspect`, `run stats`, `run check`, `run sync`, `pr open`, `pr sync` or `pr wait`, as `jidoka run update <id>`
-/// is written. The command word must start the text or follow whitespace, so `xpr open <id>` does not count.
-/// Run ids also appear in tool output and in files an agent reads (a session that listed every run would
-/// otherwise claim them all), so a bare number does not count. A run id is digits only, so a number inside
-/// a longer number does not match.
-pub(crate) fn mentioned_runs(text: &str, ids: &HashSet<&str>) -> HashSet<String> {
-    const COMMANDS: [&str; 8] = [
-        "run update",
-        "run inspect",
-        "run stats",
-        "run check",
-        "run sync",
-        "pr open",
-        "pr sync",
-        "pr wait",
-    ];
-    let bytes = text.as_bytes();
-    let mut found = HashSet::new();
-    let mut at = 0;
-    while at < bytes.len() {
-        if !bytes[at].is_ascii_digit() {
-            at += 1;
-            continue;
-        }
-        let start = at;
-        while at < bytes.len() && bytes[at].is_ascii_digit() {
-            at += 1;
-        }
-        if !(8..=22).contains(&(at - start)) || !ids.contains(&text[start..at]) {
-            continue;
-        }
-        // What comes just before the number: the command, then spaces and an optional quote.
-        let before = text.as_bytes()[..start]
-            .iter()
-            .rev()
-            .take(24)
-            .copied()
-            .collect::<Vec<u8>>();
-        let before: String = before.into_iter().rev().map(char::from).collect();
-        let before = before.trim_end_matches(['"', '\'', '`', ' ']);
-        let command_starts_a_word = COMMANDS.iter().any(|command| {
-            before.strip_suffix(command).is_some_and(|rest| {
-                rest.chars()
-                    .next_back()
-                    .is_none_or(|c| c.is_ascii_whitespace())
-            })
-        });
-        if command_starts_a_word {
-            found.insert(text[start..at].to_string());
-        }
-    }
-    found
-}
-
 fn sorted_dir(path: &Path) -> Vec<fs::DirEntry> {
     let mut entries: Vec<fs::DirEntry> = fs::read_dir(path)
         .map(|dir| dir.flatten().collect())
@@ -263,41 +210,18 @@ pub(crate) fn merge_largest(into: &mut Tokens, other: &Tokens) {
     into.reasoning = max(into.reasoning, other.reasoning);
 }
 
-/// What one log file gave. Lines that looked like usage but could not be used are counted, so the
-/// coverage can say so instead of silently looking complete.
+/// The pause markers, moments of activity, attention signals and skills one session's logs gave: all but the
+/// responses, which an adapter reads on their own.
 #[derive(Default)]
-struct LogUsage {
-    entries: Vec<(String, Entry)>,
-    /// Lines that were not valid JSON.
-    malformed: usize,
-    /// Valid lines that held no usable model, time or counts.
-    unusable: usize,
-    /// Entries that carry no response id, so a repeat of them cannot be told from a new call.
-    unidentified: usize,
+struct Markers {
     pauses: Vec<(PauseKind, u64)>,
     activity: Vec<u64>,
     attention: Vec<(u64, crate::attention::Signal)>,
     skills: Vec<(u64, String)>,
 }
 
-impl LogUsage {
-    /// Adds an entry under its response id, or, with none, under its line so it counts once as written.
-    fn push(&mut self, id: Option<String>, line: usize, prefix: &str, entry: Entry) {
-        let key = match id {
-            Some(id) => format!("{prefix}|{id}"),
-            None => {
-                self.unidentified += 1;
-                format!("{prefix}|{}|line {line}", entry.session)
-            }
-        };
-        self.entries.push((key, entry));
-    }
-
-    fn absorb(&mut self, other: LogUsage) {
-        self.malformed += other.malformed;
-        self.unusable += other.unusable;
-        self.unidentified += other.unidentified;
-        self.entries.extend(other.entries);
+impl Markers {
+    fn absorb(&mut self, other: Markers) {
         self.pauses.extend(other.pauses);
         self.activity.extend(other.activity);
         self.attention.extend(other.attention);
@@ -383,6 +307,8 @@ pub(crate) struct Response {
     /// It called a tool that is not Bash.
     pub(crate) other_tool: bool,
     pub(crate) any_tool: bool,
+    /// Whether the log says which tool calls it made. A Copilot usage record whose message is missing does not.
+    pub(crate) calls_known: bool,
     /// The bytes of text its tool calls returned; unknown when the log does not say.
     pub(crate) tool_output_bytes: Option<u64>,
 }
@@ -527,171 +453,30 @@ pub(crate) fn civil_day(millis: u64) -> String {
     crate::usage::format_timestamp(millis)[..10].to_string()
 }
 
-// --- Copilot ----------------------------------------------------------------------------------------
-
-/// The tokens of a Copilot `usage` object, or `None` when it reports neither input nor output.
-pub(crate) fn copilot_tokens(usage: &Value) -> Option<Tokens> {
-    let (input, read, write, output) = (
-        count(usage.get("inputTokens")),
-        count(usage.get("cacheReadTokens")),
-        count(usage.get("cacheWriteTokens")),
-        count(usage.get("outputTokens")),
-    );
-    if input.is_none() && output.is_none() {
-        return None;
-    }
-    Some(Tokens {
-        input: input.map(|n| {
-            n.saturating_sub(read.unwrap_or(0))
-                .saturating_sub(write.unwrap_or(0))
-        }),
-        cache_read: read,
-        cache_write: write,
-        output,
-        reasoning: count(usage.get("reasoningTokens")),
-    })
-}
-
-/// Copilot counts cache reads and writes inside `inputTokens`; both are taken out of input. Reasoning
-/// tokens are part of output. Each record also names the effort of its call as `reasoningEffort`.
-fn parse_copilot(text: &str, session: &str) -> LogUsage {
-    let mut parsed = LogUsage::default();
-    for (number, line) in text
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| line.contains("\"session.usage_record\""))
-    {
-        let Ok(data) = serde_json::from_str::<Value>(line) else {
-            parsed.malformed += 1;
-            continue;
-        };
-        if data["type"] != "session.usage_record" {
-            continue;
-        }
-        let usage = &data["data"]["usage"];
-        let (Some(model), Some(ts)) = (
-            model_name(&usage["model"]),
-            timestamp(data.get("timestamp")),
-        ) else {
-            parsed.unusable += 1;
-            continue;
-        };
-        let Some(tokens) = copilot_tokens(usage) else {
-            parsed.unusable += 1;
-            continue;
-        };
-        parsed.push(
-            usage["apiCallId"].as_str().map(str::to_string),
-            number,
-            &format!("copilot|{session}"),
-            Entry {
-                session: session.to_string(),
-                ts,
-                model,
-                tokens,
-                subagent: usage["initiator"] == "sub-agent",
-                effort: effort_name(&usage["reasoningEffort"]),
-            },
-        );
-    }
-    parsed
-}
-
-/// The skills a Copilot log shows used: `skill` tool calls.
-fn copilot_skills(text: &str, parsed: &mut LogUsage) {
-    for line in text
-        .lines()
-        .filter(|line| line.contains("\"tool.execution_start\""))
-    {
-        let Ok(data) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        if data["type"] != "tool.execution_start" || data["data"]["toolName"] != "skill" {
-            continue;
-        }
-        if let (Some(ts), Some(name)) = (
-            timestamp(data.get("timestamp")),
-            data["data"]["arguments"]["skill"]
-                .as_str()
-                .and_then(skill_name),
-        ) {
-            parsed.skills.push((ts, name));
-        }
-    }
-}
-
-fn read_copilot(root: &Path, pass: &mut ReadPass, out: &mut ReadResult) {
-    for dir in sub_dirs(root) {
-        let session = dir.file_name().to_string_lossy().into_owned();
-        let path = dir.path().join("events.jsonl");
-        if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
-            continue;
-        }
-        if pass.over_limit(out) {
-            return;
-        }
-        if pass.stale(&path) {
-            continue;
-        }
-        let Some(text) = pass.load(&path, &session, out) else {
-            continue;
-        };
-        let mentions = crate::copilot_requests::copilot_claims(&text, pass.ids);
-        if mentions.is_empty() && !pass.recorded.contains(session.as_str()) {
-            continue;
-        }
-        let mut parsed = parse_copilot(&text, &session);
-        copilot_skills(&text, &mut parsed);
-        parsed.attention = crate::attention::signals(crate::attention::Agent::Copilot, &text);
-        pass.add(&session, mentions, parsed, "Copilot", out);
-    }
-}
-
 // --- reading ----------------------------------------------------------------------------------------
 
-/// A session's pause markers and moments of activity.
-type Markers = (Vec<(PauseKind, u64)>, Vec<u64>);
-
-/// One pass over the agent logs: what to look for and the limits, plus what the readers have gathered so far.
+/// One pass over one agent's logs: what to look for and the limits, and how much has been read so far.
 struct ReadPass<'a> {
-    ids: &'a HashSet<&'a str>,
     recorded: &'a HashSet<&'a str>,
     from: u64,
     deadline: Instant,
     limits: ReadLimits,
     files: usize,
     bytes: u64,
-    /// Entries by key across every session, so a response that appears twice counts once.
-    entries: BTreeMap<String, Entry>,
-    /// Per session: the run ids it names.
-    sessions: BTreeMap<String, HashSet<String>>,
-    /// Per session: its pause markers and moments of activity.
-    pauses: BTreeMap<String, Markers>,
-    attention: BTreeMap<String, Vec<(u64, crate::attention::Signal)>>,
-    /// Per session: the skills it used and when.
-    skills: BTreeMap<String, Vec<(u64, String)>>,
 }
 
 impl<'a> ReadPass<'a> {
     fn new(window: &'a RunWindow<'a>, deadline: Instant, limits: ReadLimits) -> Self {
         Self {
-            ids: &window.ids,
             recorded: &window.recorded,
             from: window.from,
             deadline,
             limits,
             files: 0,
             bytes: 0,
-            entries: BTreeMap::new(),
-            sessions: BTreeMap::new(),
-            pauses: BTreeMap::new(),
-            attention: BTreeMap::new(),
-            skills: BTreeMap::new(),
         }
     }
-}
 
-impl ReadPass<'_> {
     /// Whether a log was last written well before the earliest run of interest, so it cannot hold its
     /// work. File times are coarse and clocks differ, so there is plenty of slack.
     fn stale(&self, path: &Path) -> bool {
@@ -738,134 +523,9 @@ impl ReadPass<'_> {
             }
         }
     }
-
-    fn add(
-        &mut self,
-        id: &str,
-        mentions: HashSet<String>,
-        parsed: LogUsage,
-        agent: &str,
-        out: &mut ReadResult,
-    ) {
-        // An id comes from the log's file or folder name or its own metadata: only a plain one is kept.
-        let plain = (1..=MAX_NAME_LEN).contains(&id.len())
-            && id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
-        if !plain {
-            return;
-        }
-        let mut note = |text: String| {
-            out.notes.push(Note {
-                session: Some(id.to_string()),
-                text,
-            })
-        };
-        if parsed.malformed > 0 {
-            note(format!(
-                "{} malformed {agent} log line(s) were skipped",
-                parsed.malformed
-            ));
-        }
-        if parsed.unusable > 0 {
-            note(format!(
-                "{} {agent} usage line(s) had no usable model, time or count and were skipped",
-                parsed.unusable
-            ));
-        }
-        if parsed.unidentified > 0 {
-            note(format!(
-                "{} {agent} usage entr(ies) have no response id, so a repeat of them cannot be detected",
-                parsed.unidentified
-            ));
-        }
-        if parsed.entries.is_empty() {
-            note(format!(
-                "a {agent} session log held no usage entries in a recognised format"
-            ));
-        }
-        for (key, entry) in parsed.entries {
-            match self.entries.get_mut(&key) {
-                Some(existing) => merge_largest(&mut existing.tokens, &entry.tokens),
-                None => {
-                    self.entries.insert(key, entry);
-                }
-            }
-        }
-        let (pauses, activity) = self.pauses.entry(id.to_string()).or_default();
-        pauses.extend(parsed.pauses);
-        activity.extend(parsed.activity);
-        self.attention
-            .entry(id.to_string())
-            .or_default()
-            .extend(parsed.attention);
-        self.skills
-            .entry(id.to_string())
-            .or_default()
-            .extend(parsed.skills);
-        self.sessions
-            .entry(id.to_string())
-            .or_default()
-            .extend(mentions);
-    }
 }
 
-/// Reads the Copilot session logs that name a run in the window or were recorded for one.
-fn read_copilot_sessions(
-    roots: &Roots,
-    window: &RunWindow,
-    deadline: Instant,
-    limits: ReadLimits,
-) -> ReadResult {
-    let mut out = ReadResult::default();
-    let mut pass = ReadPass::new(window, deadline, limits);
-    let sources = [(
-        &roots.copilot,
-        read_copilot as fn(&Path, &mut ReadPass, &mut ReadResult),
-    )];
-    for (root, read) in sources {
-        // The log folder itself may be a link (a dotfiles setup); what is inside it is not followed.
-        if !root.is_dir() {
-            continue;
-        }
-        out.roots_found += 1;
-        read(root, &mut pass, &mut out);
-        if out.timed_out || out.truncated {
-            break;
-        }
-    }
-    let mut by_session: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
-    for entry in pass.entries.into_values() {
-        by_session
-            .entry(entry.session.clone())
-            .or_default()
-            .push(entry);
-    }
-    for (id, mentions) in pass.sessions {
-        let mut entries = by_session.remove(&id).unwrap_or_default();
-        entries.sort_by_key(|entry| entry.ts);
-        let (mut pauses, mut activity) = pass.pauses.remove(&id).unwrap_or_default();
-        pauses.sort_by_key(|(_, at)| *at);
-        activity.sort_unstable();
-        activity.dedup();
-        let attention = pass.attention.remove(&id).unwrap_or_default();
-        let mut skills = pass.skills.remove(&id).unwrap_or_default();
-        skills.sort();
-        skills.dedup();
-        out.sessions.push(RunSession {
-            id,
-            mentions,
-            entries,
-            pauses,
-            activity,
-            attention,
-            skills,
-        });
-    }
-    out
-}
-
-/// A Claude Code session as usage sees it.
+/// A session as usage sees it.
 fn run_session(session: LogSession) -> RunSession {
     RunSession {
         id: session.id,
@@ -896,17 +556,12 @@ pub(crate) fn read_sessions(
     deadline: Instant,
     limits: ReadLimits,
 ) -> ReadResult {
-    let claude = read_claude(&roots.claude, window, deadline, limits);
-    let codex = read_codex(&roots.codex, window, deadline, limits);
-    let stopped = [&claude, &codex]
-        .iter()
-        .any(|read| read.timed_out || read.truncated);
-    let mut out = if stopped {
-        ReadResult::default()
-    } else {
-        read_copilot_sessions(roots, window, deadline, limits)
-    };
-    for read in [claude, codex] {
+    let mut out = ReadResult::default();
+    for read in [
+        read_claude(&roots.claude, window, deadline, limits),
+        read_codex(&roots.codex, window, deadline, limits),
+        read_copilot(&roots.copilot, window, deadline, limits),
+    ] {
         out.roots_found += usize::from(read.root_found);
         out.timed_out |= read.timed_out;
         out.truncated |= read.truncated;

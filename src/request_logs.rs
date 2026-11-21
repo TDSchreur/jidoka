@@ -104,8 +104,16 @@ pub(crate) fn requests_from(read: LogRead) -> RequestRead {
                 .responses
                 .into_iter()
                 .map(|response| {
-                    let class =
-                        classify(&response.commands, response.other_tool, response.any_tool);
+                    // A response whose tool calls the log does not give is not known to have made none.
+                    let class = if response.calls_known {
+                        classify(&response.commands, response.other_tool, response.any_tool)
+                    } else {
+                        Classification {
+                            category: Category::NotCategorized,
+                            chained_reporting: false,
+                            several_categories: false,
+                        }
+                    };
                     Request {
                         ts: response.ts,
                         category: class.category,

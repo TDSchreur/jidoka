@@ -451,7 +451,7 @@ pub(crate) fn codex_tokens(usage: &Value) -> Tokens {
 
 /// The skills a Codex rollout shows used: tool calls whose command reads a `<name>/SKILL.md`. Tool output
 /// and the session's own instructions mention skill files too, so only the calls are looked at.
-fn codex_skills(text: &str, parsed: &mut LogUsage) {
+fn codex_skills(text: &str, parsed: &mut Markers) {
     for line in text.lines().filter(|line| line.contains("SKILL.md")) {
         let Ok(data) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -631,6 +631,7 @@ fn parse_codex(text: &str, session: &str, subagent: bool, ids: &HashSet<&str>) -
                         commands: closed.commands,
                         other_tool: closed.other_tool,
                         any_tool: closed.any_tool,
+                        calls_known: true,
                         tool_output_bytes: Some(closed.tool_output_bytes),
                     },
                 ));
@@ -639,7 +640,7 @@ fn parse_codex(text: &str, session: &str, subagent: bool, ids: &HashSet<&str>) -
         }
     }
     log.skills = {
-        let mut markers = LogUsage::default();
+        let mut markers = Markers::default();
         codex_skills(text, &mut markers);
         markers.skills
     };
@@ -753,7 +754,7 @@ pub(crate) fn read_codex(
         has_subagent_logs: bool,
         skipped: Skipped,
         any_response: bool,
-        markers: LogUsage,
+        markers: Markers,
     }
     let mut by_root: BTreeMap<String, Root> = BTreeMap::new();
     // A response that two rollouts hold counts once, with the largest counts.
@@ -775,7 +776,7 @@ pub(crate) fn read_codex(
             has_subagent_logs: false,
             skipped: Skipped::default(),
             any_response: false,
-            markers: LogUsage::default(),
+            markers: Markers::default(),
         });
         entry.claims.extend(rollout.claims.iter().cloned());
         entry.has_subagent_logs |= rollout.subagent;
