@@ -21,8 +21,3 @@ Options that are left out keep their current value. If the server or an update f
 
 When the installed `jidoka` rejects a command or an option that these procedures use, such as `run begin`, `run check` or `pr sync`, the skills and the binary are out of step. Do not work around it by hand: report that Jidoka needs upgrading with `jidoka install` from a current release, mark the run blocked with that reason if the run exists, and stop.
 
-## Codex command approvals
-
-When a Jidoka command needs escalation in Codex and a reusable approval is appropriate, pass the narrow, stable subcommand as the tool's `prefix_rule`. For example, use `["jidoka", "pr", "wait"]` for PR monitoring. Keep run IDs, titles and paths in the command arguments so changing them does not invalidate the saved approval. Keep any flags that limit what the approved command can do. Avoid a blanket `jidoka`, `jidoka run` or `jidoka pr` prefix.
-
-For cleanup, confirm that the user has authorized removing the merged run's worktree and local branch before requesting escalation. If the user wants a reusable cleanup approval and the host’s approval rules permit a persistent approval for cleanup, use `["jidoka", "run", "cleanup"]` and explain that saving it covers future run IDs. Otherwise request one-time approval. Jidoka checks whether the recorded pull request has merged before removing the worktree or branch.
