@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     run::{Stage, load_runs},
-    test_support::TestDir,
+    test_support::{TestDir, advance_to},
 };
 use rocket::{http::Header, local::asynchronous::Client};
 use std::fs;
@@ -13,10 +13,7 @@ async fn client(dir: &TestDir) -> Client {
 }
 
 fn at_stage(api: &Client, id: &str, stage: Stage) {
-    api.rocket()
-        .state::<RunStore>()
-        .unwrap()
-        .set_stage(id, stage);
+    advance_to(api.rocket().state::<RunStore>().unwrap(), id, stage);
 }
 
 /// A run with the given worktree, repository, spec and ticket references, and its id.
@@ -426,8 +423,8 @@ async fn usage_is_collected_in_the_background_when_a_run_moves_on() {
     assert_eq!(usage.rows[0].tokens.input, Some(42));
 
     // Collecting again after finishing gives the same numbers, not double.
-    at_stage(&api, &run.id, Stage::Finish);
     report(&api, &run.id, r#"{"mode":"fast"}"#).await;
+    at_stage(&api, &run.id, Stage::Finish);
     let response = api
         .post(format!("/api/runs/{}/advance", run.id))
         .header(cli_token_header(&api))
@@ -613,7 +610,7 @@ async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
         })
         .unwrap();
     let pr = "https://github.com/o/r/pull/7";
-    store.set_stage(&run.id, Stage::Finish);
+    advance_to(&store, &run.id, Stage::Finish);
     store
         .update(
             &run.id,
@@ -704,7 +701,7 @@ fn waiting_run(api: &Client, pr: Option<&str>) -> String {
         .unwrap();
     let pr = pr.map_or(String::new(), |pr| format!(r#","pr":"{pr}""#));
     let update = format!(r#"{{"activity":"Waiting for CI"{pr}}}"#);
-    store.set_stage(&run.id, Stage::Finish);
+    advance_to(store, &run.id, Stage::Finish);
     store
         .update(&run.id, serde_json::from_str(&update).unwrap())
         .unwrap();
@@ -1229,7 +1226,7 @@ async fn stage_exits_preserve_passes_and_distinguish_refused_and_forced_advances
     assert_eq!(details.stage_exits[0], accepted[0]);
     assert_eq!(
         details.stage_exits[1].outcome,
-        crate::run_gate::ExitOutcome::Override {
+        crate::run::ExitOutcome::Override {
             reason: "Checks unavailable".into(),
         }
     );

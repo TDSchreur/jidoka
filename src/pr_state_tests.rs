@@ -3,7 +3,7 @@
 use super::*;
 use crate::pr_wait::{GhError, GhOutput};
 use crate::run::{NewRun, RunStatus, RunStore, Stage, UpdateRun};
-use crate::test_support::TestDir;
+use crate::test_support::{TestDir, advance_to};
 use std::sync::Mutex;
 
 const PR: &str = "https://github.com/o/r/pull/7";
@@ -81,6 +81,10 @@ fn store() -> (TestDir, RunStore) {
 }
 
 fn run_with_pr(store: &RunStore, pr: &str) -> String {
+    run_with_pr_in(store, pr, Stage::Finish)
+}
+
+fn run_with_pr_in(store: &RunStore, pr: &str, stage: Stage) -> String {
     let run = store
         .create(NewRun {
             title: "t".into(),
@@ -91,7 +95,7 @@ fn run_with_pr(store: &RunStore, pr: &str) -> String {
         })
         .unwrap();
     let update: UpdateRun = serde_json::from_str(&format!(r#"{{"pr":"{pr}"}}"#)).unwrap();
-    store.set_stage(&run.id, Stage::Finish);
+    advance_to(store, &run.id, stage);
     store.update(&run.id, update).unwrap();
     run.id
 }
@@ -311,6 +315,29 @@ fn superseded_host_results_do_not_change_the_run_or_its_cached_status() {
 }
 
 #[test]
+fn one_rule_decides_which_pull_request_state_wins() {
+    let status = |state, checked_at| PrStatus {
+        url: PR.into(),
+        state,
+        reason: None,
+        checked_at,
+    };
+    let merged = status(PrState::Merged, 20);
+    assert!(!status(PrState::Open, 21).supersedes(&merged));
+    assert!(status(PrState::Merged, 21).supersedes(&merged));
+    assert!(!status(PrState::Closed, 19).supersedes(&status(PrState::Open, 20)));
+    assert!(status(PrState::Open, 21).supersedes(&status(PrState::Closed, 20)));
+    assert!(status(PrState::Closed, 20).supersedes(&status(PrState::Open, 20)));
+    assert!(!status(PrState::Open, 20).supersedes(&status(PrState::Closed, 20)));
+    assert!(!status(PrState::Draft, 20).supersedes(&status(PrState::Open, 20)));
+    let other = PrStatus {
+        url: "https://github.com/o/r/pull/8".into(),
+        ..status(PrState::Open, 1)
+    };
+    assert!(other.supersedes(&merged));
+}
+
+#[test]
 fn older_and_tied_results_cannot_overwrite_newer_or_terminal_results() {
     use crate::run::PrResult;
     let (_dir, store) = store();
@@ -370,8 +397,7 @@ fn older_and_tied_results_cannot_overwrite_newer_or_terminal_results() {
 fn repeated_merged_observation_reconciles_after_entering_finish() {
     use crate::run::PrResult;
     let (_dir, store) = store();
-    let id = run_with_pr(&store, PR);
-    store.set_stage(&id, Stage::Build);
+    let id = run_with_pr_in(&store, PR, Stage::Build);
     let status = PrStatus {
         url: PR.into(),
         state: PrState::Merged,
@@ -382,7 +408,7 @@ fn repeated_merged_observation_reconciles_after_entering_finish() {
         store.record_pr_result(&id, status.clone()).unwrap(),
         PrResult::Accepted { changed: false }
     );
-    store.set_stage(&id, Stage::Finish);
+    advance_to(&store, &id, Stage::Finish);
     assert_eq!(
         store.record_pr_result(&id, status.clone()).unwrap(),
         PrResult::Accepted { changed: true }

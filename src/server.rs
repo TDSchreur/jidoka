@@ -454,8 +454,7 @@ fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
         });
     }
     if let Some(snapshot) = run.stage_exits.iter().rev().find(|exit| {
-        exit.stage == crate::run::Stage::Check
-            && exit.outcome == crate::run_gate::ExitOutcome::Accepted
+        exit.stage == crate::run::Stage::Check && exit.outcome == crate::run::ExitOutcome::Accepted
     }) {
         value["recorded_skipped_checks"] = serde_json::to_value(&snapshot.skipped_checks)?;
         value["recorded_skipped_rework"] = serde_json::to_value(snapshot.rework)?;
@@ -562,8 +561,11 @@ fn record_gate(
     record: Json<crate::run_gate::Record>,
     store: &State<RunStore>,
 ) -> Result<&'static str, (HttpStatus, String)> {
+    let record = record.into_inner();
     store
-        .record_gate(id, record.into_inner(), &crate::pr_sync::RealGit)
+        .record_gate(id, |run| {
+            crate::run_gate::record(run, record, &crate::pr_sync::RealGit)
+        })
         .map_err(|error| (HttpStatus::BadRequest, error))?;
     Ok("Gate recorded")
 }
@@ -576,11 +578,9 @@ fn advance_run(
     store: &State<RunStore>,
     collector: &State<Collector>,
 ) -> Result<&'static str, (HttpStatus, String)> {
-    let request = request.into_inner();
-    store
-        .change_gate_with_activity(id, request.activity.clone(), |run| {
-            request.apply(run, &crate::pr_sync::RealGit, &crate::pr_wait::RealGh)
-        })
+    request
+        .into_inner()
+        .advance(store, id, &crate::pr_sync::RealGit, &crate::pr_wait::RealGh)
         .map_err(|error| (HttpStatus::BadRequest, error))?;
     collector.after_update(store, id);
     Ok("Run advanced")

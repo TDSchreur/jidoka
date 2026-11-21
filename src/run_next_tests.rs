@@ -140,7 +140,7 @@ fn options_accept_only_json() {
 #[test]
 fn next_shows_recorded_results_and_only_open_review_gates() {
     let mut run = run(Mode::Balanced, Stage::Check, None);
-    run.gates.push(crate::run_gate::GateResult {
+    run.gates.push(crate::run::GateResult {
         gate: Gate::ChecksRecorded,
         stage: Stage::Check,
         rework: None,
@@ -362,7 +362,7 @@ fn git_diff_preserves_unusual_paths_and_both_sides_of_renames() {
 #[test]
 fn forced_check_exit_is_distinct_from_a_recorded_review_pass() {
     let mut run = run(Mode::Balanced, Stage::Check, None);
-    run.gates.push(crate::run_gate::GateResult {
+    run.gates.push(crate::run::GateResult {
         gate: Gate::ChecksRecorded,
         stage: Stage::Check,
         rework: None,
@@ -374,7 +374,13 @@ fn forced_check_exit_is_distinct_from_a_recorded_review_pass() {
         check: Some("code-review".into()),
         skipped_checks: vec![],
     });
-    crate::run_gate::advance_forced(&mut run, "review incomplete").unwrap();
+    run.leave(
+        crate::run::Exit::Override {
+            reason: "review incomplete".into(),
+        },
+        1,
+    )
+    .unwrap();
     let next = build(&run, &[]).unwrap();
     let json = serde_json::to_value(&next).unwrap();
     assert_eq!(json["stage_exits"][0]["outcome"], "override");
@@ -398,7 +404,13 @@ fn finish_guidance_waits_for_live_ci_even_with_a_stored_pr_state() {
     let json = serde_json::to_value(&next).unwrap();
     assert_eq!(json["gates"][1]["name"], "ci-passed");
     assert_eq!(json["gates"][1]["status"], "awaiting-live-check");
-    crate::run_gate::finish_from_merge(&mut run, "https://example.test/pr/1", 1).unwrap();
+    run.leave(
+        crate::run::Exit::Merged {
+            url: "https://example.test/pr/1".into(),
+        },
+        1,
+    )
+    .unwrap();
     let next = build(&run, &[]).unwrap();
     let json = serde_json::to_value(&next).unwrap();
     assert_eq!(json["stage_exits"][0]["outcome"], "merged");
@@ -424,12 +436,13 @@ fn rework_and_finish_use_effective_build_for_each_host() {
             let mut routes = routing();
             routes.agent = agent;
             routes.stages.get_mut(&Stage::Build).unwrap().effort = effort.map(str::to_string);
-            let mut current = run(Mode::Balanced, Stage::Build, Some(routes));
-            current.rework = Some(1);
-            let next = build(&current, &[]).unwrap();
+            let mut building = run(Mode::Balanced, Stage::Build, Some(routes.clone()));
+            building.rework = Some(1);
+            let next = build(&building, &[]).unwrap();
             assert_eq!(next.model.unwrap().effort.as_deref(), Some(expected));
-            current.stage = Stage::Finish;
-            let next = build(&current, &[]).unwrap();
+            let mut finishing = run(Mode::Balanced, Stage::Finish, Some(routes));
+            finishing.rework = Some(1);
+            let next = build(&finishing, &[]).unwrap();
             assert!(next.model.is_none());
             assert_eq!(next.ci_model.unwrap().effort.as_deref(), Some(expected));
             assert!(next.instructions.contains("CI diagnosis"));

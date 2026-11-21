@@ -1,12 +1,12 @@
 use super::*;
-use crate::test_support::TestDir;
+use crate::test_support::{TestDir, advance_to, force_advance, new_run};
 
 #[test]
 fn generic_updates_cannot_complete_finish_with_or_without_a_summary() {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     let run = new_run(&store, "task");
-    store.set_stage(&run.id, Stage::Finish);
+    advance_to(&store, &run.id, Stage::Finish);
     assert!(parse_update(&["done", "--summary", "finish=Completed"]).is_err());
     assert!(serde_json::from_str::<UpdateRun>(r#"{"status":"done"}"#).is_err());
     let after = store.get(&run.id).unwrap().unwrap();
@@ -87,7 +87,7 @@ fn findings_are_recorded_resolved_and_gate_the_rework() {
         store.update_with(id, parsed, &FixedGit)
     };
     update(&["--mode", "jidoka-balanced", "--worktree", "/work/wt"]).unwrap();
-    store.set_stage(id, Stage::Check);
+    advance_to(&store, id, Stage::Check);
 
     update(&["--finding", "code-review", "-", "Bug"]).unwrap();
     let rework = |finding, classification, decision: Option<&str>| LifecycleRequest::Rework {
@@ -120,7 +120,7 @@ fn findings_are_recorded_resolved_and_gate_the_rework() {
         (3, "F3", Some("User approved the behavior fix")),
         (4, "F4", Some("User approved one more Rework")),
     ] {
-        store.set_stage(id, Stage::Check);
+        advance_to(&store, id, Stage::Check);
         update(&["--finding", "code-review", "-", "Another bug"]).unwrap();
         if decision.is_some() {
             let saved = std::fs::read(dir.0.path().join("runs.json")).unwrap();
@@ -171,7 +171,7 @@ fn failed_updates_leave_the_store_unchanged() {
         })
         .unwrap();
     let apply = |stage, args: &[&str]| {
-        store.set_stage(&run.id, stage);
+        advance_to(&store, &run.id, stage);
         store
             .update(&run.id, parse_update(args).unwrap())
             .unwrap()
@@ -296,23 +296,28 @@ fn update_refuses_lifecycle_options_and_initialized_mode_changes() {
     assert_eq!(store.get(&id).unwrap().unwrap().mode, Some(Mode::Balanced));
 }
 
-fn new_run(store: &RunStore, title: &str) -> Run {
-    store
-        .create(NewRun {
-            title: title.into(),
-            project: "/work/repo.worktrees/feature".into(),
-            repository: Some("/work/repo".into()),
-            session: None,
-            model_routing: None,
-        })
-        .unwrap()
-}
-
 /// A stored run for the unit tests of the update field groups, which need a `Run` but no store.
 pub(super) fn sample_run() -> Run {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     new_run(&store, "task")
+}
+
+/// An open Finding with id `id`, for unit tests that need recorded Findings.
+pub(super) fn finding(id: &str) -> Finding {
+    Finding {
+        id: id.into(),
+        check: "security".into(),
+        location: None,
+        text: "Leak".into(),
+        reviewed_commit: "abc1234".into(),
+        rework: None,
+        state: FindingState::Open,
+        reason: None,
+        fix_commit: None,
+        at: 1,
+        resolved_at: None,
+    }
 }
 
 fn selection() -> crate::routing::ModelRouting {
@@ -696,29 +701,56 @@ fn a_mark_records_the_activity_of_the_update_that_created_it() {
     let path = dir.0.path().join("runs.json");
     let store = RunStore::open(&path).unwrap();
     let run = new_run(&store, "task");
-    let after = |options: &[&str], stage: Stage| {
-        store.set_stage(&run.id, stage);
-        store
-            .update(&run.id, parse_update(options).unwrap())
-            .unwrap()
-            .unwrap()
-    };
+    store
+        .update(&run.id, parse_update(&["--mode", "balanced"]).unwrap())
+        .unwrap();
     assert_eq!(run.timeline[0].activity, None);
-    let building = after(&["--activity", "Writing the code"], Stage::Build);
+    let building = force_advance(&store, &run.id, Some("Writing the code"));
     assert_eq!(
         building.timeline[1].activity.as_deref(),
         Some("Writing the code")
     );
     // An update that adds no mark leaves the pass's activity alone.
-    let same = after(&["--activity", "Still going"], Stage::Build);
+    let same = store
+        .update(
+            &run.id,
+            parse_update(&["--activity", "Still going"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
     assert_eq!(same.timeline.len(), 2);
     assert_eq!(
         same.timeline[1].activity.as_deref(),
         Some("Writing the code")
     );
-    // A mark made by an update without an activity does not borrow the previous one.
-    let checking = after(&[], Stage::Check);
-    assert_eq!(checking.timeline[2].activity, None);
+    // An update that makes a mark, here by starting a ticket, records the activity given with it.
+    store
+        .update(
+            &run.id,
+            parse_update(&["--ticket", "https://example.com/1 One"]).unwrap(),
+        )
+        .unwrap();
+    let ticket = store
+        .update(
+            &run.id,
+            parse_update(&[
+                "--ticket-status",
+                "https://example.com/1=in-progress",
+                "--activity",
+                "Writing ticket one",
+            ])
+            .unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        ticket.timeline[2].activity.as_deref(),
+        Some("Writing ticket one")
+    );
+    // A mark made by an advance without an activity does not borrow the previous one.
+    let checking = force_advance(&store, &run.id, None);
+    assert_eq!(checking.stage, Stage::Check);
+    assert_eq!(checking.timeline[3].activity, None);
 
     // The activity survives a reload from disk, and shows in the serialised run.
     let reloaded = RunStore::open(&path)
@@ -732,7 +764,7 @@ fn a_mark_records_the_activity_of_the_update_that_created_it() {
     );
     let json = serde_json::to_value(&reloaded).unwrap();
     assert_eq!(json["timeline"][1]["activity"], "Writing the code");
-    assert!(json["timeline"][2].get("activity").is_none());
+    assert!(json["timeline"][3].get("activity").is_none());
 }
 
 #[test]
@@ -740,19 +772,14 @@ fn finishing_a_run_closes_its_window_and_an_update_cannot_reopen_it() {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     let run = new_run(&store, "task");
-    store.set_stage(&run.id, Stage::Finish);
     store
         .update(
             &run.id,
             parse_update(&["--mode", "fast", "--summary", "finish=Completed"]).unwrap(),
         )
         .unwrap();
-    store
-        .change_gate(&run.id, |run| {
-            crate::run_gate::advance_forced(run, "CI service unavailable")
-        })
-        .unwrap();
-    let done = store.get(&run.id).unwrap().unwrap();
+    advance_to(&store, &run.id, Stage::Finish);
+    let done = force_advance(&store, &run.id, None);
     assert!(done.finished_at.is_some());
     let update = store
         .update(
@@ -1019,7 +1046,7 @@ fn blocking_and_resuming_record_events_without_touching_the_timeline() {
     let resume = || LifecycleRequest::Resume {
         source: "User supplied credentials".into(),
     };
-    store.set_stage(&id, Stage::Build);
+    advance_to(&store, &id, Stage::Build);
     assert!(store.transition(&id, resume()).is_err());
     let blocked = store.transition(&id, block()).unwrap().unwrap();
     assert_eq!(blocked.events.len(), 1);
@@ -1038,17 +1065,19 @@ fn blocking_and_resuming_record_events_without_touching_the_timeline() {
     assert_eq!(again.status, RunStatus::Blocked);
     assert_eq!(again.blocking_reason, blocked.blocking_reason);
     assert_eq!(again.events, blocked.events);
-    store.set_stage(&id, Stage::Check);
     let resumed = store.transition(&id, resume()).unwrap().unwrap();
     assert_eq!(resumed.events.len(), 2);
     assert_eq!(resumed.events[1].kind, RunEventKind::Resumed);
-    assert_eq!(resumed.events[1].stage, Stage::Check);
+    assert_eq!(resumed.events[1].stage, Stage::Build);
     assert_eq!(
         resumed.events[1].reason.as_deref(),
         Some("User supplied credentials")
     );
     assert!(resumed.events[0].at <= resumed.events[1].at);
     // Events are not marks: only the stage changes make marks.
+    advance_to(&store, &id, Stage::Check);
+    let resumed = store.get(&id).unwrap().unwrap();
+    assert_eq!(resumed.events.len(), 2);
     let stages: Vec<_> = resumed.timeline.iter().map(|m| m.stage).collect();
     assert_eq!(stages, [Stage::Define, Stage::Build, Stage::Check]);
     let json = serde_json::to_value(&resumed).unwrap();
@@ -1057,36 +1086,15 @@ fn blocking_and_resuming_record_events_without_touching_the_timeline() {
 }
 
 #[test]
-fn gate_change_preserves_concurrent_pr_refresh_and_rejects_run_updates() {
+fn an_advance_is_refused_when_the_agent_changes_the_run_during_its_check() {
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     let run = new_run(&store, "task");
-    let url = "https://github.com/owner/repo/pull/1";
     store
-        .update(&run.id, parse_update(&["--pr", url]).unwrap())
+        .update(&run.id, parse_update(&["--mode", "fast"]).unwrap())
         .unwrap();
-    store
-        .change_gate(&run.id, |next| {
-            store
-                .set_pr_status(
-                    &run.id,
-                    PrStatus {
-                        url: url.into(),
-                        state: crate::pr_state::PrState::Open,
-                        reason: None,
-                        checked_at: 42,
-                    },
-                )
-                .unwrap();
-            next.stage = Stage::Build;
-            Ok(())
-        })
-        .unwrap();
-    let current = store.get(&run.id).unwrap().unwrap();
-    assert_eq!(current.stage, Stage::Build);
-    assert_eq!(current.pr_status.unwrap().checked_at, 42);
     let error = store
-        .change_gate(&run.id, |next| {
+        .advance(&run.id, AdvanceMetadata::default(), |_| {
             store
                 .transition(
                     &run.id,
@@ -1095,8 +1103,9 @@ fn gate_change_preserves_concurrent_pr_refresh_and_rejects_run_updates() {
                     },
                 )
                 .unwrap();
-            next.stage = Stage::Check;
-            Ok(())
+            Ok(Exit::Override {
+                reason: "Spec agreed by hand".into(),
+            })
         })
         .unwrap_err();
     assert!(
@@ -1104,7 +1113,7 @@ fn gate_change_preserves_concurrent_pr_refresh_and_rejects_run_updates() {
         "unexpected error: {error}"
     );
     let current = store.get(&run.id).unwrap().unwrap();
-    assert_eq!(current.stage, Stage::Build);
+    assert_eq!(current.stage, Stage::Define);
     assert_eq!(current.status, RunStatus::Blocked);
 }
 
@@ -1149,156 +1158,6 @@ fn mode_aliases_store_canonical_names() {
             .unwrap();
         assert_eq!(serde_json::to_value(updated).unwrap()["mode"], canonical);
     }
-}
-
-#[test]
-fn independent_gate_records_merge_but_run_changes_reject_stale_validation() {
-    use crate::run_gate::Record;
-    use crate::stages::Gate;
-    struct Interleaved<'a> {
-        store: &'a RunStore,
-        id: &'a str,
-        change_run: bool,
-    }
-    impl crate::pr_sync::Git for Interleaved<'_> {
-        fn git(&self, _: &std::path::Path, _: &[&str]) -> Result<String, String> {
-            if self.change_run {
-                self.store
-                    .transition(
-                        self.id,
-                        LifecycleRequest::Block {
-                            reason: "waiting".into(),
-                        },
-                    )
-                    .unwrap();
-            } else {
-                self.store
-                    .record_gate(
-                        self.id,
-                        Record {
-                            gate: Gate::NoActionableFindings,
-                            passed: true,
-                            evidence: None,
-                            check: None,
-                        },
-                        &crate::pr_sync::RealGit,
-                    )
-                    .unwrap();
-            }
-            Ok("abc123".into())
-        }
-    }
-    let dir = TestDir::new();
-    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-    let run = new_run(&store, "task");
-    store
-        .update(
-            &run.id,
-            parse_update(&["--worktree", "/work/repo"]).unwrap(),
-        )
-        .unwrap();
-    let verified = || Record {
-        gate: Gate::Verified,
-        passed: true,
-        evidence: None,
-        check: None,
-    };
-    store
-        .record_gate(
-            &run.id,
-            verified(),
-            &Interleaved {
-                store: &store,
-                id: &run.id,
-                change_run: false,
-            },
-        )
-        .unwrap();
-    let current = store.get(&run.id).unwrap().unwrap();
-    assert_eq!(current.gates.len(), 2);
-    assert!(
-        current
-            .gates
-            .iter()
-            .any(|gate| gate.gate == Gate::Verified && gate.commit.as_deref() == Some("abc123")),
-        "verified gate should retain its checked commit"
-    );
-    assert!(
-        current
-            .gates
-            .iter()
-            .any(|gate| gate.gate == Gate::NoActionableFindings),
-        "independent gate should be preserved"
-    );
-    let error = store
-        .record_gate(
-            &run.id,
-            verified(),
-            &Interleaved {
-                store: &store,
-                id: &run.id,
-                change_run: true,
-            },
-        )
-        .unwrap_err();
-    assert!(
-        error.contains("changed while checking"),
-        "unexpected error: {error}"
-    );
-    assert_eq!(store.get(&run.id).unwrap().unwrap().gates.len(), 2);
-}
-
-#[test]
-fn gate_record_rejects_run_change_reverted_during_validation() {
-    use crate::run_gate::Record;
-    use crate::stages::Gate;
-
-    struct Revert<'a> {
-        store: &'a RunStore,
-        id: &'a str,
-    }
-    impl crate::pr_sync::Git for Revert<'_> {
-        fn git(&self, _: &std::path::Path, _: &[&str]) -> Result<String, String> {
-            for activity in ["B", "A"] {
-                self.store
-                    .update(self.id, parse_update(&["--activity", activity]).unwrap())
-                    .unwrap();
-            }
-            Ok("abc123".into())
-        }
-    }
-    let dir = TestDir::new();
-    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
-    let run = new_run(&store, "task");
-    store
-        .update(
-            &run.id,
-            parse_update(&["--worktree", "/work/repo", "--activity", "A"]).unwrap(),
-        )
-        .unwrap();
-    let error = store
-        .record_gate(
-            &run.id,
-            Record {
-                gate: Gate::Verified,
-                passed: true,
-                evidence: None,
-                check: None,
-            },
-            &Revert {
-                store: &store,
-                id: &run.id,
-            },
-        )
-        .unwrap_err();
-    assert!(
-        error.contains("changed while checking"),
-        "unexpected error: {error}"
-    );
-    assert!(
-        store.get(&run.id).unwrap().unwrap().gates.is_empty(),
-        "stale gate must not be recorded"
-    );
 }
 
 #[test]
