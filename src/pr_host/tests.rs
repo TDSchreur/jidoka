@@ -2,12 +2,17 @@
 //! `Hosts`, with a scripted `gh` and `az`. Only these tests script the hosts' tools.
 
 use super::*;
-use serde_json::json;
+use crate::pr_wait::BaseState;
+use serde_json::{Value, json};
 use std::cell::RefCell;
 
-/// Answers every call with one scripted answer and records the calls, as `gh <args>` or `az <args>`.
+/// Answers the calls from a script and records them, as `gh <args>` or `az <args>`. An error answer
+/// stands for a tool that is not installed.
+/// How a script answers a call; an error stands for a tool that is not installed.
+type Answer = Box<dyn Fn(&str) -> Result<ToolOutput, String>>;
+
 struct Script {
-    answer: Result<ToolOutput, String>,
+    answer: Answer,
     calls: RefCell<Vec<String>>,
 }
 
@@ -20,9 +25,24 @@ impl Script {
         }))
     }
 
+    /// Answers every call with `answer`.
     fn answering(answer: Result<ToolOutput, String>) -> Self {
         Self {
-            answer,
+            answer: Box::new(move |_| answer.clone()),
+            calls: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Answers each call with what `print` gives for it.
+    fn printing_for(print: impl Fn(&str) -> String + 'static) -> Self {
+        Self {
+            answer: Box::new(move |call| {
+                Ok(ToolOutput {
+                    code: Some(0),
+                    stdout: print(call),
+                    stderr: String::new(),
+                })
+            }),
             calls: RefCell::new(Vec::new()),
         }
     }
@@ -33,8 +53,9 @@ impl Script {
     }
 
     fn reply(&self, call: String) -> Result<ToolOutput, ToolError> {
+        let answer = (self.answer)(&call);
         self.calls.borrow_mut().push(call);
-        self.answer.clone().map_err(|_| ToolError::NotInstalled)
+        answer.map_err(|_| ToolError::NotInstalled)
     }
 }
 
@@ -76,6 +97,38 @@ struct Case {
     created: fn(u64) -> String,
     /// The start of the one call that creates the pull request, up to its description.
     create_call: &'static str,
+    /// What the host's tool prints for `call` while the checks of a pull request in `state` at commit
+    /// `abc1234` are watched: `checks` as `(name, bucket)`, and whether the branch conflicts with its base.
+    watch: WatchPrint,
+    /// The start of the call that reads the pull request in a watch.
+    watch_view: &'static str,
+    /// The base state the host reports for a branch without conflicts.
+    clean_base: BaseState,
+}
+
+/// What a host's tool prints for a call while checks are watched; see `Case::watch`.
+type WatchPrint = fn(PrState, &[(&str, &str)], bool, &str) -> String;
+
+/// GitHub's `state` and `isDraft` for `state`; `PrState::Unknown` stands for a state Jidoka does not know.
+fn github_state(state: PrState) -> (&'static str, bool) {
+    match state {
+        PrState::Open => ("OPEN", false),
+        PrState::Draft => ("OPEN", true),
+        PrState::Merged => ("MERGED", false),
+        PrState::Closed => ("CLOSED", false),
+        PrState::Unknown => ("WEIRD", false),
+    }
+}
+
+/// Azure's `status` and `isDraft` for `state`; `PrState::Unknown` stands for a status Jidoka does not know.
+fn azure_state(state: PrState) -> (&'static str, bool) {
+    match state {
+        PrState::Open => ("active", false),
+        PrState::Draft => ("active", true),
+        PrState::Merged => ("completed", false),
+        PrState::Closed => ("abandoned", false),
+        PrState::Unknown => ("weird", false),
+    }
 }
 
 fn github() -> Case {
@@ -83,13 +136,7 @@ fn github() -> Case {
         url: "https://github.com/o/r/pull/7",
         state_call: "gh pr view https://github.com/o/r/pull/7 --json state,isDraft",
         print: |state| {
-            let (state, draft) = match state {
-                PrState::Open => ("OPEN", false),
-                PrState::Draft => ("OPEN", true),
-                PrState::Merged => ("MERGED", false),
-                PrState::Closed => ("CLOSED", false),
-                PrState::Unknown => ("WEIRD", false),
-            };
+            let (state, draft) = github_state(state);
             json!({"state": state, "isDraft": draft, "headRefOid": "ABCD1234", "headRefName": "feature/x"})
                 .to_string()
         },
@@ -121,6 +168,23 @@ fn github() -> Case {
             )
         },
         create_call: "gh (in wt) pr create --base develop --head feature/x --title Add the thing --body-file ",
+        watch: |state, checks, conflicts, call| {
+            if call.starts_with("gh pr checks") {
+                let items: Vec<_> = checks
+                    .iter()
+                    .map(|(name, bucket)| {
+                        json!({"name": name, "bucket": bucket, "state": "X", "link": "https://github.com/o/r/actions/runs/1/job/2"})
+                    })
+                    .collect();
+                return json!(items).to_string();
+            }
+            let (state, draft) = github_state(state);
+            let merge = if conflicts { "DIRTY" } else { "CLEAN" };
+            json!({"state": state, "isDraft": draft, "headRefOid": "abc1234", "mergeStateStatus": merge})
+                .to_string()
+        },
+        watch_view: "gh pr view",
+        clean_base: BaseState::UpToDate,
     }
 }
 
@@ -129,13 +193,7 @@ fn azure() -> Case {
         url: "https://dev.azure.com/org/Proj/_git/Repo/pullrequest/535",
         state_call: "az repos pr show --id 535 --organization https://dev.azure.com/org --output json --detect false",
         print: |state| {
-            let (status, draft) = match state {
-                PrState::Open => ("active", false),
-                PrState::Draft => ("active", true),
-                PrState::Merged => ("completed", false),
-                PrState::Closed => ("abandoned", false),
-                PrState::Unknown => ("weird", false),
-            };
+            let (status, draft) = azure_state(state);
             json!({
                 "pullRequestId": 535,
                 "status": status,
@@ -171,6 +229,79 @@ fn azure() -> Case {
         find_call: "az repos pr list --organization https://dev.azure.com/org --project Proj --repository Repo --source-branch feature/x --status active --output json --detect false",
         created: |number| json!({"pullRequestId": number}).to_string(),
         create_call: "az repos pr create --organization https://dev.azure.com/org --project Proj --repository Repo --source-branch feature/x --target-branch develop --title=Add the thing --description @",
+        watch: |state, checks, conflicts, call| {
+            let mut azure = AzureWatch::new(checks);
+            azure.status = azure_state(state);
+            azure.merge_status = if conflicts { "conflicts" } else { "succeeded" };
+            azure.print(call)
+        },
+        watch_view: "az repos pr show",
+        // A merge that succeeds does not prove that the branch is up to date.
+        clean_base: BaseState::Unknown,
+    }
+}
+
+/// What `az` prints while the checks of Azure pull request 535 at commit `abc1234` are watched.
+struct AzureWatch {
+    status: (&'static str, bool),
+    merge_status: &'static str,
+    policies: Value,
+    iterations: Value,
+    iteration_statuses: Value,
+}
+
+impl AzureWatch {
+    /// An active pull request without policies, whose current iteration has `checks` as statuses.
+    fn new(checks: &[(&str, &str)]) -> Self {
+        let statuses: Vec<_> = checks
+            .iter()
+            .enumerate()
+            .map(|(index, (name, bucket))| {
+                let state = match *bucket {
+                    "pass" => "succeeded",
+                    "fail" => "failed",
+                    "cancel" => "canceled",
+                    "skipping" => "notApplicable",
+                    _ => "pending",
+                };
+                json!({"id": index + 1, "iterationId": 1, "state": state, "context": {"name": name}})
+            })
+            .collect();
+        Self {
+            status: ("active", false),
+            merge_status: "succeeded",
+            policies: json!([]),
+            iterations: json!({"value": [{"id": 1, "createdDate": "2026-01-01T00:00:00Z", "sourceRefCommit": {"commitId": "abc1234"}}]}),
+            iteration_statuses: json!({"value": statuses}),
+        }
+    }
+
+    fn print(&self, call: &str) -> String {
+        let value = if call.starts_with("az repos pr show") {
+            json!({
+                "pullRequestId": 535,
+                "status": self.status.0,
+                "isDraft": self.status.1,
+                "mergeStatus": self.merge_status,
+                "repository": {"id": "repo-id", "name": "Repo", "project": {"name": "Proj"}},
+                "forkSource": null,
+                "sourceRefName": "refs/heads/feature/x",
+                "lastMergeSourceCommit": {"commitId": "abc1234"}
+            })
+        } else if call.starts_with("az repos ref list") {
+            json!([{"name": "refs/heads/feature/x", "objectId": "abc1234"}])
+        } else if call.starts_with("az repos pr policy list") {
+            self.policies.clone()
+        } else if call.contains(" pullRequestIterations ") {
+            self.iterations.clone()
+        } else if call.contains(" pullRequestIterationStatuses ") {
+            self.iteration_statuses.clone()
+        } else if call.contains(" pullRequestStatuses ") {
+            json!({"value": []})
+        } else {
+            panic!("unexpected call {call}")
+        };
+        value.to_string()
     }
 }
 
@@ -311,4 +442,122 @@ fn both_hosts_create_a_pull_request_and_return_its_url() {
         assert_eq!(calls.len(), 1, "{}", case.remote);
         assert!(calls[0].starts_with(case.create_call), "{}", calls[0]);
     }
+}
+
+/// The snapshot a watch reads from the host of `case`, and the calls it made.
+fn snapshot(
+    case: &Case,
+    state: PrState,
+    checks: &'static [(&'static str, &'static str)],
+    conflicts: bool,
+) -> (watch::Snapshot, Vec<String>) {
+    let print = case.watch;
+    let tools = Script::printing_for(move |call| print(state, checks, conflicts, call));
+    let adapter = Hosts::<Script>::adapter(case.url).unwrap();
+    let snapshot = adapter.snapshot(&tools, case.url).unwrap();
+    (snapshot, tools.calls.take())
+}
+
+/// The checks of `snapshot` as `(name, bucket)`.
+fn buckets(snapshot: &watch::Snapshot) -> Vec<(&str, &str)> {
+    snapshot
+        .checks
+        .iter()
+        .map(|check| (check.name.as_str(), check.bucket.as_str()))
+        .collect()
+}
+
+#[test]
+fn both_hosts_read_a_watch_snapshot_with_the_pull_request_before_and_after_its_checks() {
+    const CHECKS: &[(&str, &str)] = &[
+        ("build", "pass"),
+        ("deploy", "cancel"),
+        ("lint", "fail"),
+        ("test", "pending"),
+    ];
+    for case in [github(), azure()] {
+        for state in [PrState::Open, PrState::Draft] {
+            let (snapshot, calls) = snapshot(&case, state, CHECKS, false);
+            assert_eq!(snapshot.state, state, "{}", case.url);
+            assert_eq!(snapshot.head, "abc1234");
+            assert_eq!(buckets(&snapshot), CHECKS, "{}", case.url);
+            assert!(snapshot.applies);
+            assert_eq!(snapshot.base, Some(case.clean_base), "{}", case.url);
+            let views = calls.iter().filter(|c| c.starts_with(case.watch_view));
+            assert_eq!(views.count(), 2, "{calls:?}");
+            assert!(calls.first().unwrap().starts_with(case.watch_view));
+        }
+        let (snapshot, _) = snapshot(&case, PrState::Open, CHECKS, true);
+        assert_eq!(snapshot.base, Some(BaseState::Conflicts), "{}", case.url);
+    }
+}
+
+#[test]
+fn both_hosts_report_a_pull_request_without_checks_as_one_no_check_applies_to() {
+    for case in [github(), azure()] {
+        let (snapshot, _) = snapshot(&case, PrState::Open, &[], false);
+        assert!(snapshot.checks.is_empty(), "{}", case.url);
+        assert!(!snapshot.applies, "{}", case.url);
+    }
+}
+
+#[test]
+fn both_hosts_read_no_checks_of_a_merged_or_closed_pull_request() {
+    for case in [github(), azure()] {
+        for state in [PrState::Merged, PrState::Closed] {
+            let (snapshot, calls) = snapshot(&case, state, &[("build", "pass")], false);
+            assert_eq!(snapshot.state, state, "{}", case.url);
+            assert_eq!(snapshot.head, "abc1234");
+            assert!(snapshot.checks.is_empty());
+            assert_eq!(calls.len(), 1, "{calls:?}");
+        }
+    }
+}
+
+const AZURE_PR: &str = "https://dev.azure.com/org/Proj/_git/Repo/pullrequest/535";
+
+/// The checks of the Azure pull request `azure` prints, as `(name, bucket)`.
+fn azure_checks(azure: AzureWatch) -> Vec<(String, String)> {
+    let tools = Script::printing_for(move |call| azure.print(call));
+    let snapshot = azure::Azure.snapshot(&tools, AZURE_PR).unwrap();
+    buckets(&snapshot)
+        .into_iter()
+        .map(|(name, bucket)| (name.to_string(), bucket.to_string()))
+        .collect()
+}
+
+fn azure_policy(name: &str, started: &str) -> Value {
+    json!({"status": "approved", "startedDate": started, "configuration": {"isEnabled": true, "isBlocking": true, "type": {"displayName": name}}})
+}
+
+#[test]
+fn azure_counts_a_build_only_for_the_current_iteration() {
+    let check = |name: &str, bucket: &str| vec![(name.to_string(), bucket.to_string())];
+    let mut current = AzureWatch::new(&[]);
+    current.policies = json!([azure_policy("Build", "2026-01-01T00:00:01Z")]);
+    assert_eq!(azure_checks(current), check("Build", "pass"));
+
+    // Azure has not caught up with the head yet.
+    let mut stale_iteration = AzureWatch::new(&[]);
+    stale_iteration.policies = json!([azure_policy("Build", "2026-01-01T00:00:01Z")]);
+    stale_iteration.iterations =
+        json!({"value": [{"id": 1, "sourceRefCommit": {"commitId": "old"}}]});
+    assert_eq!(
+        azure_checks(stale_iteration),
+        check("Azure is updating the current PR iteration", "pending")
+    );
+
+    // A build that started before the current iteration says nothing about it, approved or not.
+    let mut stale_build = AzureWatch::new(&[]);
+    stale_build.policies = json!([azure_policy("Build", "2025-12-31T00:00:00Z")]);
+    assert_eq!(azure_checks(stale_build), check("Build", "pending"));
+
+    let mut reviewers = azure_policy("Minimum number of reviewers", "2025-12-31T00:00:00Z");
+    reviewers["context"] = json!({"buildId": 42});
+    let mut stale_reviewers = AzureWatch::new(&[]);
+    stale_reviewers.policies = json!([reviewers]);
+    assert_eq!(
+        azure_checks(stale_reviewers),
+        check("Minimum number of reviewers", "pending")
+    );
 }

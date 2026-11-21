@@ -1,14 +1,19 @@
-//! Pull request host: reads pull requests on GitHub (with `gh`) and Azure Repos (with `az`) behind one
-//! interface, so callers never ask which host a pull request lives on. It also works out which host a
+//! Pull request host: reads, opens and watches pull requests on GitHub (with `gh`) and Azure Repos (with
+//! `az`) behind one interface, so callers never ask which host a pull request lives on. It also works out which host a
 //! repository uses from its origin remote.
 
 mod azure;
 mod github;
+mod watch;
 
-pub(crate) use azure::{AzurePr, AzureRepo, az_json, required};
-pub(crate) use github::{problem, run_gh};
+pub(crate) use azure::AzureRepo;
 
-use crate::{inspect::shown, pr_state::PrState, run_begin::last_line};
+use crate::{
+    inspect::shown,
+    pr_state::PrState,
+    pr_wait::{CheckResult, Clock, Failure, Options, Waited},
+    run_begin::last_line,
+};
 use std::{io, path::Path, process::Command};
 
 /// A problem with the tools or the pull request, not an outcome. The message says what to do.
@@ -116,6 +121,19 @@ pub(crate) trait PrHost {
 
     /// Opens `pr` in origin's repository and returns its URL. `dir` is the worktree.
     fn create(&self, dir: &Path, origin: &Origin, pr: &NewPr) -> Result<String, ToolProblem>;
+
+    /// Watches the checks of the pull request at `url` for its current head commit until they have ended,
+    /// and returns the CI outcome with the state the pull request had then. `activity` is told what the
+    /// run is doing, and `progress` how far the checks are. It only reads: it never merges, pushes or
+    /// updates the branch.
+    fn watch(
+        &self,
+        url: &str,
+        options: &Options,
+        clock: &dyn Clock,
+        activity: &mut dyn FnMut(&str),
+        progress: &mut dyn FnMut(&str),
+    ) -> Result<Waited, ToolProblem>;
 }
 
 /// An open pull request of a branch.
@@ -147,6 +165,23 @@ pub(crate) struct Head {
 trait Adapter {
     fn state(&self, tools: &dyn Tools, url: &str) -> Result<PrState, ToolProblem>;
     fn head(&self, tools: &dyn Tools, url: &str) -> Result<Head, ToolProblem>;
+
+    /// One consistent look at the pull request for a watch of its checks.
+    fn snapshot(&self, tools: &dyn Tools, url: &str) -> Result<watch::Snapshot, ToolProblem>;
+
+    /// The failed checks of a failed watch. A host that can fetch their logs adds the end of each log;
+    /// by default there is none.
+    fn failures(&self, _tools: &dyn Tools, checks: &[CheckResult]) -> Vec<Failure> {
+        checks
+            .iter()
+            .filter(|check| check.bucket == "fail")
+            .map(|check| Failure {
+                name: check.name.clone(),
+                link: check.link.clone(),
+                excerpt: None,
+            })
+            .collect()
+    }
 }
 
 /// The real pull request host: picks the GitHub or the Azure Repos adapter from the pull request's URL,
@@ -231,6 +266,22 @@ impl<T: Tools> PrHost for Hosts<T> {
             Host::Unknown => Err(unknown_origin()),
         }
     }
+
+    fn watch(
+        &self,
+        url: &str,
+        options: &Options,
+        clock: &dyn Clock,
+        activity: &mut dyn FnMut(&str),
+        progress: &mut dyn FnMut(&str),
+    ) -> Result<Waited, ToolProblem> {
+        let pr = watch::PullRequest {
+            adapter: Self::adapter(url)?,
+            tools: &self.tools,
+            url,
+        };
+        watch::watch(&pr, options, clock, activity, progress)
+    }
 }
 
 fn unsupported() -> ToolProblem {
@@ -238,7 +289,7 @@ fn unsupported() -> ToolProblem {
 }
 
 /// Whether `url` is an Azure DevOps Services pull request URL, in its canonical or legacy form.
-pub(crate) fn is_azure_pr_url(url: &str) -> bool {
+fn is_azure_pr_url(url: &str) -> bool {
     url.starts_with("https://dev.azure.com/")
         || url
             .strip_prefix("https://")
@@ -434,6 +485,8 @@ pub(crate) struct FakeHost {
     open: std::sync::Mutex<Vec<Option<OpenPr>>>,
     /// The URL `create` opens, or its problem.
     created: Result<String, String>,
+    /// The CI outcome `watch` gives an open pull request.
+    ci: crate::pr_wait::Outcome,
     calls: std::sync::Mutex<Vec<String>>,
 }
 
@@ -446,6 +499,7 @@ impl FakeHost {
             answers: std::sync::Mutex::new(answers),
             open: std::sync::Mutex::new(vec![None]),
             created: Err("The fake host opens no pull request.".into()),
+            ci: crate::pr_wait::Outcome::Passed,
             calls: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -489,7 +543,12 @@ impl FakeHost {
         )
     }
 
-    /// The calls so far, as `state <url>`, `head <url>`, `find_open <branch>`, `check_new <branch>` or
+    /// `watch` gives an open pull request the CI outcome `ci` instead of `passed`.
+    pub(crate) fn with_ci(self, ci: crate::pr_wait::Outcome) -> Self {
+        Self { ci, ..self }
+    }
+
+    /// The calls so far, as `state <url>`, `head <url>`, `watch <url>`, `find_open <branch>`, `check_new <branch>` or
     /// `create <branch> into <base>: <title>`.
     pub(crate) fn calls(&self) -> Vec<String> {
         self.calls
@@ -556,6 +615,37 @@ impl PrHost for FakeHost {
             pr.branch, pr.base, pr.title
         ));
         self.created.clone().map_err(ToolProblem)
+    }
+
+    /// Answers at once with the next answer's state and commit: `not-open` for a merged or closed pull
+    /// request, else the CI outcome the fake was given.
+    fn watch(
+        &self,
+        url: &str,
+        _options: &Options,
+        _clock: &dyn Clock,
+        activity: &mut dyn FnMut(&str),
+        _progress: &mut dyn FnMut(&str),
+    ) -> Result<Waited, ToolProblem> {
+        use crate::pr_wait::{BaseState, Outcome};
+        let head = self.answer("watch", url)?;
+        let outcome = match head.state {
+            PrState::Open | PrState::Draft => self.ci,
+            _ => Outcome::NotOpen,
+        };
+        let waited = Waited {
+            outcome,
+            exit_code: outcome.exit_code(),
+            pull_request: url.into(),
+            head: head.commit,
+            new_head: None,
+            base: BaseState::UpToDate,
+            checks: Vec::new(),
+            failures: Vec::new(),
+            state: head.state,
+        };
+        activity(&crate::pr_wait::activity_text(&waited));
+        Ok(waited)
     }
 }
 

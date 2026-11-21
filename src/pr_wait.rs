@@ -1,14 +1,9 @@
-//! `jidoka pr wait`: watches the checks of a run's pull request and returns one CI outcome.
+//! `jidoka pr wait`: the options and the outcome of watching the checks of a run's pull request. The pull
+//! request host watches them (`PrHost::watch`).
 
-use crate::{
-    inspect::shown,
-    pr_host::{ToolProblem, Tools, is_azure_pr_url, problem, run_gh},
-};
+use crate::{inspect::shown, pr_state::PrState};
 use serde::Serialize;
 use std::time::{Duration, Instant};
-
-#[path = "pr_wait_azure.rs"]
-mod azure;
 
 /// Time, so that tests never sleep.
 pub(crate) trait Clock {
@@ -82,22 +77,15 @@ pub(crate) struct Waited {
     /// The failed checks, when the outcome is `failed`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) failures: Vec<Failure>,
+    /// The state the pull request had when the wait ended. Not part of the JSON output.
+    #[serde(skip)]
+    pub(crate) state: PrState,
 }
 
 /// How long to wait for the checks when the caller says nothing.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// The longest `--timeout` that is accepted.
 const MAX_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
-/// How long checks may take to appear before the pull request counts as having no CI.
-const GRACE: Duration = Duration::from_secs(90);
-/// How long the pull request may take to show a commit that was just pushed, and how often it is asked.
-const HEAD_GRACE: Duration = Duration::from_secs(30);
-const HEAD_POLL: Duration = Duration::from_secs(5);
-/// The most runs whose failed log is fetched.
-const MAX_LOGS: usize = 3;
-/// The most lines and bytes kept of a failed log: its end is where the cause is.
-const LOG_LINES: usize = 40;
-const LOG_BYTES: usize = 4096;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Options {
@@ -105,7 +93,7 @@ pub(crate) struct Options {
     /// Return `failed` at the first failing check instead of waiting for the others.
     pub(crate) fail_fast: bool,
     /// The commit the run's branch has on origin, when its worktree is on that commit. Right after a push,
-    /// GitHub can report the previous head for a few seconds; the wait gives it `HEAD_GRACE` to catch up.
+    /// the host can report the previous head for a few seconds; the wait gives it a short grace to catch up.
     pub(crate) pushed_head: Option<String>,
 }
 
@@ -185,108 +173,8 @@ impl Clock for RealClock {
     }
 }
 
-/// Checks that `gh` can be started, so that its absence is reported before anything else is.
-pub(crate) fn check_gh(tools: &dyn Tools) -> Result<(), ToolProblem> {
-    run_gh(tools, None, &["--version"]).map(|_| ())
-}
-
-/// How often the checks are asked for.
-const POLL: Duration = Duration::from_secs(15);
-/// How long to wait before asking again when GitHub has not worked out the base state yet.
-const BASE_RETRY: Duration = Duration::from_secs(3);
-/// How many more times an unknown base state is asked for.
-const BASE_RETRIES: usize = 5;
-
-/// What `gh pr view` says about the pull request.
-struct View {
-    head: String,
-    state: String,
-    merge: String,
-}
-
-fn read_view(tools: &dyn Tools, pull_request: &str) -> Result<View, ToolProblem> {
-    let args = [
-        "pr",
-        "view",
-        pull_request,
-        "--json",
-        "headRefOid,state,mergeStateStatus",
-    ];
-    let output = run_gh(tools, None, &args)?;
-    if output.code != Some(0) {
-        return Err(problem("pr view", &output));
-    }
-    let data: serde_json::Value = serde_json::from_str(&output.stdout).map_err(|error| {
-        ToolProblem(format!(
-            "`gh pr view` gave output that is not JSON: {error}"
-        ))
-    })?;
-    let text = |name: &str| data[name].as_str().unwrap_or("").to_string();
-    Ok(View {
-        head: text("headRefOid"),
-        state: text("state"),
-        merge: text("mergeStateStatus"),
-    })
-}
-
-fn read_checks(tools: &dyn Tools, pull_request: &str) -> Result<Vec<CheckResult>, ToolProblem> {
-    let args = [
-        "pr",
-        "checks",
-        pull_request,
-        "--json",
-        "name,bucket,state,link",
-    ];
-    let output = run_gh(tools, None, &args)?;
-    // `gh pr checks` exits non-zero while checks are pending or failed; the JSON is what counts.
-    let stdout = output.stdout.trim();
-    if !stdout.starts_with('[') {
-        if output.stderr.to_lowercase().contains("no checks reported") {
-            return Ok(Vec::new());
-        }
-        return Err(problem("pr checks", &output));
-    }
-    let items: Vec<serde_json::Value> = serde_json::from_str(stdout).map_err(|error| {
-        ToolProblem(format!(
-            "`gh pr checks` gave output that is not JSON: {error}"
-        ))
-    })?;
-    Ok(items
-        .iter()
-        .map(|item| {
-            let text = |name: &str| item[name].as_str().unwrap_or("").to_string();
-            CheckResult {
-                name: text("name"),
-                bucket: text("bucket"),
-                link: text("link"),
-            }
-        })
-        .collect())
-}
-
-/// The base state from `mergeStateStatus`; an unknown one is asked for again.
-fn base_state(
-    tools: &dyn Tools,
-    clock: &dyn Clock,
-    pull_request: &str,
-    mut merge: String,
-) -> Result<BaseState, ToolProblem> {
-    for attempt in 0..=BASE_RETRIES {
-        match merge.as_str() {
-            "BEHIND" => return Ok(BaseState::Behind),
-            "DIRTY" => return Ok(BaseState::Conflicts),
-            "UNKNOWN" | "" if attempt < BASE_RETRIES => {
-                clock.sleep(BASE_RETRY);
-                merge = read_view(tools, pull_request)?.merge;
-            }
-            "UNKNOWN" | "" => return Ok(BaseState::Unknown),
-            _ => return Ok(BaseState::UpToDate),
-        }
-    }
-    Ok(BaseState::Unknown)
-}
-
-fn activity_text(waited: &Waited) -> String {
+/// The outcome of `waited` as the run's activity.
+pub(crate) fn activity_text(waited: &Waited) -> String {
     match waited.outcome {
         Outcome::Passed => "CI passed".into(),
         Outcome::Failed => {
@@ -318,95 +206,6 @@ fn activity_text(waited: &Waited) -> String {
     }
 }
 
-/// The run id and the repository of a check link such as `https://github.com/o/r/actions/runs/123/job/4`.
-/// The repository is written as `gh --repo` takes it: `owner/repo`, or `host/owner/repo` away from github.com.
-fn run_of_link(link: &str) -> Option<(&str, String)> {
-    let rest = link
-        .strip_prefix("https://")
-        .or_else(|| link.strip_prefix("http://"))?;
-    let (place, tail) = rest.split_once("/actions/runs/")?;
-    let id = tail.split(['/', '?', '#']).next()?;
-    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let name_ok = |part: &str| {
-        !part.is_empty()
-            && part
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "._-:".contains(c))
-    };
-    // The host and the owner start the `--repo` value, so they must not look like an option; a repository
-    // may start with a dot (`.github`), but `.` and `..` are paths.
-    let starts_plain = |part: &str| {
-        part.chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphanumeric())
-    };
-    let parts: Vec<&str> = place.split('/').collect();
-    let [host, owner, repo] = parts[..] else {
-        return None;
-    };
-    if !(name_ok(host) && starts_plain(host) && name_ok(owner) && starts_plain(owner))
-        || !name_ok(repo)
-        || matches!(repo, "." | "..")
-    {
-        return None;
-    }
-    let repository = if host == "github.com" {
-        format!("{owner}/{repo}")
-    } else {
-        format!("{host}/{owner}/{repo}")
-    };
-    Some((id, repository))
-}
-
-/// The end of a log: its last lines, cut to a size that fits a screen.
-fn excerpt(log: &str) -> Option<String> {
-    let lines: Vec<&str> = log.lines().collect();
-    let tail = lines[lines.len().saturating_sub(LOG_LINES)..].join("\n");
-    if tail.trim().is_empty() {
-        return None;
-    }
-    if tail.len() <= LOG_BYTES {
-        return Some(tail);
-    }
-    let mut start = tail.len() - LOG_BYTES;
-    while !tail.is_char_boundary(start) {
-        start += 1;
-    }
-    Some(tail[start..].to_string())
-}
-
-/// The failed checks, each run's log fetched once (the first failed check of a run carries it), for at
-/// most `MAX_LOGS` runs. A log that cannot be fetched leaves the name and link only.
-fn failures(tools: &dyn Tools, checks: &[CheckResult]) -> Vec<Failure> {
-    let mut fetched: Vec<&str> = Vec::new();
-    let mut out = Vec::new();
-    for check in checks.iter().filter(|check| check.bucket == "fail") {
-        let mut text = None;
-        if let Some((id, repository)) = run_of_link(&check.link)
-            && !fetched.contains(&id)
-            && fetched.len() < MAX_LOGS
-        {
-            fetched.push(id);
-            text = tools
-                .gh(
-                    None,
-                    &["run", "view", id, "--repo", &repository, "--log-failed"],
-                )
-                .ok()
-                .filter(|output| output.code == Some(0))
-                .and_then(|output| excerpt(&output.stdout));
-        }
-        out.push(Failure {
-            name: check.name.clone(),
-            link: check.link.clone(),
-            excerpt: text,
-        });
-    }
-    out
-}
-
 /// The commit `branch` has on origin, when the worktree's `HEAD` is that commit; `None` otherwise, or when
 /// git cannot tell. It is only a hint for the wait, so a git problem is not reported.
 pub(crate) fn pushed_head(worktree: &std::path::Path, branch: &str) -> Option<String> {
@@ -415,111 +214,6 @@ pub(crate) fn pushed_head(worktree: &std::path::Path, branch: &str) -> Option<St
     };
     let head = rev("HEAD^{commit}")?;
     (rev(&format!("refs/remotes/origin/{branch}^{{commit}}"))? == head).then_some(head)
-}
-
-/// Watches the checks of `pull_request` for its current head commit until they have ended, and returns the
-/// CI outcome. `activity` is told what the run is doing, and `progress` how far the checks are. It only
-/// reads: it never merges, pushes or updates the branch.
-pub(crate) fn wait(
-    pull_request: Option<&str>,
-    options: &Options,
-    tools: &dyn Tools,
-    clock: &dyn Clock,
-    activity: &mut dyn FnMut(&str),
-    progress: &mut dyn FnMut(&str),
-) -> Result<Waited, ToolProblem> {
-    let pull_request = pull_request.ok_or_else(|| {
-        ToolProblem(
-            "The run has no pull request recorded. Open it, record it with `jidoka run update <id> --pr <url>`, and try again."
-                .into(),
-        )
-    })?;
-    if is_azure_pr_url(pull_request) {
-        return azure::wait(pull_request, options, tools, clock, activity, progress);
-    }
-    let mut first = read_view(tools, pull_request)?;
-    // The whole wait, including the grace for a just-pushed head, stays within `--timeout`.
-    let started = clock.elapsed();
-    if let Some(pushed) = &options.pushed_head {
-        while first.state == "OPEN"
-            && first.head != *pushed
-            && clock.elapsed().saturating_sub(started) < HEAD_GRACE.min(options.timeout)
-        {
-            progress("Waiting for the pull request to show the pushed commit");
-            clock.sleep(HEAD_POLL);
-            first = read_view(tools, pull_request)?;
-        }
-    }
-    let result =
-        |outcome: Outcome, view: &View, checks: Vec<CheckResult>, base: BaseState| Waited {
-            outcome,
-            exit_code: outcome.exit_code(),
-            pull_request: pull_request.to_string(),
-            head: first.head.clone(),
-            new_head: (view.head != first.head).then(|| view.head.clone()),
-            base,
-            checks,
-            failures: Vec::new(),
-        };
-    if first.state != "OPEN" {
-        let waited = result(Outcome::NotOpen, &first, Vec::new(), BaseState::Unknown);
-        activity(&activity_text(&waited));
-        return Ok(waited);
-    }
-    activity("Waiting for CI");
-    let waited = loop {
-        let checks = read_checks(tools, pull_request)?;
-        let view = read_view(tools, pull_request)?;
-        if view.state != "OPEN" {
-            break result(Outcome::NotOpen, &view, Vec::new(), BaseState::Unknown);
-        }
-        if view.head != first.head {
-            // The checks belong to another commit; they say nothing about this one.
-            break result(Outcome::HeadChanged, &view, Vec::new(), BaseState::Unknown);
-        }
-        let waited_for = clock.elapsed().saturating_sub(started);
-        if checks.is_empty() {
-            if waited_for >= GRACE.min(options.timeout) {
-                let base = base_state(tools, clock, pull_request, view.merge.clone())?;
-                break result(Outcome::NoCi, &view, checks, base);
-            }
-            progress("No checks reported yet");
-            clock.sleep(POLL);
-            continue;
-        }
-        let pending = checks
-            .iter()
-            .filter(|check| check.bucket == "pending")
-            .count();
-        let any_failed = checks.iter().any(|check| check.bucket == "fail");
-        if pending > 0 && !(options.fail_fast && any_failed) {
-            if waited_for >= options.timeout {
-                let base = base_state(tools, clock, pull_request, view.merge.clone())?;
-                break result(Outcome::Timeout, &view, checks, base);
-            }
-            progress(&format!(
-                "{pending} of {} checks still running",
-                checks.len()
-            ));
-            clock.sleep(POLL);
-            continue;
-        }
-        let outcome = if any_failed {
-            Outcome::Failed
-        } else if checks.iter().any(|check| check.bucket == "cancel") {
-            Outcome::Cancelled
-        } else {
-            Outcome::Passed
-        };
-        let base = base_state(tools, clock, pull_request, view.merge.clone())?;
-        let mut waited = result(outcome, &view, checks, base);
-        if outcome == Outcome::Failed {
-            waited.failures = failures(tools, &waited.checks);
-        }
-        break waited;
-    };
-    activity(&activity_text(&waited));
-    Ok(waited)
 }
 
 /// The outcome and what the agent needs to act on it, as text.
@@ -568,7 +262,3 @@ pub(crate) fn render(waited: &Waited) -> String {
     });
     out
 }
-
-#[cfg(test)]
-#[path = "pr_wait_tests.rs"]
-mod tests;

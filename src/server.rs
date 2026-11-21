@@ -576,11 +576,12 @@ fn advance_run(
     id: &str,
     request: Json<crate::run_gate::AdvanceRequest>,
     store: &State<RunStore>,
+    tool: &State<PrTool>,
     collector: &State<Collector>,
 ) -> Result<&'static str, (HttpStatus, String)> {
     request
         .into_inner()
-        .advance(store, id, &crate::pr_sync::RealGit, &RealTools)
+        .advance(store, id, &crate::pr_sync::RealGit, tool.0.as_ref())
         .map_err(|error| (HttpStatus::BadRequest, error))?;
     collector.after_update(store, id);
     Ok("Run advanced")

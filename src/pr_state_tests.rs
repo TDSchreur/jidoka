@@ -192,6 +192,17 @@ impl PrHost for ReplacingHost<'_> {
     ) -> Result<String, ToolProblem> {
         panic!("the refresh reads only the state")
     }
+
+    fn watch(
+        &self,
+        _url: &str,
+        _options: &crate::pr_wait::Options,
+        _clock: &dyn crate::pr_wait::Clock,
+        _activity: &mut dyn FnMut(&str),
+        _progress: &mut dyn FnMut(&str),
+    ) -> Result<crate::pr_wait::Waited, ToolProblem> {
+        panic!("the refresh reads only the state")
+    }
 }
 
 #[test]

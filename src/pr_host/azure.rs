@@ -7,9 +7,14 @@
 
 use super::{
     Adapter, Head, NewPr, OpenPr, ToolError, ToolOutput, ToolProblem, Tools, encode_segment,
+    watch::Snapshot,
 };
-use crate::pr_state::PrState;
+use crate::{
+    pr_state::PrState,
+    pr_wait::{BaseState, CheckResult},
+};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 pub(super) struct Azure;
 
@@ -28,6 +33,48 @@ impl Adapter for Azure {
             branch: branch.to_string(),
         })
     }
+
+    /// The pull request's state and live head are read before and after its checks; a pull request that is
+    /// no longer active has no checks and keeps its last source commit as its head.
+    fn snapshot(&self, tools: &dyn Tools, url: &str) -> Result<Snapshot, ToolProblem> {
+        let pr = AzurePr::parse(url)?;
+        let before = pr.show(tools)?;
+        if !is_active(&before)? {
+            return ended(&before);
+        }
+        let head = pr.live_head(tools, &before)?;
+        let (checks, applies) = checks_for(&pr, tools, &before, &head, url)?;
+        let after = pr.show(tools)?;
+        if !is_active(&after)? {
+            return ended(&after);
+        }
+        Ok(Snapshot {
+            state: state_of(&after)?,
+            head: pr.live_head(tools, &after)?,
+            checks,
+            applies,
+            base: Some(base_state(&after)),
+        })
+    }
+}
+
+/// Whether the pull request is still active; a pull request in a state Jidoka does not know is an error.
+fn is_active(data: &Value) -> Result<bool, ToolProblem> {
+    Ok(matches!(state_of(data)?, PrState::Open | PrState::Draft))
+}
+
+/// The snapshot of a pull request that is no longer active.
+fn ended(data: &Value) -> Result<Snapshot, ToolProblem> {
+    Ok(Snapshot {
+        state: state_of(data)?,
+        head: data["lastMergeSourceCommit"]["commitId"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
+        checks: Vec::new(),
+        applies: false,
+        base: Some(BaseState::Unknown),
+    })
 }
 
 /// Azure's `active`, `completed` and `abandoned`, with `isDraft` for an active draft.
@@ -189,6 +236,256 @@ pub(super) fn create(
     Ok(repo.pr_url(id))
 }
 
+/// Policies asked for per `az repos pr policy list` call.
+const POLICY_PAGE_SIZE: usize = 100;
+/// Pages of policies read before giving up, so a misbehaving response cannot loop forever.
+const MAX_POLICY_PAGES: usize = 100;
+/// Configuration type ID of the Azure Repos Build policy.
+const BUILD_POLICY_TYPE: &str = "0609b952-1397-4640-95ec-e00a01b2c241";
+
+fn parse_time(value: &str) -> Option<time::OffsetDateTime> {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+}
+
+/// Azure's merge calculation proves conflicts; a successful merge does not prove the branch is up to date.
+fn base_state(data: &Value) -> BaseState {
+    match data["mergeStatus"].as_str() {
+        Some("conflicts") => BaseState::Conflicts,
+        _ => BaseState::Unknown,
+    }
+}
+
+/// The checks of `head` from the policies and statuses of the latest iteration, and whether any of them
+/// applies. While Azure has not caught up with `head`, one pending check says so.
+#[expect(
+    clippy::too_many_lines,
+    reason = "walks iterations, statuses and policy evaluations into check results in one go"
+)]
+fn checks_for(
+    pr: &AzurePr,
+    tools: &dyn Tools,
+    data: &Value,
+    head: &str,
+    url: &str,
+) -> Result<(Vec<CheckResult>, bool), ToolProblem> {
+    let repo = required(&data["repository"]["id"], "repository ID")?;
+    let iterations = pr.invoke(tools, "pullRequestIterations", repo, None)?;
+    let latest = iterations
+        .iter()
+        .max_by_key(|item| item["id"].as_u64().unwrap_or(0));
+    let mut checks = Vec::new();
+    let current = latest
+        .is_some_and(|item| item["sourceRefCommit"]["commitId"].as_str() == Some(head))
+        && data["lastMergeSourceCommit"]["commitId"].as_str() == Some(head);
+    if !current {
+        checks.push(CheckResult {
+            name: "Azure is updating the current PR iteration".into(),
+            bucket: "pending".into(),
+            link: url.into(),
+        });
+        return Ok((checks, true));
+    }
+    let iteration_time = latest
+        .and_then(|item| item["createdDate"].as_str())
+        .and_then(parse_time);
+    let iteration = latest
+        .and_then(|item| item["id"].as_u64())
+        .filter(|id| *id > 0)
+        .ok_or_else(|| ToolProblem("Azure PR iteration has no valid ID.".into()))?;
+    let mut policies = Vec::new();
+    let top = POLICY_PAGE_SIZE.to_string();
+    for page in 0..MAX_POLICY_PAGES {
+        let skip = (page * POLICY_PAGE_SIZE).to_string();
+        let response = az_json(
+            tools,
+            &[
+                "repos",
+                "pr",
+                "policy",
+                "list",
+                "--id",
+                &pr.id,
+                "--organization",
+                &pr.org,
+                "--top",
+                &top,
+                "--skip",
+                &skip,
+                "--output",
+                "json",
+                "--detect",
+                "false",
+            ],
+        )?;
+        let items = response
+            .as_array()
+            .ok_or_else(|| ToolProblem("Azure policy response is not an array.".into()))?;
+        policies.extend(items.iter().cloned());
+        if items.len() < POLICY_PAGE_SIZE {
+            break;
+        }
+        if page + 1 == MAX_POLICY_PAGES {
+            return Err(ToolProblem(
+                "Azure returned too many policies to evaluate safely.".into(),
+            ));
+        }
+    }
+    let mut applicable = false;
+    for policy in &policies {
+        let enabled = policy["configuration"]["isEnabled"]
+            .as_bool()
+            .ok_or_else(|| {
+                ToolProblem("Azure policy does not say whether it is enabled.".into())
+            })?;
+        if !enabled {
+            continue;
+        }
+        let required_policy = policy["configuration"]["isBlocking"]
+            .as_bool()
+            .ok_or_else(|| {
+                ToolProblem("Azure policy does not say whether it is required.".into())
+            })?;
+        let state = required(&policy["status"], "policy state")?;
+        if required_policy && state != "notApplicable" {
+            applicable = true;
+        }
+        let build_id = policy["context"]["buildId"].as_u64();
+        let build_policy = build_id.is_some()
+            || policy["configuration"]["type"]["id"].as_str() == Some(BUILD_POLICY_TYPE)
+            || policy["configuration"]["type"]["displayName"].as_str() == Some("Build");
+        // Azure re-evaluates other policies itself; only a build must have started for the current iteration.
+        let evaluation_time = policy["startedDate"].as_str().and_then(parse_time);
+        let fresh = !build_policy
+            || matches!((iteration_time, evaluation_time), (Some(iteration), Some(evaluation)) if evaluation >= iteration);
+        let bucket = if !required_policy || state == "notApplicable" {
+            "skipping"
+        } else if !fresh
+            || policy["context"]["isExpired"].as_bool() == Some(true)
+            || policy["context"]["buildIsNotCurrent"].as_bool() == Some(true)
+        {
+            "pending"
+        } else {
+            match (state, build_id) {
+                ("approved", _) => "pass",
+                ("rejected", Some(id)) => {
+                    let id = id.to_string();
+                    // The lookup only tells a cancelled build from a failed one; it never undoes the rejection.
+                    let build = az_json(
+                        tools,
+                        &[
+                            "pipelines",
+                            "runs",
+                            "show",
+                            "--id",
+                            &id,
+                            "--organization",
+                            &pr.org,
+                            "--project",
+                            &pr.project,
+                            "--output",
+                            "json",
+                            "--detect",
+                            "false",
+                        ],
+                    );
+                    match build {
+                        Ok(build)
+                            if build["status"].as_str() == Some("completed")
+                                && matches!(
+                                    build["result"].as_str(),
+                                    Some("canceled" | "cancelled")
+                                ) =>
+                        {
+                            "cancel"
+                        }
+                        _ => "fail",
+                    }
+                }
+                ("rejected" | "broken", _) => "fail",
+                _ => "pending",
+            }
+        };
+        let name = policy["configuration"]["type"]["displayName"]
+            .as_str()
+            .unwrap_or("Azure policy");
+        let link = build_id
+            .map(|id| {
+                format!(
+                    "{}/{}/_build/results?buildId={id}",
+                    pr.org,
+                    encode_segment(&pr.project)
+                )
+            })
+            .unwrap_or_else(|| url.into());
+        checks.push(CheckResult {
+            name: if required_policy {
+                name.into()
+            } else {
+                format!("{name} (optional: {state})")
+            },
+            bucket: bucket.into(),
+            link,
+        });
+    }
+    let mut statuses = pr.invoke(tools, "pullRequestStatuses", repo, None)?;
+    statuses.extend(pr.invoke(tools, "pullRequestIterationStatuses", repo, Some(iteration))?);
+    let mut latest_status: BTreeMap<(String, String), Value> = BTreeMap::new();
+    for status in statuses {
+        if status["iterationId"]
+            .as_u64()
+            .is_some_and(|id| id != iteration)
+        {
+            continue;
+        }
+        let name = required(&status["context"]["name"], "status name")?.to_string();
+        let genre = status["context"]["genre"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let id = status["id"]
+            .as_u64()
+            .filter(|id| *id > 0)
+            .ok_or_else(|| ToolProblem("Azure status has no valid ID.".into()))?;
+        let key = (genre, name);
+        if latest_status
+            .get(&key)
+            .and_then(|item| item["id"].as_u64())
+            .unwrap_or(0)
+            < id
+        {
+            latest_status.insert(key, status);
+        }
+    }
+    for ((genre, name), status) in latest_status {
+        let state = required(&status["state"], "status state")?;
+        let scoped = status["iterationId"].as_u64() == Some(iteration);
+        if !scoped || state != "notApplicable" {
+            applicable = true;
+        }
+        let bucket = if !scoped {
+            "pending"
+        } else {
+            match state {
+                "failed" | "error" => "fail",
+                "canceled" | "cancelled" => "cancel",
+                "notApplicable" => "skipping",
+                "succeeded" => "pass",
+                _ => "pending",
+            }
+        };
+        checks.push(CheckResult {
+            name: if genre.is_empty() {
+                name
+            } else {
+                format!("{genre}: {name}")
+            },
+            bucket: bucket.into(),
+            link: url.into(),
+        });
+    }
+    Ok((checks, applicable))
+}
+
 /// The branch name of a source ref such as `refs/heads/feature/x`.
 fn branch_name(reference: &str) -> Result<&str, ToolProblem> {
     reference
@@ -198,17 +495,17 @@ fn branch_name(reference: &str) -> Result<&str, ToolProblem> {
 }
 
 /// An Azure Repos pull request, as its URL names it.
-pub(crate) struct AzurePr {
+struct AzurePr {
     /// The organization URL, `https://dev.azure.com/<organization>`.
-    pub(crate) org: String,
-    pub(crate) project: String,
+    org: String,
+    project: String,
     repository: String,
-    pub(crate) id: String,
+    id: String,
 }
 
 impl AzurePr {
     /// Reads the canonical `https://dev.azure.com/<organization>/<project>/_git/<repository>/pullrequest/<id>` URL.
-    pub(crate) fn parse(url: &str) -> Result<Self, ToolProblem> {
+    fn parse(url: &str) -> Result<Self, ToolProblem> {
         let Some(path) = url.strip_prefix("https://dev.azure.com/") else {
             return Err(ToolProblem(
                 "Legacy visualstudio.com pull request URLs are not supported; record the canonical https://dev.azure.com/<organization>/<project>/_git/<repository>/pullrequest/<id> URL with `jidoka run update <run-id> --pr <url>`.".into(),
@@ -267,7 +564,7 @@ impl AzurePr {
         Ok(data)
     }
     /// The pull request, refused when it comes from a fork.
-    pub(crate) fn show(&self, tools: &dyn Tools) -> Result<Value, ToolProblem> {
+    fn show(&self, tools: &dyn Tools) -> Result<Value, ToolProblem> {
         let data = self.fetch(tools)?;
         if !data["forkSource"].is_null() {
             return Err(ToolProblem(
@@ -277,7 +574,7 @@ impl AzurePr {
         Ok(data)
     }
     /// The commit the source branch has now, read from the live branch ref.
-    pub(crate) fn live_head(&self, tools: &dyn Tools, data: &Value) -> Result<String, ToolProblem> {
+    fn live_head(&self, tools: &dyn Tools, data: &Value) -> Result<String, ToolProblem> {
         let reference = required(&data["sourceRefName"], "source branch")?;
         let branch = branch_name(reference)?;
         let repo_id = required(&data["repository"]["id"], "repository ID")?;
@@ -311,7 +608,7 @@ impl AzurePr {
         Ok(required(&found["objectId"], "source head")?.to_string())
     }
     /// The `value` list of a pull request resource read with `az devops invoke`.
-    pub(crate) fn invoke(
+    fn invoke(
         &self,
         tools: &dyn Tools,
         resource: &str,
@@ -476,7 +773,7 @@ fn decode_segment(part: &str) -> Option<String> {
 /// # Errors
 ///
 /// Returns a problem naming `label` when the field is missing or not safe.
-pub(crate) fn required<'a>(value: &'a Value, label: &str) -> Result<&'a str, ToolProblem> {
+fn required<'a>(value: &'a Value, label: &str) -> Result<&'a str, ToolProblem> {
     value
         .as_str()
         .filter(|s| !s.is_empty() && !s.starts_with('-') && !s.chars().any(char::is_control))
@@ -488,7 +785,7 @@ pub(crate) fn required<'a>(value: &'a Value, label: &str) -> Result<&'a str, Too
 /// # Errors
 ///
 /// Returns a problem that says what to do when `az` cannot be started, fails or prints no JSON.
-pub(crate) fn az_json(tools: &dyn Tools, args: &[&str]) -> Result<Value, ToolProblem> {
+fn az_json(tools: &dyn Tools, args: &[&str]) -> Result<Value, ToolProblem> {
     az_parsed(args, tools.az(args))
 }
 

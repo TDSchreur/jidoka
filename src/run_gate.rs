@@ -1,6 +1,6 @@
 //! Gate evaluation, gate recording and the live CI check that decide how a run may leave a Stage.
 use crate::{
-    pr_host::{Hosts, PrHost, Tools},
+    pr_host::PrHost,
     pr_state,
     pr_sync::Git,
     pr_wait,
@@ -481,16 +481,7 @@ impl Gate {
 /// # Errors
 ///
 /// Returns a message naming each failing gate and its remedy, or why CI has not passed.
-pub(crate) fn accepted_exit(run: &Run, git: &dyn Git, tool: &dyn Tools) -> Result<Exit, String> {
-    accepted_exit_with_clock(run, git, tool, &pr_wait::RealClock(Instant::now()))
-}
-
-fn accepted_exit_with_clock(
-    run: &Run,
-    git: &dyn Git,
-    tool: &dyn Tools,
-    clock: &dyn pr_wait::Clock,
-) -> Result<Exit, String> {
+pub(crate) fn accepted_exit(run: &Run, git: &dyn Git, host: &dyn PrHost) -> Result<Exit, String> {
     let mode = run.mode.ok_or("Record the run's mode first")?;
     let transition = stages::next(mode, run.stage, run.status)?;
     let candidate = candidate(run, transition.gates, git);
@@ -524,7 +515,7 @@ fn accepted_exit_with_clock(
     }
 
     if transition.to == Destination::Done {
-        let ci = ci_passed(run, git, tool, clock).map_err(|reason| {
+        let ci = ci_passed(run, git, host).map_err(|reason| {
             format!(
                 "Cannot advance:\n{}",
                 gate_failure(run, Gate::CiPassed, &reason)
@@ -587,7 +578,7 @@ impl AdvanceRequest {
         store: &RunStore,
         id: &str,
         git: &dyn Git,
-        host: &dyn Tools,
+        host: &dyn PrHost,
     ) -> Result<(), String> {
         self.validate()?;
         let forced = self.forced_reason()?.map(str::to_owned);
@@ -672,39 +663,27 @@ fn require(condition: bool, reason: &str) -> Result<(), String> {
     }
 }
 
-fn ci_passed(
-    run: &Run,
-    git: &dyn Git,
-    tool: &dyn Tools,
-    clock: &dyn pr_wait::Clock,
-) -> Result<CiEvidence, String> {
+fn ci_passed(run: &Run, git: &dyn Git, host: &dyn PrHost) -> Result<CiEvidence, String> {
     let url = run.pr.as_deref().ok_or("No pull request is recorded")?;
     let checked_at = updated_now().map_err(|error| format!("Could not read the time: {error}"))?;
-    let state = Hosts::new(tool)
-        .state(url)
-        .map_err(|error| format!("Could not read pull request state: {}", error.0))?;
-    require(
-        state == pr_state::PrState::Open,
-        &format!(
-            "Pull request is {}; if it merged, run `jidoka run sync {}` to reconcile the run",
-            state.label(),
-            run.id
-        ),
-    )?;
     let commit = run.worktree_head(git)?;
     let options = pr_wait::Options {
         timeout: CI_TIMEOUT,
         pushed_head: None,
         ..Default::default()
     };
-    let result = pr_wait::wait(Some(url), &options, tool, clock, &mut |_| {}, &mut |_| {})
+    let clock = pr_wait::RealClock(Instant::now());
+    let result = host
+        .watch(url, &options, &clock, &mut |_| {}, &mut |_| {})
         .map_err(|error| format!("Could not check CI: {}", error.0))?;
-    if result.outcome == pr_wait::Outcome::NotOpen {
-        return Err(format!(
-            "Pull request closed or merged while checking CI; run `jidoka run sync {}` to reconcile the run",
+    require(
+        result.state == pr_state::PrState::Open,
+        &format!(
+            "Pull request is {}; if it merged, run `jidoka run sync {}` to reconcile the run",
+            result.state.label(),
             run.id
-        ));
-    }
+        ),
+    )?;
     require(
         result.head == commit,
         "The pull request head does not match the worktree HEAD",
@@ -723,7 +702,7 @@ fn ci_passed(
         outcome,
         pr_status: pr_state::PrStatus {
             url: url.into(),
-            state,
+            state: result.state,
             reason: None,
             checked_at,
         },
@@ -734,7 +713,8 @@ fn ci_passed(
 mod tests {
     use super::*;
     use crate::{
-        pr_host::{ToolError, ToolOutput},
+        pr_host::{FakeHost, Head},
+        pr_wait::Outcome,
         run::{Completion, ExitOutcome, Mode, Ticket},
     };
     use std::cell::RefCell;
@@ -747,18 +727,8 @@ mod tests {
     }
 
     /// Leaves the Stage of a run value once its exit gates pass, as the store does with the exit.
-    fn advance_on(run: &mut Run, git: &dyn Git, tool: &dyn Tools) -> Result<(), String> {
+    fn advance_on(run: &mut Run, git: &dyn Git, tool: &dyn PrHost) -> Result<(), String> {
         let exit = accepted_exit(run, git, tool)?;
-        run.leave(exit, 1)
-    }
-
-    fn advance_with_clock(
-        run: &mut Run,
-        git: &dyn Git,
-        tool: &dyn Tools,
-        clock: &dyn pr_wait::Clock,
-    ) -> Result<(), String> {
-        let exit = accepted_exit_with_clock(run, git, tool, clock)?;
         run.leave(exit, 1)
     }
 
@@ -766,7 +736,7 @@ mod tests {
     fn advance_stored(
         store: &crate::run::RunStore,
         git: &dyn Git,
-        tool: &dyn Tools,
+        tool: &dyn PrHost,
     ) -> Result<(), String> {
         store.advance("1", AdvanceMetadata::default(), |run| {
             accepted_exit(run, git, tool)
@@ -796,30 +766,6 @@ mod tests {
             })
         }
     }
-    struct FakeGh {
-        state: &'static str,
-        bucket: &'static str,
-        head: &'static str,
-    }
-    impl Tools for FakeGh {
-        fn az(&self, _: &[&str]) -> Result<ToolOutput, ToolError> {
-            panic!("GitHub must not use az")
-        }
-        fn gh(&self, _: Option<&Path>, args: &[&str]) -> Result<ToolOutput, ToolError> {
-            let value = if args.contains(&"checks") {
-                serde_json::json!([{"name":"test", "bucket":self.bucket, "state":"SUCCESS", "link":""}])
-            } else if args.contains(&"state,isDraft") {
-                serde_json::json!({"state":self.state,"isDraft":false})
-            } else {
-                serde_json::json!({"state":self.state,"headRefOid":self.head,"mergeStateStatus":"CLEAN","baseRefName":"main"})
-            };
-            Ok(ToolOutput {
-                code: Some(0),
-                stdout: value.to_string(),
-                stderr: String::new(),
-            })
-        }
-    }
     fn run(stage: Stage) -> Run {
         let mut run: Run = serde_json::from_value(serde_json::json!({"gates":[],"id":"1","title":"t","project":"/p","stage":stage,"status":"running"})).unwrap();
         run.mode = Some(Mode::Fast);
@@ -838,12 +784,18 @@ mod tests {
             check: (gate == Gate::ChecksRecorded).then(|| "code-review".to_owned()),
         }
     }
-    fn host() -> FakeGh {
-        FakeGh {
-            state: "OPEN",
-            bucket: "pass",
-            head: "abc1234",
-        }
+    /// An open pull request at commit `abc1234` whose CI passes.
+    fn host() -> FakeHost {
+        FakeHost::states(&[pr_state::PrState::Open])
+    }
+
+    /// An open pull request at `commit` whose CI passes.
+    fn host_at(state: pr_state::PrState, commit: &str) -> FakeHost {
+        FakeHost::new(vec![Ok(Head {
+            state,
+            commit: commit.into(),
+            branch: "feature".into(),
+        })])
     }
 
     #[test]
@@ -1026,10 +978,7 @@ mod tests {
                 .unwrap();
         };
         let gate = |result| store.record_gate("1", |run| record(run, result, &git));
-        let gh = FakeGh {
-            head: "def5678",
-            ..host()
-        };
+        let gh = host_at(pr_state::PrState::Open, "def5678");
         let advance = || advance_stored(&store, &git, &gh);
         update(&[
             "--ticket",
@@ -1259,10 +1208,7 @@ mod tests {
         let error = advance_on(
             &mut run,
             &git,
-            &FakeGh {
-                state: "MERGED",
-                ..host()
-            },
+            &FakeHost::states(&[pr_state::PrState::Merged]),
         )
         .unwrap_err();
         assert!(error.contains("jidoka run sync 1"));
@@ -1271,27 +1217,10 @@ mod tests {
 
     #[test]
     fn merge_during_ci_check_reports_sync_even_if_the_head_changed() {
-        struct MergedDuringWait;
-        impl Tools for MergedDuringWait {
-            fn az(&self, _: &[&str]) -> Result<ToolOutput, ToolError> {
-                panic!("GitHub must not use az")
-            }
-            fn gh(&self, _: Option<&Path>, args: &[&str]) -> Result<ToolOutput, ToolError> {
-                let value = if args.contains(&"state,isDraft") {
-                    serde_json::json!({"state":"OPEN","isDraft":false})
-                } else {
-                    serde_json::json!({"state":"MERGED","headRefOid":"new-head","mergeStateStatus":"CLEAN","baseRefName":"main"})
-                };
-                Ok(ToolOutput {
-                    code: Some(0),
-                    stdout: value.to_string(),
-                    stderr: String::new(),
-                })
-            }
-        }
         let git = FakeGit(RefCell::new("abc1234".into()));
         let mut run = run(Stage::Finish);
-        let error = advance_on(&mut run, &git, &MergedDuringWait).unwrap_err();
+        let merged = host_at(pr_state::PrState::Merged, "new-head");
+        let error = advance_on(&mut run, &git, &merged).unwrap_err();
         assert!(error.contains("jidoka run sync 1"), "{error}");
         assert_eq!(run.status, RunStatus::Running);
     }
@@ -1300,18 +1229,9 @@ mod tests {
     fn finish_checks_pr_state_ci_and_head() {
         let git = FakeGit(RefCell::new("abc1234".into()));
         for host in [
-            FakeGh {
-                state: "CLOSED",
-                ..host()
-            },
-            FakeGh {
-                bucket: "fail",
-                ..host()
-            },
-            FakeGh {
-                head: "def5678",
-                ..host()
-            },
+            FakeHost::states(&[pr_state::PrState::Closed]),
+            host().with_ci(Outcome::Failed),
+            host_at(pr_state::PrState::Open, "def5678"),
         ] {
             assert!(advance_on(&mut run(Stage::Finish), &git, &host).is_err());
         }
@@ -1365,42 +1285,6 @@ mod tests {
             assert_eq!(run.stage, Stage::Finish);
         }
     }
-    #[derive(Default)]
-    struct Clock(std::cell::Cell<Duration>);
-    impl pr_wait::Clock for Clock {
-        fn elapsed(&self) -> Duration {
-            self.0.get()
-        }
-        fn sleep(&self, duration: Duration) {
-            self.0.set(self.0.get() + duration);
-        }
-    }
-
-    struct AppearingChecks {
-        answers: RefCell<std::collections::VecDeque<&'static str>>,
-    }
-    impl Tools for AppearingChecks {
-        fn az(&self, _: &[&str]) -> Result<ToolOutput, ToolError> {
-            panic!("GitHub must not use az")
-        }
-        fn gh(&self, _: Option<&Path>, args: &[&str]) -> Result<ToolOutput, ToolError> {
-            if args.contains(&"checks") {
-                let mut answers = self.answers.borrow_mut();
-                let answer = if answers.len() > 1 {
-                    answers.pop_front().unwrap()
-                } else {
-                    *answers.front().unwrap()
-                };
-                return Ok(ToolOutput {
-                    code: Some(0),
-                    stdout: answer.into(),
-                    stderr: String::new(),
-                });
-            }
-            host().gh(None, args)
-        }
-    }
-
     #[test]
     fn finish_requires_a_summary_even_when_forced() {
         let git = FakeGit(RefCell::new("abc1234".into()));
@@ -1471,53 +1355,24 @@ mod tests {
     }
 
     #[test]
-    fn no_ci_waits_for_the_grace_period_and_new_failures_block_advance() {
+    fn finishing_without_ci_records_no_ci() {
         let git = FakeGit(RefCell::new("abc1234".into()));
-        let clock = Clock::default();
-        let no_checks = AppearingChecks {
-            answers: RefCell::new(["[]"].into()),
-        };
-        let mut no_ci_run = run(Stage::Finish);
-        advance_with_clock(&mut no_ci_run, &git, &no_checks, &clock).unwrap();
-        assert!(clock.0.get() >= Duration::from_secs(90));
-        assert_eq!(no_ci_run.status, RunStatus::Done);
+        let mut run = run(Stage::Finish);
+        advance_on(&mut run, &git, &host().with_ci(Outcome::NoCi)).unwrap();
+        assert_eq!(run.status, RunStatus::Done);
         assert_eq!(
-            no_ci_run.completion,
+            run.completion,
             Some(Completion::Ci {
                 head: "abc1234".into(),
                 outcome: CiOutcome::NoCi
             })
         );
-
-        let clock = Clock::default();
-        let late_failure = AppearingChecks {
-            answers: RefCell::new(
-                [
-                    "[]",
-                    r#"[{"name":"build","bucket":"fail","state":"FAILURE","link":""}]"#,
-                ]
-                .into(),
-            ),
-        };
-        let mut run = run(Stage::Finish);
-        assert!(advance_with_clock(&mut run, &git, &late_failure, &clock).is_err());
-        assert_eq!(run.status, RunStatus::Running);
-        assert!(clock.0.get() < Duration::from_secs(90));
     }
 
     struct BrokenGit;
     impl Git for BrokenGit {
         fn git(&self, _: &Path, _: &[&str]) -> Result<String, String> {
             Err("repository unavailable".into())
-        }
-    }
-    struct BrokenHost;
-    impl Tools for BrokenHost {
-        fn az(&self, _: &[&str]) -> Result<ToolOutput, ToolError> {
-            Err(ToolError::Other("host unavailable".into()))
-        }
-        fn gh(&self, _: Option<&Path>, _: &[&str]) -> Result<ToolOutput, ToolError> {
-            Err(ToolError::Other("host unavailable".into()))
         }
     }
     #[test]
@@ -1530,50 +1385,14 @@ mod tests {
             error.contains("repository unavailable") && error.contains("jidoka run gate"),
             "{error}"
         );
-        let error = advance_on(&mut run(Stage::Finish), &git, &BrokenHost).unwrap_err();
+        let broken = FakeHost::new(vec![Err("host unavailable".into())]);
+        let error = advance_on(&mut run(Stage::Finish), &git, &broken).unwrap_err();
         assert!(
             error.contains("host unavailable") && error.contains("jidoka pr wait"),
             "{error}"
         );
     }
 
-    struct Azure;
-    impl Tools for Azure {
-        fn gh(&self, _: Option<&Path>, _: &[&str]) -> Result<ToolOutput, ToolError> {
-            panic!("Azure must not use gh")
-        }
-        fn az(&self, args: &[&str]) -> Result<ToolOutput, ToolError> {
-            let value = match args {
-                ["repos", "pr", "show", ..] => {
-                    serde_json::json!({"pullRequestId":535,"status":"active","isDraft":false,"sourceRefName":"refs/heads/feature","lastMergeSourceCommit":{"commitId":"abc1234"},"repository":{"id":"repo","name":"Repo","project":{"name":"Project"}}})
-                }
-                ["repos", "ref", "list", ..] => {
-                    serde_json::json!([{"name":"refs/heads/feature","objectId":"abc1234"}])
-                }
-                ["repos", "pr", "policy", "list", ..] => {
-                    serde_json::json!([{"status":"approved","startedDate":"2026-01-01T00:00:01Z","configuration":{"isEnabled":true,"isBlocking":true,"type":{"displayName":"Build"}}}])
-                }
-                ["devops", "invoke", ..] if args.contains(&"pullRequestIterations") => {
-                    serde_json::json!({"value":[{"id":1,"createdDate":"2026-01-01T00:00:00Z","sourceRefCommit":{"commitId":"abc1234"}}]})
-                }
-                ["devops", "invoke", ..] => serde_json::json!({"value":[]}),
-                _ => panic!("unexpected Azure command {args:?}"),
-            };
-            Ok(ToolOutput {
-                code: Some(0),
-                stdout: value.to_string(),
-                stderr: String::new(),
-            })
-        }
-    }
-    #[test]
-    fn azure_ci_can_pass() {
-        let git = FakeGit(RefCell::new("abc1234".into()));
-        let mut run = run(Stage::Finish);
-        run.pr = Some("https://dev.azure.com/org/Project/_git/Repo/pullrequest/535".into());
-        advance_on(&mut run, &git, &Azure).unwrap();
-        assert_eq!(run.status, RunStatus::Done);
-    }
     #[test]
     fn check_requires_recorded_passing_results() {
         let git = FakeGit(RefCell::new("abc1234".into()));

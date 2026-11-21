@@ -1,8 +1,23 @@
 //! The GitHub adapter: reads pull requests on GitHub and GitHub Enterprise with `gh`.
 
-use super::{Adapter, Head, NewPr, OpenPr, ToolError, ToolOutput, ToolProblem, Tools, unsupported};
-use crate::{inspect::shown, pr_state::PrState};
+use super::{
+    Adapter, Head, NewPr, OpenPr, ToolError, ToolOutput, ToolProblem, Tools, unsupported,
+    watch::Snapshot,
+};
+use crate::{
+    inspect::shown,
+    pr_state::PrState,
+    pr_wait::{BaseState, CheckResult, Failure},
+};
 use std::path::Path;
+
+/// The fields of a pull request a watch reads.
+const WATCH_FIELDS: &str = "state,isDraft,headRefOid,mergeStateStatus";
+/// The most runs whose failed log is fetched.
+const MAX_LOGS: usize = 3;
+/// The most lines and bytes kept of a failed log: its end is where the cause is.
+const LOG_LINES: usize = 40;
+const LOG_BYTES: usize = 4096;
 
 pub(super) struct GitHub;
 
@@ -20,6 +35,157 @@ impl Adapter for GitHub {
             branch: text("headRefName"),
         })
     }
+
+    fn snapshot(&self, tools: &dyn Tools, url: &str) -> Result<Snapshot, ToolProblem> {
+        let before = view(tools, url, WATCH_FIELDS)?;
+        let state = state_of(&before)?;
+        let (checks, after) = if matches!(state, PrState::Open | PrState::Draft) {
+            // The pull request is read again after its checks, so the checks belong to the head it reports.
+            (read_checks(tools, url)?, view(tools, url, WATCH_FIELDS)?)
+        } else {
+            (Vec::new(), before)
+        };
+        let base = match after["mergeStateStatus"].as_str().unwrap_or("") {
+            "BEHIND" => Some(BaseState::Behind),
+            "DIRTY" => Some(BaseState::Conflicts),
+            // GitHub has not worked it out yet.
+            "UNKNOWN" | "" => None,
+            _ => Some(BaseState::UpToDate),
+        };
+        Ok(Snapshot {
+            state: state_of(&after)?,
+            head: after["headRefOid"].as_str().unwrap_or("").to_string(),
+            applies: !checks.is_empty(),
+            checks,
+            base,
+        })
+    }
+
+    /// The failed checks, each Actions run's log fetched once (the first failed check of a run carries it),
+    /// for at most `MAX_LOGS` runs. A log that cannot be fetched leaves the name and link only.
+    fn failures(&self, tools: &dyn Tools, checks: &[CheckResult]) -> Vec<Failure> {
+        let mut fetched: Vec<&str> = Vec::new();
+        let mut out = Vec::new();
+        for check in checks.iter().filter(|check| check.bucket == "fail") {
+            let mut text = None;
+            if let Some((id, repository)) = run_of_link(&check.link)
+                && !fetched.contains(&id)
+                && fetched.len() < MAX_LOGS
+            {
+                fetched.push(id);
+                text = tools
+                    .gh(
+                        None,
+                        &["run", "view", id, "--repo", &repository, "--log-failed"],
+                    )
+                    .ok()
+                    .filter(|output| output.code == Some(0))
+                    .and_then(|output| excerpt(&output.stdout));
+            }
+            out.push(Failure {
+                name: check.name.clone(),
+                link: check.link.clone(),
+                excerpt: text,
+            });
+        }
+        out
+    }
+}
+
+/// The checks of the pull request at `url`, from `gh pr checks`.
+fn read_checks(tools: &dyn Tools, url: &str) -> Result<Vec<CheckResult>, ToolProblem> {
+    let pull_request = pull_request(url).ok_or_else(unsupported)?;
+    let args = [
+        "pr",
+        "checks",
+        pull_request.as_str(),
+        "--json",
+        "name,bucket,state,link",
+    ];
+    let output = run_gh(tools, None, &args)?;
+    // `gh pr checks` exits non-zero while checks are pending or failed; the JSON is what counts.
+    let stdout = output.stdout.trim();
+    if !stdout.starts_with('[') {
+        if output.stderr.to_lowercase().contains("no checks reported") {
+            return Ok(Vec::new());
+        }
+        return Err(problem("pr checks", &output));
+    }
+    let items: Vec<serde_json::Value> = serde_json::from_str(stdout).map_err(|error| {
+        ToolProblem(format!(
+            "`gh pr checks` gave output that is not JSON: {error}"
+        ))
+    })?;
+    Ok(items
+        .iter()
+        .map(|item| {
+            let text = |name: &str| item[name].as_str().unwrap_or("").to_string();
+            CheckResult {
+                name: text("name"),
+                bucket: text("bucket"),
+                link: text("link"),
+            }
+        })
+        .collect())
+}
+
+/// The run id and the repository of a check link such as `https://github.com/o/r/actions/runs/123/job/4`.
+/// The repository is written as `gh --repo` takes it: `owner/repo`, or `host/owner/repo` away from github.com.
+fn run_of_link(link: &str) -> Option<(&str, String)> {
+    let rest = link
+        .strip_prefix("https://")
+        .or_else(|| link.strip_prefix("http://"))?;
+    let (place, tail) = rest.split_once("/actions/runs/")?;
+    let id = tail.split(['/', '?', '#']).next()?;
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let name_ok = |part: &str| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-:".contains(c))
+    };
+    // The host and the owner start the `--repo` value, so they must not look like an option; a repository
+    // may start with a dot (`.github`), but `.` and `..` are paths.
+    let starts_plain = |part: &str| {
+        part.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+    };
+    let parts: Vec<&str> = place.split('/').collect();
+    let [host, owner, repo] = parts[..] else {
+        return None;
+    };
+    if !(name_ok(host) && starts_plain(host) && name_ok(owner) && starts_plain(owner))
+        || !name_ok(repo)
+        || matches!(repo, "." | "..")
+    {
+        return None;
+    }
+    let repository = if host == "github.com" {
+        format!("{owner}/{repo}")
+    } else {
+        format!("{host}/{owner}/{repo}")
+    };
+    Some((id, repository))
+}
+
+/// The end of a log: its last lines, cut to a size that fits a screen.
+fn excerpt(log: &str) -> Option<String> {
+    let lines: Vec<&str> = log.lines().collect();
+    let tail = lines[lines.len().saturating_sub(LOG_LINES)..].join("\n");
+    if tail.trim().is_empty() {
+        return None;
+    }
+    if tail.len() <= LOG_BYTES {
+        return Some(tail);
+    }
+    let mut start = tail.len() - LOG_BYTES;
+    while !tail.is_char_boundary(start) {
+        start += 1;
+    }
+    Some(tail[start..].to_string())
 }
 
 fn state_of(data: &serde_json::Value) -> Result<PrState, ToolProblem> {
@@ -157,11 +323,7 @@ pub(super) fn pull_request(url: &str) -> Option<String> {
 /// # Errors
 ///
 /// Returns a problem that says what to do when `gh` cannot be started.
-pub(crate) fn run_gh(
-    tools: &dyn Tools,
-    dir: Option<&Path>,
-    args: &[&str],
-) -> Result<ToolOutput, ToolProblem> {
+fn run_gh(tools: &dyn Tools, dir: Option<&Path>, args: &[&str]) -> Result<ToolOutput, ToolProblem> {
     started(tools.gh(dir, args))
 }
 
@@ -184,7 +346,7 @@ fn first_line(text: &str) -> &str {
 }
 
 /// A failed `gh <what>` call as a message that says what to do.
-pub(crate) fn problem(what: &str, output: &ToolOutput) -> ToolProblem {
+fn problem(what: &str, output: &ToolOutput) -> ToolProblem {
     let stderr = output.stderr.to_lowercase();
     if output.code == Some(4) || stderr.contains("gh auth login") {
         return ToolProblem(
