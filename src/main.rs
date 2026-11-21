@@ -1005,6 +1005,10 @@ mod test_support {
     }
 
     /// Creates a run titled `title` in `store`, for a worktree of `/work/repo`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the store cannot create the run, for example because its data folder is not writable.
     pub(crate) fn new_run(store: &RunStore, title: &str) -> Run {
         store
             .create(NewRun {

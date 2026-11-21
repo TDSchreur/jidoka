@@ -870,7 +870,12 @@ mod tests {
         assert_eq!(run.usage, Some(usage));
         // The skill report observed during the check is kept, ahead of the forced advance's report.
         let observed = &run.run_reports[run.run_reports.len() - 2];
-        assert!(matches!(observed.kind, ReportKind::Skill) && observed.at == 7);
+        assert!(
+            matches!(observed.kind, ReportKind::Skill) && observed.at == 7,
+            "the skill report observed during the check should precede the forced advance's report, got {:?} at {}",
+            observed.kind,
+            observed.at
+        );
         assert_eq!(
             run.run_reports.last().unwrap().text,
             "Forced advance from define: Spec agreed by hand"

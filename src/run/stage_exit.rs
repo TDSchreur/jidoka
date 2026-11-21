@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     pr_state::PrStatus,
-    stages::{self, Destination, Gate},
+    stages::{self, Destination, Gate, Transition},
 };
 use serde::{Deserialize, Serialize};
 
@@ -229,7 +229,7 @@ impl Run {
             Exit::Override { reason } => {
                 let reason = reason.trim().to_owned();
                 let transition = stages::next(mode?, stage, self.status)?;
-                let gates = self.force(&reason, transition.gates, transition.to, at)?;
+                let gates = self.force(&reason, transition, at)?;
                 Leaving {
                     to: transition.to,
                     outcome: ExitOutcome::Override { reason },
@@ -248,7 +248,8 @@ impl Run {
                 classification,
                 decision,
             } => {
-                let to = stages::rework(mode?, stage, self.status)?.to;
+                let mode = mode.map_err(|_| "Record the run's mode before starting a Rework")?;
+                let to = stages::rework(mode, stage, self.status)?.to;
                 let number = self.start_rework(&finding, classification, decision, at)?;
                 Leaving {
                     to,
@@ -319,12 +320,11 @@ impl Run {
         Ok(())
     }
 
-    /// Checks a forced exit to `to`, records `reason` as a run report and returns the bypassed `gates`.
+    /// Checks a forced `transition`, records `reason` as a run report and returns its bypassed gates.
     fn force(
         &mut self,
         reason: &str,
-        gates: &[Gate],
-        to: Destination,
+        transition: Transition,
         at: u64,
     ) -> Result<Vec<Evaluation>, String> {
         if reason.is_empty() {
@@ -341,12 +341,13 @@ impl Run {
                 "A run can hold at most {MAX_REPORTS_PER_RUN} run reports"
             ));
         }
-        if to == Destination::Done {
+        if transition.to == Destination::Done {
             self.complete(Completion::Override {
                 reason: reason.into(),
             })?;
         }
-        let gates = gates
+        let gates = transition
+            .gates
             .iter()
             .map(|&gate| {
                 if gate == Gate::FinishSummary {
@@ -679,6 +680,24 @@ mod tests {
         let history = &run.rework_history[0];
         assert_eq!((history.number, history.at), (1, AT));
         assert_eq!(history.findings, ["F1", "F3"]);
+    }
+
+    #[test]
+    fn a_rework_without_a_mode_asks_for_the_mode() {
+        let mut run = run_in(Stage::Check);
+        run.mode = None;
+        let result = run.leave(
+            Exit::Rework {
+                finding: "F1".into(),
+                classification: FindingClassification::Wording,
+                decision: None,
+            },
+            AT,
+        );
+        assert_eq!(
+            result,
+            Err("Record the run's mode before starting a Rework".into())
+        );
     }
 
     #[test]
