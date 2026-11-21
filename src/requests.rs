@@ -101,7 +101,7 @@ pub(crate) const RECORDED_NOT_FOUND: &str =
     "the run has recorded sessions, but none of their logs were found";
 
 /// The note for a run whose recorded sessions no scanned log claims: names the sessions and the scanned folders.
-fn recorded_not_found_note(target: &Run, roots: &Roots) -> String {
+pub(crate) fn recorded_not_found_note(target: &Run, roots: &Roots) -> String {
     // CLAUDE_CONFIG_DIR points to the directory that contains projects.
     let claude = roots.claude.parent().unwrap_or(&roots.claude);
     format!(
