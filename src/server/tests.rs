@@ -664,22 +664,16 @@ async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
     assert_ne!(response.status(), HttpStatus::Ok);
 }
 
-/// Answers every `gh` call with a merged pull request.
-struct MergedGh;
-
-impl crate::pr_wait::Gh for MergedGh {
-    fn run(&self, _args: &[&str]) -> Result<crate::pr_wait::GhOutput, crate::pr_wait::GhError> {
-        Ok(crate::pr_wait::GhOutput {
-            code: Some(0),
-            stdout: r#"{"state":"MERGED","isDraft":false}"#.into(),
-            stderr: String::new(),
-        })
-    }
+/// A pull request host whose pull requests are all merged.
+fn merged_host() -> std::sync::Arc<crate::pr_host::FakeHost> {
+    std::sync::Arc::new(crate::pr_host::FakeHost::states(&[
+        crate::pr_state::PrState::Merged,
+    ]))
 }
 
 async fn client_with_pr_tool(
     dir: &TestDir,
-    tool: std::sync::Arc<dyn crate::pr_wait::Gh + Send + Sync>,
+    tool: std::sync::Arc<dyn crate::pr_host::PrHost + Send + Sync>,
 ) -> Client {
     Client::tracked(
         build_rocket_with_tool(&dir.0.path().join("runs.json"), DEFAULT_PORT, tool).unwrap(),
@@ -725,7 +719,7 @@ async fn sync<'a>(
 #[rocket::async_test]
 async fn syncing_a_run_reads_its_pull_request_and_follows_what_happened_to_it() {
     let dir = TestDir::new();
-    let api = client_with_pr_tool(&dir, std::sync::Arc::new(MergedGh)).await;
+    let api = client_with_pr_tool(&dir, merged_host()).await;
     let id = waiting_run(&api, Some("https://github.com/o/r/pull/7"));
     let token = session_token(&api).await;
     let response = sync(&api, &id, Some(&token)).await;
@@ -740,7 +734,7 @@ async fn syncing_a_run_reads_its_pull_request_and_follows_what_happened_to_it() 
 #[rocket::async_test]
 async fn syncing_needs_the_session_token_and_a_run_with_a_pull_request() {
     let dir = TestDir::new();
-    let api = client_with_pr_tool(&dir, std::sync::Arc::new(MergedGh)).await;
+    let api = client_with_pr_tool(&dir, merged_host()).await;
     let with_pr = waiting_run(&api, Some("https://github.com/o/r/pull/7"));
     let without_pr = waiting_run(&api, None);
     let token = session_token(&api).await;

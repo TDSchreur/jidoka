@@ -4,7 +4,7 @@
 //! The setting is `knowledge.json` in Jidoka's configuration folder (see ADR-0015). It is per user, not per
 //! project, because a platform has one knowledge repo and checkout paths differ per machine.
 
-use crate::pr_open::{AzureRepo, encode_segment};
+use crate::pr_host::{AzureRepo, encode_segment};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,

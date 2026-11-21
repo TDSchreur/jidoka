@@ -1,7 +1,7 @@
-//! `jidoka run cleanup` with real git in temporary repositories and a scripted `gh`.
+//! `jidoka run cleanup` with real git in temporary repositories and a fake pull request host.
 
 use super::*;
-use crate::pr_wait::{GhError, GhOutput};
+use crate::pr_host::{FakeHost, Head};
 use std::{fs, path::PathBuf, process::Command};
 use tempfile::TempDir;
 
@@ -68,33 +68,6 @@ impl Git for TestGit {
     }
 }
 
-/// Answers the state and head commit questions about the pull request.
-struct FakeGh {
-    state: &'static str,
-    draft: bool,
-    head: String,
-    /// The pull request's head branch.
-    branch: String,
-}
-
-impl Gh for FakeGh {
-    fn run(&self, args: &[&str]) -> Result<GhOutput, GhError> {
-        let stdout = if args.iter().any(|a| a.contains("headRefOid")) {
-            format!(
-                r#"{{"headRefOid":"{}","headRefName":"{}"}}"#,
-                self.head, self.branch
-            )
-        } else {
-            format!(r#"{{"state":"{}","isDraft":{}}}"#, self.state, self.draft)
-        };
-        Ok(GhOutput {
-            code: Some(0),
-            stdout,
-            stderr: String::new(),
-        })
-    }
-}
-
 /// A repository `repo` on `develop` and a worktree `wt` on `feature` with one commit.
 struct Fixture {
     _tmp: TempDir,
@@ -149,13 +122,18 @@ impl Fixture {
         }
     }
 
-    fn gh(&self) -> FakeGh {
-        FakeGh {
-            state: "MERGED",
-            draft: false,
-            head: self.head.clone(),
+    /// A host whose pull request is in `state`, from the worktree's branch at its commit.
+    fn host_in(&self, state: PrState) -> FakeHost {
+        FakeHost::new(vec![Ok(Head {
+            state,
+            commit: self.head.clone(),
             branch: "feature".into(),
-        }
+        })])
+    }
+
+    /// A host whose pull request merged the worktree's branch.
+    fn host(&self) -> FakeHost {
+        self.host_in(PrState::Merged)
     }
 
     fn branch_exists(&self) -> bool {
@@ -168,8 +146,8 @@ impl Fixture {
     }
 
     /// Cleans up from the root, which is outside the worktree.
-    fn cleanup(&self, run: &Recorded, gh: &FakeGh) -> Result<Cleaned, ToolProblem> {
-        cleanup(run, gh, &TestGit, &self.root)
+    fn cleanup(&self, run: &Recorded, host: &FakeHost) -> Result<Cleaned, ToolProblem> {
+        cleanup(run, host, &TestGit, &self.root)
     }
 
     fn assert_untouched(&self) {
@@ -185,7 +163,10 @@ fn refusal(result: Result<Cleaned, ToolProblem>) -> String {
 #[test]
 fn a_merged_pull_request_removes_the_worktree_and_branch() {
     let fx = Fixture::new();
-    let cleaned = fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
+    let host = fx.host();
+    let cleaned = fx.cleanup(&fx.recorded(), &host).unwrap();
+    // State and head come from one read of the pull request.
+    assert_eq!(host.calls(), [format!("head {PR}")]);
     assert_eq!(
         cleaned,
         Cleaned {
@@ -204,25 +185,20 @@ fn a_merged_pull_request_removes_the_worktree_and_branch() {
 #[test]
 fn anything_but_merged_refuses_and_removes_nothing() {
     let fx = Fixture::new();
-    for (state, draft) in [
-        ("OPEN", false),
-        ("OPEN", true),
-        ("CLOSED", false),
-        ("WEIRD", false),
-    ] {
-        let gh = FakeGh {
-            state,
-            draft,
-            head: fx.head.clone(),
-            branch: "feature".into(),
-        };
-        let message = refusal(fx.cleanup(&fx.recorded(), &gh));
-        assert!(!message.is_empty(), "{state}");
+    for state in [PrState::Open, PrState::Draft, PrState::Closed] {
+        let message = refusal(fx.cleanup(&fx.recorded(), &fx.host_in(state)));
+        assert!(message.contains("not merged"), "{state:?}: {message}");
         fx.assert_untouched();
     }
+    let unreadable = FakeHost::new(vec![Err("The host could not be asked.".into())]);
+    assert_eq!(
+        refusal(fx.cleanup(&fx.recorded(), &unreadable)),
+        "The host could not be asked."
+    );
+    fx.assert_untouched();
     let mut run = fx.recorded();
     run.pr = None;
-    assert!(refusal(fx.cleanup(&run, &fx.gh())).contains("no pull request"));
+    assert!(refusal(fx.cleanup(&run, &fx.host())).contains("no pull request"));
     fx.assert_untouched();
 }
 
@@ -230,14 +206,14 @@ fn anything_but_merged_refuses_and_removes_nothing() {
 fn uncommitted_changes_refuse() {
     let fx = Fixture::new();
     fs::write(fx.wt.join("b.txt"), "changed\n").unwrap();
-    assert!(refusal(fx.cleanup(&fx.recorded(), &fx.gh())).contains("uncommitted"));
+    assert!(refusal(fx.cleanup(&fx.recorded(), &fx.host())).contains("uncommitted"));
     fx.assert_untouched();
 }
 
 #[test]
 fn running_inside_the_worktree_refuses() {
     let fx = Fixture::new();
-    let message = refusal(cleanup(&fx.recorded(), &fx.gh(), &TestGit, &fx.wt));
+    let message = refusal(cleanup(&fx.recorded(), &fx.host(), &TestGit, &fx.wt));
     assert!(message.contains("main checkout"), "{message}");
     fx.assert_untouched();
 }
@@ -246,7 +222,7 @@ fn running_inside_the_worktree_refuses() {
 fn a_rerun_after_the_worktree_was_deleted_by_hand_succeeds() {
     let fx = Fixture::new();
     fs::remove_dir_all(&fx.wt).unwrap();
-    let cleaned = fx.cleanup(&fx.recorded(), &fx.gh()).unwrap();
+    let cleaned = fx.cleanup(&fx.recorded(), &fx.host()).unwrap();
     assert_eq!(cleaned.worktree, Step::Removed);
     assert_eq!(cleaned.branch, Step::Removed);
     assert!(!fx.branch_exists());
@@ -283,7 +259,7 @@ impl Git for MovingGit<'_> {
 #[test]
 fn a_branch_that_moved_after_the_check_is_not_deleted() {
     let fx = Fixture::new();
-    let result = cleanup(&fx.recorded(), &fx.gh(), &MovingGit(&fx), &fx.root);
+    let result = cleanup(&fx.recorded(), &fx.host(), &MovingGit(&fx), &fx.root);
     assert!(result.is_err());
     assert!(fx.branch_exists());
 }
@@ -324,7 +300,7 @@ fn listed_wt(fx: &Fixture) -> Option<Listed> {
 fn a_locked_worktree_refuses_and_removes_nothing() {
     let fx = Fixture::new();
     run_git(&fx.repo, &["worktree", "lock", fx.wt.to_str().unwrap()]);
-    let message = refusal(fx.cleanup(&fx.recorded(), &fx.gh()));
+    let message = refusal(fx.cleanup(&fx.recorded(), &fx.host()));
     assert!(message.contains("locked"), "{message}");
     assert!(message.contains("Nothing was removed"), "{message}");
     fx.assert_untouched();
@@ -338,7 +314,7 @@ fn a_branch_also_checked_out_in_the_main_checkout_refuses_before_removing() {
         &fx.repo,
         &["checkout", "-q", "--ignore-other-worktrees", "feature"],
     );
-    let message = refusal(fx.cleanup(&fx.recorded(), &fx.gh()));
+    let message = refusal(fx.cleanup(&fx.recorded(), &fx.host()));
     assert!(message.contains("checked out"), "{message}");
     assert!(message.contains("Nothing was removed"), "{message}");
     fx.assert_untouched();
