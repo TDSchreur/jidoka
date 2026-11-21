@@ -577,7 +577,6 @@ mod tests {
             "--ticket-status",
             "--summary",
             "--pr",
-            "--blocking-reason",
         ] {
             assert!(flags.contains(&flag), "the context does not record {flag}");
         }

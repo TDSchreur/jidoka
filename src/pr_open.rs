@@ -76,7 +76,7 @@ impl Gh for RealGh {
 
 /// The Jidoka server, as far as this command needs it.
 pub(crate) trait RunApi {
-    fn update(&self, id: &str, status: &str, options: &[&str]) -> Result<(), String>;
+    fn update(&self, id: &str, options: &[&str]) -> Result<(), String>;
 }
 
 /// What the command needs to know about the run.
@@ -85,7 +85,6 @@ pub(crate) struct PrRun {
     pub(crate) id: String,
     pub(crate) worktree: Option<String>,
     pub(crate) branch: Option<String>,
-    pub(crate) stage: String,
     /// `running`, `blocked` or `done`. Only a running run is updated.
     pub(crate) status: String,
     /// The commit the branch started from, when recorded. `pr sync` uses it to tell the branch's own commits.
@@ -938,7 +937,6 @@ fn finish(
     if run.running() {
         api.update(
             &run.id,
-            "running",
             &["--pr", &pull_request, "--activity", "Opened pull request"],
         )
         .map_err(|error| {
@@ -973,18 +971,10 @@ pub(crate) fn render(opened: &Opened, run: &PrRun) -> String {
         shown(&opened.commit.chars().take(7).collect::<String>())
     );
     if !opened.recorded {
-        let summary = if run.stage == "finish" && run.status == "done" {
-            " --summary finish=<what shipped>"
-        } else {
-            ""
-        };
         text.push_str(&format!(
-            "  The run was not updated (it is {}). Record the pull request with `jidoka run update {} {} {}{} --pr {}`.\n",
+            "  Run status is {}. Record the pull request with `jidoka run update {} --pr {}`.\n",
             shown(&run.status),
             shown(&run.id),
-            shown(&run.stage),
-            shown(&run.status),
-            summary,
             shown(&opened.pull_request)
         ));
     }

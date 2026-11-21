@@ -506,25 +506,46 @@ fn update_run(
     store: &State<RunStore>,
     collector: &State<Collector>,
 ) -> Result<Json<Run>, (HttpStatus, String)> {
-    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err((HttpStatus::BadRequest, "Invalid run id".into()));
-    }
+    client_run_id(id)?;
     let updated = store
         .update(id, update.into_inner())
-        .map_err(|error| match error.kind() {
-            // An inconsistent update (an unknown ticket, two tickets in progress) is the caller's to fix.
-            io::ErrorKind::InvalidInput => (HttpStatus::BadRequest, error.to_string()),
-            _ => {
-                eprintln!("Run storage error: {error}");
-                (
-                    HttpStatus::InternalServerError,
-                    "Internal server error".into(),
-                )
-            }
-        })?
+        .map_err(run_update_error)?
         .ok_or((HttpStatus::NotFound, "Not found".into()))?;
     collector.after_update(store, &updated.id);
     Ok(Json(updated))
+}
+
+fn client_run_id(id: &str) -> Result<(), (HttpStatus, String)> {
+    crate::client::check_run_id(id).map_err(|error| (HttpStatus::BadRequest, error.into()))
+}
+
+fn run_update_error(error: io::Error) -> (HttpStatus, String) {
+    if error.kind() == io::ErrorKind::InvalidInput {
+        (HttpStatus::BadRequest, error.to_string())
+    } else {
+        eprintln!("Run storage error: {error}");
+        (
+            HttpStatus::InternalServerError,
+            "Internal server error".into(),
+        )
+    }
+}
+
+#[rocket::post("/api/runs/<id>/lifecycle", data = "<request>")]
+fn transition_run(
+    _access: PostAccess,
+    id: &str,
+    request: Json<crate::run::LifecycleRequest>,
+    store: &State<RunStore>,
+    collector: &State<Collector>,
+) -> Result<Json<Run>, (HttpStatus, String)> {
+    client_run_id(id)?;
+    let run = store
+        .transition(id, request.into_inner())
+        .map_err(run_update_error)?
+        .ok_or((HttpStatus::NotFound, "Not found".into()))?;
+    collector.after_update(store, &run.id);
+    Ok(Json(run))
 }
 
 #[rocket::post("/api/runs/<id>/gate", data = "<record>")]
@@ -1288,6 +1309,7 @@ fn build_rocket_with_tokens(
                 get_document,
                 create_run,
                 update_run,
+                transition_run,
                 record_gate,
                 advance_run,
                 sync_run,

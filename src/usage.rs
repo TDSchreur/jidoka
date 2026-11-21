@@ -1060,7 +1060,7 @@ pub(crate) fn collect_active(
 ) -> std::io::Result<()> {
     let mut first_error = None;
     for run in store.list()? {
-        let automatic = crate::run::is_automatic_reason(run.status, run.blocking_reason.as_deref());
+        let automatic = run.automatically_blocked();
         let watched = run.status == crate::run::RunStatus::Running || automatic;
         let recent = run
             .updated_at

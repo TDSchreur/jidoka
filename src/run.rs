@@ -1,6 +1,5 @@
 use crate::pr_state::PrStatus;
 use crate::routing::ModelRouting;
-use crate::stages::{self, Destination};
 use crate::usage::{Collection, Mark, Pause, PauseKind, Usage};
 use findings::{FindingsContext, FindingsUpdate};
 use model_routing::RoutingUpdate;
@@ -18,6 +17,12 @@ use summaries::SummariesUpdate;
 use tickets::TicketsUpdate;
 
 mod findings;
+mod lifecycle;
+#[cfg(test)]
+use lifecycle::FindingClassification;
+pub(crate) use lifecycle::{
+    LifecycleRequest, LifecycleSource, ReworkRecord, next_rework, parse_lifecycle,
+};
 mod model_routing;
 mod reports;
 mod store;
@@ -26,7 +31,7 @@ mod summaries;
 mod tickets;
 
 pub(crate) const UPDATE_HELP: &str = concat!(
-    "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --blocking-reason <text> | --clear-blocking-reason\n  --rework <1-99> | --clear-rework (on a running run in Check, --rework <n> also moves it back to Build for a Rework and needs a new --finding in the same update; elsewhere it only sets the count)\n  --mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast> | --clear-mode\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n",
+    "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --current-ticket <reference> | --clear-current-ticket\n  --mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast>\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n",
     tickets::help!(),
     findings::help!(),
     reports::help!(),
@@ -35,7 +40,7 @@ pub(crate) const UPDATE_HELP: &str = concat!(
     model_routing::help!(),
     "Omitted fields are preserved; clear flags remove them."
 );
-/// Highest Rework count a run can report.
+/// Highest Rework count to bound stored Rework history.
 pub(crate) const MAX_REWORK: u32 = 99;
 /// Sessions one update may attribute to a run; a run rarely spans more than a handful of agent sessions.
 const MAX_SESSIONS: usize = 20;
@@ -83,9 +88,14 @@ pub(crate) struct Run {
     /// Why the run is blocked; the dashboard shows it as the status reason.
     #[serde(default)]
     pub(crate) blocking_reason: Option<String>,
+    /// Who set the current block, when the run recorded an explicit source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) block_source: Option<LifecycleSource>,
     /// Number of the current or latest Rework: a return from Check to Build.
     #[serde(default)]
     pub(crate) rework: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) rework_history: Vec<ReworkRecord>,
     #[serde(default)]
     pub(crate) updated_at: Option<u64>,
     /// When the agent last updated the run. Unlike `updated_at`, the dashboard's own pause blocks and
@@ -191,6 +201,7 @@ impl Run {
         self.completion = Some(completion);
         self.activity = None;
         self.blocking_reason = None;
+        self.block_source = None;
         Ok(())
     }
 
@@ -307,6 +318,8 @@ pub(crate) struct RunEvent {
     pub(crate) stage: Stage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<LifecycleSource>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -408,18 +421,13 @@ impl NewRun {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct UpdateRun {
-    pub(crate) status: RunStatus,
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub(crate) activity: FieldUpdate,
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub(crate) current_ticket: FieldUpdate,
-    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
-    pub(crate) blocking_reason: FieldUpdate,
-    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
-    pub(crate) rework: FieldUpdate<u32>,
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub(crate) mode: FieldUpdate<Mode>,
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
@@ -611,36 +619,11 @@ fn io_invalid(message: impl Into<String>) -> io::Error {
 }
 
 impl UpdateRun {
-    pub(crate) fn new(status: RunStatus) -> Self {
-        Self {
-            status,
-            activity: FieldUpdate::Keep,
-            current_ticket: FieldUpdate::Keep,
-            blocking_reason: FieldUpdate::Keep,
-            rework: FieldUpdate::Keep,
-            mode: FieldUpdate::Keep,
-            worktree: FieldUpdate::Keep,
-            branch: FieldUpdate::Keep,
-            base_commit: FieldUpdate::Keep,
-            spec: FieldUpdate::Keep,
-            pr: FieldUpdate::Keep,
-            tickets: TicketsUpdate::default(),
-            reports: ReportsUpdate::default(),
-            findings: FindingsUpdate::default(),
-            summaries: SummariesUpdate::default(),
-            sessions: Vec::new(),
-            routing: RoutingUpdate::default(),
-        }
-    }
-
     pub(crate) fn validate(&self) -> Result<(), String> {
         self.activity.validate(MAX_NOTE_BYTES)?;
-        self.blocking_reason.validate(MAX_NOTE_BYTES)?;
         self.current_ticket.validate(MAX_PATH_BYTES)?;
-        if let FieldUpdate::Set(count) = self.rework
-            && !(1..=MAX_REWORK).contains(&count)
-        {
-            return Err("Rework must be a whole number from 1 to 99".into());
+        if matches!(self.mode, FieldUpdate::Clear) {
+            return Err("The workflow mode cannot be cleared".into());
         }
         if let FieldUpdate::Set(value) = &self.current_ticket {
             check_reference("Current ticket", value, MAX_PATH_BYTES)?;
@@ -712,9 +695,8 @@ fn repeated(flag: &str) -> String {
     format!("Repeated or conflicting run update option: {flag}")
 }
 
-pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, String> {
-    let mut update =
-        UpdateRun::new(serde_json::from_value(status.into()).map_err(|e| e.to_string())?);
+pub(crate) fn parse_update(options: &[&str]) -> Result<UpdateRun, String> {
+    let mut update = UpdateRun::default();
     let mut args = options.iter();
     while let Some(flag) = args.next() {
         let mut next_value = || {
@@ -731,32 +713,14 @@ pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, 
             Ok(value)
         };
         match *flag {
-            "--rework" | "--clear-rework" => {
-                if !update.rework.is_keep() {
-                    return Err(repeated(flag));
-                }
-                update.rework = if *flag == "--clear-rework" {
-                    FieldUpdate::Clear
-                } else {
-                    let count = next_value()?;
-                    FieldUpdate::Set(count.parse().map_err(|_| {
-                        format!("Invalid value for --rework: {count}; use a whole number from 1 to {MAX_REWORK}")
-                    })?)
-                };
-                continue;
-            }
-            "--mode" | "--clear-mode" => {
+            "--mode" => {
                 if !update.mode.is_keep() {
                     return Err(repeated(flag));
                 }
-                update.mode = if *flag == "--clear-mode" {
-                    FieldUpdate::Clear
-                } else {
-                    let mode = next_value()?;
-                    FieldUpdate::Set(serde_json::from_value(serde_json::Value::from(*mode)).map_err(|_| {
-                        format!("Invalid value for --mode: {mode}; use full, balanced or fast (also accepted: jidoka-full, jidoka-balanced, jidoka-fast)")
-                    })?)
-                };
+                let mode = next_value()?;
+                update.mode = FieldUpdate::Set(serde_json::from_value(serde_json::Value::from(*mode)).map_err(|_| {
+                    format!("Invalid value for --mode: {mode}; use full, balanced or fast (also accepted: jidoka-full, jidoka-balanced, jidoka-fast)")
+                })?);
                 continue;
             }
             "--ticket" | "--clear-tickets" | "--ticket-status" => {
@@ -792,7 +756,6 @@ pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, 
         let field = match *flag {
             "--activity" | "--clear-activity" => &mut update.activity,
             "--current-ticket" | "--clear-current-ticket" => &mut update.current_ticket,
-            "--blocking-reason" | "--clear-blocking-reason" => &mut update.blocking_reason,
             "--worktree" | "--clear-worktree" => &mut update.worktree,
             "--branch" | "--clear-branch" => &mut update.branch,
             "--base-commit" | "--clear-base-commit" => &mut update.base_commit,
@@ -813,28 +776,6 @@ pub(crate) fn parse_update(status: &str, options: &[&str]) -> Result<UpdateRun, 
     Ok(update)
 }
 
-/// Logs a Blocked or Resumed event when the update changed whether the run is blocked.
-fn record_block_change(run: &mut Run, was_blocked: bool, at: u64) {
-    let is_blocked = matches!(run.status, RunStatus::Blocked);
-    if was_blocked == is_blocked || run.events.len() >= MAX_EVENTS {
-        return;
-    }
-    run.events.push(RunEvent {
-        at,
-        kind: if is_blocked {
-            RunEventKind::Blocked
-        } else {
-            RunEventKind::Resumed
-        },
-        stage: run.stage,
-        reason: if is_blocked {
-            run.blocking_reason.clone()
-        } else {
-            None
-        },
-    });
-}
-
 pub(crate) fn updated_now() -> io::Result<u64> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -851,12 +792,6 @@ impl FieldUpdate {
             other => other,
         }
     }
-}
-
-/// Whether a run is blocked for a reason the dashboard sets for a pause, not one the agent gave.
-pub(crate) fn is_automatic_reason(status: RunStatus, reason: Option<&str>) -> bool {
-    status == RunStatus::Blocked
-        && reason.is_some_and(|reason| PauseKind::from_reason(reason).is_some())
 }
 
 /// Appends a mark when the stage, rework or ticket in progress differs from the last one. The mark keeps

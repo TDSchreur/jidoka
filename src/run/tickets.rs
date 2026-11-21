@@ -171,7 +171,7 @@ mod tests {
     use crate::run::{parse_update, tests::sample_run};
 
     fn parsed(options: &[&str]) -> Result<TicketsUpdate, String> {
-        Ok(parse_update("running", options)?.tickets)
+        Ok(parse_update(options)?.tickets)
     }
 
     #[test]

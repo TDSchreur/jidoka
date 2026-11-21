@@ -4,7 +4,7 @@
 use crate::pr_wait::{
     Gh, ToolProblem, azure_pr_head, azure_pr_status, is_azure_pr_url, problem, run_gh,
 };
-use crate::run::{Completion, PrResult, Run, RunStatus, RunStore, Stage};
+use crate::run::{Completion, LifecycleSource, PrResult, Run, RunStatus, RunStore, Stage};
 use serde::{Deserialize, Serialize};
 use std::io;
 
@@ -200,7 +200,7 @@ fn due(status: Option<&PrStatus>, url: &str, now: u64) -> bool {
 pub(crate) const CLOSED_REASON: &str = "PR closed without merge";
 
 /// Applies the lifecycle consequence of an observed merge or close.
-pub(crate) fn follow_up(run: &mut Run, status: &PrStatus) -> Result<bool, String> {
+pub(crate) fn follow_up(run: &mut Run, status: &PrStatus, at: u64) -> Result<bool, String> {
     match (status.state, run.status) {
         (PrState::Merged, RunStatus::Running | RunStatus::Blocked)
             if run.stage == Stage::Finish =>
@@ -210,8 +210,7 @@ pub(crate) fn follow_up(run: &mut Run, status: &PrStatus) -> Result<bool, String
             })?;
         }
         (PrState::Closed, RunStatus::Running) => {
-            run.status = RunStatus::Blocked;
-            run.blocking_reason = Some(CLOSED_REASON.into());
+            run.block(CLOSED_REASON, LifecycleSource::PullRequest, at)?;
             run.activity = None;
         }
         _ => return Ok(false),

@@ -94,7 +94,7 @@ mod tests {
     use crate::run::{parse_update, tests::sample_run};
 
     fn parsed(options: &[&str]) -> Result<RoutingUpdate, String> {
-        Ok(parse_update("running", options)?.routing)
+        Ok(parse_update(options)?.routing)
     }
 
     #[test]

@@ -43,6 +43,11 @@ enum Stamp {
     Collector,
 }
 
+enum UpdateSource {
+    Report,
+    WorkspaceReady,
+}
+
 /// What an edit decided.
 enum Edit {
     Save,
@@ -136,7 +141,9 @@ impl RunStore {
             activity: None,
             current_ticket: None,
             blocking_reason: None,
+            block_source: None,
             rework: None,
+            rework_history: Vec::new(),
             updated_at: Some(created),
             agent_updated_at: Some(created),
             repository: new.repository,
@@ -280,64 +287,52 @@ impl RunStore {
         update: UpdateRun,
         git: &dyn crate::pr_sync::Git,
     ) -> io::Result<Option<Run>> {
+        self.apply_update(id, update, git, UpdateSource::Report)
+    }
+
+    fn apply_update(
+        &self,
+        id: &str,
+        update: UpdateRun,
+        git: &dyn crate::pr_sync::Git,
+        source: UpdateSource,
+    ) -> io::Result<Option<Run>> {
         update.validate().map_err(io_invalid)?;
         self.change(id, Stamp::Agent, |next, updated_at| {
-            if update.status == RunStatus::Done && next.status != RunStatus::Done {
+            if matches!(source, UpdateSource::WorkspaceReady)
+                && (next.status == RunStatus::Done || next.worktree.is_some())
+            {
                 return Err(io_invalid(
-                    "Use `jidoka run advance <id>` to complete Finish",
+                    "Only an unfinished run without a worktree can record a new workspace",
                 ));
             }
-            if next.status == RunStatus::Done && update.status != RunStatus::Done {
-                return Err(io_invalid("The run is done"));
+            if let FieldUpdate::Set(mode) = update.mode {
+                if next.mode.is_some_and(|stored| stored != mode) {
+                    return Err(io_invalid("The workflow mode is already initialized"));
+                }
+                if next.mode.is_none() {
+                    let stage = next.stage;
+                    reports::observe_skill(next, mode.name(), stage, updated_at);
+                    next.mode = Some(mode);
+                }
             }
-            let was_blocked = matches!(next.status, RunStatus::Blocked);
-            let was_running = matches!(next.status, RunStatus::Running);
-            next.status = update.status;
             let started_with = match &update.activity {
                 FieldUpdate::Set(text) => Some(text.clone()),
                 _ => None,
             };
             update.activity.apply(&mut next.activity);
             update.current_ticket.apply(&mut next.current_ticket);
-            update.blocking_reason.apply(&mut next.blocking_reason);
-            let stage_before = next.stage;
-            let rework_set = matches!(update.rework, FieldUpdate::Set(_));
-            update.rework.apply(&mut next.rework);
-            // The workflow skill carries the run, so it counts as used from the moment the mode is recorded.
-            if let FieldUpdate::Set(mode) = &update.mode {
-                let stage = next.stage;
-                reports::observe_skill(next, mode.name(), stage, updated_at);
-            }
-            update.mode.apply(&mut next.mode);
             update.worktree.apply(&mut next.worktree);
             update.branch.apply(&mut next.branch);
             update.base_commit.map_hex().apply(&mut next.base_commit);
             update.spec.apply(&mut next.spec);
             update.pr.apply(&mut next.pr);
-            if (was_running || was_blocked)
-                && update.status == RunStatus::Running
-                && next.stage == Stage::Check
-                && rework_set
-            {
-                update.findings.check_rework(true).map_err(io_invalid)?;
-                let mode = next
-                    .mode
-                    .ok_or_else(|| io_invalid("Record the run's mode before starting a Rework"))?;
-                if let Destination::Stage(stage) = stages::rework(mode, next.stage, next.status)
-                    .map_err(io_invalid)?
-                    .to
-                {
-                    next.stage = stage;
-                }
-            }
-            let moved = next.stage != stage_before;
             update
                 .findings
                 .apply(
                     next,
                     &FindingsContext {
-                        stage: stage_before,
-                        moved,
+                        stage: next.stage,
                         at: updated_at,
                         git,
                     },
@@ -358,9 +353,58 @@ impl RunStore {
             if next.sessions.len() > KEEP_SESSIONS {
                 next.sessions.drain(..next.sessions.len() - KEEP_SESSIONS);
             }
-            record_block_change(next, was_blocked, updated_at);
+            if matches!(source, UpdateSource::WorkspaceReady)
+                && next.block_source == Some(LifecycleSource::Workspace)
+            {
+                next.resume("Workspace ready", LifecycleSource::Workspace, updated_at)
+                    .map_err(io_invalid)?;
+            }
             // Where the work is now, for attributing token usage.
             mark(next, updated_at, started_with);
+            Ok(Edit::Save)
+        })
+    }
+
+    /// Applies an explicit lifecycle request under the store lock.
+    pub(crate) fn transition(
+        &self,
+        id: &str,
+        request: LifecycleRequest,
+    ) -> io::Result<Option<Run>> {
+        if let LifecycleRequest::WorkspaceReady { update } = request {
+            return self.apply_update(
+                id,
+                *update,
+                &crate::run_check::ReadOnlyGit,
+                UpdateSource::WorkspaceReady,
+            );
+        }
+        self.change(id, Stamp::Agent, |run, now| {
+            match request {
+                LifecycleRequest::Block { reason } => {
+                    run.block(&reason, LifecycleSource::Agent, now)
+                }
+                LifecycleRequest::Resume { source } => {
+                    run.resume(&source, LifecycleSource::Agent, now)
+                }
+                LifecycleRequest::Rework {
+                    finding,
+                    classification,
+                    decision,
+                } => run.start_rework(finding, classification, decision, now),
+                LifecycleRequest::WorkspaceBlocked { reason } => {
+                    if run.block_source == Some(LifecycleSource::Workspace) {
+                        run.refresh_block(&reason, LifecycleSource::Workspace, now)
+                    } else {
+                        run.block(&reason, LifecycleSource::Workspace, now)
+                    }
+                }
+                LifecycleRequest::WorkspaceReady { .. } => {
+                    Err("Workspace update was already handled".into())
+                }
+            }
+            .map_err(io_invalid)?;
+            mark(run, now, None);
             Ok(Edit::Save)
         })
     }
@@ -472,8 +516,8 @@ impl RunStore {
     ) -> io::Result<()> {
         self.change(id, Stamp::Dashboard, |next, now| {
             let agent_at = next.agent_updated_at.or(next.updated_at);
-            let automatic = is_automatic_reason(next.status, next.blocking_reason.as_deref());
-            let (kind, at) = match (next.status, latest) {
+            let automatic = next.automatically_blocked();
+            match (next.status, latest) {
                 (
                     RunStatus::Running,
                     Some(
@@ -482,9 +526,7 @@ impl RunStore {
                         },
                     ),
                 ) if requested || Some(pause.at) >= agent_at => {
-                    next.status = RunStatus::Blocked;
-                    next.blocking_reason = Some(pause.kind.reason().to_string());
-                    (RunEventKind::Blocked, pause.at)
+                    next.block(pause.kind.reason(), LifecycleSource::Pause, pause.at)
                 }
                 (
                     RunStatus::Blocked,
@@ -494,35 +536,25 @@ impl RunStore {
                         },
                     ),
                 ) if automatic && next.blocking_reason.as_deref() != Some(pause.kind.reason()) => {
-                    next.blocking_reason = Some(pause.kind.reason().to_string());
-                    (RunEventKind::Blocked, pause.at)
+                    next.refresh_block(pause.kind.reason(), LifecycleSource::Pause, pause.at)
                 }
                 (
                     RunStatus::Blocked,
                     Some(Pause {
-                        resumed_at: Some(resumed),
+                        resumed_at: Some(at),
                         ..
                     }),
                 ) if automatic => {
-                    next.status = RunStatus::Running;
-                    next.blocking_reason = None;
-                    (RunEventKind::Resumed, *resumed)
+                    next.resume("Agent activity resumed", LifecycleSource::Pause, *at)
                 }
-                (RunStatus::Blocked, None) if automatic => {
-                    next.status = RunStatus::Running;
-                    next.blocking_reason = None;
-                    (RunEventKind::Resumed, now)
-                }
+                (RunStatus::Blocked, None) if automatic => next.resume(
+                    "Pause cleared from the agent log",
+                    LifecycleSource::Pause,
+                    now,
+                ),
                 _ => return Ok(Edit::Skip),
-            };
-            if next.events.len() < MAX_EVENTS {
-                next.events.push(RunEvent {
-                    at,
-                    kind,
-                    stage: next.stage,
-                    reason: next.blocking_reason.clone(),
-                });
             }
+            .map_err(io_invalid)?;
             next.agent_updated_at = agent_at;
             Ok(Edit::Save)
         })
@@ -642,12 +674,10 @@ impl RunStore {
                 }
             }
             result = PrResult::Accepted { changed: false };
-            let was_blocked = run.status == RunStatus::Blocked;
-            if crate::pr_state::follow_up(run, &status).map_err(io_invalid)? {
-                let now = updated_now()?;
+            let now = updated_now()?;
+            if crate::pr_state::follow_up(run, &status, now).map_err(io_invalid)? {
                 run.updated_at = Some(now);
                 run.gate_generation = run.gate_generation.wrapping_add(1);
-                record_block_change(run, was_blocked, now);
                 mark(run, now, None);
                 run.finished_at = if run.status == RunStatus::Done {
                     Some(now)
@@ -805,7 +835,7 @@ mod tests {
         store
             .update(
                 &id,
-                parse_update("running", &["--pr", "https://example.test/pr/1"]).unwrap(),
+                parse_update(&["--pr", "https://example.test/pr/1"]).unwrap(),
             )
             .unwrap();
         store

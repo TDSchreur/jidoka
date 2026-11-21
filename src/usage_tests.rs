@@ -877,7 +877,7 @@ fn codex_async_request_survives_progress_and_waits_for_user_message() {
 
 mod auto_block {
     use super::*;
-    use crate::run::{FieldUpdate, RunEventKind, RunStatus, RunStore, UpdateRun};
+    use crate::run::{RunEventKind, RunStatus, RunStore, UpdateRun};
 
     struct Fixture {
         world: World,
@@ -952,11 +952,18 @@ mod auto_block {
         }
 
         fn agent_update(&self, status: RunStatus, reason: Option<&str>) {
-            let mut update = UpdateRun::new(status);
-            if let Some(reason) = reason {
-                update.blocking_reason = FieldUpdate::Set(reason.into());
+            match status {
+                RunStatus::Blocked => {
+                    let request = crate::run::LifecycleRequest::Block {
+                        reason: reason.unwrap().into(),
+                    };
+                    self.store.transition(&self.id, request).unwrap();
+                }
+                RunStatus::Running => {
+                    self.store.update(&self.id, UpdateRun::default()).unwrap();
+                }
+                RunStatus::Done => panic!("This helper does not complete runs"),
             }
-            self.store.update(&self.id, update).unwrap();
         }
     }
 
@@ -1157,11 +1164,8 @@ mod auto_block {
         done.store
             .update(
                 &done.id,
-                crate::run::parse_update(
-                    "running",
-                    &["--mode", "fast", "--summary", "finish=Completed"],
-                )
-                .unwrap(),
+                crate::run::parse_update(&["--mode", "fast", "--summary", "finish=Completed"])
+                    .unwrap(),
             )
             .unwrap();
         done.store
@@ -1291,10 +1295,7 @@ fn completed_routed_stage_with_only_coordinator_usage_adds_no_model_warning() {
     assert!(store.get(RUN_A).unwrap().unwrap().run_reports.is_empty());
     store.set_stage(RUN_A, Stage::Check);
     store
-        .update(
-            RUN_A,
-            crate::run::UpdateRun::new(crate::run::RunStatus::Running),
-        )
+        .update(RUN_A, crate::run::UpdateRun::default())
         .unwrap();
     collect_and_store(&store, RUN_A, &settings).unwrap();
     collect_and_store(&store, RUN_A, &settings).unwrap();

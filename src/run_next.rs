@@ -24,6 +24,8 @@ pub(crate) struct Move {
     /// `stage`, `done` or `rework`.
     kind: &'static str,
     to: Option<Stage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rework: Option<u32>,
     gates: Vec<OpenGate>,
 }
 
@@ -139,7 +141,7 @@ impl Next {
 fn describe(gate: Gate) -> &'static str {
     match gate {
         Gate::TicketsDone => {
-            "every ticket is done (jidoka run update <id> running --ticket-status <ref>=done)"
+            "every ticket is done (jidoka run update <id> --ticket-status <ref>=done)"
         }
         Gate::Verified => "the full verification passed on the head commit",
         Gate::TicketsVerified => "verification passed after each ticket",
@@ -401,12 +403,27 @@ pub(crate) fn changed_paths(run: &Run, git: &dyn Git) -> Result<Vec<String>, Str
     .map_err(|error| format!("Could not inspect the changed paths in {worktree}: {error}"))
 }
 
+fn rework_move(run: &Run, mode: Mode, changed_paths: &[String]) -> Option<Move> {
+    let rework = stages::rework(mode, run.stage, run.status).ok()?;
+    let Destination::Stage(stage) = rework.to else {
+        return None;
+    };
+    Some(Move {
+        kind: "rework",
+        to: Some(stage),
+        rework: Some(crate::run::next_rework(run.rework).ok()?),
+        gates: open(run, rework.gates, Some(changed_paths)),
+    })
+}
+
+/// Builds stage guidance and the moves available to the run.
+///
 /// # Errors
 ///
 /// Returns a message when the run has no recorded mode.
 pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String> {
     let mode = run.mode.ok_or_else(|| {
-        "the run has no recorded mode; record it with `jidoka run update <id> running --mode <mode>`"
+        "the run has no recorded mode; record it with `jidoka run update <id> --mode <mode>`"
             .to_string()
     })?;
     let mut moves = Vec::new();
@@ -422,17 +439,10 @@ pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String>
             moves.push(Move {
                 kind,
                 to,
+                rework: None,
                 gates: open(run, transition.gates, Some(changed_paths)),
             });
-            if let Ok(rework) = stages::rework(mode, run.stage, run.status)
-                && let Destination::Stage(stage) = rework.to
-            {
-                moves.push(Move {
-                    kind: "rework",
-                    to: Some(stage),
-                    gates: open(run, rework.gates, Some(changed_paths)),
-                });
-            }
+            moves.extend(rework_move(run, mode, changed_paths));
         }
         Err(reason) => note = Some(reason),
     }
@@ -634,9 +644,9 @@ pub(crate) fn render(next: &Next) -> String {
     for mv in &next.moves {
         let target = mv.to.map_or("done", Stage::name);
         out.push_str(&format!("\nMove to {target} ({})\n", mv.kind));
-        if mv.kind == "rework" {
+        if let Some(number) = mv.rework {
             out.push_str(&format!(
-                "  with: jidoka run update {} running --rework <n> --finding <check> <location|-> \"<text>\" (repeat --finding)\n",
+                "  Rework {number}: jidoka run rework {} --finding <id> --classification <wording|behavior> [--decision <text>]\n",
                 next.run
             ));
         } else {

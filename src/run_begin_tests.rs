@@ -191,7 +191,17 @@ impl RunApi for FakeApi {
         Ok(self.session_runs.borrow().clone())
     }
 
-    fn update(&self, id: &str, status: &str, options: &[&str]) -> Result<(), String> {
+    fn workspace_ready(&self, id: &str, options: &[&str]) -> Result<(), String> {
+        self.record_workspace(id, "running", options)
+    }
+
+    fn workspace_blocked(&self, id: &str, reason: &str) -> Result<(), String> {
+        self.record_workspace(id, "blocked", &["--blocking-reason", reason])
+    }
+}
+
+impl FakeApi {
+    fn record_workspace(&self, id: &str, status: &str, options: &[&str]) -> Result<(), String> {
         if self.fail_updates.get() {
             return Err("the server is not reachable".into());
         }

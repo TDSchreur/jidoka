@@ -57,9 +57,9 @@ pub(crate) struct Record {
     pub(crate) check: Option<String>,
 }
 
-const RESOLVE_FINDINGS: &str = "resolve them with `jidoka run update <id> running --finding-status <finding-id>=<fixed|dismissed|deferred>[:<reason>]` or start Rework with --finding";
+const RESOLVE_FINDINGS: &str = "resolve them with `jidoka run update <id> --finding-status <finding-id>=<fixed|dismissed|deferred>[:<reason>]` or start it with `jidoka run rework`";
 /// The remedy `advance` names for this gate, which fails either on open Findings or on no recorded pass.
-const RECORD_OR_RESOLVE_FINDINGS: &str = "record `jidoka run gate <id> no-actionable-findings pass` once no Finding is open; resolve open Findings with `jidoka run update <id> running --finding-status <finding-id>=<fixed|dismissed|deferred>[:<reason>]` or start Rework with --finding";
+const RECORD_OR_RESOLVE_FINDINGS: &str = "record `jidoka run gate <id> no-actionable-findings pass` once no Finding is open; resolve open Findings with `jidoka run update <id> --finding-status <finding-id>=<fixed|dismissed|deferred>[:<reason>]` or start it with `jidoka run rework`";
 
 pub(crate) fn parse_options(options: &[&str]) -> Result<(Option<String>, Option<String>), String> {
     let mut evidence = None;
@@ -275,7 +275,7 @@ fn advance_with_clock(
                     run.tickets.iter().all(|t| t.status == TicketStatus::Done),
                     "Some tickets are not done",
                 ),
-                "mark every ticket done with `jidoka run update <id> running --ticket-status <ref>=done`",
+                "mark every ticket done with `jidoka run update <id> --ticket-status <ref>=done`",
             ),
             Gate::Verified => (
                 verified(run, git),
@@ -296,7 +296,7 @@ fn advance_with_clock(
                     }),
                     "A ticket has no passing verification",
                 ),
-                "set the current ticket with `jidoka run update <id> running --current-ticket <reference>`, verify it, then run `jidoka run gate <id> tickets-verified pass`",
+                "set the current ticket with `jidoka run update <id> --current-ticket <reference>`, verify it, then run `jidoka run gate <id> tickets-verified pass`",
             ),
             Gate::ChecksRecorded => (
                 require(
@@ -805,7 +805,7 @@ mod tests {
         let store = RunStore::open(&path).unwrap();
         let update = |options: &[&str]| {
             store
-                .update_with("1", parse_update("running", options).unwrap(), &git)
+                .update_with("1", parse_update(options).unwrap(), &git)
                 .unwrap()
                 .unwrap();
         };
@@ -833,7 +833,17 @@ mod tests {
         }
         advance().unwrap();
         assert_eq!(store.get("1").unwrap().unwrap().stage, Stage::Check);
-        update(&["--finding", "code-review", "-", "Bug", "--rework", "1"]);
+        update(&["--finding", "code-review", "-", "Bug"]);
+        store
+            .transition(
+                "1",
+                crate::run::parse_lifecycle(
+                    "rework",
+                    &["--finding", "F1", "--classification", "behavior"],
+                )
+                .unwrap(),
+            )
+            .unwrap();
         advance().unwrap();
         gate(result(Gate::ChecksRecorded, true)).unwrap();
         let error = advance().unwrap_err();
