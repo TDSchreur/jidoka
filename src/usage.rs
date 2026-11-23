@@ -6,8 +6,9 @@
 //! never shown as zero: a field a log does not report is absent.
 
 use crate::{
-    agent_logs::{LogSession, ReadLimits, Roots, RunWindow, read_sessions},
+    agent_logs::{LogSession, ReadLimits, Roots},
     run::{Run, Stage},
+    session_attribution::{self, Attributed, Attribution, Missing},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -449,73 +450,51 @@ fn bucket(mark: &Mark) -> (Option<String>, bool) {
     (ticket, rework)
 }
 
-/// The usage of `target` from the sessions that were read. `runs` holds every run, so an entry that
-/// two runs could both claim is assigned to neither.
-pub(crate) fn attribute(
-    target: &Run,
-    runs: &[Run],
-    sessions: &[LogSession],
-    now: u64,
-) -> (Vec<UsageRow>, Tokens, Vec<String>) {
+/// The token rows of the Run from its attributed responses, and the tokens of the ambiguous ones, which
+/// are assigned to neither run.
+fn token_rows(target: &Run, attribution: &Attribution) -> (Vec<UsageRow>, Tokens) {
     type Key = (Stage, String, Option<String>, bool);
     let mut rows: BTreeMap<Key, UsageRow> = BTreeMap::new();
     let mut unattributed = Tokens::default();
-    let mut counted: Vec<String> = Vec::new();
-    for session in sessions.iter().filter(|session| session.belongs_to(target)) {
-        let claimants: Vec<&Run> = runs.iter().filter(|run| session.belongs_to(run)).collect();
-        let mut used = false;
-        for entry in &session.responses {
-            // An entry from the future cannot be the run's work: a clock is wrong or the log is made up.
-            if entry.ts > now.saturating_add(FUTURE_SLACK_MS) {
-                continue;
-            }
-            let Some(mark) = mark_at(target, entry.ts) else {
-                continue;
-            };
-            let contested = claimants
-                .iter()
-                .filter(|run| run.id != target.id && mark_at(run, entry.ts).is_some())
-                .count();
-            if contested > 0 {
-                unattributed.add(&entry.tokens);
-                continue;
-            }
-            let (ticket, rework) = bucket(mark);
-            let row = rows
-                .entry((mark.stage, entry.model.clone(), ticket.clone(), rework))
-                .or_insert_with(|| UsageRow {
-                    stage: mark.stage,
-                    model: entry.model.clone(),
-                    ticket,
-                    rework,
-                    tokens: Tokens::default(),
-                    subagents: Tokens::default(),
-                    long_context: Tokens::default(),
-                    efforts: BTreeSet::new(),
-                });
-            if let Some(effort) = &entry.effort
-                && (row.efforts.len() < MAX_EFFORTS_PER_ROW || row.efforts.contains(effort))
-            {
-                row.efforts.insert(effort.clone());
-            }
-            row.tokens.add(&entry.tokens);
-            if entry.subagent {
-                row.subagents.add(&entry.tokens);
-            }
-            let request_input = [
-                entry.tokens.input,
-                entry.tokens.cache_read,
-                entry.tokens.cache_write,
-            ]
-            .iter()
-            .fold(0u64, |sum, n| sum.saturating_add(n.unwrap_or(0)));
-            if request_input > LONG_CONTEXT_INPUT_TOKENS {
-                row.long_context.add(&entry.tokens);
-            }
-            used = true;
+    for response in &attribution.ambiguous {
+        unattributed.add(&response.tokens);
+    }
+    for Attributed {
+        response: entry,
+        mark,
+    } in &attribution.responses
+    {
+        let (ticket, rework) = bucket(mark);
+        let row = rows
+            .entry((mark.stage, entry.model.clone(), ticket.clone(), rework))
+            .or_insert_with(|| UsageRow {
+                stage: mark.stage,
+                model: entry.model.clone(),
+                ticket,
+                rework,
+                tokens: Tokens::default(),
+                subagents: Tokens::default(),
+                long_context: Tokens::default(),
+                efforts: BTreeSet::new(),
+            });
+        if let Some(effort) = &entry.effort
+            && (row.efforts.len() < MAX_EFFORTS_PER_ROW || row.efforts.contains(effort))
+        {
+            row.efforts.insert(effort.clone());
         }
-        if used {
-            counted.push(session.id.clone());
+        row.tokens.add(&entry.tokens);
+        if entry.subagent {
+            row.subagents.add(&entry.tokens);
+        }
+        let request_input = [
+            entry.tokens.input,
+            entry.tokens.cache_read,
+            entry.tokens.cache_write,
+        ]
+        .iter()
+        .fold(0u64, |sum, n| sum.saturating_add(n.unwrap_or(0)));
+        if request_input > LONG_CONTEXT_INPUT_TOKENS {
+            row.long_context.add(&entry.tokens);
         }
     }
     // Stages in order, then the rework, the tickets in the run's order, and work with no ticket last.
@@ -532,7 +511,7 @@ pub(crate) fn attribute(
     rows.sort_by(|a, b| {
         (a.stage, ticket_order(a), &a.model).cmp(&(b.stage, ticket_order(b), &b.model))
     });
-    (rows, unattributed, counted)
+    (rows, unattributed)
 }
 
 /// The pauses and the idle gaps of `target` in the sessions it claims, inside its window. A gap that a
@@ -599,6 +578,10 @@ pub(crate) fn derive_pauses(
 
 /// Reads the session logs and works out the usage of `target`. Never fails: whatever cannot be read
 /// becomes a note, or a reason when nothing at all is known.
+#[expect(
+    clippy::too_many_lines,
+    reason = "derives rows, skills, pauses, attention and notes from one scan in one function"
+)]
 pub(crate) fn collect(
     target: &Run,
     runs: &[Run],
@@ -606,50 +589,25 @@ pub(crate) fn collect(
     now: u64,
     deadline: Instant,
 ) -> Usage {
-    collect_limited(target, runs, roots, now, deadline, ReadLimits::default())
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "finds overlapping runs, reads all agent logs and merges usage in one function"
-)]
-fn collect_limited(
-    target: &Run,
-    runs: &[Run],
-    roots: &Roots,
-    now: u64,
-    deadline: Instant,
-    limits: ReadLimits,
-) -> Usage {
-    let Some(first) = target.timeline.first() else {
-        return Usage::not_tracked(
-            "the run has no stage timeline: it started before usage tracking existed",
-            now,
-        );
+    let scan = match session_attribution::scan(target, runs, roots, deadline, ReadLimits::default())
+    {
+        Ok(scan) => scan,
+        Err(reason) => return Usage::not_tracked(reason, now),
     };
-    // Only runs whose time overlaps the target's can contest its entries, so only they are looked for;
-    // this also keeps the scan from reaching back to the oldest run there is.
-    let window = RunWindow::new(target, runs, first.at);
-    let tracked = &window.tracked;
-    // The run's own agent homes, when it recorded them, so the reason below names the folders scanned.
-    let roots = &roots.for_run(target);
-    let read = read_sessions(roots, &window, deadline, limits);
-    let claimed: Vec<&LogSession> = read
-        .sessions
-        .iter()
-        .filter(|s| s.belongs_to(target))
-        .collect();
-    if claimed.is_empty() {
-        let reason = if read.roots_found == 0 && target.sessions.is_empty() {
-            "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()
-        } else if read.timed_out {
-            "reading the session logs took too long".to_string()
-        } else if read.truncated {
-            "reading the session logs stopped at its limit on their number and size".to_string()
-        } else if !target.sessions.is_empty() {
-            crate::requests::recorded_not_found_note(target, roots)
-        } else {
-            "no session log names this run and none was recorded for it; its agent may not write logs this tool reads, or its session id was never recorded".to_string()
+    let first = scan.first;
+    let read = &scan.read;
+    let tracked = &scan.window.tracked;
+    if let Some(missing) = scan.missing() {
+        let reason = match missing {
+            Missing::NoLogs => {
+                "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()
+            }
+            _ if read.timed_out => "reading the session logs took too long".to_string(),
+            _ if read.truncated => {
+                "reading the session logs stopped at its limit on their number and size".to_string()
+            }
+            Missing::RecordedNotFound(note) => note,
+            Missing::Unclaimed => "no session log names this run and none was recorded for it; its agent may not write logs this tool reads, or its session id was never recorded".to_string(),
         };
         // A log recorded for the run that could not be read is why nothing was found: say so.
         let mut usage = Usage::not_tracked(reason, now);
@@ -664,8 +622,15 @@ fn collect_limited(
         }
         return usage;
     }
+    let claimed = scan.claimed();
     let skills = used_skills(target, tracked, &claimed);
-    let (rows, unattributed, counted) = attribute(target, runs, &read.sessions, now);
+    let attribution = scan.attribute(now, None);
+    let (rows, unattributed) = token_rows(target, &attribution);
+    let counted: Vec<String> = attribution
+        .sessions
+        .iter()
+        .map(|session| session.id.clone())
+        .collect();
     let (pauses, idle) = derive_pauses(target, &read.sessions, now);
     // Each session is evaluated on its own signals: another session cannot answer its request.
     // A request left unanswered by a session that a later session has overtaken can no longer be

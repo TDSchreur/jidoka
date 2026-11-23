@@ -1,7 +1,7 @@
 //! Categories of model requests for `jidoka run requests`, and the shell-command parsing that finds which runs
 //! a session's commands name.
 //!
-//! Of each request it keeps the time, the token counts and a category taken from the Bash commands of its
+//! Of each request it keeps the token counts and a category taken from the Bash commands of its
 //! tool calls. The command text is dropped as soon as it is classified: nothing but categories, flags and
 //! counts leaves this module.
 
@@ -56,7 +56,6 @@ impl Category {
 /// One model request.
 #[derive(Clone, Debug)]
 pub(crate) struct Request {
-    pub(crate) ts: u64,
     pub(crate) category: Category,
     pub(crate) tokens: Tokens,
     /// Its commands also updated the run, next to other work.
@@ -82,7 +81,6 @@ pub(crate) fn request_of(response: &Response) -> Request {
         }
     };
     Request {
-        ts: response.ts,
         category: class.category,
         tokens: response.tokens,
         chained_reporting: class.chained_reporting,
