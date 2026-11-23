@@ -13,6 +13,8 @@ The plan file is the single source of truth. Re-read it at the start of every it
 
 The path to the plan file. If the user did not give one, ask once. If the user names a single step, run only that step.
 
+Handing over a plan to this skill is the user's authorization to merge each step's pull request. If the user said anything against merging, or against unattended work, follow that instead and tell the step agents to stop at an open pull request.
+
 ## Plan format
 
 Plans usually look like this; adapt to small variations:

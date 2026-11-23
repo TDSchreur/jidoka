@@ -897,6 +897,8 @@ mod tests {
         assert!(!root.join("jidoka-awesome-copilot/LICENSE").exists());
         assert!(!root.join("jidoka-setup-knowledge-repo/LICENSE").exists());
         assert!(!root.join("jidoka-cross-repo-change/LICENSE").exists());
+        assert!(root.join("jidoka-work-through-plan/SKILL.md").is_file());
+        assert!(!root.join("jidoka-work-through-plan/LICENSE").exists());
         install_to(root).unwrap();
         let leftovers: Vec<_> = fs::read_dir(root)
             .unwrap()
