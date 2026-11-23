@@ -1,0 +1,5 @@
+interface:
+  display_name: "Create release"
+  short_description: "Bump the version, merge the release pull request and verify the published release"
+policy:
+  allow_implicit_invocation: false
