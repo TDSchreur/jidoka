@@ -1,7 +1,12 @@
 //! `jidoka pr sync` with real git in temporary repositories and a local bare remote.
 
 use super::*;
-use std::{cell::RefCell, fs, path::PathBuf};
+use std::{
+    cell::RefCell,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 use tempfile::TempDir;
 
 /// The plain path form git prints; on Windows `canonicalize` gives a `\\?\` path that git reads as a URL.
@@ -189,19 +194,15 @@ impl Project {
     }
 }
 
-/// One call of `RunApi::update`: run and options.
-type Update = (String, Vec<String>);
-
+/// The reports sent to the run, with the run they were for.
 #[derive(Default)]
 struct FakeApi {
-    updates: RefCell<Vec<Update>>,
+    updates: RefCell<Vec<(String, PrReport)>>,
 }
 
-impl RunApi for FakeApi {
-    fn update(&self, id: &str, options: &[&str]) -> Result<(), String> {
-        self.updates
-            .borrow_mut()
-            .push((id.into(), options.iter().map(|o| o.to_string()).collect()));
+impl RunReporter for FakeApi {
+    fn report(&self, id: &str, report: &PrReport) -> Result<(), String> {
+        self.updates.borrow_mut().push((id.into(), report.clone()));
         Ok(())
     }
 }
@@ -246,11 +247,14 @@ fn a_clean_merge_that_touches_none_of_the_change_is_pushed() {
         "Merge origin/develop into feature"
     );
     assert!(render(&synced).contains("jidoka pr wait"));
-    let updates = api.updates.borrow();
-    let (_, args) = updates.last().unwrap();
-    assert!(
-        args.iter().any(|a| a == "Merged develop into the branch"),
-        "{args:?}"
+    assert_eq!(
+        api.updates.borrow().last(),
+        Some(&(
+            "100".to_string(),
+            PrReport::BaseMerged {
+                base: "develop".into()
+            }
+        ))
     );
 }
 
@@ -360,13 +364,13 @@ fn the_checks_stop_the_command_before_anything_changes() {
 fn the_workspace_check_refuses_a_workspace_that_cannot_be_merged_or_pushed() {
     let project = Project::new();
     let git = TestGit::default();
-    let refused = |run: &PrRun, base: Option<&str>| match check_workspace(run, base, &git) {
+    let refused = |run: &PrRun, base: Option<&str>| match Workspace::verify(run, base, &git) {
         Ok(_) => panic!("the check passed"),
         Err(problem) => problem.0,
     };
 
     // A usable Workspace; without --base the base is origin's default branch.
-    let workspace = check_workspace(&run_of(&project), None, &git).unwrap();
+    let workspace = Workspace::verify(&run_of(&project), None, &git).unwrap();
     assert_eq!(
         (workspace.branch.as_str(), workspace.base.as_str()),
         ("feature", "develop")

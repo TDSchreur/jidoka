@@ -287,7 +287,7 @@ pub(crate) fn read_copilot(
             continue;
         }
         let skills = copilot_skills(&text);
-        let attention = crate::attention::signals(crate::attention::Agent::Copilot, &text);
+        let attention = crate::attention::signals(crate::agent::Agent::Copilot, &text);
         drop(text);
         if !plain_id(&session) {
             continue;

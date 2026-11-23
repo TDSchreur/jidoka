@@ -1,3 +1,4 @@
+use crate::agent::Agent;
 use std::{
     env,
     ffi::OsString,
@@ -8,7 +9,7 @@ use std::{
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
 /// Skills maintained in this project, installed without a third-party license.
-const LOCAL_SKILLS: [&str; 11] = [
+const LOCAL_SKILLS: [&str; 12] = [
     "jidoka",
     "jidoka-full",
     "jidoka-procedures",
@@ -20,53 +21,47 @@ const LOCAL_SKILLS: [&str; 11] = [
     "jidoka-awesome-copilot",
     "jidoka-setup-knowledge-repo",
     "jidoka-cross-repo-change",
+    "jidoka-work-through-plan",
 ];
 
-/// The agents Jidoka installs skills for, in the order the install menu lists them.
-pub(crate) const AGENTS: [&str; 3] = ["codex", "claude", "copilot"];
-
-/// `codex, claude, or copilot`.
-pub(crate) fn agent_list() -> String {
-    let (last, rest) = AGENTS.split_last().expect("AGENTS is not empty");
-    format!("{}, or {last}", rest.join(", "))
-}
-
-fn unknown_agent(name: &str) -> io::Error {
+/// The error for an agent name that is not one of `Agent::ALL`.
+pub(crate) fn unknown_agent(name: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        format!("unknown agent {name:?}; use {}", agent_list()),
+        format!("unknown agent {name:?}; use {}", Agent::list()),
     )
 }
 
-/// Turns an answer such as `1,claude`, `2 3` or `all` into agent names, without duplicates.
+/// Turns an answer such as `1,claude`, `2 3` or `all` into agents, without duplicates. Numbers count
+/// from 1 in the install menu order, `Agent::ALL`.
 ///
 /// # Errors
 ///
 /// Fails naming the first entry that is not a number, name or `all`, and on an empty answer.
-pub(crate) fn parse_agent_choice(answer: &str) -> io::Result<Vec<String>> {
-    let mut agents: Vec<String> = Vec::new();
+pub(crate) fn parse_agent_choice(answer: &str) -> io::Result<Vec<Agent>> {
+    let mut agents: Vec<Agent> = Vec::new();
     for entry in answer
         .split(|c: char| c == ',' || c.is_whitespace())
         .filter(|entry| !entry.is_empty())
     {
-        let chosen: Vec<&str> = match entry {
-            "all" => AGENTS.to_vec(),
-            name if AGENTS.contains(&name) => vec![name],
-            number => match number.parse::<usize>() {
-                Ok(n) if (1..=AGENTS.len()).contains(&n) => vec![AGENTS[n - 1]],
+        let chosen: Vec<Agent> = match (entry, Agent::parse(entry)) {
+            ("all", _) => Agent::ALL.to_vec(),
+            (_, Some(agent)) => vec![agent],
+            (number, None) => match number.parse::<usize>() {
+                Ok(n) if (1..=Agent::ALL.len()).contains(&n) => vec![Agent::ALL[n - 1]],
                 _ => return Err(unknown_agent(number)),
             },
         };
-        for name in chosen {
-            if !agents.iter().any(|known| known == name) {
-                agents.push(name.to_string());
+        for agent in chosen {
+            if !agents.contains(&agent) {
+                agents.push(agent);
             }
         }
     }
     if agents.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("no agent given; use {}", agent_list()),
+            format!("no agent given; use {}", Agent::list()),
         ));
     }
     Ok(agents)
@@ -80,7 +75,7 @@ pub(crate) fn select(
     terminal: bool,
     input: &mut impl io::BufRead,
     output: &mut impl io::Write,
-) -> io::Result<Vec<String>> {
+) -> io::Result<Vec<Agent>> {
     let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let env_agent = var("JIDOKA_AGENT")
         .map(|value| value.to_string_lossy().into_owned())
@@ -95,14 +90,11 @@ pub(crate) fn select(
     }
 }
 
-fn ask_agents(
-    input: &mut impl io::BufRead,
-    output: &mut impl io::Write,
-) -> io::Result<Vec<String>> {
+fn ask_agents(input: &mut impl io::BufRead, output: &mut impl io::Write) -> io::Result<Vec<Agent>> {
     loop {
         writeln!(output, "Install the Jidoka skills for which agents?")?;
-        for (index, name) in AGENTS.iter().enumerate() {
-            writeln!(output, "  {}) {name}", index + 1)?;
+        for (index, agent) in Agent::ALL.iter().enumerate() {
+            writeln!(output, "  {}) {}", index + 1, agent.name())?;
         }
         write!(
             output,
@@ -147,7 +139,7 @@ pub(crate) fn run(options: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Installs the bundled skills for the selected agents, the default policy and the install record.
-pub(crate) fn install(agents: &[String]) -> io::Result<()> {
+pub(crate) fn install(agents: &[Agent]) -> io::Result<()> {
     let var = |name: &str| env::var_os(name);
     install_skills(agents, &home_dir()?, &var, &mut io::stdout())?;
     let path = crate::install_record::path_in(var).ok_or_else(|| {
@@ -158,13 +150,18 @@ pub(crate) fn install(agents: &[String]) -> io::Result<()> {
     })?;
     crate::install_record::write(
         &path,
-        &crate::install_record::InstallRecord::current(agents.to_vec()),
+        &crate::install_record::InstallRecord::current(
+            agents
+                .iter()
+                .map(|agent| agent.name().to_string())
+                .collect(),
+        ),
     )
 }
 
 /// The skills and the default policy of an install, without the install record; policy messages go to `out`.
 pub(crate) fn install_skills(
-    agents: &[String],
+    agents: &[Agent],
     home: &Path,
     var: &impl Fn(&str) -> Option<OsString>,
     out: &mut impl io::Write,
@@ -175,13 +172,12 @@ pub(crate) fn install_skills(
 
 /// Only the skills of an install: no policy, no record.
 pub(crate) fn install_skill_files(
-    agents: &[String],
+    agents: &[Agent],
     home: &Path,
     var: &impl Fn(&str) -> Option<OsString>,
     out: &mut impl io::Write,
 ) -> io::Result<()> {
-    let roots = skills_roots(agents, home, var)?;
-    for root in roots {
+    for root in skills_roots(agents, home, var) {
         install_to_reporting(&root, out)?;
     }
     Ok(())
@@ -207,12 +203,7 @@ pub(crate) fn replace_default_policy(
             "cannot find Jidoka config directory for model routing",
         )
     })?;
-    let agents = [
-        crate::routing::RoutingAgent::Claude,
-        crate::routing::RoutingAgent::Codex,
-        crate::routing::RoutingAgent::Copilot,
-    ];
-    crate::routing::replace_starter(&path, &agents).map_err(|error| {
+    crate::routing::replace_starter(&path, &crate::routing::POLICY_ORDER).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!(
@@ -224,45 +215,25 @@ pub(crate) fn replace_default_policy(
     Ok(path)
 }
 
-/// Resolves the skills folder of every listed agent before anything is installed.
+/// The skills folder of every listed agent.
 pub(crate) fn skills_roots(
-    agents: &[impl AsRef<str>],
+    agents: &[Agent],
     home: &Path,
     var: impl Fn(&str) -> Option<OsString>,
-) -> io::Result<Vec<PathBuf>> {
+) -> Vec<PathBuf> {
     agents
         .iter()
-        .map(|agent| skills_root(agent.as_ref(), home, &var))
+        .map(|agent| skills_root(*agent, home, &var))
         .collect()
 }
 
-/// Resolves an agent's skills folder, honoring its config directory variable.
+/// An agent's skills folder, inside its Agent home.
 pub(crate) fn skills_root(
-    agent: &str,
+    agent: Agent,
     home: &Path,
     var: impl Fn(&str) -> Option<OsString>,
-) -> io::Result<PathBuf> {
-    Ok(agent_home(agent, home, var)?.join("skills"))
-}
-
-/// An agent's own folder, such as `~/.claude`, honoring its config directory variable.
-pub(crate) fn agent_home(
-    agent: &str,
-    home: &Path,
-    var: impl Fn(&str) -> Option<OsString>,
-) -> io::Result<PathBuf> {
-    let config_dir = |name: &str, default: &str| {
-        var(name)
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(default))
-    };
-    match agent {
-        "codex" => Ok(config_dir("CODEX_HOME", ".codex")),
-        "claude" => Ok(config_dir("CLAUDE_CONFIG_DIR", ".claude")),
-        "copilot" => Ok(config_dir("COPILOT_HOME", ".copilot")),
-        _ => Err(unknown_agent(agent)),
-    }
+) -> PathBuf {
+    agent.home(home, var).join("skills")
 }
 
 pub(crate) fn home_dir() -> io::Result<PathBuf> {
@@ -397,7 +368,7 @@ mod tests {
         env: &[(&str, &str)],
         terminal: bool,
         answers: &str,
-    ) -> (io::Result<Vec<String>>, String) {
+    ) -> (io::Result<Vec<Agent>>, String) {
         let var = |name: &str| {
             env.iter()
                 .find(|(key, _)| *key == name)
@@ -408,8 +379,8 @@ mod tests {
         (result, String::from_utf8(out).unwrap())
     }
 
-    fn names(selection: io::Result<Vec<String>>) -> Vec<String> {
-        selection.unwrap()
+    fn names(selection: io::Result<Vec<Agent>>) -> Vec<&'static str> {
+        selection.unwrap().into_iter().map(Agent::name).collect()
     }
 
     #[test]
@@ -469,23 +440,24 @@ mod tests {
         let unset = |_: &str| None;
         let set = |name: &str| Some(OsString::from(format!("/custom/{name}")));
         let empty = |_: &str| Some(OsString::new());
-        let root =
-            |agent, var: &dyn Fn(&str) -> Option<OsString>| skills_root(agent, home, var).unwrap();
-        assert_eq!(root("claude", &unset), home.join(".claude/skills"));
-        assert_eq!(root("claude", &empty), home.join(".claude/skills"));
+        let root = |agent, var: &dyn Fn(&str) -> Option<OsString>| skills_root(agent, home, var);
+        assert_eq!(root(Agent::Claude, &unset), home.join(".claude/skills"));
+        assert_eq!(root(Agent::Claude, &empty), home.join(".claude/skills"));
         assert_eq!(
-            root("claude", &set),
+            root(Agent::Claude, &set),
             Path::new("/custom/CLAUDE_CONFIG_DIR/skills")
         );
-        assert_eq!(root("codex", &unset), home.join(".codex/skills"));
-        assert_eq!(root("codex", &set), Path::new("/custom/CODEX_HOME/skills"));
-        assert_eq!(root("copilot", &unset), home.join(".copilot/skills"));
-        assert_eq!(root("copilot", &empty), home.join(".copilot/skills"));
+        assert_eq!(root(Agent::Codex, &unset), home.join(".codex/skills"));
         assert_eq!(
-            root("copilot", &set),
+            root(Agent::Codex, &set),
+            Path::new("/custom/CODEX_HOME/skills")
+        );
+        assert_eq!(root(Agent::Copilot, &unset), home.join(".copilot/skills"));
+        assert_eq!(root(Agent::Copilot, &empty), home.join(".copilot/skills"));
+        assert_eq!(
+            root(Agent::Copilot, &set),
             Path::new("/custom/COPILOT_HOME/skills")
         );
-        assert!(skills_root("other", home, unset).is_err());
     }
     /// Names that belong to this repository, not to the projects the skills are installed in.
     /// Concrete commands and branches go in AGENTS.md, README or .github/instructions instead.
@@ -780,22 +752,20 @@ mod tests {
                 &parse_agent_choice("codex, claude,codex").unwrap(),
                 home,
                 unset
-            )
-            .unwrap(),
+            ),
             [home.join(".codex/skills"), home.join(".claude/skills")]
         );
         assert_eq!(
-            skills_roots(&["copilot"], home, unset).unwrap(),
+            skills_roots(&[Agent::Copilot], home, unset),
             [home.join(".copilot/skills")]
         );
-        let error = skills_roots(&["codex", "vscode"], home, unset).unwrap_err();
+        let error = parse_agent_choice("codex, vscode").unwrap_err();
         assert!(error.to_string().contains("vscode"));
     }
     #[test]
     fn selector_replaces_full_and_all_entry_points_survive_reinstall_for_each_agent() {
         let home = tempfile::tempdir().unwrap();
-        let roots =
-            skills_roots(&["codex", "claude", "copilot"], home.path(), |_: &str| None).unwrap();
+        let roots = skills_roots(&Agent::ALL, home.path(), |_: &str| None);
         for root in roots {
             fs::create_dir_all(root.join("jidoka")).unwrap();
             fs::write(
@@ -896,6 +866,8 @@ mod tests {
         assert!(!root.join("jidoka-awesome-copilot/LICENSE").exists());
         assert!(!root.join("jidoka-setup-knowledge-repo/LICENSE").exists());
         assert!(!root.join("jidoka-cross-repo-change/LICENSE").exists());
+        assert!(root.join("jidoka-work-through-plan/SKILL.md").is_file());
+        assert!(!root.join("jidoka-work-through-plan/LICENSE").exists());
         install_to(root).unwrap();
         let leftovers: Vec<_> = fs::read_dir(root)
             .unwrap()

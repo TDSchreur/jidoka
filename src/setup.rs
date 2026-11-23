@@ -1,4 +1,5 @@
 //! Startup check: adopts skills installed before the install record existed, or hints at `jidoka install`.
+use crate::agent::Agent;
 use crate::install_record::{self, InstallRecord};
 use std::{
     ffi::OsString,
@@ -49,12 +50,10 @@ pub(crate) fn check(
             return;
         }
     }
-    let adopted: Vec<String> = crate::install::AGENTS
+    let adopted: Vec<String> = Agent::ALL
         .into_iter()
-        .filter(|agent| {
-            crate::install::skills_root(agent, home, &var).is_ok_and(|root| has_bundled(&root))
-        })
-        .map(String::from)
+        .filter(|agent| has_bundled(&crate::install::skills_root(*agent, home, &var)))
+        .map(|agent| agent.name().to_string())
         .collect();
     let record = InstallRecord {
         version: String::new(),
@@ -166,7 +165,14 @@ fn refresh(
     let Some(_lock) = Lock::take(path.with_file_name("install.lock")) else {
         return;
     };
-    let result = crate::install::install_skill_files(&record.agents, home, var, &mut io::sink())
+    // The record is a user file, so a name in it may be unknown.
+    let agents: io::Result<Vec<Agent>> = record
+        .agents
+        .iter()
+        .map(|name| Agent::parse(name).ok_or_else(|| crate::install::unknown_agent(name)))
+        .collect();
+    let result = agents
+        .and_then(|agents| crate::install::install_skill_files(&agents, home, var, &mut io::sink()))
         .and_then(|()| crate::install::replace_default_policy(var))
         .map(|_| ())
         .and_then(|()| {

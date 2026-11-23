@@ -1,19 +1,20 @@
 //! `jidoka run next`: what a run does now, in the order the agent needs it.
 
 use crate::{
+    agent::Agent,
     checks,
+    git::Git,
     inspect::shown,
-    pr_sync::Git,
-    routing::{ModelChoice, ModelRouting, RoutingAgent},
+    routing::{ModelChoice, ModelRouting},
     run::{
         Evaluation, ExitOutcome, GateResult, GateStatus, Mode, Run, RunStatus, Stage, StageExit,
         Ticket, TicketStatus,
     },
-    run_gate,
+    run_gate::{self, AssessmentPurpose, CheckSelection},
     stages::{self, Destination, Gate},
 };
 use serde::Serialize;
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
 
 /// A Gate that is still open, with what satisfies it.
 #[derive(Clone, Serialize, Debug, PartialEq, Eq)]
@@ -203,11 +204,7 @@ fn gate_display(evaluations: Vec<Evaluation>) -> Vec<GateDisplay> {
 }
 
 /// Show saved exits and live local results for the current pass.
-pub(crate) fn stage_gates<'a>(
-    run: &'a Run,
-    paths: Result<&[String], &str>,
-    git: &dyn Git,
-) -> Vec<StageGates<'a>> {
+pub(crate) fn stage_gates(run: &Run, mut current: Vec<Evaluation>) -> Vec<StageGates<'_>> {
     let Some(mode) = run.mode else {
         return Vec::new();
     };
@@ -224,7 +221,7 @@ pub(crate) fn stage_gates<'a>(
             return None;
         }
         let gates = if active {
-            current_evaluations(run, mode, transition.gates, paths, git)
+            std::mem::take(&mut current)
         } else {
             transition
                 .gates
@@ -242,27 +239,9 @@ pub(crate) fn stage_gates<'a>(
     history.chain(remaining).collect()
 }
 
-fn current_evaluations(
-    run: &Run,
-    mode: Mode,
-    gates: &[Gate],
-    paths: Result<&[String], &str>,
-    git: &dyn Git,
-) -> Vec<Evaluation> {
-    let candidate = run_gate::candidate(run, gates, git);
-    let selection = paths.map(|paths| checks::select(mode, paths));
-    run_gate::evaluate(
-        run,
-        gates,
-        git,
-        &candidate,
-        selection.as_ref().map_err(|reason| *reason),
-    )
-}
-
 include!(concat!(env!("OUT_DIR"), "/stage_chunks.rs"));
 
-fn instructions(mode: Mode, stage: Stage, routing: Option<RoutingAgent>) -> String {
+fn instructions(mode: Mode, stage: Stage, routing: Option<Agent>) -> String {
     let mode_dir = match mode {
         Mode::Fast => "fast",
         Mode::Balanced => "balanced",
@@ -287,9 +266,9 @@ fn instructions(mode: Mode, stage: Stage, routing: Option<RoutingAgent>) -> Stri
         Stage::Finish => &["stage-reporting", "finish", "pull-request-and-ci"],
     };
     let routed = routing.map(|agent| match agent {
-        RoutingAgent::Claude => "routing-claude",
-        RoutingAgent::Codex => "routing-codex",
-        RoutingAgent::Copilot => "routing-copilot",
+        Agent::Claude => "routing-claude",
+        Agent::Codex => "routing-codex",
+        Agent::Copilot => "routing-copilot",
     });
     let stage_routing = routing.map(|_| match stage {
         Stage::Define => "routing-define",
@@ -314,14 +293,13 @@ fn instructions(mode: Mode, stage: Stage, routing: Option<RoutingAgent>) -> Stri
 
 pub(crate) fn checks_for(
     mode: Mode,
-    changed_paths: &[String],
+    selection: &checks::Selection,
     routing: Option<&ModelRouting>,
 ) -> Checks {
-    let selection = checks::select(mode, changed_paths);
     Checks {
         applicable: selection
             .applicable
-            .into_iter()
+            .iter()
             .map(|a| CheckEntry {
                 name: a.check.name,
                 gate: Some(a.check.gate.gate()),
@@ -330,46 +308,23 @@ pub(crate) fn checks_for(
                     .model_route
                     .and_then(|stage| routing.and_then(|r| r.choice_for(stage)))
                     .cloned(),
-                reason: match a.reason {
+                reason: match &a.reason {
                     checks::Reason::Floor => format!("{} always runs it", mode.name()),
-                    checks::Reason::Triggered { path } => format!("{} changed", shown(&path)),
+                    checks::Reason::Triggered { path } => format!("{} changed", shown(path)),
                 },
             })
             .collect(),
         skipped: selection
             .skipped
-            .into_iter()
+            .iter()
             .map(|s| CheckEntry {
                 name: s.check.name,
                 gate: None,
                 model: None,
-                reason: s.reason,
+                reason: s.reason.clone(),
             })
             .collect(),
     }
-}
-
-/// The paths changed between the run's base commit and its head.
-///
-/// # Errors
-///
-/// Returns a message when the worktree, base commit or diff is unavailable.
-pub(crate) fn changed_paths(run: &Run, git: &dyn Git) -> Result<Vec<String>, String> {
-    let worktree = run
-        .worktree
-        .as_ref()
-        .ok_or("Record the worktree to select checks")?;
-    let base = run
-        .base_commit
-        .as_ref()
-        .ok_or("Record the base commit to select checks")?;
-    let range = format!("{base}..HEAD");
-    git.git(
-        Path::new(worktree),
-        &["diff", "--name-only", "--no-renames", "-z", &range],
-    )
-    .map(|out| out.split_terminator('\0').map(str::to_string).collect())
-    .map_err(|error| format!("Could not inspect the changed paths in {worktree}: {error}"))
 }
 
 fn rework_move(run: &Run, mode: Mode) -> Option<Move> {
@@ -407,16 +362,7 @@ fn recorded_gate_results(run: &Run) -> Vec<GateResult> {
 /// # Errors
 ///
 /// Returns a message when the run has no recorded mode.
-#[cfg(test)]
-pub(crate) fn build(run: &Run, changed_paths: &[String]) -> Result<Next, String> {
-    build_with_git(run, Ok(changed_paths), &crate::run_check::ReadOnlyGit)
-}
-
-pub(crate) fn build_with_git(
-    run: &Run,
-    changed_paths: Result<&[String], &str>,
-    git: &dyn Git,
-) -> Result<Next, String> {
+pub(crate) fn build(run: &Run, git: &dyn Git) -> Result<Next, String> {
     let mode = run.mode.ok_or_else(|| {
         "the run has no recorded mode; record it with `jidoka run update <id> --mode <mode>`"
             .to_string()
@@ -424,15 +370,10 @@ pub(crate) fn build_with_git(
     let mut moves = Vec::new();
     let mut gates = Vec::new();
     let mut note = None;
-    match stages::next(mode, run.stage, run.status) {
+    let assessment = run_gate::assess_local(run, git, AssessmentPurpose::Guidance);
+    match assessment.transition {
         Ok(transition) => {
-            gates = open(current_evaluations(
-                run,
-                mode,
-                transition.gates,
-                changed_paths,
-                git,
-            ));
+            gates = open(assessment.evaluations);
             let (kind, to) = match transition.to {
                 Destination::Stage(stage) => ("stage", Some(stage)),
                 Destination::Done => ("done", None),
@@ -447,6 +388,11 @@ pub(crate) fn build_with_git(
         }
         Err(reason) => note = Some(reason),
     }
+    let (selection, checks_unavailable) = match &assessment.checks {
+        CheckSelection::NotApplicable => (None, None),
+        CheckSelection::Unavailable(reason) => (None, Some(reason.clone())),
+        CheckSelection::Selected { selection, .. } => (Some(selection), None),
+    };
     Ok(Next {
         run: run.id.clone(),
         title: run.title.clone(),
@@ -454,16 +400,13 @@ pub(crate) fn build_with_git(
         stage: run.stage,
         status: run.status,
         rework: run.rework,
-        instructions: stage_instructions(run, mode, changed_paths.ok()),
+        instructions: stage_instructions(run, mode, selection),
         gates,
         gate_results: recorded_gate_results(run),
         stage_exits: run.stage_exits.clone(),
-        checks_unavailable: changed_paths.err().map(str::to_owned),
+        checks_unavailable,
         moves,
-        checks: changed_paths
-            .ok()
-            .filter(|_| run.stage == Stage::Check && mode != Mode::Fast)
-            .map(|paths| checks_for(mode, paths, run.model_routing.as_ref())),
+        checks: selection.map(|selection| checks_for(mode, selection, run.model_routing.as_ref())),
         summaries: run.summaries.clone(),
         tickets: run.tickets.clone(),
         unticketed_attempt: run.unticketed_attempt,
@@ -496,7 +439,7 @@ pub(crate) fn build_with_git(
     })
 }
 
-fn stage_instructions(run: &Run, mode: Mode, changed_paths: Option<&[String]>) -> String {
+fn stage_instructions(run: &Run, mode: Mode, selection: Option<&checks::Selection>) -> String {
     if run.status == RunStatus::Done {
         return String::new();
     }
@@ -511,10 +454,8 @@ fn stage_instructions(run: &Run, mode: Mode, changed_paths: Option<&[String]>) -
             })
             .map(|routing| routing.agent),
     );
-    if run.stage == Stage::Check
-        && let Some(paths) = changed_paths
-    {
-        for applicable in checks::select(mode, paths).applicable {
+    if let Some(selection) = selection {
+        for applicable in &selection.applicable {
             stage_instructions.push_str("\n\n");
             stage_instructions.push_str(applicable.check.instructions);
         }

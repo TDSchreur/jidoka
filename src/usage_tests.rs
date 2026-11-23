@@ -676,7 +676,7 @@ fn recorded_sessions_in_an_unscanned_folder_get_their_own_reason() {
     assert_eq!(usage.status, UsageStatus::NotTracked);
     let reason = usage.reason.unwrap();
     assert!(
-        reason.starts_with(crate::requests::RECORDED_NOT_FOUND),
+        reason.starts_with(crate::session_attribution::RECORDED_NOT_FOUND),
         "{reason}"
     );
 
@@ -698,7 +698,7 @@ fn recorded_sessions_in_an_unscanned_folder_get_their_own_reason() {
     assert_eq!(usage.status, UsageStatus::NotTracked);
     let reason = usage.reason.unwrap();
     assert!(
-        reason.starts_with(crate::requests::RECORDED_NOT_FOUND),
+        reason.starts_with(crate::session_attribution::RECORDED_NOT_FOUND),
         "{reason}"
     );
     assert!(reason.contains("elsewhere"), "{reason}");

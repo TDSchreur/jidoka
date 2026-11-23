@@ -4,9 +4,9 @@
 //! session's model. Nothing here changes a file or calls a model; at most it asks an agent for its `--version`.
 
 use super::{Check, Machine, find_program, read_doc};
+use crate::agent::Agent;
 use crate::routing::{
-    COPILOT_EFFORTS, Coverage, Host, ModelChoice, ModelRouting, Policy, RoutingAgent,
-    policy_path_in, read,
+    COPILOT_EFFORTS, Coverage, ModelChoice, ModelRouting, Policy, policy_path_in, read,
 };
 use std::path::Path;
 
@@ -19,7 +19,7 @@ const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 /// The routing checks for `agent` (all agents when `None`), as `--agent` on `jidoka doctor` selects. What
 /// the policy does for each agent comes from `Policy::coverage`, the same rule `jidoka run start` follows;
 /// this only adds what the machine needs.
-pub(super) fn checks(root: &Path, machine: &Machine, agent: Option<&str>) -> Vec<Check> {
+pub(super) fn checks(root: &Path, machine: &Machine, agent: Option<Agent>) -> Vec<Check> {
     let Some(path) = policy_path_in(|name| (machine.var)(name)) else {
         return Vec::new();
     };
@@ -35,13 +35,13 @@ pub(super) fn checks(root: &Path, machine: &Machine, agent: Option<&str>) -> Vec
     };
     let shown = path.display();
     // The agents to report on: the one asked for, or those the policy is about.
-    let hosts: Vec<Host> = match (agent.and_then(Host::parse), &policy) {
+    let agents: Vec<Agent> = match (agent, &policy) {
         (_, Policy::Off) => return Vec::new(),
-        (Some(host), _) => vec![host],
+        (Some(agent), _) => vec![agent],
         (None, Policy::Multi { .. }) => policy
             .configured()
             .into_iter()
-            .filter_map(Host::parse)
+            .filter_map(Agent::parse)
             .collect(),
     };
     // Every check says which agent it is about.
@@ -49,16 +49,15 @@ pub(super) fn checks(root: &Path, machine: &Machine, agent: Option<&str>) -> Vec
         "policy",
         format!("{shown} configures {}", policy.configured().join(", ")),
     )];
-    for host in hosts {
-        let name = host.name();
-        let tag = |check: Check| check.for_agent(name);
-        match policy.coverage(host) {
+    for agent in agents {
+        let tag = |check: Check| check.for_agent(agent.name());
+        match policy.coverage(agent) {
             None => {}
             Some(Coverage::Routed(selection)) => {
                 checks.extend(agent_checks(&selection, root, machine).into_iter().map(tag));
             }
             Some(Coverage::NotRouted(why)) => {
-                checks.push(tag(Check::skipped("policy", why.text(host))));
+                checks.push(tag(Check::skipped("policy", why.text(agent))));
             }
         }
     }
@@ -67,9 +66,9 @@ pub(super) fn checks(root: &Path, machine: &Machine, agent: Option<&str>) -> Vec
 
 fn agent_checks(selection: &ModelRouting, root: &Path, machine: &Machine) -> Vec<Check> {
     match selection.agent {
-        RoutingAgent::Claude => claude_checks(selection, root, machine),
-        RoutingAgent::Codex => codex_checks(selection, machine),
-        RoutingAgent::Copilot => copilot_checks(selection, root, machine),
+        Agent::Claude => claude_checks(selection, root, machine),
+        Agent::Codex => codex_checks(selection, machine),
+        Agent::Copilot => copilot_checks(selection, root, machine),
     }
 }
 
@@ -151,11 +150,9 @@ struct CodexModel {
 type CodexCatalog = Result<Vec<CodexModel>, String>;
 
 fn codex_catalog(machine: &Machine) -> CodexCatalog {
-    let home =
-        crate::install::agent_home("codex", &machine.home, machine.var).map_err(|error| {
-            format!("could not find the Codex folder, so models_cache.json was not read: {error}")
-        })?;
-    let path = home.join("models_cache.json");
+    let path = Agent::Codex
+        .home(&machine.home, machine.var)
+        .join("models_cache.json");
     let shown = path.display();
     let text = read_doc(&path).map_err(|error| format!("could not read {shown}: {error}"))?;
     let unexpected = || format!("{shown} is not in the expected shape");
@@ -379,30 +376,30 @@ fn effort_check(selection: &ModelRouting, host: &str, accepted: &[&str]) -> Chec
 
 /// Where Claude Code settings can set environment variables, besides the environment itself.
 fn settings_files(root: &Path, machine: &Machine) -> Vec<(String, std::path::PathBuf)> {
-    let mut files = Vec::new();
-    if let Ok(home) = crate::install::agent_home("claude", &machine.home, machine.var) {
-        files.push(("user settings".to_string(), home.join("settings.json")));
-    }
-    files.push((
-        "project settings".into(),
-        root.join(".claude/settings.json"),
-    ));
-    files.push((
-        "local project settings".into(),
-        root.join(".claude/settings.local.json"),
-    ));
-    files
+    let home = Agent::Claude.home(&machine.home, machine.var);
+    vec![
+        ("user settings".into(), home.join("settings.json")),
+        (
+            "project settings".into(),
+            root.join(".claude/settings.json"),
+        ),
+        (
+            "local project settings".into(),
+            root.join(".claude/settings.local.json"),
+        ),
+    ]
 }
 
 /// Copilot CLI settings can pin a subagent's model and effort: `subagents.agents.<name>.model` and `.effortLevel`.
 /// Whether a pin beats what the `task` tool passes is not verified, so a pin is a warning that it can.
 fn copilot_overrides_check(root: &Path, machine: &Machine) -> Check {
-    let mut files = Vec::new();
-    if let Ok(home) = crate::install::agent_home("copilot", &machine.home, machine.var) {
-        files.push(home.join("settings.json"));
-    }
-    files.push(root.join(".github/copilot/settings.json"));
-    files.push(root.join(".github/copilot/settings.local.json"));
+    let files = [
+        Agent::Copilot
+            .home(&machine.home, machine.var)
+            .join("settings.json"),
+        root.join(".github/copilot/settings.json"),
+        root.join(".github/copilot/settings.local.json"),
+    ];
     let (mut pins, mut unreadable) = (Vec::new(), Vec::new());
     for path in files {
         let text = match read_doc(&path) {

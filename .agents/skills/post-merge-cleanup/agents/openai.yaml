@@ -1,0 +1,5 @@
+interface:
+  display_name: "Post-merge cleanup"
+  short_description: "Clean up a merged run and update the local jidoka"
+policy:
+  allow_implicit_invocation: false

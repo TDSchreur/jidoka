@@ -1,0 +1,5 @@
+interface:
+  display_name: "Verify and report"
+  short_description: "Run the right verification and report what ran and what was skipped"
+policy:
+  allow_implicit_invocation: false

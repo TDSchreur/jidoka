@@ -1,5 +1,6 @@
 use super::*;
-use crate::routing::{ModelChoice, ModelRouting, RoutingAgent};
+use crate::routing::{ModelChoice, ModelRouting};
+use std::path::Path;
 
 fn run(mode: Mode, stage: Stage, routing: Option<ModelRouting>) -> Run {
     let mut run: Run = serde_json::from_value(serde_json::json!({
@@ -19,13 +20,15 @@ fn run(mode: Mode, stage: Stage, routing: Option<ModelRouting>) -> Run {
     });
     run.mode = Some(mode);
     run.stage = stage;
+    run.worktree = Some("/work/repo".into());
+    run.base_commit = Some("abc".into());
     run.summaries.insert(Stage::Define, "the plan".into());
     run
 }
 
 fn routing() -> ModelRouting {
     ModelRouting {
-        agent: RoutingAgent::Claude,
+        agent: Agent::Claude,
         stages: BTreeMap::from([(
             Stage::Build,
             ModelChoice {
@@ -45,13 +48,29 @@ fn routing() -> ModelRouting {
     }
 }
 
+struct LocalGit;
+
+impl Git for LocalGit {
+    fn git(&self, _: &Path, args: &[&str]) -> Result<String, String> {
+        match args {
+            ["rev-parse", "HEAD"] => Ok("def".into()),
+            ["diff", ..] => Ok("src/a.rs\0".into()),
+            _ => panic!("unexpected Git operation: {args:?}"),
+        }
+    }
+}
+
+fn build(run: &Run) -> Result<Next, String> {
+    super::build(run, &LocalGit)
+}
+
 fn names(gates: &[OpenGate]) -> Vec<Gate> {
     gates.iter().map(|g| g.name).collect()
 }
 
 #[test]
 fn fast_build_lists_gates_and_has_no_checks_or_rework() {
-    let next = build(&run(Mode::Fast, Stage::Build, None), &[]).unwrap();
+    let next = build(&run(Mode::Fast, Stage::Build, None)).unwrap();
     assert_eq!(names(&next.gates), [Gate::TicketsDone, Gate::Verified]);
     assert_eq!(next.moves.len(), 1);
     assert_eq!(next.moves[0].to, Some(Stage::Finish));
@@ -61,11 +80,7 @@ fn fast_build_lists_gates_and_has_no_checks_or_rework() {
 
 #[test]
 fn balanced_check_offers_advance_with_applicable_checks() {
-    let next = build(
-        &run(Mode::Balanced, Stage::Check, None),
-        &["src/a.rs".into()],
-    )
-    .unwrap();
+    let next = build(&run(Mode::Balanced, Stage::Check, None)).unwrap();
     let kinds: Vec<_> = next.moves.iter().map(|m| (m.kind, m.to)).collect();
     assert_eq!(kinds, [("stage", Some(Stage::Finish))]);
     let checks = next.checks.unwrap();
@@ -74,27 +89,27 @@ fn balanced_check_offers_advance_with_applicable_checks() {
 
 #[test]
 fn full_build_requires_tickets_and_finish_ends_in_done() {
-    let build_next = build(&run(Mode::Full, Stage::Build, None), &[]).unwrap();
+    let build_next = build(&run(Mode::Full, Stage::Build, None)).unwrap();
     assert_eq!(
         names(&build_next.gates),
         [Gate::TicketsDone, Gate::TicketsVerified]
     );
-    let finish = build(&run(Mode::Full, Stage::Finish, None), &[]).unwrap();
+    let finish = build(&run(Mode::Full, Stage::Finish, None)).unwrap();
     assert_eq!(finish.moves[0].kind, "done");
     assert_eq!(finish.moves[0].to, None);
 }
 
 #[test]
 fn model_comes_from_the_override_then_the_policy_and_is_none_without_routing() {
-    let build_next = build(&run(Mode::Balanced, Stage::Build, Some(routing())), &[]).unwrap();
+    let build_next = build(&run(Mode::Balanced, Stage::Build, Some(routing()))).unwrap();
     assert_eq!(build_next.model.unwrap().model, "sonnet");
-    let check = build(&run(Mode::Balanced, Stage::Check, Some(routing())), &[]).unwrap();
+    let check = build(&run(Mode::Balanced, Stage::Check, Some(routing()))).unwrap();
     assert_eq!(check.model.unwrap().model, "opus");
-    let define = build(&run(Mode::Balanced, Stage::Define, Some(routing())), &[]).unwrap();
+    let define = build(&run(Mode::Balanced, Stage::Define, Some(routing()))).unwrap();
     assert!(define.model.is_none());
     for mode in [Mode::Fast, Mode::Balanced, Mode::Full] {
         assert!(
-            build(&run(mode, Stage::Build, None), &[])
+            build(&run(mode, Stage::Build, None))
                 .unwrap()
                 .model
                 .is_none()
@@ -106,7 +121,7 @@ fn model_comes_from_the_override_then_the_policy_and_is_none_without_routing() {
 fn blocked_run_has_a_note_and_no_moves() {
     let mut blocked = run(Mode::Fast, Stage::Build, None);
     blocked.status = RunStatus::Blocked;
-    let next = build(&blocked, &[]).unwrap();
+    let next = build(&blocked).unwrap();
     assert!(next.moves.is_empty());
     assert!(next.note.unwrap().contains("blocked"));
 }
@@ -115,12 +130,12 @@ fn blocked_run_has_a_note_and_no_moves() {
 fn a_run_without_mode_is_an_error() {
     let mut unknown = run(Mode::Fast, Stage::Build, None);
     unknown.mode = None;
-    assert!(build(&unknown, &[]).is_err());
+    assert!(build(&unknown).is_err());
 }
 
 #[test]
 fn json_and_text_show_the_model_and_gates() {
-    let next = build(&run(Mode::Balanced, Stage::Build, Some(routing())), &[]).unwrap();
+    let next = build(&run(Mode::Balanced, Stage::Build, Some(routing()))).unwrap();
     let json = serde_json::to_value(&next).unwrap();
     assert_eq!(json["stage"], "build");
     assert_eq!(json["model"]["effort"], "medium");
@@ -152,7 +167,7 @@ fn next_shows_recorded_results_and_only_open_review_gates() {
         check: Some("code-review".into()),
         skipped_checks: Vec::new(),
     });
-    let next = build(&run, &[]).unwrap();
+    let next = build(&run).unwrap();
     assert_eq!(
         names(&next.gates),
         [
@@ -168,7 +183,7 @@ fn next_shows_recorded_results_and_only_open_review_gates() {
     );
     run.rework = Some(1);
     assert_eq!(
-        names(&build(&run, &[]).unwrap().gates),
+        names(&build(&run).unwrap().gates),
         [
             Gate::ChecksRecorded,
             Gate::NoActionableFindings,
@@ -181,7 +196,7 @@ fn next_shows_recorded_results_and_only_open_review_gates() {
 fn next_supplies_only_current_stage_and_routing_when_selected() {
     for mode in [Mode::Fast, Mode::Balanced, Mode::Full] {
         for &stage in stages::stages(mode) {
-            let next = build(&run(mode, stage, None), &[]).unwrap();
+            let next = build(&run(mode, stage, None)).unwrap();
             assert!(next.instructions.contains(&format!(
                 "{}: {}",
                 match mode {
@@ -200,13 +215,13 @@ fn next_supplies_only_current_stage_and_routing_when_selected() {
             assert!(!next.instructions.contains("No instructions for this stage"));
         }
     }
-    let routed = build(&run(Mode::Balanced, Stage::Build, Some(routing())), &[]).unwrap();
+    let routed = build(&run(Mode::Balanced, Stage::Build, Some(routing()))).unwrap();
     assert!(routed.instructions.contains("# Model routing"));
 }
 
 #[test]
 fn build_instructions_are_focused_and_full_explains_each_ticket_gate() {
-    let output = build(&run(Mode::Full, Stage::Build, Some(routing())), &[]).unwrap();
+    let output = build(&run(Mode::Full, Stage::Build, Some(routing()))).unwrap();
     assert!(output.instructions.contains("tickets-verified pass"));
     assert!(
         output
@@ -220,10 +235,10 @@ fn build_instructions_are_focused_and_full_explains_each_ticket_gate() {
         output.instructions.len() < 8000,
         "stage guidance unexpectedly large"
     );
-    let check = build(&run(Mode::Balanced, Stage::Check, None), &[]).unwrap();
+    let check = build(&run(Mode::Balanced, Stage::Check, None)).unwrap();
     assert!(check.instructions.contains("## Committing for Check"));
     for mode in [Mode::Balanced, Mode::Full] {
-        let check = build(&run(mode, Stage::Check, None), &[]).unwrap();
+        let check = build(&run(mode, Stage::Check, None)).unwrap();
         assert!(check.instructions.contains("## Check reviews"));
         assert!(check.instructions.contains("no-actionable-findings pass"));
     }
@@ -231,25 +246,25 @@ fn build_instructions_are_focused_and_full_explains_each_ticket_gate() {
 
 #[test]
 fn finish_includes_the_pull_request_procedure_and_a_done_run_has_no_instructions() {
-    let finish = build(&run(Mode::Balanced, Stage::Finish, None), &[]).unwrap();
+    let finish = build(&run(Mode::Balanced, Stage::Finish, None)).unwrap();
     assert!(finish.instructions.contains("## Pull request and CI"));
     let mut done = run(Mode::Balanced, Stage::Finish, None);
     done.status = RunStatus::Done;
-    let next = build(&done, &[]).unwrap();
+    let next = build(&done).unwrap();
     assert!(next.instructions.is_empty());
     assert!(!render(&next).contains("Instructions"));
 }
 
 #[test]
 fn applicable_check_supplies_instructions_gate_and_routed_model() {
-    let next = build(&run(Mode::Balanced, Stage::Check, Some(routing())), &[]).unwrap();
+    let next = build(&run(Mode::Balanced, Stage::Check, Some(routing()))).unwrap();
     assert!(next.instructions.contains("## Code review"));
     assert!(next.instructions.contains("Use `jidoka-code-review`"));
     let json = serde_json::to_value(&next).unwrap();
     assert_eq!(json["checks"]["applicable"][0]["gate"], "checks-recorded");
     assert_eq!(json["checks"]["applicable"][0]["model"]["model"], "opus");
     assert!(render(&next).contains("gate: checks-recorded"));
-    let build_stage = build(&run(Mode::Balanced, Stage::Build, Some(routing())), &[]).unwrap();
+    let build_stage = build(&run(Mode::Balanced, Stage::Build, Some(routing()))).unwrap();
     assert!(!build_stage.instructions.contains("## Code review"));
 }
 
@@ -262,101 +277,47 @@ impl Git for FailingDiff {
 }
 
 #[test]
-fn check_selection_reports_missing_context_and_diff_failure() {
-    let mut run = run(Mode::Balanced, Stage::Check, None);
+fn check_selection_explains_unavailable_evidence_only_when_needed() {
+    let mut run = run(Mode::Balanced, Stage::Build, None);
+    run.worktree = None;
+    let next = super::build(&run, &FailingDiff).unwrap();
     assert!(
-        changed_paths(&run, &FailingDiff)
-            .unwrap_err()
-            .contains("worktree")
+        next.checks.is_none(),
+        "Build guidance included Check selection: {:?}",
+        next.checks
     );
-    run.worktree = Some("/work/repo".into());
     assert!(
-        changed_paths(&run, &FailingDiff)
-            .unwrap_err()
-            .contains("base commit")
+        next.checks_unavailable.is_none(),
+        "Build guidance reported Check selection unavailable: {:?}",
+        next.checks_unavailable
     );
-    run.base_commit = Some("abc".into());
-    let error = changed_paths(&run, &FailingDiff).unwrap_err();
-    assert!(error.contains("/work/repo"));
-    assert!(error.contains("git diff failed"));
-}
 
-struct NullDiff;
-
-impl Git for NullDiff {
-    fn git(&self, _dir: &Path, args: &[&str]) -> Result<String, String> {
-        assert_eq!(
-            args,
-            ["diff", "--name-only", "--no-renames", "-z", "abc..HEAD"]
+    run.stage = Stage::Check;
+    let reason = |run: &Run| {
+        let next = super::build(run, &FailingDiff).unwrap();
+        assert!(
+            next.checks.is_none(),
+            "Check guidance showed a selection without a usable diff: {:?}",
+            next.checks
         );
-        Ok(" leading.txt\0line\nbreak.tf\0ümlaut.tf\0".into())
-    }
-}
-
-#[test]
-fn changed_paths_preserves_unusual_names() {
-    let mut run = run(Mode::Balanced, Stage::Check, None);
+        let reason = next.checks_unavailable.unwrap();
+        let gate = next
+            .gates
+            .iter()
+            .find(|g| g.name == Gate::ChecksRecorded)
+            .unwrap();
+        assert_eq!(gate.reason.as_deref(), Some(reason.as_str()));
+        reason
+    };
+    assert_eq!(reason(&run), "Record the worktree to select checks");
     run.worktree = Some("/work/repo".into());
+    run.base_commit = None;
+    assert_eq!(reason(&run), "Record the base commit to select checks");
     run.base_commit = Some("abc".into());
     assert_eq!(
-        changed_paths(&run, &NullDiff).unwrap(),
-        [" leading.txt", "line\nbreak.tf", "ümlaut.tf"]
+        reason(&run),
+        "Could not inspect the changed paths in /work/repo: git diff failed"
     );
-}
-
-#[test]
-fn git_diff_preserves_unusual_paths_and_both_sides_of_renames() {
-    let dir = tempfile::tempdir().unwrap();
-    let git = |args: &[&str]| {
-        let output = std::process::Command::new("git")
-            .current_dir(dir.path())
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", dir.path().join("no-config"))
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    };
-    git(&["init", "-q"]);
-    let commit = |message| {
-        git(&[
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.com",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            message,
-        ])
-    };
-    std::fs::write(dir.path().join("security.tf"), "resource").unwrap();
-    git(&["add", "--all"]);
-    commit("base");
-    let base = git(&["rev-parse", "HEAD"]);
-    git(&["mv", "security.tf", "renamed.txt"]);
-    std::fs::write(dir.path().join(" leading.txt"), "one").unwrap();
-    std::fs::write(dir.path().join("ümlaut.tf"), "two").unwrap();
-    git(&["add", "--all"]);
-    commit("change");
-    let mut run = run(Mode::Balanced, Stage::Check, None);
-    run.worktree = Some(dir.path().to_string_lossy().into_owned());
-    run.base_commit = Some(base);
-    let paths = changed_paths(&run, &crate::run_check::ReadOnlyGit).unwrap();
-    assert!(paths.contains(&" leading.txt".to_string()));
-    assert!(paths.contains(&"ümlaut.tf".to_string()));
-    assert!(paths.contains(&"security.tf".to_string()));
-    assert!(paths.contains(&"renamed.txt".to_string()));
 }
 
 #[test]
@@ -381,7 +342,7 @@ fn forced_check_exit_is_distinct_from_a_recorded_review_pass() {
         1,
     )
     .unwrap();
-    let next = build(&run, &[]).unwrap();
+    let next = build(&run).unwrap();
     let json = serde_json::to_value(&next).unwrap();
     assert_eq!(json["stage_exits"][0]["outcome"], "override");
     let review = &json["stage_exits"][0]["gates"][0];
@@ -400,7 +361,7 @@ fn finish_guidance_waits_for_live_ci_even_with_a_stored_pr_state() {
         reason: None,
         checked_at: 0,
     });
-    let next = build(&run, &[]).unwrap();
+    let next = build(&run).unwrap();
     let json = serde_json::to_value(&next).unwrap();
     assert_eq!(json["gates"][1]["name"], "ci-passed");
     assert_eq!(json["gates"][1]["status"], "awaiting-live-check");
@@ -411,7 +372,7 @@ fn finish_guidance_waits_for_live_ci_even_with_a_stored_pr_state() {
         1,
     )
     .unwrap();
-    let next = build(&run, &[]).unwrap();
+    let next = build(&run).unwrap();
     let json = serde_json::to_value(&next).unwrap();
     assert_eq!(json["stage_exits"][0]["outcome"], "merged");
     assert_eq!(json["stage_exits"][0]["gates"][1]["status"], "bypassed");
@@ -419,11 +380,7 @@ fn finish_guidance_waits_for_live_ci_even_with_a_stored_pr_state() {
 
 #[test]
 fn rework_and_finish_use_effective_build_for_each_host() {
-    for agent in [
-        RoutingAgent::Claude,
-        RoutingAgent::Codex,
-        RoutingAgent::Copilot,
-    ] {
+    for agent in [Agent::Claude, Agent::Codex, Agent::Copilot] {
         for (effort, expected) in [
             (None, "high"),
             (Some("medium"), "high"),
@@ -438,11 +395,11 @@ fn rework_and_finish_use_effective_build_for_each_host() {
             routes.stages.get_mut(&Stage::Build).unwrap().effort = effort.map(str::to_string);
             let mut building = run(Mode::Balanced, Stage::Build, Some(routes.clone()));
             building.rework = Some(1);
-            let next = build(&building, &[]).unwrap();
+            let next = build(&building).unwrap();
             assert_eq!(next.model.unwrap().effort.as_deref(), Some(expected));
             let mut finishing = run(Mode::Balanced, Stage::Finish, Some(routes));
             finishing.rework = Some(1);
-            let next = build(&finishing, &[]).unwrap();
+            let next = build(&finishing).unwrap();
             assert!(next.model.is_none());
             assert_eq!(next.ci_model.unwrap().effort.as_deref(), Some(expected));
             assert!(next.instructions.contains("CI diagnosis"));
@@ -460,11 +417,7 @@ fn complex_policy_option_is_shown_and_override_wins() {
             effort: Some("high".into()),
         },
     );
-    let next = build(
-        &run(Mode::Balanced, Stage::Build, Some(routes.clone())),
-        &[],
-    )
-    .unwrap();
+    let next = build(&run(Mode::Balanced, Stage::Build, Some(routes.clone()))).unwrap();
     assert_eq!(next.complex_model.unwrap().model, "opus");
     routes.overrides.insert(
         Stage::Build,
@@ -475,7 +428,7 @@ fn complex_policy_option_is_shown_and_override_wins() {
     );
     let mut current = run(Mode::Balanced, Stage::Build, Some(routes));
     current.rework = Some(1);
-    assert_eq!(build(&current, &[]).unwrap().model.unwrap().model, "custom");
+    assert_eq!(build(&current).unwrap().model.unwrap().model, "custom");
 }
 
 fn group_view(spec: &str) -> crate::groups::GroupView {
@@ -498,7 +451,7 @@ fn group_view(spec: &str) -> crate::groups::GroupView {
 #[test]
 fn finish_shows_the_group_spec_and_the_outstanding_prerequisites() {
     let guidance = GroupGuidance::from_view(&group_view("https://example.com/spec"), "1");
-    let next = build(&run(Mode::Full, Stage::Finish, None), &[])
+    let next = build(&run(Mode::Full, Stage::Finish, None))
         .unwrap()
         .with_group(guidance);
     let text = render(&next);
@@ -518,7 +471,7 @@ fn finish_shows_the_group_spec_and_the_outstanding_prerequisites() {
 fn a_local_spec_path_is_kept_out_of_the_guidance() {
     let guidance = GroupGuidance::from_view(&group_view("/home/me/plan.md"), "1").unwrap();
     assert_eq!(guidance.spec, None);
-    let next = build(&run(Mode::Full, Stage::Finish, None), &[])
+    let next = build(&run(Mode::Full, Stage::Finish, None))
         .unwrap()
         .with_group(Some(guidance));
     let text = render(&next);
@@ -530,14 +483,14 @@ fn a_local_spec_path_is_kept_out_of_the_guidance() {
 #[test]
 fn an_ungrouped_run_or_a_non_member_gets_no_group_section() {
     assert!(GroupGuidance::from_view(&group_view("https://example.com"), "99").is_none());
-    let next = build(&run(Mode::Full, Stage::Finish, None), &[]).unwrap();
+    let next = build(&run(Mode::Full, Stage::Finish, None)).unwrap();
     assert!(!render(&next).contains("\nChange group g"));
     assert!(serde_json::to_value(&next).unwrap().get("group").is_none());
 }
 
 #[test]
 fn knowledge_guidance_appears_only_when_configured() {
-    let plain = build(&run(Mode::Full, Stage::Define, None), &[]).unwrap();
+    let plain = build(&run(Mode::Full, Stage::Define, None)).unwrap();
     let before = render(&plain);
     assert!(!before.contains("Knowledge repo"));
     let json = serde_json::to_string(&plain).unwrap();
@@ -548,7 +501,7 @@ fn knowledge_guidance_appears_only_when_configured() {
         ..Default::default()
     };
     let guidance = crate::knowledge::Guidance::for_setting(&setting);
-    let next = build(&run(Mode::Full, Stage::Define, None), &[])
+    let next = build(&run(Mode::Full, Stage::Define, None))
         .unwrap()
         .with_knowledge(guidance);
     let text = render(&next);

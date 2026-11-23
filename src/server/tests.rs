@@ -1230,7 +1230,7 @@ async fn stage_exits_preserve_passes_and_distinguish_refused_and_forced_advances
             reason: "Checks unavailable".into(),
         }
     );
-    let dashboard = run_detail(&details).unwrap();
+    let dashboard = run_detail::detail(&details, &crate::git::ReadOnlyGit).unwrap();
     let passes = dashboard["stage_gates"].as_array().unwrap();
     assert_eq!(passes[0]["gates"][0]["status"], "passed");
     assert_eq!(passes[1]["gates"][0]["status"], "bypassed");
@@ -1273,7 +1273,7 @@ async fn check_selection_explains_missing_diff_and_is_not_computed_on_list() {
         "worktree": dir.0.path().join("missing"), "base_commit": "abcdef0"
     }))
     .unwrap();
-    let failure = run_detail(&run).unwrap();
+    let failure = run_detail::detail(&run, &crate::git::ReadOnlyGit).unwrap();
     assert!(
         failure["checks_unavailable"]
             .as_str()
@@ -1300,6 +1300,201 @@ async fn run_details_preserve_recorded_skips_after_check() {
         "no matching path"
     );
     assert_eq!(body["recorded_skipped_rework"], 1);
+    // An older run has no Stage exits, so its earlier Stages have no recorded gate evidence.
+    let check = body["stage_gates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pass| pass["stage"] == "check")
+        .unwrap();
+    assert!(check.get("exit").is_none());
+    assert_eq!(check["gates"][0]["status"], "unknown");
+    assert!(body.get("model_route").is_none());
+}
+
+/// The detail as `GET /api/runs/42` returns it for a single stored run.
+async fn run_detail_body(dir: &TestDir, run: serde_json::Value) -> serde_json::Value {
+    fs::write(
+        dir.0.path().join("runs.json"),
+        serde_json::to_string(&[run]).unwrap(),
+    )
+    .unwrap();
+    let api = client(dir).await;
+    let response = api
+        .get("/api/runs/42")
+        .header(Header::new("Host", "127.0.0.1:4311"))
+        .dispatch()
+        .await;
+    assert_eq!(response.status(), HttpStatus::Ok);
+    serde_json::from_str(&response.into_string().await.unwrap()).unwrap()
+}
+
+fn exit(
+    stage: &str,
+    rework: Option<u32>,
+    to: &str,
+    outcome: serde_json::Value,
+) -> serde_json::Value {
+    let mut exit =
+        serde_json::json!({ "stage": stage, "rework": rework, "to": to, "at": 1, "gates": [] });
+    exit.as_object_mut()
+        .unwrap()
+        .extend(outcome.as_object().unwrap().clone());
+    exit
+}
+
+#[rocket::async_test]
+async fn run_details_after_rework_prefer_the_latest_accepted_check_exit() {
+    let dir = TestDir::new();
+    let mut accepted_check = exit(
+        "check",
+        Some(1),
+        "finish",
+        serde_json::json!({ "outcome": "accepted" }),
+    );
+    accepted_check["skipped_checks"] =
+        serde_json::json!([{ "name": "security", "reason": "no matching path" }]);
+    let body = run_detail_body(&dir, serde_json::json!({
+        "id": "42", "title": "t", "project": "/work", "mode": "jidoka-balanced",
+        "stage": "finish", "status": "running", "rework": 1,
+        "model_routing": { "agent": "claude", "stages": { "check": { "model": "opus", "effort": "high" } } },
+        "gates": [{
+            "gate": "checks-recorded", "stage": "check", "rework": 1, "passed": true, "evidence": null,
+            "commit": "abc", "ticket": null, "check": "code-review",
+            "skipped_checks": [{ "name": "legacy", "reason": "from the gate result" }]
+        }],
+        "stage_exits": [
+            exit("define", None, "build", serde_json::json!({ "outcome": "accepted" })),
+            exit("build", None, "check", serde_json::json!({ "outcome": "accepted" })),
+            exit("check", None, "build", serde_json::json!({ "outcome": "rework", "number": 1, "finding": "F1" })),
+            exit("build", Some(1), "check", serde_json::json!({ "outcome": "accepted" })),
+            accepted_check,
+        ],
+    }))
+    .await;
+
+    assert_eq!(body["recorded_skipped_checks"][0]["name"], "security");
+    assert_eq!(body["recorded_skipped_rework"], 1);
+    let passes: Vec<_> = body["stage_gates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pass| {
+            (
+                pass["stage"].clone(),
+                pass["rework"].clone(),
+                pass["exit"]["outcome"].clone(),
+            )
+        })
+        .collect();
+    let row = |stage: &str, rework: serde_json::Value, outcome: &str| {
+        (serde_json::json!(stage), rework, serde_json::json!(outcome))
+    };
+    assert_eq!(
+        passes,
+        [
+            row("define", serde_json::Value::Null, "accepted"),
+            row("build", serde_json::Value::Null, "accepted"),
+            row("check", serde_json::Value::Null, "rework"),
+            row("build", serde_json::json!(1), "accepted"),
+            row("check", serde_json::json!(1), "accepted"),
+            (
+                serde_json::json!("finish"),
+                serde_json::json!(1),
+                serde_json::Value::Null
+            ),
+        ]
+    );
+    assert_eq!(body["model_route"]["agent"], "claude");
+    assert_eq!(body["model_route"]["stages"][0]["stage"], "check");
+    assert_eq!(body["model_route"]["stages"][0]["model"], "opus");
+    assert_eq!(body["model_route"]["stages"][0]["override"], false);
+}
+
+/// A Git repository at `path` with one commit; returns that commit.
+fn committed_repository(path: &Path) -> String {
+    fs::create_dir_all(path).unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .env("GIT_CONFIG_GLOBAL", path.join("no-config"))
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    git(&["init", "-q"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+    git(&["rev-parse", "HEAD"])
+}
+
+#[rocket::async_test]
+async fn run_details_show_current_assessment_next_to_differing_recorded_evidence() {
+    let dir = TestDir::new();
+    let worktree = dir.0.path().join("work");
+    let base = committed_repository(&worktree);
+    let mut reworked_check = exit(
+        "check",
+        None,
+        "build",
+        serde_json::json!({ "outcome": "rework", "number": 1, "finding": "F1" }),
+    );
+    reworked_check["gates"] =
+        serde_json::json!([{ "name": "checks-recorded", "status": "passed" }]);
+    let body = run_detail_body(&dir, serde_json::json!({
+        "id": "42", "title": "t", "project": "/work", "mode": "jidoka-balanced",
+        "stage": "check", "status": "running", "rework": 1,
+        "worktree": worktree, "base_commit": base,
+        "gates": [{
+            "gate": "checks-recorded", "stage": "check", "rework": null, "passed": true, "evidence": null,
+            "commit": "abc", "ticket": null, "check": "code-review",
+            "skipped_checks": [{ "name": "security", "reason": "no matching path" }]
+        }],
+        "stage_exits": [
+            exit("define", None, "build", serde_json::json!({ "outcome": "accepted" })),
+            exit("build", None, "check", serde_json::json!({ "outcome": "accepted" })),
+            reworked_check,
+            exit("build", Some(1), "check", serde_json::json!({ "outcome": "accepted" })),
+        ],
+    }))
+    .await;
+
+    // No accepted Check exit yet, so the recorded skips come from the gate result of the first pass.
+    assert_eq!(body["recorded_skipped_checks"][0]["name"], "security");
+    assert_eq!(body["recorded_skipped_rework"], serde_json::Value::Null);
+    // The current selection, made from the worktree now, skips nothing; the recorded skips stay.
+    assert_eq!(body["checks"]["applicable"][0]["name"], "code-review");
+    assert_eq!(body["checks"]["skipped"], serde_json::json!([]));
+    assert!(body.get("checks_unavailable").is_none());
+    let checks: Vec<_> = body["stage_gates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|pass| pass["stage"] == "check")
+        .collect();
+    assert_eq!(checks.len(), 2);
+    assert_eq!(checks[0]["exit"]["outcome"], "rework");
+    assert_eq!(checks[0]["gates"][0]["status"], "passed");
+    assert!(checks[1].get("exit").is_none());
+    assert_eq!(checks[1]["rework"], 1);
+    let current = checks[1]["gates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|gate| gate["name"] == "checks-recorded")
+        .unwrap();
+    assert_ne!(current["status"], "passed");
+    assert!(body.get("model_route").is_none());
 }
 
 #[test]

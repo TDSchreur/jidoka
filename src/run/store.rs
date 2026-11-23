@@ -324,7 +324,7 @@ impl RunStore {
     /// Applies an update to a copy first, so an inconsistent update changes nothing, and
     /// restores the stored record when saving fails.
     pub(crate) fn update(&self, id: &str, update: UpdateRun) -> io::Result<Option<Run>> {
-        self.update_with(id, update, &crate::run_check::ReadOnlyGit)
+        self.update_with(id, update, &crate::git::ReadOnlyGit)
     }
 
     /// Like [`update`](Self::update), reading commits for findings through `git`.
@@ -332,7 +332,7 @@ impl RunStore {
         &self,
         id: &str,
         update: UpdateRun,
-        git: &dyn crate::pr_sync::Git,
+        git: &dyn crate::git::Git,
     ) -> io::Result<Option<Run>> {
         self.apply_update(id, update, git, UpdateSource::Report)
     }
@@ -341,7 +341,7 @@ impl RunStore {
         &self,
         id: &str,
         update: UpdateRun,
-        git: &dyn crate::pr_sync::Git,
+        git: &dyn crate::git::Git,
         source: UpdateSource,
     ) -> io::Result<Option<Run>> {
         update.validate().map_err(io_invalid)?;
@@ -418,7 +418,7 @@ impl RunStore {
             return self.apply_update(
                 id,
                 *update,
-                &crate::run_check::ReadOnlyGit,
+                &crate::git::ReadOnlyGit,
                 UpdateSource::WorkspaceReady,
             );
         }

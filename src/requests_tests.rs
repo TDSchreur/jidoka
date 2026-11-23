@@ -2,7 +2,9 @@
 //! analysis. Nothing here reads a real user's logs.
 
 use super::*;
-use crate::{agent_logs::Roots, request_logs::Category, run::Run};
+use crate::{
+    agent_logs::Roots, request_logs::Category, run::Run, session_attribution::RECORDED_NOT_FOUND,
+};
 use serde_json::{Value, json};
 use std::{fs, time::Duration};
 use tempfile::TempDir;

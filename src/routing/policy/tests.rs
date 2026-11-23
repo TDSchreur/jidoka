@@ -28,12 +28,12 @@ fn write(text: &str) -> (tempfile::TempDir, PathBuf) {
     (dir, path)
 }
 
-fn load_text(text: &str, host: Option<Host>) -> Result<Resolution, String> {
+fn load_text(text: &str, host: Option<Agent>) -> Result<Resolution, String> {
     let (_dir, path) = write(text);
     load(&path, host)
 }
 
-fn selection(text: &str, host: Option<Host>) -> ModelRouting {
+fn selection(text: &str, host: Option<Agent>) -> ModelRouting {
     load_text(text, host)
         .unwrap()
         .selection
@@ -52,8 +52,8 @@ fn read_error(text: &str) -> String {
 
 #[test]
 fn one_file_holds_independent_per_stage_settings_for_claude_and_codex() {
-    let claude = selection(MULTI, Some(Host::Claude));
-    assert_eq!(claude.agent, RoutingAgent::Claude);
+    let claude = selection(MULTI, Some(Agent::Claude));
+    assert_eq!(claude.agent, Agent::Claude);
     assert_eq!(claude.stages[&Stage::Check].model, "opus");
     assert_eq!(claude.stages[&Stage::Check].effort.as_deref(), Some("high"));
     // A Stage left out is not routed.
@@ -63,8 +63,8 @@ fn one_file_holds_independent_per_stage_settings_for_claude_and_codex() {
     );
     assert_eq!(claude.choice_for(Stage::Build), None);
 
-    let codex = selection(MULTI, Some(Host::Codex));
-    assert_eq!(codex.agent, RoutingAgent::Codex);
+    let codex = selection(MULTI, Some(Agent::Codex));
+    assert_eq!(codex.agent, Agent::Codex);
     assert_eq!(codex.stages[&Stage::Define].model, "gpt-6-astra");
     assert_eq!(
         codex.stages[&Stage::Define].effort.as_deref(),
@@ -79,7 +79,7 @@ fn one_file_holds_independent_per_stage_settings_for_claude_and_codex() {
 
 #[test]
 fn a_run_records_only_the_selected_agents_stages() {
-    let recorded = serde_json::to_value(selection(MULTI, Some(Host::Codex))).unwrap();
+    let recorded = serde_json::to_value(selection(MULTI, Some(Agent::Codex))).unwrap();
     assert_eq!(
         recorded,
         serde_json::json!({
@@ -112,7 +112,7 @@ fn a_policy_for_several_agents_needs_to_be_told_which_one_the_run_is_in() {
 #[test]
 fn an_agent_without_an_entry_is_not_routed_and_is_told_how_to_add_one() {
     let only_claude = r#"{"agents":{"claude":{"stages":{"check":{"model":"opus"}}}}}"#;
-    let resolution = load_text(only_claude, Some(Host::Codex)).unwrap();
+    let resolution = load_text(only_claude, Some(Agent::Codex)).unwrap();
     assert_eq!(resolution.selection, None);
     let notice = resolution.notice.unwrap();
     assert!(
@@ -121,7 +121,7 @@ fn an_agent_without_an_entry_is_not_routed_and_is_told_how_to_add_one() {
     );
     // Claude's own entry is untouched by that.
     assert!(
-        load_text(only_claude, Some(Host::Claude))
+        load_text(only_claude, Some(Agent::Claude))
             .unwrap()
             .selection
             .is_some()
@@ -134,11 +134,11 @@ fn a_disabled_entry_routes_nothing_and_is_not_checked() {
         "claude":{"stages":{"check":{"model":"opus"}}},
         "codex":{"enabled":false,"stages":{"check":{"model":"not valid"}}}}}"#;
     assert_eq!(
-        load_text(text, Some(Host::Codex)).unwrap(),
+        load_text(text, Some(Agent::Codex)).unwrap(),
         Resolution::default()
     );
     assert!(
-        load_text(text, Some(Host::Claude))
+        load_text(text, Some(Agent::Claude))
             .unwrap()
             .selection
             .is_some()
@@ -156,11 +156,11 @@ fn a_copilot_run_records_the_copilot_entry_and_not_another_agents() {
         r#"{"agents":{"codex":{"stages":{"check":{"model":"gpt-6-astra"}}},"#,
     );
     for text in [COPILOT, both.as_str()] {
-        let selection = load_text(text, Some(Host::Copilot))
+        let selection = load_text(text, Some(Agent::Copilot))
             .unwrap()
             .selection
             .unwrap();
-        assert_eq!(selection.agent, RoutingAgent::Copilot);
+        assert_eq!(selection.agent, Agent::Copilot);
         assert_eq!(selection.stages.len(), 2);
         assert_eq!(selection.stages[&Stage::Check].model, "claude-opus-4.8");
         assert_eq!(
@@ -169,7 +169,7 @@ fn a_copilot_run_records_the_copilot_entry_and_not_another_agents() {
         );
     }
     // The other agents get nothing from a file that only has a Copilot entry.
-    let resolution = load_text(COPILOT, Some(Host::Claude)).unwrap();
+    let resolution = load_text(COPILOT, Some(Agent::Claude)).unwrap();
     assert_eq!(resolution.selection, None);
     assert!(resolution.notice.unwrap().contains("no entry for claude"));
     // Several configured agents still need `--agent`.
@@ -202,7 +202,7 @@ fn copilot_entries_need_exact_model_ids_and_listed_efforts() {
             r#"{{"agents":{{"copilot":{{"stages":{{"check":{{"model":"auto","effort":"{effort}"}}}}}}}}}}"#
         );
         assert!(
-            load_text(&text, Some(Host::Copilot))
+            load_text(&text, Some(Agent::Copilot))
                 .unwrap()
                 .selection
                 .is_some(),
@@ -211,14 +211,17 @@ fn copilot_entries_need_exact_model_ids_and_listed_efforts() {
     }
     // Claude Code keeps its aliases, and a switched-off Copilot entry is not checked.
     assert!(
-        load_text(MULTI.replace("opus", "sonnet").as_str(), Some(Host::Claude))
-            .unwrap()
-            .selection
-            .is_some()
+        load_text(
+            MULTI.replace("opus", "sonnet").as_str(),
+            Some(Agent::Claude)
+        )
+        .unwrap()
+        .selection
+        .is_some()
     );
     let off = r#"{"agents":{"copilot":{"enabled":false,"stages":{"check":{"model":"sonnet"}}}}}"#;
     assert_eq!(
-        load_text(off, Some(Host::Copilot)).unwrap(),
+        load_text(off, Some(Agent::Copilot)).unwrap(),
         Resolution::default()
     );
 }
@@ -230,9 +233,9 @@ fn without_a_policy_file_nothing_is_recorded() {
     assert_eq!(read(&path).unwrap(), Policy::Off);
     for host in [
         None,
-        Some(Host::Claude),
-        Some(Host::Codex),
-        Some(Host::Copilot),
+        Some(Agent::Claude),
+        Some(Agent::Codex),
+        Some(Agent::Copilot),
     ] {
         assert_eq!(load(&path, host).unwrap(), Resolution::default());
     }
@@ -284,9 +287,9 @@ fn a_broken_policy_stops_a_run_in_any_agent() {
     let broken = r#"{"agents": {"claude": {"typo": 1}}}"#;
     for host in [
         None,
-        Some(Host::Claude),
-        Some(Host::Codex),
-        Some(Host::Copilot),
+        Some(Agent::Claude),
+        Some(Agent::Codex),
+        Some(Agent::Copilot),
     ] {
         assert!(load_text(broken, host).is_err(), "{host:?}");
     }
@@ -300,8 +303,8 @@ fn a_broken_policy_stops_a_run_in_any_agent() {
 fn a_copilot_starter_reviews_on_another_model_and_offers_complex_choices() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("model-routing.json");
-    assert!(create_starter(&path, &[RoutingAgent::Copilot]).unwrap());
-    let recorded = load(&path, Some(Host::Copilot))
+    assert!(create_starter(&path, &[Agent::Copilot]).unwrap());
+    let recorded = load(&path, Some(Agent::Copilot))
         .unwrap()
         .selection
         .expect("the starter routes");
@@ -316,7 +319,7 @@ fn a_copilot_starter_reviews_on_another_model_and_offers_complex_choices() {
 fn a_starter_for_both_agents_routes_every_stage() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("model-routing.json");
-    assert!(create_starter(&path, &[RoutingAgent::Claude, RoutingAgent::Codex]).unwrap());
+    assert!(create_starter(&path, &[Agent::Claude, Agent::Codex]).unwrap());
     assert!(matches!(
         read(&path).unwrap(),
         Policy::Multi {
@@ -325,11 +328,8 @@ fn a_starter_for_both_agents_routes_every_stage() {
             copilot: None
         }
     ));
-    for (host, agent) in [
-        (Host::Claude, RoutingAgent::Claude),
-        (Host::Codex, RoutingAgent::Codex),
-    ] {
-        let recorded = load(&path, Some(host))
+    for agent in [Agent::Claude, Agent::Codex] {
+        let recorded = load(&path, Some(agent))
             .unwrap()
             .selection
             .expect("the starter routes");
@@ -358,18 +358,18 @@ fn a_starter_for_both_agents_routes_every_stage() {
 fn a_starter_is_created_with_its_folder_and_never_replaces_anything() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("jidoka").join("model-routing.json");
-    assert!(create_starter(&path, &[RoutingAgent::Claude]).unwrap());
+    assert!(create_starter(&path, &[Agent::Claude]).unwrap());
     assert!(fs::read_to_string(&path).unwrap().contains("\"agents\""));
     // A second call, even for another agent, leaves the file alone.
     fs::write(&path, "my own policy").unwrap();
-    assert!(!create_starter(&path, &[RoutingAgent::Codex]).unwrap());
+    assert!(!create_starter(&path, &[Agent::Codex]).unwrap());
     assert_eq!(fs::read_to_string(&path).unwrap(), "my own policy");
 }
 
 #[test]
 fn complex_choices_are_optional_validated_and_recorded() {
     let valid = r#"{"agents":{"copilot":{"stages":{"build":{"model":"gpt-6.1-sol"}},"complex":{"build":{"model":"gpt-6-astra","effort":"high"}}}}}"#;
-    let routing = selection(valid, Some(Host::Copilot));
+    let routing = selection(valid, Some(Agent::Copilot));
     assert_eq!(routing.complex[&Stage::Build].model, "gpt-6-astra");
     assert!(read_error(&valid.replace("gpt-6-astra", "sonnet")).contains("alias"));
     assert!(read_error(&valid.replace("high", "ultra")).contains("Effort"));

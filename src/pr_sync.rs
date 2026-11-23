@@ -1,169 +1,13 @@
 //! `jidoka pr sync`: brings a run's branch up to date with its base with a normal merge commit.
 
 use crate::{
+    git::{Git, first_line, last_line, valid_branch_name},
     inspect::shown,
     pr_host::ToolProblem,
-    pr_open::{PrRun, RunApi},
     pr_state::PrState,
-    run_begin::{first_line, git, last_line, valid_branch_name},
+    pr_workspace::{PrReport, PrRun, RunReporter, Workspace, push_branch},
 };
 use serde::Serialize;
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-};
-
-/// Runs git. Tests override it to keep the user's own git settings out.
-pub(crate) trait Git {
-    /// The output of a git command that must succeed; the error is what git printed.
-    fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
-        git(dir, args)
-    }
-
-    /// The exit status of a git command whose status is the answer (such as `merge-base --is-ancestor`).
-    fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("LC_ALL", "C")
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .output()
-            .map_err(|error| format!("git could not be started: {error}"))?;
-        output
-            .status
-            .code()
-            .ok_or_else(|| "git was stopped by a signal".to_string())
-    }
-}
-
-/// The real git.
-pub(crate) struct RealGit;
-
-impl Git for RealGit {}
-
-/// A run's Workspace that passed the checks `pr open` and `pr sync` share.
-pub(crate) struct Workspace {
-    pub(crate) dir: PathBuf,
-    pub(crate) branch: String,
-    /// The base branch, from `--base` or origin's default branch.
-    pub(crate) base: String,
-}
-
-/// Checks the run's Workspace before anything is merged or pushed: the worktree exists, it is on a branch that
-/// is safe to push and that the run records, no merge is in progress, the base is another branch, and nothing
-/// is uncommitted.
-pub(crate) fn check_workspace(
-    run: &PrRun,
-    base: Option<&str>,
-    git: &dyn Git,
-) -> Result<Workspace, ToolProblem> {
-    let worktree = run.worktree.as_deref().ok_or_else(|| {
-        ToolProblem(format!(
-            "Run {} has no worktree recorded. Record it with `jidoka run update` (--worktree and --branch), or create the workspace with `jidoka run begin`.",
-            run.id
-        ))
-    })?;
-    let dir = Path::new(worktree);
-    if !dir.is_dir() {
-        return Err(ToolProblem(format!(
-            "The recorded worktree {} does not exist.",
-            shown(worktree)
-        )));
-    }
-    let branch = git
-        .git(dir, &["branch", "--show-current"])
-        .map_err(|error| {
-            ToolProblem(format!(
-                "{} could not be read: {}",
-                shown(worktree),
-                shown(first_line(&error))
-            ))
-        })?;
-    if branch.is_empty() {
-        return Err(ToolProblem(format!(
-            "The worktree {} is not on a branch (a detached HEAD).",
-            shown(worktree)
-        )));
-    }
-    // A branch name that git could read as an option or a refspec (`+main` forces an update of main) is
-    // never handed to git.
-    if !valid_branch_name(&branch) {
-        return Err(ToolProblem(format!(
-            "The branch name {} is one this command will not push: it could be read as a git option or a forced refspec. Rename the branch (`git branch -m`) and try again.",
-            shown(&branch)
-        )));
-    }
-    if let Some(recorded) = &run.branch
-        && *recorded != branch
-    {
-        return Err(ToolProblem(format!(
-            "The worktree is on {} but the run records {}. Switch it back, or record the right branch with `jidoka run update`.",
-            shown(&branch),
-            shown(recorded)
-        )));
-    }
-    if git
-        .status(dir, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])
-        .map_err(ToolProblem)?
-        == 0
-    {
-        return Err(ToolProblem(
-            "A merge is in progress in the worktree. Resolve it (or abort it yourself), commit, and try again."
-                .into(),
-        ));
-    }
-    let base = match base {
-        Some(base) => base.to_string(),
-        None => git
-            .git(
-                dir,
-                &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-            )
-            .ok()
-            .and_then(|head| head.strip_prefix("origin/").map(str::to_string))
-            .ok_or_else(|| {
-                ToolProblem(
-                    "origin/HEAD is not set, so the base branch is not known. Pass it with --base."
-                        .into(),
-                )
-            })?,
-    };
-    if branch == base {
-        return Err(ToolProblem(format!(
-            "{} is the base branch. A pull request needs a feature branch.",
-            shown(&branch)
-        )));
-    }
-    let status = git.git(dir, &["status", "--porcelain"]).map_err(|error| {
-        ToolProblem(format!(
-            "The status of {} could not be read: {}",
-            shown(worktree),
-            shown(first_line(&error))
-        ))
-    })?;
-    if !status.is_empty() {
-        return Err(ToolProblem(format!(
-            "The worktree has uncommitted changes ({} paths). Commit them, then try again.",
-            status.lines().count()
-        )));
-    }
-    Ok(Workspace {
-        dir: dir.to_path_buf(),
-        branch,
-        base,
-    })
-}
-
-/// Pushes `branch` to origin and sets it as the upstream. It never forces: the branch is pushed by its full
-/// name on both sides, so that no name is read as a refspec. The error is what git printed.
-pub(crate) fn push_branch(git: &dyn Git, dir: &Path, branch: &str) -> Result<(), String> {
-    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-    git.git(dir, &["push", "-u", "origin", &refspec])
-        .map(|_| ())
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -257,7 +101,7 @@ pub(crate) fn sync(
     run: &PrRun,
     options: &Options,
     git: &dyn Git,
-    api: &dyn RunApi,
+    reporter: &dyn RunReporter,
 ) -> Result<Synced, ToolProblem> {
     let problem = |text: String| ToolProblem(text);
     if let Some(state @ (PrState::Merged | PrState::Closed)) = run.pr_state {
@@ -271,7 +115,7 @@ pub(crate) fn sync(
             state.label()
         )));
     }
-    let Workspace { dir, branch, base } = check_workspace(run, options.base.as_deref(), git)?;
+    let Workspace { dir, branch, base } = Workspace::verify(run, options.base.as_deref(), git)?;
     let dir = dir.as_path();
     let read = |args: &[&str], what: &str| {
         git.git(dir, args)
@@ -453,7 +297,7 @@ pub(crate) fn sync(
                                 shown(&base)
                             ))
                         })?;
-                        record(run, api, &format!("Merged {base} into the branch"));
+                        record(run, reporter, PrReport::BaseMerged { base: base.clone() });
                         return Ok(synced(
                             Outcome::Pushed,
                             Vec::new(),
@@ -491,7 +335,11 @@ pub(crate) fn sync(
                         shown(last_line(&error))
                     )));
                 }
-                record(run, api, &format!("Merging {base}: conflicts to resolve"));
+                record(
+                    run,
+                    reporter,
+                    PrReport::BaseConflicts { base: base.clone() },
+                );
                 return Ok(synced(Outcome::Conflict, conflicts, None, unpushed));
             }
             let merge_commit = read(&["rev-parse", "HEAD"], "Reading the merge commit")?;
@@ -502,7 +350,11 @@ pub(crate) fn sync(
             // Only a merge on top of exactly what the remote has, touching nothing of the change, is pushed:
             // commits that are not pushed yet may not be verified.
             if !overlap.is_empty() || unpushed > 0 || remote.is_none() {
-                record(run, api, &format!("Merged {base}: verification needed"));
+                record(
+                    run,
+                    reporter,
+                    PrReport::BaseNeedsVerification { base: base.clone() },
+                );
                 return Ok(synced(
                     Outcome::NeedsVerification,
                     overlap,
@@ -517,7 +369,7 @@ pub(crate) fn sync(
                     shown(&merge_commit.chars().take(7).collect::<String>())
                 ))
             })?;
-            record(run, api, &format!("Merged {base} into the branch"));
+            record(run, reporter, PrReport::BaseMerged { base: base.clone() });
             Ok(synced(Outcome::Pushed, Vec::new(), Some(merge_commit), 0))
         }
         other => Err(problem(format!(
@@ -527,10 +379,10 @@ pub(crate) fn sync(
 }
 
 /// Notes the base update on a running run, keeping its stage and status. It is not a Rework or a CI fix.
-fn record(run: &PrRun, api: &dyn RunApi, activity: &str) {
+fn record(run: &PrRun, reporter: &dyn RunReporter, report: PrReport) {
     if run.running() {
         // The outcome stands even if the dashboard cannot be reached.
-        let _ = api.update(&run.id, &["--activity", activity]);
+        let _ = reporter.report(&run.id, &report);
     }
 }
 
