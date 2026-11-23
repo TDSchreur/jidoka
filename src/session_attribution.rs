@@ -15,6 +15,10 @@ use std::time::Instant;
 pub(crate) const NO_TIMELINE: &str =
     "the run has no stage timeline: it started before usage tracking existed";
 
+/// The reason given when none of the agents' log folders exist.
+pub(crate) const NO_LOGS: &str =
+    "no Claude Code, Codex or Copilot session logs were found on this machine";
+
 /// Start of the note for a run whose recorded sessions no scanned log claims.
 pub(crate) const RECORDED_NOT_FOUND: &str =
     "the run has recorded sessions, but none of their logs were found";

@@ -599,9 +599,7 @@ pub(crate) fn collect(
     let tracked = &scan.window.tracked;
     if let Some(missing) = scan.missing() {
         let reason = match missing {
-            Missing::NoLogs => {
-                "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()
-            }
+            Missing::NoLogs => session_attribution::NO_LOGS.to_string(),
             _ if read.timed_out => "reading the session logs took too long".to_string(),
             _ if read.truncated => {
                 "reading the session logs stopped at its limit on their number and size".to_string()

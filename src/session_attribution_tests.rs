@@ -143,6 +143,26 @@ fn an_overlapping_run_that_does_not_claim_the_session_does_not_make_it_ambiguous
 }
 
 #[test]
+fn a_run_that_claims_the_session_at_another_time_does_not_make_it_ambiguous() {
+    let home = TempDir::new().unwrap();
+    write_session(
+        home.path(),
+        "shared",
+        &[
+            response(10, "m1", Some(RUN_A)),
+            response(300, "m2", Some(RUN_B)),
+        ],
+    );
+    let a = run(RUN_A, 0, 100, &[]);
+    let runs = [a.clone(), run(RUN_B, 200, 400, &[])];
+
+    let scan = scan_of(&a, &runs, home.path());
+    let attribution = scan.attribute(NOW, None);
+    assert_eq!(times(&attribution), [at(10)]);
+    assert!(attribution.ambiguous.is_empty());
+}
+
+#[test]
 fn a_lead_in_counts_responses_shortly_before_the_first_mark_under_that_mark() {
     let home = TempDir::new().unwrap();
     write_session(

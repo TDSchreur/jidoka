@@ -144,9 +144,7 @@ pub(crate) fn analyze(
     if let Some(missing) = scan.missing() {
         result.notes.push(match missing {
             Missing::RecordedNotFound(note) => note,
-            Missing::NoLogs => {
-                "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()
-            }
+            Missing::NoLogs => session_attribution::NO_LOGS.to_string(),
             Missing::Unclaimed => {
                 "no session log executed a jidoka run update for this run and none was recorded for it"
                     .to_string()
