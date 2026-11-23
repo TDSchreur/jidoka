@@ -325,9 +325,7 @@ impl pr_workspace::RunReporter for ServerApi {
         client::check_run_id(id).map_err(|error| error.to_string())?;
         let update = report.update();
         update.validate()?;
-        let token_file = cli_token_file().map_err(|error| error.to_string())?;
-        client::send_update(&cli_address()?, &token_file, id, &update)
-            .map_err(|error| error.to_string())
+        send_run_update(id, &update)
     }
 }
 
@@ -926,8 +924,13 @@ fn dashboard(requested: Option<u16>, usage: bool) -> Result<(), Box<dyn std::err
 /// before the dashboard is looked for.
 fn report_to_dashboard(id: &str, options: &[&str]) -> Result<(), String> {
     let update = client::prepare_update(id, options).map_err(|e| e.to_string())?;
+    send_run_update(id, &update)
+}
+
+/// Sends an update that was already checked to the dashboard.
+fn send_run_update(id: &str, update: &run::UpdateRun) -> Result<(), String> {
     let token_file = cli_token_file().map_err(|e| e.to_string())?;
-    client::send_update(&cli_address()?, &token_file, id, &update).map_err(|e| e.to_string())
+    client::send_update(&cli_address()?, &token_file, id, update).map_err(|e| e.to_string())
 }
 
 fn send_lifecycle(id: &str, request: &run::LifecycleRequest) -> Result<(), String> {

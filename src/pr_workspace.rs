@@ -65,11 +65,11 @@ impl Workspace {
         git: &dyn Git,
     ) -> Result<Self, ToolProblem> {
         let worktree = run.worktree.as_deref().ok_or_else(|| {
-        ToolProblem(format!(
-            "Run {} has no worktree recorded. Record it with `jidoka run update` (--worktree and --branch), or create the workspace with `jidoka run begin`.",
-            run.id
-        ))
-    })?;
+            ToolProblem(format!(
+                "Run {} has no worktree recorded. Record it with `jidoka run update` (--worktree and --branch), or create the workspace with `jidoka run begin`.",
+                run.id
+            ))
+        })?;
         let dir = Path::new(worktree);
         if !dir.is_dir() {
             return Err(ToolProblem(format!(
@@ -115,9 +115,9 @@ impl Workspace {
             == 0
         {
             return Err(ToolProblem(
-            "A merge is in progress in the worktree. Resolve it (or abort it yourself), commit, and try again."
-                .into(),
-        ));
+                "A merge is in progress in the worktree. Resolve it (or abort it yourself), commit, and try again."
+                    .into(),
+            ));
         }
         let base = match base {
             Some(base) => base.to_string(),
@@ -130,9 +130,9 @@ impl Workspace {
                 .and_then(|head| head.strip_prefix("origin/").map(str::to_string))
                 .ok_or_else(|| {
                     ToolProblem(
-                    "origin/HEAD is not set, so the base branch is not known. Pass it with --base."
-                        .into(),
-                )
+                        "origin/HEAD is not set, so the base branch is not known. Pass it with --base."
+                            .into(),
+                    )
                 })?,
         };
         if branch == base {

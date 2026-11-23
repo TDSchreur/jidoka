@@ -1,4 +1,4 @@
-//! The reports `pr open` and `pr sync` send, against the update the server already takes.
+//! The run updates that the reports of `pr open` and `pr sync` send.
 
 use super::*;
 use crate::run::parse_update;
@@ -9,7 +9,7 @@ fn body(update: &UpdateRun) -> serde_json::Value {
 }
 
 #[test]
-fn each_report_sends_the_update_the_cli_options_used_to_send() {
+fn each_report_sets_its_activity_and_an_opened_report_the_pull_request() {
     let url = "https://github.com/o/r/pull/7";
     let base = || "develop".to_string();
     let cases = [
