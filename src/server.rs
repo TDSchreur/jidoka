@@ -446,6 +446,8 @@ fn run_with_cost(run: &Run) -> serde_json::Result<serde_json::Value> {
 
 /// Enrich a single run with gate and check status. Diff and HEAD inspection is kept off list polling.
 fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
+    use crate::run_gate::{self, AssessmentPurpose, CheckSelection};
+
     let mut value = run_with_cost(run)?;
     if let Some(routing) = &run.model_routing {
         value["model_route"] = serde_json::json!({
@@ -462,25 +464,25 @@ fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
         value["recorded_skipped_checks"] = serde_json::to_value(&result.skipped_checks)?;
         value["recorded_skipped_rework"] = serde_json::to_value(result.rework)?;
     }
-    let paths = match run.mode {
-        None => Err("Record the workflow mode to select checks".to_string()),
-        Some(crate::run::Mode::Fast) => Ok(Vec::new()),
-        Some(_) => crate::run_next::changed_paths(run, &crate::run_check::ReadOnlyGit),
-    };
-    value["stage_gates"] = serde_json::to_value(crate::run_next::stage_gates(
+    let assessment = run_gate::assess_local(
         run,
-        paths.as_deref().map_err(String::as_str),
         &crate::run_check::ReadOnlyGit,
-    ))?;
-    match paths {
-        Ok(paths) => {
+        AssessmentPurpose::Dashboard,
+    );
+    value["stage_gates"] =
+        serde_json::to_value(crate::run_next::stage_gates(run, assessment.evaluations))?;
+    match assessment.checks {
+        CheckSelection::Selected { mode, selection } => {
             value["checks"] = serde_json::to_value(crate::run_next::checks_for(
-                run.mode.expect("a mode is required for check selection"),
-                &paths,
+                mode,
+                &selection,
                 run.model_routing.as_ref(),
             ))?;
         }
-        Err(reason) => value["checks_unavailable"] = serde_json::Value::String(reason),
+        CheckSelection::Unavailable(reason) => {
+            value["checks_unavailable"] = serde_json::Value::String(reason);
+        }
+        CheckSelection::NotApplicable => {}
     }
     Ok(value)
 }

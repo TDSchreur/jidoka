@@ -1,5 +1,6 @@
 //! Gate evaluation, gate recording and the live CI check that decide how a run may leave a Stage.
 use crate::{
+    checks::{self, Selection},
     pr_host::PrHost,
     pr_state,
     pr_sync::Git,
@@ -10,7 +11,7 @@ use crate::{
         SummariesUpdate, Ticket, TicketStatus, check_text, updated_now, validate_agent_homes,
         validate_sessions,
     },
-    stages::{self, Destination, Gate},
+    stages::{self, Destination, Gate, Transition},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -108,8 +109,7 @@ pub(crate) fn record(run: &Run, record: Record, git: &dyn Git) -> Result<GateRes
             return Err("Record check results in the Check stage".into());
         }
         let mode = run.mode.ok_or("Record the run's mode first")?;
-        let paths = crate::run_next::changed_paths(run, git)?;
-        let selection = crate::checks::select(mode, &paths);
+        let selection = select_checks(run, mode, git)?;
         let name = record
             .check
             .as_deref()
@@ -276,7 +276,7 @@ fn tickets_verified<'a>(
     Ok(passed)
 }
 
-fn skipped_snapshot(selection: &crate::checks::Selection) -> Vec<SkippedCheck> {
+fn skipped_snapshot(selection: &Selection) -> Vec<SkippedCheck> {
     selection
         .skipped
         .iter()
@@ -305,7 +305,7 @@ fn latest_check<'a>(run: &'a Run, gate: Gate, check: &str) -> Option<&'a GateRes
 
 fn check_results<'a>(
     run: &'a Run,
-    selection: &crate::checks::Selection,
+    selection: &Selection,
     gate: Gate,
     head: &str,
 ) -> Result<Vec<&'a GateResult>, String> {
@@ -321,13 +321,125 @@ fn check_results<'a>(
         .collect()
 }
 
-/// Evaluate the same local inputs for guidance and advancement. CI requires a separate live check.
-pub(crate) fn evaluate(
+/// Determines when to assess a blocked run and whether to preview checks outside Check.
+#[derive(Clone, Copy)]
+pub(crate) enum AssessmentPurpose {
+    Advance,
+    Guidance,
+    Dashboard,
+}
+
+pub(crate) enum CheckSelection {
+    NotApplicable,
+    Unavailable(String),
+    Selected { mode: Mode, selection: Selection },
+}
+
+pub(crate) struct LocalAssessment {
+    pub(crate) transition: Result<Transition, String>,
+    pub(crate) evaluations: Vec<Evaluation>,
+    pub(crate) checks: CheckSelection,
+    candidate: Option<Result<String, String>>,
+}
+
+/// Collects and evaluates local Stage exit evidence. CI requires a separate live check.
+pub(crate) fn assess_local(
+    run: &Run,
+    git: &dyn Git,
+    purpose: AssessmentPurpose,
+) -> LocalAssessment {
+    let status = match (purpose, run.status) {
+        (AssessmentPurpose::Dashboard, RunStatus::Blocked) => RunStatus::Running,
+        _ => run.status,
+    };
+    let transition = run
+        .mode
+        .ok_or_else(|| "Record the run's mode first".to_string())
+        .and_then(|mode| stages::next(mode, run.stage, status));
+    let gates = transition.as_ref().map_or(&[][..], |next| next.gates);
+    let candidate = candidate(run, gates, git);
+    let checks = select_for_assessment(run, git, purpose);
+    let evaluations = evaluate(run, gates, git, &candidate, &checks);
+    LocalAssessment {
+        transition,
+        evaluations,
+        checks,
+        candidate,
+    }
+}
+
+fn select_for_assessment(run: &Run, git: &dyn Git, purpose: AssessmentPurpose) -> CheckSelection {
+    let mode = match purpose {
+        AssessmentPurpose::Dashboard => match run.mode {
+            None => {
+                return CheckSelection::Unavailable(
+                    "Record the workflow mode to select checks".into(),
+                );
+            }
+            Some(Mode::Fast) => {
+                return CheckSelection::Selected {
+                    mode: Mode::Fast,
+                    selection: checks::select(Mode::Fast, &[] as &[String]),
+                };
+            }
+            Some(mode) => Some(mode),
+        },
+        AssessmentPurpose::Guidance
+            if run.stage == Stage::Check && run.status == RunStatus::Done =>
+        {
+            return match run.mode.filter(|&mode| mode != Mode::Fast) {
+                Some(mode) => CheckSelection::Selected {
+                    mode,
+                    selection: checks::select(mode, &[] as &[String]),
+                },
+                None => CheckSelection::NotApplicable,
+            };
+        }
+        AssessmentPurpose::Advance if run.status != RunStatus::Running => None,
+        AssessmentPurpose::Advance | AssessmentPurpose::Guidance
+            if run.stage == Stage::Check && run.status != RunStatus::Done =>
+        {
+            run.mode.filter(|&mode| mode != Mode::Fast)
+        }
+        AssessmentPurpose::Advance | AssessmentPurpose::Guidance => None,
+    };
+    let Some(mode) = mode else {
+        return CheckSelection::NotApplicable;
+    };
+    match select_checks(run, mode, git) {
+        Ok(selection) => CheckSelection::Selected { mode, selection },
+        Err(reason) => CheckSelection::Unavailable(reason),
+    }
+}
+
+fn select_checks(run: &Run, mode: Mode, git: &dyn Git) -> Result<Selection, String> {
+    changed_paths(run, git).map(|paths| checks::select(mode, &paths))
+}
+
+fn changed_paths(run: &Run, git: &dyn Git) -> Result<Vec<String>, String> {
+    let worktree = run
+        .worktree
+        .as_ref()
+        .ok_or("Record the worktree to select checks")?;
+    let base = run
+        .base_commit
+        .as_ref()
+        .ok_or("Record the base commit to select checks")?;
+    let range = format!("{base}..HEAD");
+    git.git(
+        Path::new(worktree),
+        &["diff", "--name-only", "--no-renames", "-z", &range],
+    )
+    .map(|out| out.split_terminator('\0').map(str::to_string).collect())
+    .map_err(|error| format!("Could not inspect the changed paths in {worktree}: {error}"))
+}
+
+fn evaluate(
     run: &Run,
     gates: &[Gate],
     git: &dyn Git,
     candidate: &Option<Result<String, String>>,
-    selection: Result<&crate::checks::Selection, &str>,
+    selection: &CheckSelection,
 ) -> Vec<Evaluation> {
     let candidate = candidate
         .as_ref()
@@ -339,11 +451,7 @@ pub(crate) fn evaluate(
         .collect()
 }
 
-pub(crate) fn candidate(
-    run: &Run,
-    gates: &[Gate],
-    git: &dyn Git,
-) -> Option<Result<String, String>> {
+fn candidate(run: &Run, gates: &[Gate], git: &dyn Git) -> Option<Result<String, String>> {
     gates
         .iter()
         .any(|gate| {
@@ -356,18 +464,17 @@ pub(crate) fn candidate(
 }
 
 /// Relevant recorded results for each subject in a failed or incomplete gate.
-fn gate_records<'a>(
-    run: &'a Run,
-    gate: Gate,
-    selection: Result<&crate::checks::Selection, &str>,
-) -> Vec<&'a GateResult> {
+fn gate_records<'a>(run: &'a Run, gate: Gate, selection: &CheckSelection) -> Vec<&'a GateResult> {
     match gate {
-        Gate::ChecksRecorded => selection
-            .into_iter()
-            .flat_map(|selection| &selection.applicable)
-            .filter(|entry| entry.check.gate.gate() == gate)
-            .filter_map(|entry| latest_check(run, gate, entry.check.name))
-            .collect(),
+        Gate::ChecksRecorded => match selection {
+            CheckSelection::Selected { selection, .. } => selection
+                .applicable
+                .iter()
+                .filter(|entry| entry.check.gate.gate() == gate)
+                .filter_map(|entry| latest_check(run, gate, entry.check.name))
+                .collect(),
+            CheckSelection::NotApplicable | CheckSelection::Unavailable(_) => Vec::new(),
+        },
         Gate::TicketsVerified => match run.unticketed_attempt {
             Some(attempt) => unticketed_verification(run, attempt).into_iter().collect(),
             None => run
@@ -386,7 +493,7 @@ fn evaluate_gate(
     gate: Gate,
     git: &dyn Git,
     candidate: Result<&str, &str>,
-    selection: Result<&crate::checks::Selection, &str>,
+    selection: &CheckSelection,
 ) -> Evaluation {
     let mut evaluation = Evaluation::with_status(gate, GateStatus::Passed);
     let result = match gate {
@@ -417,9 +524,13 @@ fn evaluate_gate(
         Gate::TicketsVerified => candidate
             .map_err(str::to_owned)
             .and_then(|head| tickets_verified(run, git, head)),
-        Gate::ChecksRecorded => selection
-            .map_err(str::to_owned)
-            .and_then(|selection| check_results(run, selection, gate, candidate?)),
+        Gate::ChecksRecorded => match selection {
+            CheckSelection::Selected { selection, .. } => candidate
+                .map_err(str::to_owned)
+                .and_then(|head| check_results(run, selection, gate, head)),
+            CheckSelection::Unavailable(reason) => Err(reason.clone()),
+            CheckSelection::NotApplicable => Err("This stage has no check selection".into()),
+        },
         Gate::NoActionableFindings => no_open_findings(run)
             .and_then(|()| passing_record(latest(run, gate)).map(|result| vec![result])),
         Gate::FinishSummary => run.check_finish_summary().map(|()| {
@@ -484,21 +595,13 @@ impl Gate {
 ///
 /// Returns a message naming each failing gate and its remedy, or why CI has not passed.
 pub(crate) fn accepted_exit(run: &Run, git: &dyn Git, host: &dyn PrHost) -> Result<Exit, String> {
-    let mode = run.mode.ok_or("Record the run's mode first")?;
-    let transition = stages::next(mode, run.stage, run.status)?;
-    let candidate = candidate(run, transition.gates, git);
-    let selection = if run.stage == Stage::Check {
-        crate::run_next::changed_paths(run, git).map(|paths| crate::checks::select(mode, &paths))
-    } else {
-        Err("Check selection is only available in Check".into())
-    };
-    let gates = evaluate(
-        run,
-        transition.gates,
-        git,
-        &candidate,
-        selection.as_ref().map_err(String::as_str),
-    );
+    let LocalAssessment {
+        transition,
+        evaluations: gates,
+        checks,
+        candidate,
+    } = assess_local(run, git, AssessmentPurpose::Advance);
+    let transition = transition?;
     let failures: Vec<_> = gates
         .iter()
         .filter_map(|gate| {
@@ -527,9 +630,10 @@ pub(crate) fn accepted_exit(run: &Run, git: &dyn Git, host: &dyn PrHost) -> Resu
     }
     Ok(Exit::Accepted {
         gates,
-        skipped_checks: selection
-            .as_ref()
-            .map_or_else(|_| Vec::new(), skipped_snapshot),
+        skipped_checks: match checks {
+            CheckSelection::Selected { selection, .. } => skipped_snapshot(&selection),
+            CheckSelection::NotApplicable | CheckSelection::Unavailable(_) => Vec::new(),
+        },
     })
 }
 
@@ -995,7 +1099,7 @@ mod tests {
         ]);
         advance().unwrap();
         let current = store.get("1").unwrap().unwrap();
-        let next = serde_json::to_value(crate::run_next::build(&current, &[]).unwrap()).unwrap();
+        let next = serde_json::to_value(crate::run_next::build(&current, &git).unwrap()).unwrap();
         assert!(
             next["instructions"]
                 .as_str()
@@ -1085,7 +1189,7 @@ mod tests {
         let store = crate::run::RunStore::open(&path).unwrap();
         let update = crate::run::parse_update(&["--finding", "code-review", "-", "Bug"]).unwrap();
         let run = store.update_with("1", update, &git).unwrap().unwrap();
-        let next = crate::run_next::build_with_git(&run, Ok(&[]), &git).unwrap();
+        let next = crate::run_next::build(&run, &git).unwrap();
         let text = crate::run_next::render(&next);
         assert!(
             text.contains("Findings F1 are open"),
@@ -1095,8 +1199,11 @@ mod tests {
             text.contains("Move to build (rework)"),
             "Missing Rework move in guidance: {text}"
         );
-        let dashboard =
-            serde_json::to_value(crate::run_next::stage_gates(&run, Ok(&[]), &git)).unwrap();
+        let dashboard = serde_json::to_value(crate::run_next::stage_gates(
+            &run,
+            assess_local(&run, &git, AssessmentPurpose::Dashboard).evaluations,
+        ))
+        .unwrap();
         assert!(dashboard.to_string().contains("Findings F1 are open"));
         let error = advance_stored(&store, &git, &host()).unwrap_err();
         assert!(error.contains("Findings F1 are open"));
@@ -1124,7 +1231,11 @@ mod tests {
             failed.evidence = Some("Verification timed out".into());
             record_on(&mut run, failed, &git).unwrap();
             let views = |run: &Run| {
-                serde_json::to_value(crate::run_next::stage_gates(run, Ok(&[]), &git)).unwrap()
+                serde_json::to_value(crate::run_next::stage_gates(
+                    run,
+                    assess_local(run, &git, AssessmentPurpose::Dashboard).evaluations,
+                ))
+                .unwrap()
             };
             let evaluated = |views: serde_json::Value| {
                 views
@@ -1542,6 +1653,147 @@ mod tests {
                 .contains("not applicable")
         );
     }
+    struct NullDiff;
+
+    impl Git for NullDiff {
+        fn git(&self, _dir: &Path, args: &[&str]) -> Result<String, String> {
+            assert_eq!(
+                args,
+                ["diff", "--name-only", "--no-renames", "-z", "abc..HEAD"]
+            );
+            Ok(" leading.txt\0line\nbreak.tf\0ümlaut.tf\0".into())
+        }
+    }
+
+    #[test]
+    fn changed_paths_preserves_unusual_names() {
+        let mut run = run(Stage::Check);
+        run.worktree = Some("/work/repo".into());
+        run.base_commit = Some("abc".into());
+        assert_eq!(
+            changed_paths(&run, &NullDiff).unwrap(),
+            [" leading.txt", "line\nbreak.tf", "ümlaut.tf"]
+        );
+    }
+
+    #[test]
+    fn git_diff_preserves_unusual_paths_and_both_sides_of_renames() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(dir.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", dir.path().join("no-config"))
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "-q"]);
+        let commit = |message| {
+            git(&[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                message,
+            ])
+        };
+        std::fs::write(dir.path().join("security.tf"), "resource").unwrap();
+        git(&["add", "--all"]);
+        commit("base");
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["mv", "security.tf", "renamed.txt"]);
+        std::fs::write(dir.path().join(" leading.txt"), "one").unwrap();
+        std::fs::write(dir.path().join("ümlaut.tf"), "two").unwrap();
+        git(&["add", "--all"]);
+        commit("change");
+        let mut run = run(Stage::Check);
+        run.worktree = Some(dir.path().to_string_lossy().into_owned());
+        run.base_commit = Some(base);
+        let paths = changed_paths(&run, &crate::run_check::ReadOnlyGit).unwrap();
+        assert!(paths.contains(&" leading.txt".to_string()));
+        assert!(paths.contains(&"ümlaut.tf".to_string()));
+        assert!(paths.contains(&"security.tf".to_string()));
+        assert!(paths.contains(&"renamed.txt".to_string()));
+    }
+
+    #[test]
+    fn stale_check_evidence_blocks_guidance_and_advance() {
+        let git = FakeGit(RefCell::new("abc1234".into()));
+        let mut run = run(Stage::Check);
+        run.mode = Some(Mode::Balanced);
+        for gate in [
+            Gate::ChecksRecorded,
+            Gate::NoActionableFindings,
+            Gate::Verified,
+        ] {
+            record_on(&mut run, result(gate, true), &git).unwrap();
+        }
+        let next = crate::run_next::build(&run, &git).unwrap();
+        let next_json = serde_json::to_value(next).unwrap();
+        let gates = &next_json["gates"];
+        assert!(
+            gates.as_array().unwrap().is_empty(),
+            "Expected fresh evidence to satisfy every Gate, found {gates}"
+        );
+
+        *git.0.borrow_mut() = "def5678".into();
+        let next = serde_json::to_value(crate::run_next::build(&run, &git).unwrap()).unwrap();
+        let dashboard = assess_local(&run, &git, AssessmentPurpose::Dashboard);
+        let error = advance_on(&mut run, &git, &host()).unwrap_err();
+        for (gate, reason) in [
+            (
+                Gate::ChecksRecorded,
+                "Check code-review has no passing result on HEAD",
+            ),
+            (
+                Gate::Verified,
+                "The verification commit does not match HEAD",
+            ),
+        ] {
+            assert!(
+                next["gates"].as_array().unwrap().iter().any(|entry| {
+                    entry["name"] == gate.name()
+                        && entry["status"] == "open"
+                        && entry["reason"] == reason
+                }),
+                "Missing {gate:?} in guidance: {next}"
+            );
+            assert!(
+                dashboard.evaluations.iter().any(|entry| {
+                    entry.name == gate
+                        && entry.status == GateStatus::Open
+                        && entry.reason.as_deref() == Some(reason)
+                }),
+                "Missing {gate:?} in dashboard assessment"
+            );
+            assert!(
+                error.contains(&format!("{}: {reason}", gate.name())),
+                "{error}"
+            );
+        }
+        assert_eq!(run.stage, Stage::Check);
+        assert!(
+            run.stage_exits.is_empty(),
+            "Refused Advance saved Stage exits: {:?}",
+            run.stage_exits
+        );
+    }
+
     #[test]
     fn advance_rejects_head_change_during_check_selection() {
         struct MovingHead(std::cell::Cell<u32>);
