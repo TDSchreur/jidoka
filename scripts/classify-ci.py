@@ -33,6 +33,7 @@ BUNDLED_SKILL_PREFIXES = (
     b"skills/jidoka-awesome-copilot/",
     b"skills/jidoka-setup-knowledge-repo/",
     b"skills/jidoka-cross-repo-change/",
+    b"skills/jidoka-work-through-plan/",
     b".agents/skills/jidoka/",
     b".agents/skills/jidoka-full/",
     b".agents/skills/jidoka-fast/",
