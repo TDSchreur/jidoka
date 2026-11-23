@@ -1411,9 +1411,38 @@ async fn run_details_after_rework_prefer_the_latest_accepted_check_exit() {
     assert_eq!(body["model_route"]["stages"][0]["override"], false);
 }
 
+/// A Git repository at `path` with one commit; returns that commit.
+fn committed_repository(path: &Path) -> String {
+    fs::create_dir_all(path).unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .env("GIT_CONFIG_GLOBAL", path.join("no-config"))
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    git(&["init", "-q"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+    git(&["rev-parse", "HEAD"])
+}
+
 #[rocket::async_test]
 async fn run_details_show_current_assessment_next_to_differing_recorded_evidence() {
     let dir = TestDir::new();
+    let worktree = dir.0.path().join("work");
+    let base = committed_repository(&worktree);
     let mut reworked_check = exit(
         "check",
         None,
@@ -1425,6 +1454,7 @@ async fn run_details_show_current_assessment_next_to_differing_recorded_evidence
     let body = run_detail_body(&dir, serde_json::json!({
         "id": "42", "title": "t", "project": "/work", "mode": "jidoka-balanced",
         "stage": "check", "status": "running", "rework": 1,
+        "worktree": worktree, "base_commit": base,
         "gates": [{
             "gate": "checks-recorded", "stage": "check", "rework": null, "passed": true, "evidence": null,
             "commit": "abc", "ticket": null, "check": "code-review",
@@ -1442,12 +1472,10 @@ async fn run_details_show_current_assessment_next_to_differing_recorded_evidence
     // No accepted Check exit yet, so the recorded skips come from the gate result of the first pass.
     assert_eq!(body["recorded_skipped_checks"][0]["name"], "security");
     assert_eq!(body["recorded_skipped_rework"], serde_json::Value::Null);
-    // The current selection cannot be computed, which does not hide the recorded evidence.
-    assert_eq!(
-        body["checks_unavailable"],
-        "Record the worktree to select checks"
-    );
-    assert!(body.get("checks").is_none());
+    // The current selection, made from the worktree now, skips nothing; the recorded skips stay.
+    assert_eq!(body["checks"]["applicable"][0]["name"], "code-review");
+    assert_eq!(body["checks"]["skipped"], serde_json::json!([]));
+    assert!(body.get("checks_unavailable").is_none());
     let checks: Vec<_> = body["stage_gates"]
         .as_array()
         .unwrap()

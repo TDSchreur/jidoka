@@ -1,5 +1,7 @@
-//! The dashboard's view of one Run: the stored record with its cost, the evidence recorded when its
-//! Stages ended, and the current local Gate assessment.
+//! The dashboard's projection of one Run.
+//!
+//! It combines the stored record with its cost, the evidence recorded when its Stages ended, and the
+//! current local Gate assessment.
 //!
 //! The run list only needs [`summary`]; Git is inspected only for [`detail`], so list polling stays
 //! cheap. The browser places history rows itself from `stage_exits` and the timeline.
@@ -14,8 +16,14 @@ use crate::{
 };
 use serde::Serialize;
 
-/// A run as the run list shows it: the stored record plus the estimated cost of its usage, from the
-/// price table as it is now. The cost is never stored.
+/// A run as the run list shows it, without inspecting Git.
+///
+/// It is the stored record plus the estimated cost of its usage, from the price table as it is now.
+/// The cost is never stored.
+///
+/// # Errors
+///
+/// Fails when the record or its cost cannot be serialized.
 pub(super) fn summary(run: &Run) -> serde_json::Result<serde_json::Value> {
     let mut value = serde_json::to_value(run)?;
     if let Some(usage) = &run.usage {
@@ -24,9 +32,15 @@ pub(super) fn summary(run: &Run) -> serde_json::Result<serde_json::Value> {
     Ok(value)
 }
 
-/// A run as `GET /api/runs/<id>` shows it: the [`summary`] plus its model route, the skipped checks
-/// recorded when Check ended, and its Stage gates and check selection as the shared local assessment
-/// sees them now. Only this projection inspects the worktree through `git`.
+/// A run as `GET /api/runs/<id>` shows it.
+///
+/// It is the [`summary`] plus its model route, the skipped checks recorded when Check ended, and its
+/// Stage gates and check selection as the shared local assessment sees them now. Only this projection
+/// inspects the worktree through `git`.
+///
+/// # Errors
+///
+/// Fails when the projection cannot be serialized.
 pub(super) fn detail(run: &Run, git: &dyn Git) -> serde_json::Result<serde_json::Value> {
     let assessment = run_gate::assess_local(run, git, AssessmentPurpose::Dashboard);
     let (checks, checks_unavailable) = match assessment.checks {
