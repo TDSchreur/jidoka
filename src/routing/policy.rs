@@ -23,7 +23,8 @@ use std::{
 /// The policy file is user-owned and could be anything: larger files are not read.
 const MAX_POLICY_BYTES: u64 = 1 << 20;
 
-/// The agents a policy can have an entry for, in the order the policy and its messages list them.
+/// The agents a policy can have an entry for, in the order the policy and its messages list them. This
+/// differs on purpose from the install menu order of `Agent::ALL`: policy files and messages already use it.
 pub(crate) const POLICY_ORDER: [Agent; 3] = [Agent::Claude, Agent::Codex, Agent::Copilot];
 
 /// The options of `jidoka run start <title>`: only `--agent <name>`, the agent the run starts in.

@@ -780,8 +780,8 @@ fn agent_sessions_from(
             match agent_home.into_os_string().into_string() {
                 Ok(path) if run::is_valid_agent_home(&path) => home = Some(path),
                 _ => {
-                    let from_var = var(agent.home_var()).is_some_and(|value| !value.is_empty());
-                    let source = if from_var {
+                    // Without the user's home, only a set variable can name the Agent home.
+                    let source = if agent.home_in(None, var).is_some() {
                         agent.home_var()
                     } else {
                         "the home directory"
