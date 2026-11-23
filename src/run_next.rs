@@ -2,8 +2,8 @@
 
 use crate::{
     checks,
+    git::Git,
     inspect::shown,
-    pr_sync::Git,
     routing::{ModelChoice, ModelRouting, RoutingAgent},
     run::{
         Evaluation, ExitOutcome, GateResult, GateStatus, Mode, Run, RunStatus, Stage, StageExit,

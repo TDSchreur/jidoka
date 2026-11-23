@@ -10,10 +10,10 @@ mod watch;
 pub(crate) use azure::AzureRepo;
 
 use crate::{
+    git::last_line,
     inspect::shown,
     pr_state::PrState,
     pr_wait::{CheckResult, Clock, Failure, Options, Waited},
-    run_begin::last_line,
 };
 use std::{io, path::Path, process::Command};
 

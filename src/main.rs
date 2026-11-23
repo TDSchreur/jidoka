@@ -6,6 +6,7 @@ mod cost;
 mod discovery;
 mod doctor;
 mod document;
+mod git;
 mod gitignore;
 mod group_cli;
 mod groups;
@@ -19,6 +20,7 @@ mod pr_open;
 mod pr_state;
 mod pr_sync;
 mod pr_wait;
+mod pr_workspace;
 mod repository;
 mod request_logs;
 mod requests;
@@ -318,9 +320,12 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
     Ok(0)
 }
 
-impl pr_open::RunApi for ServerApi {
-    fn update(&self, id: &str, options: &[&str]) -> Result<(), String> {
-        report_to_dashboard(id, options)
+impl pr_workspace::RunReporter for ServerApi {
+    fn report(&self, id: &str, report: &pr_workspace::PrReport) -> Result<(), String> {
+        client::check_run_id(id).map_err(|error| error.to_string())?;
+        let update = report.update();
+        update.validate()?;
+        send_run_update(id, &update)
     }
 }
 
@@ -330,22 +335,12 @@ fn pr_open_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     let parsed = pr_open::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
     client::check_run_id(id)?;
     let run = fetch_run_cli(id)?;
-    let info = pr_open::PrRun {
-        id: id.to_string(),
-        worktree: run.worktree.clone(),
-        branch: run.branch.clone(),
-        status: serde_json::to_value(run.status)?
-            .as_str()
-            .unwrap_or("running")
-            .to_string(),
-        base_commit: run.base_commit.clone(),
-        pr_state: run.pr_status.as_ref().map(|status| status.state),
-    };
+    let info = pr_workspace::PrRun::from_run(id, &run);
     let opened = pr_open::open(
         &info,
         &parsed,
         &pr_host::Hosts::new(pr_host::RealTools),
-        &pr_sync::RealGit,
+        &git::RealGit,
         &ServerApi,
     )
     .map_err(|problem| inspect::shown(&problem.0))?;
@@ -369,7 +364,7 @@ fn run_check_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::erro
         branch: run.branch.clone(),
         base_commit: run.base_commit.clone(),
     };
-    let report = run_check::check(&recorded, &run_check::ReadOnlyGit);
+    let report = run_check::check(&recorded, &git::ReadOnlyGit);
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -451,7 +446,7 @@ fn run_cleanup_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::er
     let cleaned = run_cleanup::cleanup(
         &recorded,
         &pr_host::Hosts::new(pr_host::RealTools),
-        &pr_sync::RealGit,
+        &git::RealGit,
         &cwd,
     )
     .map_err(|problem| inspect::shown(&problem.0))?;
@@ -476,17 +471,8 @@ fn pr_sync_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
     let parsed = pr_sync::parse_options(options).map_err(|error| format!("{error}\n{HELP}"))?;
     client::check_run_id(id)?;
     let run = fetch_run_cli(id)?;
-    let text =
-        |value: serde_json::Value, fallback: &str| value.as_str().unwrap_or(fallback).to_string();
-    let info = pr_open::PrRun {
-        id: id.to_string(),
-        worktree: run.worktree.clone(),
-        branch: run.branch.clone(),
-        status: text(serde_json::to_value(run.status)?, "running"),
-        base_commit: run.base_commit.clone(),
-        pr_state: run.pr_status.as_ref().map(|status| status.state),
-    };
-    let synced = pr_sync::sync(&info, &parsed, &pr_sync::RealGit, &ServerApi)
+    let info = pr_workspace::PrRun::from_run(id, &run);
+    let synced = pr_sync::sync(&info, &parsed, &git::RealGit, &ServerApi)
         .map_err(|problem| inspect::shown(&problem.0))?;
     if parsed.json {
         println!("{}", serde_json::to_string_pretty(&synced)?);
@@ -716,7 +702,7 @@ fn print_next(id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
 /// The `run next` data of run `id`, read from the dashboard; the changed paths are read only in Check.
 fn next_for(id: &str) -> Result<run_next::Next, Box<dyn std::error::Error>> {
     let run = fetch_run_cli(id)?;
-    let next = run_next::build(&run, &run_check::ReadOnlyGit)?;
+    let next = run_next::build(&run, &git::ReadOnlyGit)?;
     // Only Finish uses the group, so other stages never ask the dashboard for it.
     let group = if run.stage == run::Stage::Finish && run.status != run::RunStatus::Done {
         group_guidance(id)?
@@ -938,8 +924,13 @@ fn dashboard(requested: Option<u16>, usage: bool) -> Result<(), Box<dyn std::err
 /// before the dashboard is looked for.
 fn report_to_dashboard(id: &str, options: &[&str]) -> Result<(), String> {
     let update = client::prepare_update(id, options).map_err(|e| e.to_string())?;
+    send_run_update(id, &update)
+}
+
+/// Sends an update that was already checked to the dashboard.
+fn send_run_update(id: &str, update: &run::UpdateRun) -> Result<(), String> {
     let token_file = cli_token_file().map_err(|e| e.to_string())?;
-    client::send_update(&cli_address()?, &token_file, id, &update).map_err(|e| e.to_string())
+    client::send_update(&cli_address()?, &token_file, id, update).map_err(|e| e.to_string())
 }
 
 fn send_lifecycle(id: &str, request: &run::LifecycleRequest) -> Result<(), String> {

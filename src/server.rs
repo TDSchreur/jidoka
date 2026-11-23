@@ -464,11 +464,8 @@ fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
         value["recorded_skipped_checks"] = serde_json::to_value(&result.skipped_checks)?;
         value["recorded_skipped_rework"] = serde_json::to_value(result.rework)?;
     }
-    let assessment = run_gate::assess_local(
-        run,
-        &crate::run_check::ReadOnlyGit,
-        AssessmentPurpose::Dashboard,
-    );
+    let assessment =
+        run_gate::assess_local(run, &crate::git::ReadOnlyGit, AssessmentPurpose::Dashboard);
     value["stage_gates"] =
         serde_json::to_value(crate::run_next::stage_gates(run, assessment.evaluations))?;
     match assessment.checks {
@@ -566,7 +563,7 @@ fn record_gate(
     let record = record.into_inner();
     store
         .record_gate(id, |run| {
-            crate::run_gate::record(run, record, &crate::pr_sync::RealGit)
+            crate::run_gate::record(run, record, &crate::git::RealGit)
         })
         .map_err(|error| (HttpStatus::BadRequest, error))?;
     Ok("Gate recorded")
@@ -583,7 +580,7 @@ fn advance_run(
 ) -> Result<&'static str, (HttpStatus, String)> {
     request
         .into_inner()
-        .advance(store, id, &crate::pr_sync::RealGit, tool.0.as_ref())
+        .advance(store, id, &crate::git::RealGit, tool.0.as_ref())
         .map_err(|error| (HttpStatus::BadRequest, error))?;
     collector.after_update(store, id);
     Ok("Run advanced")

@@ -71,7 +71,7 @@ pub(crate) struct FindingsContext<'a> {
     pub(crate) stage: Stage,
     /// The update's timestamp, for new and resolved Findings.
     pub(crate) at: u64,
-    pub(crate) git: &'a dyn crate::pr_sync::Git,
+    pub(crate) git: &'a dyn crate::git::Git,
 }
 
 impl FindingsUpdate {
@@ -256,7 +256,7 @@ mod tests {
     use std::path::Path;
 
     struct FixedGit;
-    impl crate::pr_sync::Git for FixedGit {
+    impl crate::git::Git for FixedGit {
         fn git(&self, _: &Path, _: &[&str]) -> Result<String, String> {
             Ok("abc1234".into())
         }

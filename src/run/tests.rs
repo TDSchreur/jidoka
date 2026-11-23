@@ -144,7 +144,7 @@ fn recording_the_mode_reports_the_workflow_skill_and_observed_skills_are_stored_
 }
 
 struct FixedGit;
-impl crate::pr_sync::Git for FixedGit {
+impl crate::git::Git for FixedGit {
     fn git(&self, _: &Path, _: &[&str]) -> Result<String, String> {
         Ok("abc1234".into())
     }

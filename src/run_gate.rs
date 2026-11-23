@@ -1,10 +1,9 @@
 //! Gate evaluation, gate recording and the live CI check that decide how a run may leave a Stage.
 use crate::{
     checks::{self, Selection},
+    git::Git,
     pr_host::PrHost,
-    pr_state,
-    pr_sync::Git,
-    pr_wait,
+    pr_state, pr_wait,
     run::{
         AdvanceMetadata, CiEvidence, CiOutcome, Evaluation, Exit, GateResult, GateStatus,
         MAX_GATE_RESULTS, MAX_NOTE_BYTES, Mode, Run, RunStatus, RunStore, SkippedCheck, Stage,
@@ -1724,7 +1723,7 @@ mod tests {
         let mut run = run(Stage::Check);
         run.worktree = Some(dir.path().to_string_lossy().into_owned());
         run.base_commit = Some(base);
-        let paths = changed_paths(&run, &crate::run_check::ReadOnlyGit).unwrap();
+        let paths = changed_paths(&run, &crate::git::ReadOnlyGit).unwrap();
         assert!(paths.contains(&" leading.txt".to_string()));
         assert!(paths.contains(&"ümlaut.tf".to_string()));
         assert!(paths.contains(&"security.tf".to_string()));
@@ -1829,7 +1828,7 @@ mod tests {
             id: &'a str,
             change_run: bool,
         }
-        impl crate::pr_sync::Git for Interleaved<'_> {
+        impl crate::git::Git for Interleaved<'_> {
             fn git(&self, _: &std::path::Path, _: &[&str]) -> Result<String, String> {
                 if self.change_run {
                     self.store
@@ -1851,7 +1850,7 @@ mod tests {
                                     evidence: None,
                                     check: None,
                                 },
-                                &crate::pr_sync::RealGit,
+                                &crate::git::RealGit,
                             )
                         })
                         .unwrap();
@@ -1931,7 +1930,7 @@ mod tests {
             store: &'a RunStore,
             id: &'a str,
         }
-        impl crate::pr_sync::Git for Revert<'_> {
+        impl crate::git::Git for Revert<'_> {
             fn git(&self, _: &std::path::Path, _: &[&str]) -> Result<String, String> {
                 for activity in ["B", "A"] {
                     self.store

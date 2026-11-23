@@ -2,11 +2,10 @@
 //! when no work would be lost. The remote branch is never touched.
 
 use crate::{
+    git::{self, Git, Worktree, first_line, valid_branch_name},
     inspect::shown,
     pr_host::{PrHost, ToolProblem},
     pr_state::PrState,
-    pr_sync::Git,
-    run_begin::{first_line, valid_branch_name},
     run_check::canonical_dir,
 };
 use std::path::{Path, PathBuf};
@@ -274,16 +273,6 @@ pub(crate) fn cleanup(
     Ok(cleaned)
 }
 
-/// A worktree as `git worktree list --porcelain` prints it.
-#[derive(Debug, PartialEq, Eq)]
-struct Entry {
-    /// The path exactly as git prints it.
-    path: String,
-    /// The branch checked out there, if any.
-    branch: Option<String>,
-    locked: bool,
-}
-
 /// The run's worktree as git lists it.
 struct Target<'a> {
     /// The path the run recorded.
@@ -295,27 +284,8 @@ struct Target<'a> {
 }
 
 /// Every worktree git lists, the main checkout included.
-fn worktrees(git: &dyn Git, repository: &Path) -> Result<Vec<Entry>, ToolProblem> {
-    let list = git
-        .git(repository, &["worktree", "list", "--porcelain"])
-        .map_err(|e| git_problem("worktree list", &e))?;
-    let mut entries: Vec<Entry> = Vec::new();
-    for line in list.lines() {
-        if let Some(path) = line.strip_prefix("worktree ") {
-            entries.push(Entry {
-                path: path.to_string(),
-                branch: None,
-                locked: false,
-            });
-        } else if let Some(entry) = entries.last_mut() {
-            if let Some(branch) = line.strip_prefix("branch refs/heads/") {
-                entry.branch = Some(branch.to_string());
-            } else if line == "locked" || line.starts_with("locked ") {
-                entry.locked = true;
-            }
-        }
-    }
-    Ok(entries)
+fn worktrees(git: &dyn Git, repository: &Path) -> Result<Vec<Worktree>, ToolProblem> {
+    git::worktrees(git, repository).map_err(|e| git_problem("worktree list", &e))
 }
 
 /// `path` with its nearest existing ancestor canonicalised and the missing components appended, so a path
