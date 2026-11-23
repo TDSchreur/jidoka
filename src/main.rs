@@ -715,19 +715,7 @@ fn print_next(id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
 /// The `run next` data of run `id`, read from the dashboard; the changed paths are read only in Check.
 fn next_for(id: &str) -> Result<run_next::Next, Box<dyn std::error::Error>> {
     let run = fetch_run_cli(id)?;
-    let paths = if run.stage == run::Stage::Check
-        && run.status != run::RunStatus::Done
-        && run.mode != Some(run::Mode::Fast)
-    {
-        run_next::changed_paths(&run, &run_check::ReadOnlyGit)
-    } else {
-        Ok(Vec::new())
-    };
-    let next = run_next::build_with_git(
-        &run,
-        paths.as_deref().map_err(String::as_str),
-        &run_check::ReadOnlyGit,
-    )?;
+    let next = run_next::build(&run, &run_check::ReadOnlyGit)?;
     // Only Finish uses the group, so other stages never ask the dashboard for it.
     let group = if run.stage == run::Stage::Finish && run.status != run::RunStatus::Done {
         group_guidance(id)?
