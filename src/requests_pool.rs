@@ -192,7 +192,7 @@ pub(crate) fn pool(
             let missing = result
                 .notes
                 .iter()
-                .any(|note| note.starts_with(crate::requests::RECORDED_NOT_FOUND));
+                .any(|note| note.starts_with(crate::session_attribution::RECORDED_NOT_FOUND));
             out.left_out.push(left_out(if missing {
                 "its recorded session logs were not found in the scanned folders (see CLAUDE_CONFIG_DIR)".into()
             } else {

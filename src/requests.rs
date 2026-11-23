@@ -1,12 +1,13 @@
 //! `jidoka run requests`: the model requests of a run per category, with their tokens.
 
 use crate::{
-    agent_logs::{LogSession, ReadLimits, Roots, RunWindow, read_sessions},
+    agent_logs::{ReadLimits, Roots},
     inspect::shown,
     request_logs::{Category, Request, request_of},
     run::Run,
+    session_attribution::{self, Attributed, LeadIn, Missing},
     stats::{number, table_with},
-    usage::{FUTURE_SLACK_MS, Tokens, mark_at},
+    usage::Tokens,
 };
 use serde::Serialize;
 use std::{collections::BTreeMap, time::Instant};
@@ -86,40 +87,15 @@ fn add(counts: &mut Counts, request: &Request) {
 /// before `jidoka run start` executes and creates the run, so it always falls just before the first mark.
 const START_GRACE_MS: u64 = 120_000;
 
-/// Whether `request` is the run's work: it falls inside the run's time, or it is workspace work just
-/// before the run's first mark.
-fn in_run(run: &Run, request: &Request) -> bool {
-    mark_at(run, request.ts).is_some()
-        || (request.category == Category::Workspace
-            && run.timeline.first().is_some_and(|first| {
-                request.ts < first.at && first.at - request.ts <= START_GRACE_MS
-            }))
-}
+/// The lead-in of the request analysis: workspace work up to `START_GRACE_MS` before the first mark.
+const WORKSPACE_LEAD_IN: LeadIn = LeadIn {
+    ms: START_GRACE_MS,
+    applies: |response| request_of(response).category == Category::Workspace,
+};
 
-/// Start of the note for a run whose recorded sessions no scanned log claims.
-pub(crate) const RECORDED_NOT_FOUND: &str =
-    "the run has recorded sessions, but none of their logs were found";
-
-/// The note for a run whose recorded sessions no scanned log claims: names the sessions and the scanned folders.
-pub(crate) fn recorded_not_found_note(target: &Run, roots: &Roots) -> String {
-    // CLAUDE_CONFIG_DIR points to the directory that contains projects.
-    let claude = roots.claude.parent().unwrap_or(&roots.claude);
-    format!(
-        "{RECORDED_NOT_FOUND}: {} (scanned folders: {}, {}, {}); for Claude Code, set CLAUDE_CONFIG_DIR to the Claude folder that holds the sessions",
-        target.sessions.join(", "),
-        claude.display(),
-        roots.codex.display(),
-        roots.copilot.display()
-    )
-}
-
-/// The requests of `target` from the Claude Code logs. `runs` holds every run, so a request that two runs
-/// working at the same time could both claim is in neither. Never fails: whatever cannot be read becomes a
-/// note.
-#[expect(
-    clippy::too_many_lines,
-    reason = "reads logs per agent and builds categories, subagent and ambiguity counts together"
-)]
+/// The requests of `target` from the agents' session logs. `runs` holds every run, so a request that two
+/// runs working at the same time could both claim is in neither. Never fails: whatever cannot be read
+/// becomes a note.
 pub(crate) fn analyze(
     target: &Run,
     runs: &[Run],
@@ -140,87 +116,66 @@ pub(crate) fn analyze(
         sessions: Vec::new(),
         notes: Vec::new(),
     };
-    let Some(first) = target.timeline.first() else {
-        result
-            .notes
-            .push("the run has no stage timeline: it started before usage tracking existed".into());
-        return result;
+    let scan = match session_attribution::scan(target, runs, roots, deadline, ReadLimits::default())
+    {
+        Ok(scan) => scan,
+        Err(reason) => {
+            result.notes.push(reason.to_string());
+            return result;
+        }
     };
-    let window = RunWindow::new(target, runs, first.at);
-    let tracked = &window.tracked;
-    // The run's own agent homes, when it recorded them, so the notes below name the folders scanned.
-    let roots = &roots.for_run(target);
-    let read = read_sessions(roots, &window, deadline, ReadLimits::default());
+    let read = &scan.read;
     for note in &read.notes {
         if !result.notes.contains(&note.text) {
             result.notes.push(note.text.clone());
         }
     }
-    let (timed_out, truncated) = (read.timed_out, read.truncated);
-    if timed_out {
+    if read.timed_out {
         result
             .notes
             .push("reading the session logs took too long; the counts may be incomplete".into());
     }
-    if truncated {
+    if read.truncated {
         result.notes.push(
             "reading the session logs stopped at its limit on their number and size; the counts may be incomplete"
                 .into(),
         );
     }
-    let claimed: Vec<&LogSession> = read
-        .sessions
-        .iter()
-        .filter(|session| session.belongs_to(target))
-        .collect();
-    if claimed.is_empty() {
-        result.notes.push(if !target.sessions.is_empty() {
-            recorded_not_found_note(target, roots)
-        } else if read.roots_found == 0 {
-            "no Claude Code, Codex or Copilot session logs were found on this machine".to_string()
-        } else {
-            "no session log executed a jidoka run update for this run and none was recorded for it"
-                .to_string()
+    if let Some(missing) = scan.missing() {
+        result.notes.push(match missing {
+            Missing::RecordedNotFound(note) => note,
+            Missing::NoLogs => session_attribution::NO_LOGS.to_string(),
+            Missing::Unclaimed => {
+                "no session log executed a jidoka run update for this run and none was recorded for it"
+                    .to_string()
+            }
         });
         return result;
     }
+    let attribution = scan.attribute(now, Some(WORKSPACE_LEAD_IN));
+    for response in &attribution.ambiguous {
+        add(&mut result.ambiguous, &request_of(response));
+    }
     let mut by_category: BTreeMap<(Category, bool), Counts> = BTreeMap::new();
-    for session in claimed {
-        let rivals: Vec<&Run> = tracked
-            .iter()
-            .copied()
-            .filter(|run| run.id != target.id && session.belongs_to(run))
-            .collect();
-        let mut used = false;
-        for response in &session.responses {
-            let request = &request_of(response);
-            // A request from the future cannot be the run's work: a clock is wrong or the log is made up.
-            if request.ts > now.saturating_add(FUTURE_SLACK_MS) || !in_run(target, request) {
-                continue;
-            }
-            if rivals.iter().any(|run| in_run(run, request)) {
-                add(&mut result.ambiguous, request);
-                continue;
-            }
-            add(
-                by_category
-                    .entry((request.category, request.subagent))
-                    .or_default(),
-                request,
-            );
-            add(&mut result.total, request);
-            if request.subagent {
-                add(&mut result.subagents, request);
-            }
-            result.chained_reporting += u64::from(request.chained_reporting);
-            result.several_categories += u64::from(request.several_categories);
-            used = true;
+    for Attributed { response, .. } in &attribution.responses {
+        let request = &request_of(response);
+        add(
+            by_category
+                .entry((request.category, request.subagent))
+                .or_default(),
+            request,
+        );
+        add(&mut result.total, request);
+        if request.subagent {
+            add(&mut result.subagents, request);
         }
-        if used {
-            result.sessions.push(session.id.clone());
-            if !session.has_subagent_logs {
-                result.coordinator_only_sessions.push(session.id.clone());
-            }
+        result.chained_reporting += u64::from(request.chained_reporting);
+        result.several_categories += u64::from(request.several_categories);
+    }
+    for session in &attribution.sessions {
+        result.sessions.push(session.id.clone());
+        if !session.has_subagent_logs {
+            result.coordinator_only_sessions.push(session.id.clone());
         }
     }
     result.categories = by_category
@@ -231,6 +186,13 @@ pub(crate) fn analyze(
             counts,
         })
         .collect();
+    push_summary_notes(&mut result);
+    result
+}
+
+/// The notes that explain the totals: subagents, coordinator-only sessions, uncategorized and ambiguous
+/// requests, and an empty result.
+fn push_summary_notes(result: &mut RunRequests) {
     if result.subagents.requests > 0 {
         result.notes.push(format!(
             "Subagent requests are included: {} of the {} requests",
@@ -264,7 +226,6 @@ pub(crate) fn analyze(
             .notes
             .push("the matched session logs hold no requests inside the run's time".into());
     }
-    result
 }
 
 fn share(part: u64, whole: u64) -> String {

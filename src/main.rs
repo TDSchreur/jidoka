@@ -31,6 +31,7 @@ mod run_cleanup;
 mod run_gate;
 mod run_next;
 mod server;
+mod session_attribution;
 mod setup;
 mod shell_commands;
 mod stages;
