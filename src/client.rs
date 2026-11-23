@@ -736,15 +736,12 @@ mod tests {
 
     #[test]
     fn a_run_keeps_the_selection_it_started_with_when_the_policy_file_changes() {
-        use crate::{
-            routing::{Host, RoutingAgent},
-            run::Stage,
-        };
+        use crate::{agent::Agent, run::Stage};
         let dir = TestDir::new();
         let server = TestServer::start(&dir.0.path().join("runs.json"));
         let policy = dir.0.path().join("model-routing.json");
         fs::write(&policy, both_agents("opus", "gpt-6-astra")).unwrap();
-        let codex = crate::routing::load(&policy, Some(Host::Codex))
+        let codex = crate::routing::load(&policy, Some(Agent::Codex))
             .unwrap()
             .selection;
         let id = start_run(
@@ -765,7 +762,7 @@ mod tests {
         let run = fetch_run(&server.address, &id).unwrap();
         assert!(crate::inspect::render(&run).contains("Model routing codex"));
         let routing = run.model_routing.unwrap();
-        assert_eq!(routing.agent, RoutingAgent::Codex);
+        assert_eq!(routing.agent, Agent::Codex);
         assert_eq!(routing.stages[&Stage::Check].model, "gpt-6-astra");
         assert_eq!(routing.stages.len(), 1);
         // A per-run override keeps working on the recorded selection.
@@ -780,7 +777,7 @@ mod tests {
                 .contains_key(&Stage::Check)
         );
         // A run started now reads the new file, and a Claude run gets the Claude entry, never Codex's.
-        let codex = crate::routing::load(&policy, Some(Host::Codex))
+        let codex = crate::routing::load(&policy, Some(Agent::Codex))
             .unwrap()
             .selection;
         let next = start_run(
@@ -798,7 +795,7 @@ mod tests {
             run.model_routing.unwrap().stages[&Stage::Check].model,
             "gpt-6-luna"
         );
-        let claude = crate::routing::load(&policy, Some(Host::Claude))
+        let claude = crate::routing::load(&policy, Some(Agent::Claude))
             .unwrap()
             .selection;
         let third = start_run(
@@ -815,7 +812,7 @@ mod tests {
             .unwrap()
             .model_routing
             .unwrap();
-        assert_eq!(routing.agent, RoutingAgent::Claude);
+        assert_eq!(routing.agent, Agent::Claude);
         assert_eq!(routing.stages[&Stage::Check].model, "opus");
     }
 

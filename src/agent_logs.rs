@@ -19,7 +19,7 @@ pub(crate) use codex::read_codex;
 pub(crate) use copilot::read_copilot;
 
 use crate::{
-    install::agent_home,
+    agent::Agent,
     run::Run,
     shell_commands::{MAX_COMMAND_BYTES, Variables, run_claims, truncate},
     usage::{PauseKind, Tokens, overlaps, parse_timestamp},
@@ -68,33 +68,32 @@ pub(crate) struct Roots {
 }
 
 impl Roots {
-    /// The agents' usual folders under `home`, honoring `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `COPILOT_HOME` as install does.
-    pub(crate) fn from_home(
-        home: &Path,
-        var: &dyn Fn(&str) -> Option<OsString>,
-    ) -> io::Result<Self> {
-        Ok(Self {
-            claude: agent_home("claude", home, var)?.join(CLAUDE_LOGS),
-            codex: agent_home("codex", home, var)?.join(CODEX_LOGS),
-            copilot: agent_home("copilot", home, var)?.join(COPILOT_LOGS),
-        })
+    /// The log folders in each Agent home under the user's `home`, as `Agent::home` finds them.
+    pub(crate) fn from_home(home: &Path, var: &dyn Fn(&str) -> Option<OsString>) -> Self {
+        Self {
+            claude: Agent::Claude.home(home, var).join(CLAUDE_LOGS),
+            codex: Agent::Codex.home(home, var).join(CODEX_LOGS),
+            copilot: Agent::Copilot.home(home, var).join(COPILOT_LOGS),
+        }
     }
 
     /// These roots with the log folder of each agent home `run` recorded in place of this environment's, so
     /// a run is read from the home its agent ran in. A recorded home that is not absolute is ignored.
     pub(crate) fn for_run(&self, run: &Run) -> Self {
         let mut roots = self.clone();
-        for (agent, home) in &run.agent_homes {
+        for (name, home) in &run.agent_homes {
             let home = Path::new(home);
+            // The server accepts only known agents; an unknown one in an edited record is ignored.
+            let Some(agent) = Agent::parse(name) else {
+                continue;
+            };
             if !home.is_absolute() {
                 continue;
             }
-            match agent.as_str() {
-                "claude" => roots.claude = home.join(CLAUDE_LOGS),
-                "codex" => roots.codex = home.join(CODEX_LOGS),
-                "copilot" => roots.copilot = home.join(COPILOT_LOGS),
-                // The server accepts only these agents; an unknown one in an edited record is ignored.
-                _ => {}
+            match agent {
+                Agent::Claude => roots.claude = home.join(CLAUDE_LOGS),
+                Agent::Codex => roots.codex = home.join(CODEX_LOGS),
+                Agent::Copilot => roots.copilot = home.join(COPILOT_LOGS),
             }
         }
         roots

@@ -680,7 +680,7 @@ mod tests {
         assert!(!render(&run_with_summary("s")).contains("Model routing"));
         // A Copilot selection is shown like any other agent's.
         let mut copilot = routed_run();
-        copilot.model_routing.as_mut().unwrap().agent = crate::routing::RoutingAgent::Copilot;
+        copilot.model_routing.as_mut().unwrap().agent = crate::agent::Agent::Copilot;
         assert!(render(&copilot).contains("Model routing copilot\n"));
         // The machine-readable form is the whole run, so skills can read the selection from it.
         let json = serde_json::to_value(routed_run()).unwrap();

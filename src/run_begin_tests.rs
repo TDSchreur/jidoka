@@ -240,7 +240,7 @@ fn a_fresh_run_gets_a_worktree_from_the_fetched_base_and_records_it() {
         &api,
         Some(AgentSession {
             home: Some("/home/user/.claude-work".into()),
-            ..session("sess-1", Some("claude"))
+            ..session("sess-1", Some(Agent::Claude))
         }),
         None,
     )
@@ -719,7 +719,7 @@ fn api_with_session_run(id: &str, title: &str) -> FakeApi {
     api
 }
 
-fn session(id: &str, agent: Option<&'static str>) -> AgentSession {
+fn session(id: &str, agent: Option<Agent>) -> AgentSession {
     AgentSession {
         id: id.into(),
         agent,
@@ -730,9 +730,9 @@ fn session(id: &str, agent: Option<&'static str>) -> AgentSession {
 #[test]
 fn a_session_already_on_another_run_gives_a_warning_naming_the_agents_command() {
     let cases = [
-        (Some("claude"), "use /clear in Claude Code"),
-        (Some("codex"), "use /new in Codex"),
-        (Some("copilot"), "use /clear in Copilot CLI"),
+        (Some(Agent::Claude), "use /clear in Claude Code"),
+        (Some(Agent::Codex), "use /new in Codex"),
+        (Some(Agent::Copilot), "use /clear in Copilot CLI"),
         (None, "Start each run in a fresh agent session."),
     ];
     for (agent, expected) in cases {

@@ -264,7 +264,7 @@ pub(crate) fn read_claude(
             let mut markers = Markers::default();
             claude_pauses(&text, &mut markers);
             claude_skills(&text, &mut markers);
-            markers.attention = crate::attention::signals(crate::attention::Agent::Claude, &text);
+            markers.attention = crate::attention::signals(crate::agent::Agent::Claude, &text);
             drop(text);
             // The subagents of a session are in its own folder, which is not followed if it is a link.
             let session_dir = slug.path().join(&stem);

@@ -1,5 +1,5 @@
 use super::*;
-use crate::routing::{ModelChoice, ModelRouting, RoutingAgent};
+use crate::routing::{ModelChoice, ModelRouting};
 use std::path::Path;
 
 fn run(mode: Mode, stage: Stage, routing: Option<ModelRouting>) -> Run {
@@ -28,7 +28,7 @@ fn run(mode: Mode, stage: Stage, routing: Option<ModelRouting>) -> Run {
 
 fn routing() -> ModelRouting {
     ModelRouting {
-        agent: RoutingAgent::Claude,
+        agent: Agent::Claude,
         stages: BTreeMap::from([(
             Stage::Build,
             ModelChoice {
@@ -380,11 +380,7 @@ fn finish_guidance_waits_for_live_ci_even_with_a_stored_pr_state() {
 
 #[test]
 fn rework_and_finish_use_effective_build_for_each_host() {
-    for agent in [
-        RoutingAgent::Claude,
-        RoutingAgent::Codex,
-        RoutingAgent::Copilot,
-    ] {
+    for agent in [Agent::Claude, Agent::Codex, Agent::Copilot] {
         for (effort, expected) in [
             (None, "high"),
             (Some("medium"), "high"),

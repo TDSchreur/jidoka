@@ -5,8 +5,9 @@
 //! installs anything or needs the dashboard. The one thing it writes is a starter model-routing policy, and
 //! only when `--create-model-routing` asks for it.
 
+use crate::agent::Agent;
 use crate::install::{bundled_skill_files, skills_root};
-use crate::routing::{RoutingAgent, create_starter, created_message, policy_path_in};
+use crate::routing::{POLICY_ORDER, create_starter, created_message, policy_path_in};
 use serde::Serialize;
 use std::{
     ffi::OsString,
@@ -17,8 +18,6 @@ use std::{
 
 mod provider;
 mod routing;
-
-use crate::install::{AGENTS, agent_list};
 
 /// Project files are not trusted: anything larger is not read.
 const MAX_DOC_BYTES: u64 = 1 << 20;
@@ -170,19 +169,10 @@ pub(crate) struct Machine<'a> {
 }
 
 /// Checks the project at `project` and the listed agents (all of them when `agent` is `None`).
-pub(crate) fn diagnose(
-    project: &Path,
-    agent: Option<&str>,
-    machine: &Machine,
-) -> io::Result<Report> {
-    let agent_ids: Vec<&'static str> = match agent {
-        None => AGENTS.to_vec(),
-        Some(name) => vec![*AGENTS.iter().find(|known| **known == name).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("unknown agent {name:?}; use {}", agent_list()),
-            )
-        })?],
+pub(crate) fn diagnose(project: &Path, agent: Option<Agent>, machine: &Machine) -> Report {
+    let checked: Vec<Agent> = match agent {
+        None => Agent::ALL.to_vec(),
+        Some(agent) => vec![agent],
     };
     let git = git_checks(project);
     // Later checks read from the work tree root, so they work from a subfolder or a linked worktree.
@@ -194,13 +184,13 @@ pub(crate) fn diagnose(
     // A warning never blocks, so this check stays out of `shared_ok`.
     let windows_lint = windows_lint_check(&root, machine);
     let skills_version = skills_version_check(machine);
-    let agents: Vec<AgentReport> = agent_ids
+    let agents: Vec<AgentReport> = checked
         .into_iter()
-        .map(|id| {
-            let mut checks = vec![executable_check(id, &machine.path)];
-            checks.push(skills_check(id, machine));
+        .map(|agent| {
+            let mut checks = vec![executable_check(agent.name(), &machine.path)];
+            checks.push(skills_check(agent, machine));
             AgentReport {
-                id,
+                id: agent.name(),
                 usable: checks.iter().all(Check::passed),
                 checks,
             }
@@ -215,13 +205,13 @@ pub(crate) fn diagnose(
     };
     let model_routing = routing::checks(&root, machine, agent);
     let provider = provider::checks(project, machine);
-    Ok(Report {
+    Report {
         ok: shared_ok && agents_ok && !model_routing.iter().any(Check::blocks),
         project: project_checks,
         agents,
         provider,
         model_routing,
-    })
+    }
 }
 
 pub(crate) fn git_output(project: &Path, args: &[&str]) -> Option<String> {
@@ -558,17 +548,8 @@ fn executable_check(agent: &'static str, path: &OsString) -> Check {
     }
 }
 
-fn skills_check(agent: &'static str, machine: &Machine) -> Check {
-    let root = match skills_root(agent, &machine.home, machine.var) {
-        Ok(root) => root,
-        Err(error) => {
-            return Check::fail(
-                "skills",
-                error.to_string(),
-                format!("Use {}.", agent_list()),
-            );
-        }
-    };
+fn skills_check(agent: Agent, machine: &Machine) -> Check {
+    let root = skills_root(agent, &machine.home, machine.var);
     // A skill counts as installed only when every file `install` writes for it is there, so an
     // install from an older release that lacks newer files is reported too.
     let mut absent: Vec<&str> = bundled_skill_files()
@@ -589,7 +570,7 @@ fn skills_check(agent: &'static str, machine: &Machine) -> Check {
                 root.display(),
                 absent.join(", ")
             ),
-            format!("Run `jidoka install --agent {agent}`."),
+            format!("Run `jidoka install --agent {}`.", agent.name()),
         )
     }
 }
@@ -726,7 +707,7 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
             println!("{note}\n");
         }
     }
-    let report = diagnose(&std::env::current_dir()?, agent, &machine)?;
+    let report = diagnose(&std::env::current_dir()?, agent, &machine);
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -737,16 +718,16 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
 
 /// What `jidoka doctor` was asked to do.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Args<'a> {
-    pub(crate) agent: Option<&'a str>,
+pub(crate) struct Args {
+    pub(crate) agent: Option<Agent>,
     pub(crate) json: bool,
     /// Write a starter model-routing policy first, when none exists, with an entry for each of these agents.
-    pub(crate) create_model_routing: Option<Vec<RoutingAgent>>,
+    pub(crate) create_model_routing: Option<Vec<Agent>>,
 }
 
 /// Writes a starter model-routing policy for `agent` unless a file is already there, and says what it did.
 /// This is the one thing doctor writes, and only when asked.
-fn create_model_routing(agents: &[RoutingAgent], machine: &Machine) -> Result<String, String> {
+fn create_model_routing(agents: &[Agent], machine: &Machine) -> Result<String, String> {
     let path = policy_path_in(|name| (machine.var)(name)).ok_or(
         if cfg!(windows) {
             "cannot work out the configuration folder for the model-routing policy; set APPDATA"
@@ -779,7 +760,7 @@ fn create_model_routing(agents: &[RoutingAgent], machine: &Machine) -> Result<St
 }
 
 /// Reads `[--agent <name>] [--json] [--create-model-routing]` in any order.
-pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
+pub(crate) fn parse_args(args: &[&str]) -> Result<Args, String> {
     let (mut agent, mut json, mut create) = (None, false, false);
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -787,30 +768,25 @@ pub(crate) fn parse_args<'a>(args: &[&'a str]) -> Result<Args<'a>, String> {
             "--json" => json = true,
             "--create-model-routing" => create = true,
             "--agent" => match args.next() {
-                Some(name) if AGENTS.contains(name) && agent.is_none() => agent = Some(*name),
-                Some(name) if AGENTS.contains(name) => {
-                    return Err("--agent can be given only once.".into());
-                }
-                Some(name) => {
-                    return Err(format!("Unknown agent {name:?}; use {}.", agent_list()));
-                }
-                None => return Err(format!("--agent needs {}.", agent_list())),
+                Some(name) => match Agent::parse(name) {
+                    Some(_) if agent.is_some() => {
+                        return Err("--agent can be given only once.".into());
+                    }
+                    Some(parsed) => agent = Some(parsed),
+                    None => {
+                        return Err(format!("Unknown agent {name:?}; use {}.", Agent::list()));
+                    }
+                },
+                None => return Err(format!("--agent needs {}.", Agent::list())),
             },
             other => return Err(format!("Unknown option {other:?}.")),
         }
     }
     let create_model_routing = match (create, agent) {
         (false, _) => None,
-        (true, Some("claude")) => Some(vec![RoutingAgent::Claude]),
-        (true, Some("codex")) => Some(vec![RoutingAgent::Codex]),
-        (true, Some("copilot")) => Some(vec![RoutingAgent::Copilot]),
+        (true, Some(agent)) => Some(vec![agent]),
         // Without an agent the starter has an entry for each, which is what one file for all is for.
-        (true, None) => Some(vec![
-            RoutingAgent::Claude,
-            RoutingAgent::Codex,
-            RoutingAgent::Copilot,
-        ]),
-        (true, Some(other)) => return Err(format!("Unknown agent {other:?}.")),
+        (true, None) => Some(POLICY_ORDER.to_vec()),
     };
     Ok(Args {
         agent,

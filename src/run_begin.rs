@@ -1,6 +1,7 @@
 //! `jidoka run begin`: creates a run and its workspace (a worktree on a new branch from the base) and records it.
 
 use crate::{
+    agent::Agent,
     git::{self, first_line, last_line, valid_branch_name},
     gitignore::ensure_ignored,
     inspect::shown,
@@ -42,7 +43,7 @@ pub(crate) struct Options {
     /// Resume this run instead of creating one.
     pub(crate) run: Option<String>,
     pub(crate) title: String,
-    pub(crate) agent: Option<String>,
+    pub(crate) agent: Option<Agent>,
     pub(crate) mode: Option<String>,
     pub(crate) base: Option<String>,
     pub(crate) branch: Option<String>,
@@ -84,13 +85,9 @@ fn parse_common(title: &str, options: &[&str], needs_title: bool) -> Result<Opti
             "--json" if !parsed.json => parsed.json = true,
             "--agent" if parsed.agent.is_none() => {
                 let name = value("--agent")?;
-                if crate::routing::Host::parse(name).is_none() {
-                    return Err(format!(
-                        "Unknown agent {name:?}; use {}.",
-                        crate::install::agent_list()
-                    ));
-                }
-                parsed.agent = Some(name.to_string());
+                let agent = Agent::parse(name)
+                    .ok_or_else(|| format!("Unknown agent {name:?}; use {}.", Agent::list()))?;
+                parsed.agent = Some(agent);
             }
             "--mode" if parsed.mode.is_none() => {
                 let mode = value("--mode")?;
@@ -213,8 +210,9 @@ fn retry_command(run: &str, options: &Options, named: &Named) -> String {
         Named::Taken => None,
     };
     let mut command = format!("jidoka run begin --run {run}");
+    let agent = options.agent.map(|agent| agent.name().to_string());
     for (flag, value) in [
-        ("--agent", &options.agent),
+        ("--agent", &agent),
         ("--mode", &options.mode),
         ("--base", &options.base),
         ("--branch", &branch),
@@ -230,8 +228,7 @@ fn retry_command(run: &str, options: &Options, named: &Named) -> String {
 #[derive(Clone, Debug)]
 pub(crate) struct AgentSession {
     pub(crate) id: String,
-    /// `claude`, `codex` or `copilot`.
-    pub(crate) agent: Option<&'static str>,
+    pub(crate) agent: Option<Agent>,
     /// The agent's home folder in the environment the command runs in, when it is an absolute path.
     pub(crate) home: Option<String>,
 }
@@ -241,7 +238,10 @@ impl AgentSession {
     pub(crate) fn update_options(&self) -> Vec<String> {
         let mut options = vec!["--session".to_owned(), self.id.clone()];
         if let (Some(agent), Some(home)) = (self.agent, &self.home) {
-            options.extend(["--agent-home".to_owned(), format!("{agent}={home}")]);
+            options.extend([
+                "--agent-home".to_owned(),
+                format!("{}={home}", agent.name()),
+            ]);
         }
         options
     }
@@ -251,17 +251,21 @@ impl AgentSession {
 pub(crate) fn agent_homes(sessions: &[AgentSession]) -> BTreeMap<String, String> {
     sessions
         .iter()
-        .filter_map(|session| Some((session.agent?.to_owned(), session.home.clone()?)))
+        .filter_map(|session| Some((session.agent?.name().to_owned(), session.home.clone()?)))
         .collect()
 }
 
 /// What to do in `agent` to get a fresh conversation, for the session warning.
-fn fresh_session_advice(agent: Option<&str>) -> &'static str {
+fn fresh_session_advice(agent: Option<Agent>) -> &'static str {
     match agent {
-        Some("claude") => "Start each run in a fresh agent session: use /clear in Claude Code.",
-        Some("codex") => "Start each run in a fresh agent session: use /new in Codex.",
-        Some("copilot") => "Start each run in a fresh agent session: use /clear in Copilot CLI.",
-        _ => "Start each run in a fresh agent session.",
+        Some(Agent::Claude) => {
+            "Start each run in a fresh agent session: use /clear in Claude Code."
+        }
+        Some(Agent::Codex) => "Start each run in a fresh agent session: use /new in Codex.",
+        Some(Agent::Copilot) => {
+            "Start each run in a fresh agent session: use /clear in Copilot CLI."
+        }
+        None => "Start each run in a fresh agent session.",
     }
 }
 

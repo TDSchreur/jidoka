@@ -1,14 +1,7 @@
 //! Input and response boundaries in coordinator session logs. Conversation text is never retained.
-use crate::agent_logs::timestamp;
+use crate::{agent::Agent, agent_logs::timestamp};
 use serde_json::Value;
 use std::collections::HashSet;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Agent {
-    Claude,
-    Codex,
-    Copilot,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Signal {

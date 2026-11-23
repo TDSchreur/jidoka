@@ -82,15 +82,14 @@ impl World {
     }
 
     /// Makes `agent` usable: its command on PATH and its skills in the default folder.
-    fn with_agent(self, agent: &str) -> Self {
-        program(self.bin.path(), agent);
-        let root =
-            skills_root(agent, self.home.path(), |name| self.vars.get(name).cloned()).unwrap();
+    fn with_agent(self, agent: Agent) -> Self {
+        program(self.bin.path(), agent.name());
+        let root = skills_root(agent, self.home.path(), |name| self.vars.get(name).cloned());
         install_skills(&root);
         self
     }
 
-    fn report(&self, agent: Option<&str>) -> Report {
+    fn report(&self, agent: Option<Agent>) -> Report {
         let machine = Machine {
             home: self.home.path().to_path_buf(),
             path: self.bin.path().into(),
@@ -102,7 +101,7 @@ impl World {
             },
             rustup_targets: &|_, _| self.rustup_targets.clone(),
         };
-        diagnose(self.project.path(), agent, &machine).unwrap()
+        diagnose(self.project.path(), agent, &machine)
     }
 }
 
@@ -120,7 +119,7 @@ fn agent<'a>(report: &'a Report, id: &str) -> &'a AgentReport {
 
 #[test]
 fn a_ready_project_with_one_usable_agent_passes() {
-    let report = World::ready().with_agent("claude").report(None);
+    let report = World::ready().with_agent(Agent::Claude).report(None);
     assert!(report.ok, "{}", render(&report));
     assert!(report.project.iter().all(Check::passed));
     assert!(agent(&report, "claude").usable);
@@ -150,25 +149,24 @@ fn without_any_usable_agent_the_report_is_not_ok_and_says_how_to_fix_each() {
 
 #[test]
 fn an_agent_needs_both_its_command_and_every_bundled_skill() {
-    let world = World::ready().with_agent("claude");
-    let skill = skills_root("claude", world.home.path(), |_| None)
-        .unwrap()
-        .join(bundled_skill_names()[0]);
+    let world = World::ready().with_agent(Agent::Claude);
+    let skill =
+        skills_root(Agent::Claude, world.home.path(), |_| None).join(bundled_skill_names()[0]);
     fs::remove_dir_all(skill).unwrap();
-    let report = world.report(Some("claude"));
+    let report = world.report(Some(Agent::Claude));
     assert!(!report.ok);
     let skills = &agent(&report, "claude").checks[1];
     assert_eq!(skills.status, Status::Missing);
     assert!(skills.message.contains(bundled_skill_names()[0]));
 
     // A skill that lost one of its other files is incomplete too.
-    let world = World::ready().with_agent("claude");
-    let root = skills_root("claude", world.home.path(), |_| None).unwrap();
+    let world = World::ready().with_agent(Agent::Claude);
+    let root = skills_root(Agent::Claude, world.home.path(), |_| None);
     let extra = bundled_skill_files()
         .find(|file| !file.ends_with("/SKILL.md"))
         .expect("a skill ships more than SKILL.md");
     fs::remove_file(root.join(extra)).unwrap();
-    let report = world.report(Some("claude"));
+    let report = world.report(Some(Agent::Claude));
     assert_eq!(agent(&report, "claude").checks[1].status, Status::Missing);
     assert!(
         agent(&report, "claude").checks[1]
@@ -177,8 +175,8 @@ fn an_agent_needs_both_its_command_and_every_bundled_skill() {
     );
 
     let world = World::ready();
-    install_skills(&skills_root("codex", world.home.path(), |_| None).unwrap());
-    let report = world.report(Some("codex"));
+    install_skills(&skills_root(Agent::Codex, world.home.path(), |_| None));
+    let report = world.report(Some(Agent::Codex));
     assert!(!report.ok);
     assert_eq!(
         agent(&report, "codex").checks[0].status,
@@ -201,9 +199,9 @@ fn skills_are_looked_up_where_install_would_put_them() {
         .vars
         .insert("COPILOT_HOME".into(), custom.path().join("copilot").into());
     let world = world
-        .with_agent("claude")
-        .with_agent("codex")
-        .with_agent("copilot");
+        .with_agent(Agent::Claude)
+        .with_agent(Agent::Codex)
+        .with_agent(Agent::Copilot);
     assert!(
         custom
             .path()
@@ -224,7 +222,7 @@ fn skills_are_looked_up_where_install_would_put_them() {
 #[test]
 fn project_problems_are_named_with_a_fix_and_make_the_report_not_ok() {
     // Nothing but an empty folder.
-    let world = World::ready().with_agent("claude");
+    let world = World::ready().with_agent(Agent::Claude);
     let empty = tempfile::tempdir().unwrap();
     let machine = Machine {
         home: world.home.path().into(),
@@ -234,11 +232,11 @@ fn project_problems_are_named_with_a_fix_and_make_the_report_not_ok() {
         version: &|_| None,
         rustup_targets: &|_, _| None,
     };
-    let report = diagnose(empty.path(), Some("claude"), &machine).unwrap();
+    let report = diagnose(empty.path(), Some(Agent::Claude), &machine);
     assert!(!report.ok);
     assert_eq!(project_check(&report, "git").status, Status::Fail);
 
-    let no_origin = World::ready().with_agent("claude");
+    let no_origin = World::ready().with_agent(Agent::Claude);
     git(no_origin.project.path(), &["remote", "remove", "origin"]);
     let report = no_origin.report(None);
     assert!(!report.ok);
@@ -251,7 +249,7 @@ fn project_problems_are_named_with_a_fix_and_make_the_report_not_ok() {
             .contains("git remote add origin")
     );
 
-    let no_base = World::ready().with_agent("claude");
+    let no_base = World::ready().with_agent(Agent::Claude);
     git(
         no_base.project.path(),
         &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
@@ -287,7 +285,7 @@ fn doctor_changes_nothing() {
             }
         }
     }
-    let world = World::ready().with_agent("claude");
+    let world = World::ready().with_agent(Agent::Claude);
     let take = || {
         let mut all = Vec::new();
         for dir in [world.project.path(), world.home.path(), world.bin.path()] {
@@ -302,7 +300,7 @@ fn doctor_changes_nothing() {
 
 #[test]
 fn the_json_report_has_lowercase_statuses_and_fixes_only_where_needed() {
-    let report = World::ready().with_agent("claude").report(None);
+    let report = World::ready().with_agent(Agent::Claude).report(None);
     let json = serde_json::to_value(&report).unwrap();
     assert_eq!(json["ok"], true);
     assert_eq!(json["project"][0]["id"], "git");
@@ -341,9 +339,9 @@ fn write_record(world: &mut World, version: &str) {
 #[test]
 fn a_record_behind_the_binary_is_reported_outdated_with_the_fix() {
     for version in ["0.0.1", ""] {
-        let mut world = World::ready().with_agent("claude");
+        let mut world = World::ready().with_agent(Agent::Claude);
         write_record(&mut world, version);
-        let report = world.report(Some("claude"));
+        let report = world.report(Some(Agent::Claude));
         let check = project_check(&report, "skills-version");
         assert_eq!(check.status, Status::Warning, "{version:?}");
         assert!(check.message.contains("outdated"));
@@ -364,7 +362,7 @@ fn a_record_behind_the_binary_is_reported_outdated_with_the_fix() {
 
 #[test]
 fn the_text_report_shows_status_and_fix_per_line() {
-    let text = render(&World::ready().with_agent("claude").report(None));
+    let text = render(&World::ready().with_agent(Agent::Claude).report(None));
     assert!(text.contains("pass     git:"));
     assert!(text.contains("missing  executable: `codex` is not on PATH"));
     assert!(text.contains("Fix: Run `jidoka install --agent codex`."));
@@ -378,23 +376,16 @@ fn creating_the_policy_covers_every_agent_unless_one_is_named() {
     let both = parse_args(&["--create-model-routing"]).unwrap();
     assert_eq!(
         both.create_model_routing,
-        Some(vec![
-            RoutingAgent::Claude,
-            RoutingAgent::Codex,
-            RoutingAgent::Copilot
-        ])
+        Some(vec![Agent::Claude, Agent::Codex, Agent::Copilot])
     );
     let copilot = parse_args(&["--create-model-routing", "--agent", "copilot"]).unwrap();
-    assert_eq!(
-        copilot.create_model_routing,
-        Some(vec![RoutingAgent::Copilot])
-    );
+    assert_eq!(copilot.create_model_routing, Some(vec![Agent::Copilot]));
     assert!(error(&["--create-model-routing", "--agent", "gemini"]).contains("Unknown agent"));
 }
 
 impl World {
     /// What `--create-model-routing` does on this fake machine.
-    fn create_model_routing(&self, agents: &[RoutingAgent]) -> Result<String, String> {
+    fn create_model_routing(&self, agents: &[Agent]) -> Result<String, String> {
         let machine = Machine {
             home: self.home.path().to_path_buf(),
             path: self.bin.path().into(),
@@ -410,7 +401,7 @@ impl World {
 #[test]
 fn doctor_creates_a_starter_policy_for_the_agent_and_then_checks_it() {
     let world = World::ready().claude_ready().with_config_folder();
-    let message = world.create_model_routing(&[RoutingAgent::Claude]).unwrap();
+    let message = world.create_model_routing(&[Agent::Claude]).unwrap();
     // Built part by part, so the separators are the ones the message shows on every system.
     let path = world
         .home
@@ -443,7 +434,7 @@ fn doctor_creates_a_starter_policy_for_the_agent_and_then_checks_it() {
     );
     // For Codex only, and for both agents in one file.
     let codex = World::ready().with_config_folder();
-    codex.create_model_routing(&[RoutingAgent::Codex]).unwrap();
+    codex.create_model_routing(&[Agent::Codex]).unwrap();
     let text = read(&codex);
     assert!(
         text.contains("\"codex\"") && !text.contains("\"claude\""),
@@ -451,7 +442,7 @@ fn doctor_creates_a_starter_policy_for_the_agent_and_then_checks_it() {
     );
     let both = World::ready().with_config_folder();
     let message = both
-        .create_model_routing(&[RoutingAgent::Claude, RoutingAgent::Codex])
+        .create_model_routing(&[Agent::Claude, Agent::Codex])
         .unwrap();
     assert!(message.contains("claude and codex"), "{message}");
     let text = read(&both);
@@ -465,7 +456,7 @@ fn doctor_creates_a_starter_policy_for_the_agent_and_then_checks_it() {
 fn doctor_leaves_an_existing_policy_alone_and_says_so() {
     let world = World::ready().claude_ready().with_policy(CLAUDE_POLICY);
     let path = world.home.path().join("config/jidoka/model-routing.json");
-    let message = world.create_model_routing(&[RoutingAgent::Claude]).unwrap();
+    let message = world.create_model_routing(&[Agent::Claude]).unwrap();
     assert!(
         message.contains("already exists") && message.contains("unchanged"),
         "{message}"
@@ -492,7 +483,7 @@ fn tagged<'a>(report: &'a Report, agent: &str) -> Vec<&'a Check> {
 fn checking_all_agents_reports_each_configured_entry_tagged_with_its_agent() {
     let world = World::ready()
         .claude_ready()
-        .with_agent("codex")
+        .with_agent(Agent::Codex)
         .with_version("codex", "codex-cli 0.166.0")
         .with_policy(BOTH_POLICY);
     let report = world.report(None);
@@ -565,7 +556,7 @@ impl World {
     }
 
     fn claude_ready(self) -> Self {
-        self.with_agent("claude")
+        self.with_agent(Agent::Claude)
             .with_version("claude", "2.1.318 (Claude Code)")
     }
 }
@@ -706,7 +697,7 @@ fn a_codex_policy_reports_what_it_can_and_skips_the_rest() {
     let policy =
         r#"{"agents":{"codex":{"stages":{"build":{"model":"gpt-6.1-sol","effort":"medium"}}}}}"#;
     let report = World::ready()
-        .with_agent("codex")
+        .with_agent(Agent::Codex)
         .with_version("codex", "codex-cli 0.99.1")
         .with_policy(policy)
         .report(None);
@@ -736,7 +727,7 @@ const CODEX_CATALOG: &str = r#"{"models":[
 
 fn codex_world(catalog: Option<&str>) -> World {
     let world = World::ready()
-        .with_agent("codex")
+        .with_agent(Agent::Codex)
         .with_version("codex", "codex-cli 0.99.1")
         .with_policy(CODEX_POLICY);
     if let Some(catalog) = catalog {
@@ -803,7 +794,7 @@ fn complex_choices_are_labelled_apart_from_the_stage() {
         "stages":{"build":{"model":"gpt-6.2-sol","effort":"low"}},
         "complex":{"build":{"model":"gpt-9","effort":"high"}}}}}"#;
     let world = World::ready()
-        .with_agent("codex")
+        .with_agent(Agent::Codex)
         .with_version("codex", "codex-cli 0.99.1")
         .with_policy(policy);
     let dir = world.home.path().join(".codex");
@@ -824,7 +815,7 @@ fn a_pinned_copilot_subagent_is_a_warning_and_inherit_is_not() {
     let policy = r#"{"agents":{"copilot":{"stages":{"build":{"model":"claude-sonnet-5.5","effort":"high"}}}}}"#;
     let world = || {
         World::ready()
-            .with_agent("copilot")
+            .with_agent(Agent::Copilot)
             .with_version("copilot", "GitHub Copilot CLI 1.0.0")
             .with_policy(policy)
     };
@@ -872,9 +863,9 @@ fn a_copilot_entry_checks_the_command_models_and_effort_and_warns_about_problems
         "check":{"model":"claude-opus-4.8","effort":"high"}}}}}"#;
     let report = World::ready()
         .claude_ready()
-        .with_agent("copilot")
+        .with_agent(Agent::Copilot)
         .with_policy(policy)
-        .report(Some("copilot"));
+        .report(Some(Agent::Copilot));
     let copilot = tagged(&report, "copilot");
     let ids: Vec<_> = copilot.iter().map(|c| c.id).collect();
     assert_eq!(ids, ["host", "model", "effort", "overrides"]);
@@ -889,9 +880,9 @@ fn a_copilot_entry_checks_the_command_models_and_effort_and_warns_about_problems
         "check":{"model":"claude-opus-4.8"},"build":{"model":"claude-sonnet-5.5","effort":"low"}}}}}"#;
     let report = World::ready()
         .claude_ready()
-        .with_agent("copilot")
+        .with_agent(Agent::Copilot)
         .with_policy(weak)
-        .report(Some("copilot"));
+        .report(Some(Agent::Copilot));
     assert!(report.ok, "{}", render(&report));
     let warned: Vec<_> = tagged(&report, "copilot")
         .iter()
