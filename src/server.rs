@@ -425,63 +425,13 @@ fn list_runs(
             HttpStatus::InternalServerError
         })?
         .iter()
-        .map(run_with_cost)
+        .map(run_detail::summary)
         .collect::<Result<Vec<_>, _>>()
         .map(Json)
         .map_err(|error| {
             eprintln!("Run cost serialization error: {error}");
             HttpStatus::InternalServerError
         })
-}
-
-/// A run as the API shows it: the stored record plus the estimated cost of its usage, from the price
-/// table as it is now. The cost is never stored.
-fn run_with_cost(run: &Run) -> serde_json::Result<serde_json::Value> {
-    let mut value = serde_json::to_value(run)?;
-    if let Some(usage) = &run.usage {
-        value["usage"] = crate::cost::usage_json(usage, crate::cost::PRICES)?;
-    }
-    Ok(value)
-}
-
-/// Enrich a single run with gate and check status. Diff and HEAD inspection is kept off list polling.
-fn run_detail(run: &Run) -> serde_json::Result<serde_json::Value> {
-    use crate::run_gate::{self, AssessmentPurpose, CheckSelection};
-
-    let mut value = run_with_cost(run)?;
-    if let Some(routing) = &run.model_routing {
-        value["model_route"] = serde_json::json!({
-            "agent": routing.agent,
-            "stages": crate::inspect::route_entries(routing, run.usage.as_ref(), run.rework),
-        });
-    }
-    if let Some(snapshot) = run.stage_exits.iter().rev().find(|exit| {
-        exit.stage == crate::run::Stage::Check && exit.outcome == crate::run::ExitOutcome::Accepted
-    }) {
-        value["recorded_skipped_checks"] = serde_json::to_value(&snapshot.skipped_checks)?;
-        value["recorded_skipped_rework"] = serde_json::to_value(snapshot.rework)?;
-    } else if let Some(result) = run.gates.iter().rev().find(|result| result.check.is_some()) {
-        value["recorded_skipped_checks"] = serde_json::to_value(&result.skipped_checks)?;
-        value["recorded_skipped_rework"] = serde_json::to_value(result.rework)?;
-    }
-    let assessment =
-        run_gate::assess_local(run, &crate::git::ReadOnlyGit, AssessmentPurpose::Dashboard);
-    value["stage_gates"] =
-        serde_json::to_value(crate::run_next::stage_gates(run, assessment.evaluations))?;
-    match assessment.checks {
-        CheckSelection::Selected { mode, selection } => {
-            value["checks"] = serde_json::to_value(crate::run_next::checks_for(
-                mode,
-                &selection,
-                run.model_routing.as_ref(),
-            ))?;
-        }
-        CheckSelection::Unavailable(reason) => {
-            value["checks_unavailable"] = serde_json::Value::String(reason);
-        }
-        CheckSelection::NotApplicable => {}
-    }
-    Ok(value)
 }
 
 #[rocket::post("/api/runs", data = "<new>")]
@@ -606,10 +556,12 @@ fn get_run(
         })?
         .ok_or(HttpStatus::NotFound)
         .and_then(|run| {
-            run_detail(&run).map(Json).map_err(|error| {
-                eprintln!("Run cost serialization error: {error}");
-                HttpStatus::InternalServerError
-            })
+            run_detail::detail(&run, &crate::git::ReadOnlyGit)
+                .map(Json)
+                .map_err(|error| {
+                    eprintln!("Run cost serialization error: {error}");
+                    HttpStatus::InternalServerError
+                })
         })
 }
 
@@ -1525,5 +1477,6 @@ pub(crate) fn serve(
     })
 }
 
+mod run_detail;
 #[cfg(test)]
 mod tests;
