@@ -709,10 +709,10 @@ impl UpdateRun {
 /// without control characters. The dashboard reads logs there, so nothing else is accepted.
 pub(crate) fn validate_agent_homes(homes: &BTreeMap<String, String>) -> Result<(), String> {
     for (agent, home) in homes {
-        if !crate::install::AGENTS.contains(&agent.as_str()) {
+        if crate::agent::Agent::parse(agent).is_none() {
             return Err(format!(
                 "Unknown agent for an agent home: {agent:?}; use {}",
-                crate::install::agent_list()
+                crate::agent::Agent::list()
             ));
         }
         if !is_valid_agent_home(home) {

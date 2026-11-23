@@ -1,3 +1,4 @@
+mod agent;
 mod agent_logs;
 mod attention;
 mod checks;
@@ -41,6 +42,7 @@ mod stats;
 mod token;
 mod usage;
 
+use agent::Agent;
 use client::{fetch_run, fetch_runs, start_run};
 use pr_host::PrHost;
 use run::UPDATE_HELP;
@@ -250,7 +252,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
                 .map_err(|error| format!("{error}\n{HELP}"))?;
             let runs = fetch_runs(&cli_address()?)?;
             let roots =
-                agent_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
+                agent_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name));
             let result = requests_pool::pool(
                 &runs,
                 &roots,
@@ -273,7 +275,7 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
             let target = fetch_run_cli(id)?;
             let runs = fetch_runs(&cli_address()?)?;
             let roots =
-                agent_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name))?;
+                agent_logs::Roots::from_home(&install::home_dir()?, &|name| env::var_os(name));
             let result = requests::analyze(
                 &target,
                 &runs,
@@ -531,7 +533,7 @@ fn pr_wait_command(id: &str, options: &[&str]) -> Result<u8, Box<dyn std::error:
 
 /// Reads the model-routing policy once, before a run exists: a mistake in it, or a policy for several
 /// agents without `--agent`, stops the start. Prints the notice, if any.
-fn resolve_routing(host: Option<routing::Host>) -> Result<routing::Resolution, String> {
+fn resolve_routing(host: Option<Agent>) -> Result<routing::Resolution, String> {
     let resolution = routing::policy_path_in(|name| env::var_os(name)).map_or_else(
         || Ok(routing::Resolution::default()),
         |path| routing::load(&path, host).map_err(|error| inspect::shown(&error)),
@@ -607,13 +609,12 @@ impl run_begin::RunApi for ServerApi {
 
 /// `jidoka run begin <title>`, or `--run <id>` to resume: creates a run and its workspace.
 fn run_begin_command(parsed: run_begin::Options) -> Result<u8, Box<dyn std::error::Error>> {
-    let host = parsed.agent.as_deref().and_then(routing::Host::parse);
     let dir = env::current_dir()?;
     // A resumed run already has its model routing; the policy is read only when a run is created.
     let resolution = if parsed.run.is_some() {
         routing::Resolution::default()
     } else {
-        resolve_routing(host)?
+        resolve_routing(parsed.agent)?
     };
     match run_begin::begin(
         &dir,
@@ -762,11 +763,11 @@ fn agent_sessions_from(
 ) -> (Vec<run_begin::AgentSession>, Vec<String>) {
     let mut sessions: Vec<run_begin::AgentSession> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
-    for (name, agent, home_var) in [
-        ("CLAUDE_CODE_SESSION_ID", "claude", "CLAUDE_CONFIG_DIR"),
-        ("CODEX_SESSION_ID", "codex", "CODEX_HOME"),
-        ("CODEX_THREAD_ID", "codex", "CODEX_HOME"),
-        ("COPILOT_AGENT_SESSION_ID", "copilot", "COPILOT_HOME"),
+    for (name, agent) in [
+        ("CLAUDE_CODE_SESSION_ID", Agent::Claude),
+        ("CODEX_SESSION_ID", Agent::Codex),
+        ("CODEX_THREAD_ID", Agent::Codex),
+        ("COPILOT_AGENT_SESSION_ID", Agent::Copilot),
     ] {
         let Some(id) = var(name).and_then(|value| value.into_string().ok()) else {
             continue;
@@ -774,22 +775,18 @@ fn agent_sessions_from(
         if run::check_session_id(&id).is_err() || sessions.iter().any(|known| known.id == id) {
             continue;
         }
-        let home_var_value = var(home_var).filter(|value| !value.is_empty());
-        let agent_home = match user_home {
-            Some(user_home) => install::agent_home(agent, user_home, var).ok(),
-            // Without a home directory, only the agent's own variable can name its home.
-            None => home_var_value.clone().map(std::path::PathBuf::from),
-        };
         let mut home = None;
-        if let Some(agent_home) = agent_home {
+        if let Some(agent_home) = agent.home_in(user_home, var) {
             match agent_home.into_os_string().into_string() {
                 Ok(path) if run::is_valid_agent_home(&path) => home = Some(path),
                 _ => {
-                    let source = if home_var_value.is_some() {
-                        home_var
+                    // Without the user's home, only a set variable can name the Agent home.
+                    let source = if agent.home_in(None, var).is_some() {
+                        agent.home_var()
                     } else {
                         "the home directory"
                     };
+                    let agent = agent.name();
                     let warning = format!(
                         "Warning: the {agent} home from {source} is not an absolute path the dashboard accepts, \
                          so this run's {agent} usage is read from the dashboard's own {agent} home."
@@ -907,7 +904,7 @@ fn dashboard(requested: Option<u16>, usage: bool) -> Result<(), Box<dyn std::err
     let home = install::home_dir()?;
     let settings = usage::UsageSettings {
         enabled: usage,
-        roots: agent_logs::Roots::from_home(&home, &|name| env::var_os(name))?,
+        roots: agent_logs::Roots::from_home(&home, &|name| env::var_os(name)),
         budget: DASHBOARD_USAGE_BUDGET,
         settle: usage::UsageSettings::default_settle(),
     };
@@ -1084,14 +1081,11 @@ mod tests {
 
     #[test]
     fn help_lists_every_agent_wherever_it_names_one() {
-        let expected = crate::install::AGENTS.join("|");
+        let expected = Agent::ALL.map(Agent::name).join("|");
         let mut groups = 0;
         for group in HELP.split('<').skip(1) {
             let group = group.split('>').next().unwrap();
-            if crate::install::AGENTS
-                .iter()
-                .any(|name| group.contains(name))
-            {
+            if Agent::ALL.iter().any(|agent| group.contains(agent.name())) {
                 assert_eq!(group, expected);
                 groups += 1;
             }
@@ -1185,7 +1179,7 @@ mod tests {
 
     #[test]
     fn each_session_variable_names_its_agent() {
-        let agents = |pairs: &[(&str, &str)]| -> Vec<Option<&'static str>> {
+        let agents = |pairs: &[(&str, &str)]| -> Vec<Option<Agent>> {
             agent_sessions_from(&lookup(pairs), None)
                 .0
                 .into_iter()
@@ -1193,12 +1187,15 @@ mod tests {
                 .collect()
         };
         let id = "019e1f00-aaaa-7bbb-8ccc-000000000001";
-        assert_eq!(agents(&[("CLAUDE_CODE_SESSION_ID", id)]), [Some("claude")]);
-        assert_eq!(agents(&[("CODEX_SESSION_ID", id)]), [Some("codex")]);
-        assert_eq!(agents(&[("CODEX_THREAD_ID", id)]), [Some("codex")]);
+        assert_eq!(
+            agents(&[("CLAUDE_CODE_SESSION_ID", id)]),
+            [Some(Agent::Claude)]
+        );
+        assert_eq!(agents(&[("CODEX_SESSION_ID", id)]), [Some(Agent::Codex)]);
+        assert_eq!(agents(&[("CODEX_THREAD_ID", id)]), [Some(Agent::Codex)]);
         assert_eq!(
             agents(&[("COPILOT_AGENT_SESSION_ID", id)]),
-            [Some("copilot")]
+            [Some(Agent::Copilot)]
         );
     }
 

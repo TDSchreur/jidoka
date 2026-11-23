@@ -162,3 +162,33 @@ fn copilot_claims_a_run_through_the_coordinator_but_not_through_a_subagent() {
         HashSet::from([RUN.to_string()])
     );
 }
+
+#[test]
+fn a_recorded_absolute_agent_home_wins_and_relative_or_unknown_ones_are_ignored() {
+    let own = tempfile::tempdir().unwrap();
+    let recorded = tempfile::tempdir().unwrap();
+    let roots = Roots::from_home(own.path(), &|_| None);
+    let mut target: Run = serde_json::from_value(json!({
+        "id": RUN, "title": "t", "gates": [], "project": "/p", "stage": "build", "status": "running",
+        "timeline": [], "sessions": [],
+    }))
+    .unwrap();
+    target.agent_homes.extend([
+        (
+            "codex".to_string(),
+            recorded.path().to_str().unwrap().to_string(),
+        ),
+        ("claude".to_string(), "relative/claude".to_string()),
+        (
+            "gemini".to_string(),
+            recorded.path().to_str().unwrap().to_string(),
+        ),
+    ]);
+    let for_run = roots.for_run(&target);
+    assert_eq!(for_run.codex, recorded.path().join("sessions"));
+    assert_eq!(for_run.claude, own.path().join(".claude").join("projects"));
+    assert_eq!(
+        for_run.copilot,
+        own.path().join(".copilot").join("session-state")
+    );
+}

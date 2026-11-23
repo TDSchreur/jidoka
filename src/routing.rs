@@ -3,24 +3,15 @@
 //! The record holds only the per-Stage models of the agent the run started in. The coordinating session
 //! is not routed.
 
-use crate::run::Stage;
+use crate::{agent::Agent, run::Stage};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 mod policy;
 pub(crate) use policy::{
-    Coverage, Host, Policy, Resolution, config_folder_in, create_starter, created_message, load,
-    parse_start_options, policy_path_in, read, replace_starter,
+    Coverage, POLICY_ORDER, Policy, Resolution, config_folder_in, create_starter, created_message,
+    load, parse_start_options, policy_path_in, read, replace_starter,
 };
-
-/// The coding agent a selection is for.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum RoutingAgent {
-    Codex,
-    Claude,
-    Copilot,
-}
 
 /// A Stage's model and effort. Both are free text: Jidoka keeps no list of valid models. Copilot CLI
 /// entries get a few extra checks (see `validate_for_copilot`), because it ignores what it does not know.
@@ -36,7 +27,8 @@ pub(crate) struct ModelChoice {
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ModelRouting {
-    pub(crate) agent: RoutingAgent,
+    /// The coding agent the selection is for.
+    pub(crate) agent: Agent,
     /// The policy's model per Stage, as it was when the run started. A Stage left out is not routed.
     pub(crate) stages: BTreeMap<Stage, ModelChoice>,
     /// Choices made for this run by hand; they win over `stages` and leave it untouched.
@@ -95,9 +87,9 @@ impl ModelRouting {
         let mut choice = self.choice_for(stage)?.clone();
         if stage == Stage::Build && rework.is_some() {
             let lower = match self.agent {
-                RoutingAgent::Claude => &["low", "medium"][..],
-                RoutingAgent::Codex => &["minimal", "low", "medium"][..],
-                RoutingAgent::Copilot => &["none", "minimal", "low", "medium"][..],
+                Agent::Claude => &["low", "medium"][..],
+                Agent::Codex => &["minimal", "low", "medium"][..],
+                Agent::Copilot => &["none", "minimal", "low", "medium"][..],
             };
             if choice.effort.as_deref().is_none_or(|e| lower.contains(&e)) {
                 choice.effort = Some("high".into());
@@ -144,7 +136,7 @@ impl ModelRouting {
             .chain(self.complex.values())
         {
             choice.validate()?;
-            if self.agent == RoutingAgent::Copilot {
+            if self.agent == Agent::Copilot {
                 choice.validate_for_copilot()?;
             }
         }
@@ -173,16 +165,6 @@ impl ModelChoice {
         };
         choice.validate()?;
         Ok(choice)
-    }
-}
-
-impl RoutingAgent {
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::Codex => "codex",
-            Self::Claude => "claude",
-            Self::Copilot => "copilot",
-        }
     }
 }
 

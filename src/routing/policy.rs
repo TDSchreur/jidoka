@@ -7,8 +7,8 @@
 //! A run starts in one agent. The caller must say which (`--agent`), and the run records only that agent's
 //! policy: another agent's policy is never used instead.
 
-use super::{ModelChoice, ModelRouting, RoutingAgent};
-use crate::run::Stage;
+use super::{ModelChoice, ModelRouting};
+use crate::{agent::Agent, run::Stage};
 use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
 use std::{
@@ -23,62 +23,18 @@ use std::{
 /// The policy file is user-owned and could be anything: larger files are not read.
 const MAX_POLICY_BYTES: u64 = 1 << 20;
 
-/// The agent a run starts in.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Host {
-    Claude,
-    Codex,
-    Copilot,
-}
+/// The agents a policy can have an entry for, in the order the policy and its messages list them. This
+/// differs on purpose from the install menu order of `Agent::ALL`: policy files and messages already use it.
+pub(crate) const POLICY_ORDER: [Agent; 3] = [Agent::Claude, Agent::Codex, Agent::Copilot];
 
-impl Host {
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Copilot => "copilot",
-        }
-    }
-
-    pub(crate) fn parse(name: &str) -> Option<Self> {
-        match name {
-            "claude" => Some(Self::Claude),
-            "codex" => Some(Self::Codex),
-            "copilot" => Some(Self::Copilot),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn routing_agent(self) -> RoutingAgent {
-        match self {
-            Self::Claude => RoutingAgent::Claude,
-            Self::Codex => RoutingAgent::Codex,
-            Self::Copilot => RoutingAgent::Copilot,
-        }
-    }
-}
-
-impl From<RoutingAgent> for Host {
-    fn from(agent: RoutingAgent) -> Self {
-        match agent {
-            RoutingAgent::Claude => Self::Claude,
-            RoutingAgent::Codex => Self::Codex,
-            RoutingAgent::Copilot => Self::Copilot,
-        }
-    }
-}
-
-/// The options of `jidoka run start <title>`: only `--agent <name>`.
-pub(crate) fn parse_start_options(options: &[&str]) -> Result<Option<Host>, String> {
+/// The options of `jidoka run start <title>`: only `--agent <name>`, the agent the run starts in.
+pub(crate) fn parse_start_options(options: &[&str]) -> Result<Option<Agent>, String> {
     match options {
         [] => Ok(None),
-        ["--agent"] => Err(format!("--agent needs {}.", crate::install::agent_list())),
-        ["--agent", name] => Host::parse(name).map(Some).ok_or_else(|| {
-            format!(
-                "Unknown agent {name:?}; use {}.",
-                crate::install::agent_list()
-            )
-        }),
+        ["--agent"] => Err(format!("--agent needs {}.", Agent::list())),
+        ["--agent", name] => Agent::parse(name)
+            .map(Some)
+            .ok_or_else(|| format!("Unknown agent {name:?}; use {}.", Agent::list())),
         ["--agent", _, extra, ..] | [extra, ..] => Err(format!("Unexpected option {extra:?}.")),
     }
 }
@@ -94,7 +50,7 @@ pub(crate) struct AgentPolicy {
 
 impl AgentPolicy {
     /// What a run records for this agent: the per-Stage models, with no overrides yet.
-    pub(crate) fn selection(&self, agent: RoutingAgent) -> ModelRouting {
+    pub(crate) fn selection(&self, agent: Agent) -> ModelRouting {
         ModelRouting {
             agent,
             stages: self.stages.clone(),
@@ -134,7 +90,7 @@ impl Resolution {
     }
 
     /// The result for a run in `host`, from `Policy::coverage`. A switched-off entry says nothing.
-    fn resolved(policy: &Policy, host: Host) -> Self {
+    fn resolved(policy: &Policy, host: Agent) -> Self {
         match policy.coverage(host) {
             None | Some(Coverage::NotRouted(NotRouted::SwitchedOff)) => Self::default(),
             Some(Coverage::Routed(selection)) => Self::selection(selection),
@@ -157,7 +113,7 @@ pub(crate) enum NotRouted {
 
 impl NotRouted {
     /// What to tell the user about a run in `host`.
-    pub(crate) fn text(self, host: Host) -> String {
+    pub(crate) fn text(self, host: Agent) -> String {
         match self {
             Self::NoEntry => format!(
                 "The model-routing policy has no entry for {0}, so this run is not routed: every stage uses the session's model. Add \"agents\".\"{0}\" to route it.",
@@ -179,13 +135,12 @@ pub(crate) enum Coverage {
 }
 
 impl Policy {
-    /// What the policy does for a run in `host`: the one place that decides which agent's part applies and
+    /// What the policy does for a run in `agent`: the one place that decides which agent's part applies and
     /// why none does, for `jidoka run start` and for `jidoka doctor` alike. `None` when the policy is off.
-    pub(crate) fn coverage(&self, host: Host) -> Option<Coverage> {
+    pub(crate) fn coverage(&self, agent: Agent) -> Option<Coverage> {
         if matches!(self, Self::Off) {
             return None;
         }
-        let agent = host.routing_agent();
         Some(match self.entry(agent) {
             None => Coverage::NotRouted(NotRouted::NoEntry),
             Some(entry) if !entry.enabled => Coverage::NotRouted(NotRouted::SwitchedOff),
@@ -195,7 +150,7 @@ impl Policy {
 
     /// The policy for a run that starts in `host`. `None` means the caller did not say, which is only
     /// acceptable when no entry is switched on.
-    pub(crate) fn resolve(&self, host: Option<Host>) -> Result<Resolution, String> {
+    pub(crate) fn resolve(&self, host: Option<Agent>) -> Result<Resolution, String> {
         let Some(host) = host else {
             let Self::Multi {
                 claude,
@@ -220,26 +175,22 @@ impl Policy {
     }
 
     /// The entry for `agent`.
-    pub(crate) fn entry(&self, agent: RoutingAgent) -> Option<&AgentPolicy> {
+    pub(crate) fn entry(&self, agent: Agent) -> Option<&AgentPolicy> {
         match (self, agent) {
-            (Self::Multi { claude, .. }, RoutingAgent::Claude) => claude.as_ref(),
-            (Self::Multi { codex, .. }, RoutingAgent::Codex) => codex.as_ref(),
-            (Self::Multi { copilot, .. }, RoutingAgent::Copilot) => copilot.as_ref(),
+            (Self::Multi { claude, .. }, Agent::Claude) => claude.as_ref(),
+            (Self::Multi { codex, .. }, Agent::Codex) => codex.as_ref(),
+            (Self::Multi { copilot, .. }, Agent::Copilot) => copilot.as_ref(),
             (Self::Off, _) => None,
         }
     }
 
-    /// The agents that have an entry, in a fixed order.
+    /// The agents that have an entry, in `POLICY_ORDER`.
     pub(crate) fn configured(&self) -> Vec<&'static str> {
-        [
-            RoutingAgent::Claude,
-            RoutingAgent::Codex,
-            RoutingAgent::Copilot,
-        ]
-        .into_iter()
-        .filter(|agent| self.entry(*agent).is_some())
-        .map(RoutingAgent::name)
-        .collect()
+        POLICY_ORDER
+            .into_iter()
+            .filter(|agent| self.entry(*agent).is_some())
+            .map(Agent::name)
+            .collect()
     }
 }
 
@@ -350,9 +301,9 @@ impl Agents {
                 .transpose()
         };
         Ok(Policy::Multi {
-            claude: checked("claude", RoutingAgent::Claude, self.claude)?,
-            codex: checked("codex", RoutingAgent::Codex, self.codex)?,
-            copilot: checked("copilot", RoutingAgent::Copilot, self.copilot)?,
+            claude: checked("claude", Agent::Claude, self.claude)?,
+            codex: checked("codex", Agent::Codex, self.codex)?,
+            copilot: checked("copilot", Agent::Copilot, self.copilot)?,
         })
     }
 }
@@ -433,7 +384,7 @@ pub(crate) fn read(path: &Path) -> Result<Policy, String> {
 }
 
 /// The policy for a run that is starting in `host`, which may be unknown only when nothing is switched on.
-pub(crate) fn load(path: &Path, host: Option<Host>) -> Result<Resolution, String> {
+pub(crate) fn load(path: &Path, host: Option<Agent>) -> Result<Resolution, String> {
     read(path)?
         .resolve(host)
         .map_err(|problem| format!("{}: {problem}", path.display()))
@@ -491,21 +442,21 @@ fn choice(model: &str, effort: &str) -> ModelChoice {
     }
 }
 
-fn starter_stages(agent: RoutingAgent) -> StarterStages {
+fn starter_stages(agent: Agent) -> StarterStages {
     match agent {
-        RoutingAgent::Claude => StarterStages {
+        Agent::Claude => StarterStages {
             define: choice("sonnet", "medium"),
             build: choice("sonnet", "medium"),
             check: choice("sonnet", "medium"),
             finish: choice("haiku", "low"),
         },
-        RoutingAgent::Codex => StarterStages {
+        Agent::Codex => StarterStages {
             define: choice("gpt-6.2-sol", "medium"),
             build: choice("gpt-6.2-sol", "medium"),
             check: choice("gpt-6.2-astra", "medium"),
             finish: choice("gpt-6-luna", "low"),
         },
-        RoutingAgent::Copilot => StarterStages {
+        Agent::Copilot => StarterStages {
             define: choice("claude-sonnet-5.5", "medium"),
             build: choice("claude-sonnet-5.5", "medium"),
             check: choice("gpt-6.2-astra", "medium"),
@@ -514,11 +465,11 @@ fn starter_stages(agent: RoutingAgent) -> StarterStages {
     }
 }
 
-fn starter_complex(agent: RoutingAgent) -> StarterComplex {
+fn starter_complex(agent: Agent) -> StarterComplex {
     let model = match agent {
-        RoutingAgent::Claude => "opus",
-        RoutingAgent::Codex => "gpt-6.2-sol",
-        RoutingAgent::Copilot => "claude-opus-5.5",
+        Agent::Claude => "opus",
+        Agent::Codex => "gpt-6.2-sol",
+        Agent::Copilot => "claude-opus-5.5",
     };
     StarterComplex {
         define: choice(model, "high"),
@@ -528,7 +479,7 @@ fn starter_complex(agent: RoutingAgent) -> StarterComplex {
 
 /// A starting policy written by `jidoka doctor --create-model-routing`: an entry routing all four Stages
 /// for each agent in `agents`.
-fn starter(agents: &[RoutingAgent]) -> String {
+fn starter(agents: &[Agent]) -> String {
     let entry = |agent| {
         agents.contains(&agent).then(|| StarterEntry {
             enabled: true,
@@ -539,9 +490,9 @@ fn starter(agents: &[RoutingAgent]) -> String {
     let file = StarterFile {
         enabled: true,
         agents: StarterAgents {
-            claude: entry(RoutingAgent::Claude),
-            codex: entry(RoutingAgent::Codex),
-            copilot: entry(RoutingAgent::Copilot),
+            claude: entry(Agent::Claude),
+            codex: entry(Agent::Codex),
+            copilot: entry(Agent::Copilot),
         },
     };
     let mut text = serde_json::to_string_pretty(&file).expect("the starter serializes");
@@ -562,7 +513,7 @@ pub(crate) fn created_message(shown: &str, about: Option<&str>) -> String {
 }
 
 /// Atomically replaces the policy with the starter for `agents`.
-pub(crate) fn replace_starter(path: &Path, agents: &[RoutingAgent]) -> io::Result<()> {
+pub(crate) fn replace_starter(path: &Path, agents: &[Agent]) -> io::Result<()> {
     let folder = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(folder)?;
     let mut temp = tempfile::NamedTempFile::new_in(folder)?;
@@ -573,7 +524,7 @@ pub(crate) fn replace_starter(path: &Path, agents: &[RoutingAgent]) -> io::Resul
 
 /// Writes the starter for `agents` to `path`, creating its folder. Whatever is already at `path`, even a
 /// link that points nowhere, is left alone and `false` is returned.
-pub(crate) fn create_starter(path: &Path, agents: &[RoutingAgent]) -> io::Result<bool> {
+pub(crate) fn create_starter(path: &Path, agents: &[Agent]) -> io::Result<bool> {
     if let Some(folder) = path.parent() {
         fs::create_dir_all(folder)?;
     }

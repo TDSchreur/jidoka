@@ -7,9 +7,9 @@
 //! cheap. The browser places history rows itself from `stage_exits` and the timeline.
 
 use crate::{
+    agent::Agent,
     git::Git,
     inspect::{self, RouteEntry},
-    routing::RoutingAgent,
     run::{ExitOutcome, Run, SkippedCheck, Stage},
     run_gate::{self, AssessmentPurpose, CheckSelection},
     run_next::{self, Checks, StageGates},
@@ -93,7 +93,7 @@ struct Detail<'a> {
 /// What model routing requested per Stage next to what the usage shows.
 #[derive(Serialize)]
 struct ModelRoute {
-    agent: RoutingAgent,
+    agent: Agent,
     stages: Vec<RouteEntry>,
 }
 

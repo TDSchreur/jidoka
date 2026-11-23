@@ -1,10 +1,11 @@
 //! `jidoka run next`: what a run does now, in the order the agent needs it.
 
 use crate::{
+    agent::Agent,
     checks,
     git::Git,
     inspect::shown,
-    routing::{ModelChoice, ModelRouting, RoutingAgent},
+    routing::{ModelChoice, ModelRouting},
     run::{
         Evaluation, ExitOutcome, GateResult, GateStatus, Mode, Run, RunStatus, Stage, StageExit,
         Ticket, TicketStatus,
@@ -240,7 +241,7 @@ pub(crate) fn stage_gates(run: &Run, mut current: Vec<Evaluation>) -> Vec<StageG
 
 include!(concat!(env!("OUT_DIR"), "/stage_chunks.rs"));
 
-fn instructions(mode: Mode, stage: Stage, routing: Option<RoutingAgent>) -> String {
+fn instructions(mode: Mode, stage: Stage, routing: Option<Agent>) -> String {
     let mode_dir = match mode {
         Mode::Fast => "fast",
         Mode::Balanced => "balanced",
@@ -265,9 +266,9 @@ fn instructions(mode: Mode, stage: Stage, routing: Option<RoutingAgent>) -> Stri
         Stage::Finish => &["stage-reporting", "finish", "pull-request-and-ci"],
     };
     let routed = routing.map(|agent| match agent {
-        RoutingAgent::Claude => "routing-claude",
-        RoutingAgent::Codex => "routing-codex",
-        RoutingAgent::Copilot => "routing-copilot",
+        Agent::Claude => "routing-claude",
+        Agent::Codex => "routing-codex",
+        Agent::Copilot => "routing-copilot",
     });
     let stage_routing = routing.map(|_| match stage {
         Stage::Define => "routing-define",

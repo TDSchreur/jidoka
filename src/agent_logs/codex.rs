@@ -768,7 +768,7 @@ pub(crate) fn read_codex(
         };
         let parsed = parse_codex(&text, &rollout.root, rollout.subagent, &window.ids);
         let attention = (!rollout.subagent)
-            .then(|| crate::attention::signals(crate::attention::Agent::Codex, &text));
+            .then(|| crate::attention::signals(crate::agent::Agent::Codex, &text));
         drop(text);
         let entry = by_root.entry(rollout.root.clone()).or_insert_with(|| Root {
             claims: HashSet::new(),
