@@ -7,7 +7,7 @@ argument-hint: <run-id>
 
 # Post-merge cleanup
 
-Run both steps from the main checkout (the first entry of `git worktree list --porcelain`), not from the run's worktree. The run ID is `$ARGUMENTS`; if it is empty, ask for it.
+Run both steps from the main checkout (the first entry of `git worktree list --porcelain`), not from the run's worktree. The run ID is the argument the user gave; if there is none, ask for it.
 
 Invoking this skill is the user's authorization to remove the run's worktree and local branch.
 
