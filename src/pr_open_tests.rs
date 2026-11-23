@@ -150,25 +150,30 @@ fn host_calls(host: &FakeHost, what: &str) -> usize {
     host.calls().iter().filter(|c| c.starts_with(what)).count()
 }
 
-/// One call of `RunApi::update`: run and options.
-type Update = (String, Vec<String>);
-
+/// The reports sent to the run, with the run they were for; `fail` makes the server unreachable.
 #[derive(Default)]
 struct FakeApi {
-    updates: RefCell<Vec<Update>>,
+    updates: RefCell<Vec<(String, PrReport)>>,
     fail: std::cell::Cell<bool>,
 }
 
-impl RunApi for FakeApi {
-    fn update(&self, id: &str, options: &[&str]) -> Result<(), String> {
+impl RunReporter for FakeApi {
+    fn report(&self, id: &str, report: &PrReport) -> Result<(), String> {
         if self.fail.get() {
             return Err("the server is not reachable".into());
         }
-        self.updates
-            .borrow_mut()
-            .push((id.into(), options.iter().map(|o| o.to_string()).collect()));
+        self.updates.borrow_mut().push((id.into(), report.clone()));
         Ok(())
     }
+}
+
+fn opened_report() -> (String, PrReport) {
+    (
+        "100".to_string(),
+        PrReport::Opened {
+            pull_request: URL.into(),
+        },
+    )
 }
 
 fn run_of(project: &Project) -> PrRun {
@@ -230,10 +235,7 @@ fn a_new_pull_request_is_pushed_opened_and_recorded() {
         ]
     );
     // The run records it, keeping its stage.
-    let updates = api.updates.borrow();
-    let (id, args) = updates.last().unwrap();
-    assert_eq!(id, "100");
-    assert_eq!(args[..2], ["--pr".to_string(), URL.to_string()]);
+    assert_eq!(*api.updates.borrow(), [opened_report()]);
 }
 
 #[test]
@@ -258,7 +260,7 @@ fn a_retry_finds_the_open_pull_request_and_does_not_make_a_second() {
     assert_eq!(host_calls(&host, "create"), 0);
     // New commits still reach the pull request, and the run records it again.
     assert!(project.remote_branch("feature").is_some());
-    assert_eq!(api.updates.borrow().len(), 1);
+    assert_eq!(*api.updates.borrow(), [opened_report()]);
 }
 
 #[test]
@@ -361,10 +363,29 @@ fn a_failed_creation_or_a_failed_record_says_what_happened_and_a_retry_is_safe()
     )
     .unwrap_err();
     assert!(
-        problem.0.contains(URL) && problem.0.contains("run could not be updated"),
+        problem.0.contains(URL)
+            && problem.0.contains("run could not be updated")
+            && problem.0.contains("Run the command again"),
         "{}",
         problem.0
     );
+    // The retry it asks for finds that pull request, opens no second one and records it.
+    let host = FakeHost::with_open(OpenPr {
+        url: URL.into(),
+        base: Some("develop".into()),
+    });
+    let api = FakeApi::default();
+    let opened = open(
+        &run_of(&project),
+        &options(&project),
+        &host,
+        &FakeGit::default(),
+        &api,
+    )
+    .unwrap();
+    assert!(!opened.created && opened.recorded);
+    assert_eq!(host_calls(&host, "create"), 0);
+    assert_eq!(*api.updates.borrow(), [opened_report()]);
 
     // A run that is not running is not updated, and the pull request is still reported.
     let mut run = run_of(&project);

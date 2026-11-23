@@ -1,11 +1,11 @@
 //! `jidoka run check`: compares what a run records with the repository, without changing anything.
 
-use crate::{inspect::shown, pr_sync::Git, run_begin::first_line};
-use serde::Serialize;
-use std::{
-    path::{Path, PathBuf},
-    process::{Command, Output},
+use crate::{
+    git::{Git, first_line},
+    inspect::shown,
 };
+use serde::Serialize;
+use std::path::{Path, PathBuf};
 
 /// What the run records about its workspace. `None` is a field that was never recorded.
 #[derive(Clone, Debug, Default)]
@@ -108,52 +108,6 @@ const SAFE_CONFIG: [&str; 4] = [
     "-c",
     "log.showSignature=false",
 ];
-
-/// The real git for reading: no prompts, no optional locks, and no lazy fetch of missing objects in a
-/// partial clone, so nothing is written to the repository.
-pub(crate) struct ReadOnlyGit;
-
-impl ReadOnlyGit {
-    fn output(dir: &Path, args: &[&str]) -> Result<Output, String> {
-        Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_OPTIONAL_LOCKS", "0")
-            .env("GIT_NO_LAZY_FETCH", "1")
-            .env("LC_ALL", "C")
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .output()
-            .map_err(|error| format!("git could not be started: {error}"))
-    }
-}
-
-impl Git for ReadOnlyGit {
-    fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
-        let output = Self::output(dir, args)?;
-        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_string();
-        if output.status.success() {
-            if args.contains(&"-z") {
-                Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-            } else {
-                Ok(text(&output.stdout))
-            }
-        } else if output.stderr.is_empty() {
-            Err(text(&output.stdout))
-        } else {
-            Err(text(&output.stderr))
-        }
-    }
-
-    fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
-        Self::output(dir, args)?
-            .status
-            .code()
-            .ok_or_else(|| "git was stopped by a signal".to_string())
-    }
-}
 
 /// Runs a reading git command with the safe settings in front.
 fn read(git: &dyn Git, dir: &Path, args: &[&str]) -> Result<String, String> {

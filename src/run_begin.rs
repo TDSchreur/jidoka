@@ -1,8 +1,13 @@
 //! `jidoka run begin`: creates a run and its workspace (a worktree on a new branch from the base) and records it.
 
-use crate::{gitignore::ensure_ignored, inspect::shown, routing::ModelRouting};
+use crate::{
+    git::{self, first_line, last_line, valid_branch_name},
+    gitignore::ensure_ignored,
+    inspect::shown,
+    routing::ModelRouting,
+};
 use serde::Serialize;
-use std::{collections::BTreeMap, path::Path, process::Command};
+use std::{collections::BTreeMap, path::Path};
 
 /// The Jidoka server, as far as this command needs it. Tests answer from a script.
 pub(crate) trait RunApi {
@@ -42,22 +47,6 @@ pub(crate) struct Options {
     pub(crate) base: Option<String>,
     pub(crate) branch: Option<String>,
     pub(crate) json: bool,
-}
-
-/// Whether `name` can be a branch name that is safe to pass to git: no option look-alike, no spaces or
-/// control characters, none of the characters git refuses, and no `..`, `@{`, `.lock` ending or edge slash.
-pub(crate) fn valid_branch_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with(['-', '/', '.', '+'])
-        && !name.ends_with(['/', '.'])
-        && !name.ends_with(".lock")
-        && !name.contains("..")
-        && !name.contains("//")
-        && !name.contains("@{")
-        && name != "@"
-        && !name
-            .chars()
-            .any(|c| c.is_control() || c.is_whitespace() || "~^:?*[\\".contains(c))
 }
 
 /// The options of `jidoka run begin --run <id>`: the same, without a title.
@@ -200,53 +189,6 @@ fn ignore_run_folders(worktree: &Path) -> (Vec<String>, Option<String>) {
             )),
         ),
     }
-}
-
-/// Runs git in `dir`. The error is what git printed, or why it could not be started.
-pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        // Its messages are told apart below, so they must be in English.
-        .env("LC_ALL", "C")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .output()
-        .map_err(|error| format!("git could not be started: {error}"))?;
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return Ok(if args.contains(&"-z") {
-            stdout.into_owned()
-        } else {
-            stdout.trim().to_string()
-        });
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let text = if stderr.trim().is_empty() {
-        stdout
-    } else {
-        stderr
-    };
-    Err(text.trim().to_string())
-}
-
-pub(crate) fn first_line(text: &str) -> &str {
-    text.lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim()
-}
-
-/// The last line git printed, where its `fatal:` message is (progress lines come first).
-pub(crate) fn last_line(text: &str) -> &str {
-    text.lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim()
 }
 
 /// A kebab-case name from a title: ASCII letters and digits, at most `MAX_NAME_CHARS` characters.
@@ -510,7 +452,7 @@ impl From<String> for Failure {
 }
 
 fn branch_exists(main: &Path, branch: &str) -> bool {
-    git(
+    git::run(
         main,
         &[
             "show-ref",
@@ -525,31 +467,24 @@ fn branch_exists(main: &Path, branch: &str) -> bool {
 /// The branch checked out in the worktree git lists at `path`: `None` if git lists none there, and
 /// `Some(None)` if that one is on no branch.
 fn worktree_branch(main: &Path, path: &Path) -> Option<Option<String>> {
-    let list = git(main, &["worktree", "list", "--porcelain"]).ok()?;
     let wanted = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    for block in list.split("\n\n") {
-        let mut location = None;
-        let mut branch = None;
-        for line in block.lines() {
-            if let Some(found) = line.strip_prefix("worktree ") {
-                location = Some(Path::new(found).to_path_buf());
-            } else if let Some(name) = line.strip_prefix("branch refs/heads/") {
-                branch = Some(name.to_string());
-            }
-        }
-        let location = location?;
-        let same = location.canonicalize().unwrap_or_else(|_| location.clone()) == wanted
-            || location == path;
-        if same {
-            return Some(branch);
-        }
-    }
-    None
+    git::worktrees(&git::RealGit, main)
+        .ok()?
+        .into_iter()
+        .find(|worktree| {
+            let location = Path::new(&worktree.path);
+            location
+                .canonicalize()
+                .unwrap_or_else(|_| location.to_path_buf())
+                == wanted
+                || location == path
+        })
+        .map(|worktree| worktree.branch)
 }
 
 /// Whether `branch` has no commits of its own: everything on it is already on `origin/<base>`.
 fn is_unused(main: &Path, branch: &str, base: &str) -> bool {
-    git(
+    git::run(
         main,
         &[
             "merge-base",
@@ -576,7 +511,7 @@ fn add_worktree(
     } else {
         vec!["worktree", "add", &path_text, branch]
     };
-    git(main, &args).map(|_| ()).map_err(|error| {
+    git::run(main, &args).map(|_| ()).map_err(|error| {
         if error.to_lowercase().contains("permission denied") || error.to_lowercase().contains("read-only") {
             format!(
                 "Git has no permission to write there ({}). Run where the repository's git folder and {} are writable, or ask the user to create the worktree.",
@@ -632,13 +567,13 @@ fn workspace(
             });
         }
     }
-    git(main, &["remote", "get-url", "origin"]).map_err(|_| {
+    git::run(main, &["remote", "get-url", "origin"]).map_err(|_| {
         "This repository has no remote named origin. Add one with `git remote add origin <url>` and retry."
             .to_string()
     })?;
     let base = match &options.base {
         Some(base) => base.clone(),
-        None => git(main, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        None => git::run(main, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
             .ok()
             .and_then(|head| head.strip_prefix("origin/").map(str::to_string))
             .ok_or_else(|| {
@@ -648,14 +583,14 @@ fn workspace(
     };
     // An explicit refspec also works in a clone that was made for one branch only.
     let refspec = format!("+refs/heads/{base}:refs/remotes/origin/{base}");
-    git(main, &["fetch", "origin", &refspec]).map_err(|error| {
+    git::run(main, &["fetch", "origin", &refspec]).map_err(|error| {
         if error.contains("couldn't find remote ref") {
             format!("The base branch {base} does not exist on origin. Pass an existing branch with --base.")
         } else {
             format!("Fetching {base} from origin failed: {}", first_line(&error))
         }
     })?;
-    let base_commit = git(
+    let base_commit = git::run(
         main,
         &[
             "rev-parse",
@@ -721,7 +656,7 @@ fn workspace(
         base_commit,
     };
     let tip = |name: &str| {
-        git(
+        git::run(
             main,
             &[
                 "rev-parse",
@@ -775,7 +710,7 @@ fn workspace(
             if !is_unused(main, &branch, &base) {
                 return Err(own_commits());
             }
-            let status = git(&path, &["status", "--porcelain"]).map_err(|error| {
+            let status = git::run(&path, &["status", "--porcelain"]).map_err(|error| {
                 fail(format!(
                     "{path_text} could not be read: {}",
                     first_line(&error)

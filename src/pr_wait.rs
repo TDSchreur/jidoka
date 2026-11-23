@@ -213,9 +213,8 @@ pub(crate) fn activity_text(waited: &Waited) -> String {
 /// The commit `branch` has on origin, when the worktree's `HEAD` is that commit; `None` otherwise, or when
 /// git cannot tell. It is only a hint for the wait, so a git problem is not reported.
 pub(crate) fn pushed_head(worktree: &std::path::Path, branch: &str) -> Option<String> {
-    let rev = |name: &str| {
-        crate::run_begin::git(worktree, &["rev-parse", "--verify", "--quiet", name]).ok()
-    };
+    let rev =
+        |name: &str| crate::git::run(worktree, &["rev-parse", "--verify", "--quiet", name]).ok();
     let head = rev("HEAD^{commit}")?;
     (rev(&format!("refs/remotes/origin/{branch}^{{commit}}"))? == head).then_some(head)
 }

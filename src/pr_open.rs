@@ -1,38 +1,13 @@
 //! `jidoka pr open`: pushes a run's branch and opens its pull request, or finds the one that is open.
 
 use crate::{
+    git::{Git, first_line, valid_branch_name},
     inspect::shown,
     pr_host::{NewPr, PrHost, ToolProblem, check_origin, detect_host, push_problem},
-    pr_sync::{Git, Workspace, check_workspace, push_branch},
-    run_begin::{first_line, valid_branch_name},
+    pr_workspace::{PrReport, PrRun, RunReporter, Workspace, push_branch},
 };
 use serde::Serialize;
 use std::path::PathBuf;
-
-/// The Jidoka server, as far as this command needs it.
-pub(crate) trait RunApi {
-    fn update(&self, id: &str, options: &[&str]) -> Result<(), String>;
-}
-
-/// What the command needs to know about the run.
-#[derive(Clone, Debug)]
-pub(crate) struct PrRun {
-    pub(crate) id: String,
-    pub(crate) worktree: Option<String>,
-    pub(crate) branch: Option<String>,
-    /// `running`, `blocked` or `done`. Only a running run is updated.
-    pub(crate) status: String,
-    /// The commit the branch started from, when recorded. `pr sync` uses it to tell the branch's own commits.
-    pub(crate) base_commit: Option<String>,
-    /// The pull request state the dashboard last stored. `pr sync` reads it instead of asking the host.
-    pub(crate) pr_state: Option<crate::pr_state::PrState>,
-}
-
-impl PrRun {
-    pub(crate) fn running(&self) -> bool {
-        self.status == "running"
-    }
-}
 
 /// A title longer than this is rejected, which keeps it a short one-line heading.
 const MAX_TITLE_CHARS: usize = 256;
@@ -122,9 +97,9 @@ pub(crate) fn open(
     options: &Options,
     host: &dyn PrHost,
     git: &dyn Git,
-    api: &dyn RunApi,
+    reporter: &dyn RunReporter,
 ) -> Result<Opened, ToolProblem> {
-    let Workspace { dir, branch, base } = check_workspace(run, options.base.as_deref(), git)?;
+    let Workspace { dir, branch, base } = Workspace::verify(run, options.base.as_deref(), git)?;
     let dir = dir.as_path();
     let read = |args: &[&str]| git.git(dir, args).ok();
     let origin = detect_host(&read)?;
@@ -172,7 +147,7 @@ pub(crate) fn open(
     let found = match existing {
         Some(found) => found,
         None => match host.create(dir, &origin, &new) {
-            Ok(url) => return finish(run, api, branch, base, commit, url, true),
+            Ok(url) => return finish(run, reporter, branch, base, commit, url, true),
             // Someone may have opened it between the look and now: use theirs.
             Err(problem) => match host.find_open(dir, &origin, &branch) {
                 Ok(Some(found)) => found,
@@ -181,7 +156,7 @@ pub(crate) fn open(
         },
     };
     let base = found.base.unwrap_or(base);
-    finish(run, api, branch, base, commit, found.url, false)
+    finish(run, reporter, branch, base, commit, found.url, false)
 }
 
 /// Records the pull request on a running run and returns the result.
@@ -191,7 +166,7 @@ pub(crate) fn open(
 )]
 fn finish(
     run: &PrRun,
-    api: &dyn RunApi,
+    reporter: &dyn RunReporter,
     branch: String,
     base: String,
     commit: String,
@@ -199,11 +174,10 @@ fn finish(
     created: bool,
 ) -> Result<Opened, ToolProblem> {
     if run.running() {
-        api.update(
-            &run.id,
-            &["--pr", &pull_request, "--activity", "Opened pull request"],
-        )
-        .map_err(|error| {
+        let report = PrReport::Opened {
+            pull_request: pull_request.clone(),
+        };
+        reporter.report(&run.id, &report).map_err(|error| {
             ToolProblem(format!(
                 "The pull request is open at {}, but the run could not be updated: {error}. Run the command again; it finds the pull request and records it.",
                 shown(&pull_request)

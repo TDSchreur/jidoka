@@ -223,7 +223,7 @@ impl Run {
     /// # Errors
     ///
     /// Returns a message when the run has no worktree or git cannot read its HEAD.
-    pub(crate) fn worktree_head(&self, git: &dyn crate::pr_sync::Git) -> Result<String, String> {
+    pub(crate) fn worktree_head(&self, git: &dyn crate::git::Git) -> Result<String, String> {
         let path = self
             .worktree
             .as_ref()
