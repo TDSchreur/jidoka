@@ -8,7 +8,7 @@ use std::{
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
 /// Skills maintained in this project, installed without a third-party license.
-const LOCAL_SKILLS: [&str; 11] = [
+const LOCAL_SKILLS: [&str; 12] = [
     "jidoka",
     "jidoka-full",
     "jidoka-procedures",
@@ -20,6 +20,7 @@ const LOCAL_SKILLS: [&str; 11] = [
     "jidoka-awesome-copilot",
     "jidoka-setup-knowledge-repo",
     "jidoka-cross-repo-change",
+    "jidoka-work-through-plan",
 ];
 
 /// The agents Jidoka installs skills for, in the order the install menu lists them.

@@ -118,6 +118,7 @@ fn main() {
         "jidoka-awesome-copilot",
         "jidoka-setup-knowledge-repo",
         "jidoka-cross-repo-change",
+        "jidoka-work-through-plan",
     ] {
         files(
             Path::new("skills"),

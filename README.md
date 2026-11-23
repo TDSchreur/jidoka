@@ -90,6 +90,7 @@ Run `jidoka --help` for every command.
 | [`/jidoka-setup`](skills/jidoka-setup/SKILL.md) | Prepares a repository once: issue tracker, triage labels, domain docs and verification commands. |
 | [`/jidoka-setup-knowledge-repo`](skills/jidoka-setup-knowledge-repo/SKILL.md) | Creates or fills a knowledge repo: your repositories, hosts, checkouts and shared platform notes. |
 | [`/jidoka-cross-repo-change`](skills/jidoka-cross-repo-change/SKILL.md) | Guides one change across several repositories: shared spec, one run per repository, a change group. |
+| [`/jidoka-work-through-plan <plan-file>`](skills/jidoka-work-through-plan/SKILL.md) | Works through a multi-step plan file unattended: a fresh agent per step, each taken to a merged pull request, with the plan file updated after every step. |
 | [`/jidoka-awesome-copilot`](skills/jidoka-awesome-copilot/SKILL.md) | Adds skills and instructions from [github/awesome-copilot](https://github.com/github/awesome-copilot) to a project, adapted to its layout, for Codex, Claude and Copilot. Also updates or removes them. |
 | [`/jidoka-run-report <run-id>`](skills/jidoka-run-report/SKILL.md) | Checks a run for Jidoka bugs and token waste and files an issue in the Jidoka repository after you approve it. |
 | [`/jidoka-code-review <ref>`](skills/jidoka-code-review/SKILL.md) | Reviews changes since a commit or branch against the project's standards and the originating spec. |
