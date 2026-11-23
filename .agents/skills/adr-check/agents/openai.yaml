@@ -1,0 +1,5 @@
+interface:
+  display_name: "ADR check"
+  short_description: "Decide whether this change needs an ADR and write it"
+policy:
+  allow_implicit_invocation: true

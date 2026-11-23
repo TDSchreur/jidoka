@@ -1,0 +1,5 @@
+interface:
+  display_name: "Changelog fragment"
+  short_description: "Write the changelog.d fragment for this change"
+policy:
+  allow_implicit_invocation: false
