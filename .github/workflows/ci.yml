@@ -14,6 +14,7 @@ concurrency:
 
 jobs:
   classify:
+    name: Classify pull request changes
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -26,8 +27,15 @@ jobs:
           fetch-depth: 2
       - name: Classify changed files
         id: paths
+        shell: bash
         run: |
-          mode=$(python3 scripts/classify-ci.py)
+          git rev-parse --verify HEAD^2 >/dev/null
+          # Use the base branch's classifier. Run full CI until it exists on the base.
+          if git cat-file -e HEAD^1:scripts/classify-ci.py 2>/dev/null; then
+            mode=$(git show HEAD^1:scripts/classify-ci.py | python3 -I -)
+          else
+            mode=full
+          fi
           printf 'mode=%s\n' "$mode" >> "$GITHUB_OUTPUT"
           printf 'CI path: %s\n' "$mode"
   check:
@@ -119,22 +127,10 @@ jobs:
     steps:
       - name: Require checks for the selected CI path
         env:
-          CLASSIFY_RESULT: ${{ needs.classify.result }}
-          MODE: ${{ needs.classify.outputs.mode }}
-          CHECK_RESULT: ${{ needs.check.result }}
-          ACTIONLINT_RESULT: ${{ needs.actionlint.result }}
-        run: |
-          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
-            mode=full
-          else
-            test "$CLASSIFY_RESULT" = success
-            mode=$MODE
-          fi
-          case "$mode:$CHECK_RESULT:$ACTIONLINT_RESULT" in
-            docs:skipped:skipped|content:success:skipped|full:success:success) ;;
-            *)
-              printf 'Unexpected CI results: mode=%s check=%s actionlint=%s\n' \
-                "$mode" "$CHECK_RESULT" "$ACTIONLINT_RESULT" >&2
-              exit 1
-              ;;
-          esac
+          # Allowed combinations are mode:check result:actionlint result.
+          CI_PASSED: >-
+            ${{ (github.event_name == 'push' || needs.classify.result == 'success') &&
+              contains(fromJSON('["docs:skipped:skipped", "content:success:skipped", "full:success:success"]'),
+                format('{0}:{1}:{2}', github.event_name == 'push' && 'full' || needs.classify.outputs.mode,
+                  needs.check.result, needs.actionlint.result)) }}
+        run: test "$CI_PASSED" = true
