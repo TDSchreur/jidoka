@@ -13,17 +13,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  classify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.paths.outputs.mode }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Classify changed files
+        id: paths
+        run: |
+          mode=$(python3 scripts/classify-ci.py)
+          printf 'mode=%s\n' "$mode" >> "$GITHUB_OUTPUT"
+          printf 'CI path: %s\n' "$mode"
   check:
+    needs: classify
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'push' ||
+        (needs.classify.result == 'success' &&
+          (needs.classify.outputs.mode == 'full' || needs.classify.outputs.mode == 'content'))) }}
     timeout-minutes: 45
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: ${{ fromJSON(needs.classify.outputs.mode == 'content' && '["ubuntu-latest"]' || '["ubuntu-latest","windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     env:
       # Line tables are enough for test backtraces; full debug info makes Windows (PDB) builds much slower.
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
@@ -37,16 +59,17 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/develop' }}
       # Keep these checks in sync with scripts/verify.sh.
-      - run: cargo fmt --check
+      - if: needs.classify.outputs.mode != 'content'
+        run: cargo fmt --check
       # Clippy runs on Linux only: the code is shared, and Windows-only lint gaps are accepted to save time.
       - name: Clippy
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && needs.classify.outputs.mode != 'content'
         run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
       # Uses the Chrome or Chromium preinstalled on ubuntu-latest; the tests look it up on PATH.
       # Runs the harness self-test (tests/test_*.py), then every tests/dashboard-*.py in name order, as scripts/verify.sh does.
       - name: Test the dashboard in a browser
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && needs.classify.outputs.mode != 'content'
         run: |
           python3 -m unittest discover -s tests -p 'test_*.py'
           for test in tests/dashboard-*.py; do
@@ -70,14 +93,18 @@ jobs:
         shell: pwsh
         run: ./tests/windows-installer-integration.ps1 -Executable './target/x86_64-pc-windows-msvc/release/jidoka.exe'
       - name: Test Windows installer failures on Linux
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && needs.classify.outputs.mode != 'content'
         shell: pwsh
         run: ./tests/windows-installer-startup.ps1
   actionlint:
+    needs: classify
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'push' ||
+        (needs.classify.result == 'success' && needs.classify.outputs.mode == 'full')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Install actionlint
@@ -86,12 +113,28 @@ jobs:
         run: '"$(go env GOPATH)/bin/actionlint"'
   ci-ok:
     if: always()
-    needs: [check, actionlint]
+    needs: [classify, check, actionlint]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require all checks to pass
+      - name: Require checks for the selected CI path
         env:
-          RESULT: ${{ needs.check.result }}
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          MODE: ${{ needs.classify.outputs.mode }}
+          CHECK_RESULT: ${{ needs.check.result }}
           ACTIONLINT_RESULT: ${{ needs.actionlint.result }}
-        run: test "$RESULT" = success && test "$ACTIONLINT_RESULT" = success
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            mode=full
+          else
+            test "$CLASSIFY_RESULT" = success
+            mode=$MODE
+          fi
+          case "$mode:$CHECK_RESULT:$ACTIONLINT_RESULT" in
+            docs:skipped:skipped|content:success:skipped|full:success:success) ;;
+            *)
+              printf 'Unexpected CI results: mode=%s check=%s actionlint=%s\n' \
+                "$mode" "$CHECK_RESULT" "$ACTIONLINT_RESULT" >&2
+              exit 1
+              ;;
+          esac
