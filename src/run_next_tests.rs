@@ -281,13 +281,25 @@ fn check_selection_explains_unavailable_evidence_only_when_needed() {
     let mut run = run(Mode::Balanced, Stage::Build, None);
     run.worktree = None;
     let next = super::build(&run, &FailingDiff).unwrap();
-    assert!(next.checks.is_none());
-    assert!(next.checks_unavailable.is_none());
+    assert!(
+        next.checks.is_none(),
+        "Build guidance included Check selection: {:?}",
+        next.checks
+    );
+    assert!(
+        next.checks_unavailable.is_none(),
+        "Build guidance reported Check selection unavailable: {:?}",
+        next.checks_unavailable
+    );
 
     run.stage = Stage::Check;
     let reason = |run: &Run| {
         let next = super::build(run, &FailingDiff).unwrap();
-        assert!(next.checks.is_none());
+        assert!(
+            next.checks.is_none(),
+            "Check guidance showed a selection without a usable diff: {:?}",
+            next.checks
+        );
         let reason = next.checks_unavailable.unwrap();
         let gate = next
             .gates

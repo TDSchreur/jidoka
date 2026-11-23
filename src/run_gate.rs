@@ -1744,11 +1744,11 @@ mod tests {
             record_on(&mut run, result(gate, true), &git).unwrap();
         }
         let next = crate::run_next::build(&run, &git).unwrap();
+        let next_json = serde_json::to_value(next).unwrap();
+        let gates = &next_json["gates"];
         assert!(
-            serde_json::to_value(next).unwrap()["gates"]
-                .as_array()
-                .unwrap()
-                .is_empty()
+            gates.as_array().unwrap().is_empty(),
+            "Expected fresh evidence to satisfy every Gate, found {gates}"
         );
 
         *git.0.borrow_mut() = "def5678".into();
@@ -1787,7 +1787,11 @@ mod tests {
             );
         }
         assert_eq!(run.stage, Stage::Check);
-        assert!(run.stage_exits.is_empty());
+        assert!(
+            run.stage_exits.is_empty(),
+            "Refused Advance saved Stage exits: {:?}",
+            run.stage_exits
+        );
     }
 
     #[test]
