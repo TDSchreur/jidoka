@@ -7,8 +7,8 @@ use crate::{
     inspect::shown,
     routing::{ModelChoice, ModelRouting},
     run::{
-        Evaluation, ExitOutcome, GateResult, GateStatus, Mode, Run, RunStatus, Stage, StageExit,
-        Ticket, TicketStatus,
+        Evaluation, ExitOutcome, GateResult, GateStatus, Mode, ReworkFindings, Run, RunStatus,
+        Stage, StageExit, Ticket, TicketStatus,
     },
     run_gate::{self, AssessmentPurpose, CheckSelection},
     stages::{self, Destination, Gate},
@@ -602,7 +602,7 @@ pub(crate) fn render(next: &Next) -> String {
         out.push_str(&format!("\nMove to {target} ({})\n", mv.kind));
         if let Some(number) = mv.rework {
             out.push_str(&format!(
-                "  Rework {number}: jidoka run rework {} --finding <id> --classification <wording|behavior> [--decision <text>]\n",
+                "  Rework {number}: jidoka run rework {} --finding <id>=<wording|behavior> ... [--decision <text>] (one for each open Finding)\n",
                 next.run
             ));
         } else {
@@ -683,8 +683,16 @@ fn render_exits(out: &mut String, exits: &[StageExit]) {
             ExitOutcome::Accepted => "Accepted".to_string(),
             ExitOutcome::Override { reason } => format!("Override ({})", shown(reason)),
             ExitOutcome::Merged { url } => format!("PR merge observed ({})", shown(url)),
-            ExitOutcome::Rework { number, finding } => {
-                format!("Started Rework {number} ({})", shown(finding))
+            ExitOutcome::Rework { number, included } => {
+                let ids = match included {
+                    ReworkFindings::Classified { findings } => findings
+                        .iter()
+                        .map(|f| format!("{}={}", f.id, f.classification.label()))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    ReworkFindings::Historical { finding, .. } => finding.clone(),
+                };
+                format!("Started Rework {number} ({})", shown(&ids))
             }
         };
         out.push_str(&format!("  {}{pass}: {outcome}\n", exit.stage.name()));

@@ -213,18 +213,20 @@ function Stages({ reworkCap }) {
     <//>
     <${Topic} title="Needs you">
       <p>
-        A Run that is blocked is waiting for you. The andon strip at the top turns amber and lists it with the reason,
-        and its row on the line comes first, marked amber. Typical reasons:
+        The andon strip lists blocked Runs that may need your attention, with their reasons. Their rows come first
+        on the line and are marked amber. Context compaction clears on later agent activity and appears as blocked
+        on the line and in the Run detail. A Run may need you in any of these cases.
       </p>
       <ul>
         <li>The issue tracker is not set up yet. Run <${Code}>/jidoka-setup<//> and start again.</li>
         <li>Check findings remain after the last Rework and the agent needs your decision.</li>
         <li>A tool, a permission or a check the agent cannot fix by itself, such as a failing CI check caused by infrastructure.</li>
         <li>An answer or a decision only you can give.</li>
-        <li>The agent finished a response while its Run is active; it may need you or may have been interrupted.</li>
+        <li>The agent finished a response while its Run is active. Check whether it needs an answer or a prompt to continue.</li>
+        <li>The agent reached a usage limit. You can check when it resets and resume work when capacity returns.</li>
       </ul>
       <p>
-        The <em>Needs you</em> button in the header shows only these Runs, and <em>Notify me</em> can tell you when a
+        <em>Show only these</em> in the andon strip filters the board to these Runs, and <em>Notify me</em> can tell you when a
         Run starts waiting.
       </p>
     <//>
@@ -485,9 +487,9 @@ function Dashboard({ reworkCap }) {
       <p>
         At the top, the andon strip says whether anything needs you. Below it, On the line has one row for each Run that
         is not done, with a rail of the four Stations (Define, Build, Check and Finish) that shows where the Run is. A
-        blocked Run is marked amber and its position says so, such as Check, blocked. Runs waiting for you come first,
-        then the most recently updated. Completed Runs are listed below the line. The board refreshes by itself every few
-        seconds. The toolbar, the andon strip and the line stay at the top while you scroll the Completed list; on a narrow
+        blocked Run shows its reason and position, such as Check, blocked. Runs that may need you are marked amber
+        and come first, followed by the other Runs in the selected project and then the most recently updated.
+        Completed Runs are listed below the line. The board refreshes by itself every few seconds. The toolbar, the andon strip and the line stay at the top while you scroll the Completed list; on a narrow
         screen the toolbar scrolls away and the strip and the line stay. They take at most 60% of the window: with many
         Runs, the line and the list of waiting Runs scroll on their own.
       </p>
@@ -537,7 +539,7 @@ function Dashboard({ reworkCap }) {
       <p>Each Run on the line is a row. Select its title to open the detail.</p>
       <${Terms}
         items=${[
-          ['Rail', 'The four Stations. Done ones are filled; the marker is on the current one, and turns into an amber diamond when the Run is blocked. The position is also given in words.'],
+          ['Rail', 'The four Stations. Done ones are filled; the marker is on the current one, and turns into an amber diamond when the Run needs you. The position is also given in words.'],
           ['Project', 'The project the Run belongs to.'],
           ['Rework', html`<em>Rework 1/${reworkCap}</em>: the current Rework out of the ${reworkCap} a Run gets.`],
           ['Tickets', 'How many of the Run’s tickets are done, such as 2/5.'],

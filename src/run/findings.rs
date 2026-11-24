@@ -397,8 +397,12 @@ mod tests {
         apply(update, &mut run, Stage::Check).unwrap();
         run.leave(
             crate::run::Exit::Rework {
-                finding: "F1".into(),
-                classification: crate::run::FindingClassification::Wording,
+                findings: ["F1", "F3"]
+                    .map(|id| crate::run::ClassifiedFinding {
+                        id: id.into(),
+                        classification: crate::run::FindingClassification::Wording,
+                    })
+                    .into(),
                 decision: None,
             },
             10,

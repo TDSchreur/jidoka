@@ -430,18 +430,9 @@ impl RunStore {
                 LifecycleRequest::Resume { source } => {
                     run.resume(&source, LifecycleSource::Agent, now)
                 }
-                LifecycleRequest::Rework {
-                    finding,
-                    classification,
-                    decision,
-                } => run.leave(
-                    Exit::Rework {
-                        finding,
-                        classification,
-                        decision,
-                    },
-                    now,
-                ),
+                LifecycleRequest::Rework { findings, decision } => {
+                    run.leave(Exit::Rework { findings, decision }, now)
+                }
                 LifecycleRequest::WorkspaceBlocked { reason } => {
                     if run.block_source == Some(LifecycleSource::Workspace) {
                         run.refresh_block(&reason, LifecycleSource::Workspace, now)

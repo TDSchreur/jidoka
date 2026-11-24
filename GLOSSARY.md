@@ -8,9 +8,9 @@
 
 **Stage exit**: How a run left one Pass through a Stage: gates accepted, an override with its reason, an observed merge, or a Rework with its Finding. It keeps the evidence as it was at that moment, and is the only way a Stage changes.
 
-**Needs you**: A run that is blocked and waiting for the user. The dashboard lists it in the andon strip, marks its row on the line amber, sorts it first and counts it in the page title.
+**Needs you**: A blocked run that may require the user's attention. This includes requests for input, failures, usage limits and uncertain waits or blocks. Context compaction can clear on its own and stays visible as a blocked run on the line and in its detail.
 
-**Andon strip**: The top of the dashboard. It says that nothing needs you, or turns amber and lists every run that needs you, with its project and status reason. Named after the signal board above a factory line.
+**Andon strip**: The top of the dashboard. It says that nothing needs you or turns amber and lists the runs that need you, with their projects and status reasons. These runs come first on the line, count in the page title and can be shown on their own with the waiting filter. Named after the signal board above a factory line.
 
 **The line**: The dashboard's list of active runs (every run that is not done), one row each, with a rail of the four Stages that shows where the run is.
 
@@ -22,9 +22,9 @@
 
 **Pull request host**: Where a run's pull request lives: GitHub (including GitHub Enterprise) or Azure Repos. It is chosen from the pull request's URL, or for a pull request not opened yet from the origin remote and the `jidoka.prProvider` setting. Both hosts offer the same things: reading a pull request's state and head, finding or opening a branch's pull request, and watching its checks to one CI outcome.
 
-**Rework**: A return from Check to Build to fix actionable Findings, followed by another Check. A Rework starts only together with at least one new open Finding, which records why the run was sent back. `jidoka-full` and `jidoka-balanced` allow at most three per run; after the second, findings that change only wording or documentation are fixed without asking and the user decides only on findings that change behaviour; after the third, the user decides whether to do another Rework, finish with the findings listed in the pull request, or stop. Findings alone never block a run; the run is `blocked` only while it waits for that decision.
+**Rework**: A return from Check to Build to fix actionable Findings, followed by another Check. A Rework starts only together with at least one open Finding, and the request classifies every open Finding exactly once as `wording` or `behavior` (`jidoka run rework <id> --finding <id>=<wording|behavior> ...`); the Coordinator judges each classification and the server rejects a missing, repeated or not-open Finding without changing the run. `jidoka-full` and `jidoka-balanced` allow three without a cap decision; Rework 3 needs the user's decision when any included Finding is `behavior`, and a Rework with only `wording` Findings goes ahead without asking; Rework 4 onward always needs a decision, whatever the Findings. After the third, the user also decides whether to do another Rework, finish with the findings listed in the pull request, or stop. Findings alone never block a run; the run is `blocked` only while it waits for that decision.
 
-**Finding**: One issue a check reported in Check, recorded on the run with the check's name, an optional location, one line of text, the reviewed commit and the Rework it sent back, if any. Each has an id per run (`F1`, `F2`, …) and an outcome: `open`, `fixed` (with the commit that fixed it), `dismissed` (judged not worth fixing, with the reason) or `deferred` (left unfixed by the user's choice and named in the pull request, with the reason). Check cannot be left while a Finding is open.
+**Finding**: One issue a check reported in Check, recorded on the run with the check's name, an optional location, one line of text, the reviewed commit and the Rework it sent back, if any. Each has an id per run (`F1`, `F2`, …) and an outcome: `open`, `fixed` (with the commit that fixed it), `dismissed` (judged not worth fixing, with the reason) or `deferred` (left unfixed by the user's choice and named in the pull request, with the reason). Check cannot be left while a Finding is open. A Rework classifies every open Finding as `wording` or `behavior`; one `behavior` Finding makes the whole Rework a behavior Rework.
 
 **Workflow mode**: The workflow skill that carries a run: `jidoka-full` (quality), `jidoka-balanced`, or `jidoka-fast` (speed). Modes differ in how much Define, Build, and Check do.
 
@@ -38,11 +38,11 @@
 
 **Setup**: Putting Jidoka's skills and default model routing policy in place for the chosen agents. `jidoka install` does it, and Jidoka keeps it current automatically after the binary changes version.
 
-**Run context**: What a new agent session needs to continue a run: the repository, worktree, branch and base commit it started from, the workflow mode, a reference to the spec, the ordered tickets with their progress, the pull request, a short summary per Stage and the status reason. It holds references and summaries only, never transcripts or secrets, and is changed only through `jidoka run update`. Anything a run never recorded is shown as unknown, not guessed.
+**Run context**: The recorded information a Coordinator uses to continue a run: the repository, the Workspace (worktree, branch and base commit), the workflow mode, a reference to the spec, the ordered tickets with their progress, the pull request, a short summary per Stage and the status reason. It holds references and summaries only, never transcripts or secrets. `jidoka run begin` and `jidoka run update` record it and `jidoka run cleanup` clears the Workspace from it; `jidoka run inspect` shows it. Anything a run never recorded is shown as unknown, not guessed, so a missing worktree, branch or base commit means "not recorded", not a path to look for. A done run's Completion says how Jidoka ended work and does not prove a merge; the pull request's state is read from the pull request.
 
 **Repository**: The canonical main checkout of the project a run belongs to. Every linked worktree of a checkout has the same repository, so the dashboard groups their runs in one row.
 
-**Status reason**: Why a run is blocked, in the run's own words. It is the blocking reason a run is blocked with.
+**Status reason**: The recorded explanation of why a run is blocked. It can describe a wait for the user, a failure or an automatic pause such as context compaction.
 
 **Continuing a run**: Starting a new session on an existing run. The session reads `jidoka run inspect <id>`, checks the recorded repository, worktree, branch, base commit and Git state, reports any difference to the user and never resets, cleans or discards work to make them match.
 
@@ -56,7 +56,7 @@
 
 **Estimated cost**: The cost of a run's token usage in USD, computed when it is shown as a token-based estimate at API list prices, not subscription charges, from Jidoka's built-in price table (per million tokens, Claude and OpenAI models) for each row, model, stage and run. A model without a price is `unknown`, never zero; a total that includes one is partial (`>= $X`). It is not stored.
 
-**Pause**: A moment the agent's Claude Code log shows work stopped: a usage limit or a context compaction. The dashboard keeps its kind and time, blocks a running run with the matching reason until later activity appears, and shows it on the run's timeline. A stretch of over 10 minutes with no activity that no pause explains is an idle gap. Codex and Copilot logs are not checked: Copilot's `events.jsonl` writes no usage-limit or compaction events.
+**Pause**: A moment the agent's Claude Code log shows work stopped: a usage limit or a context compaction. The dashboard keeps its kind and time, blocks a running run with the matching reason until later activity appears, and shows it on the run's timeline. A usage limit can need attention while context compaction clears on its own. A stretch of over 10 minutes with no activity that no pause explains is an idle gap. Codex and Copilot logs are not checked: Copilot's `events.jsonl` writes no usage-limit or compaction events.
 
 **Session claim**: Which agent sessions belong to a run: a session does when it executed a Jidoka command that names the run (`run update`, `run sync`, `run inspect`, `run check`, `run stats`, `pr open`, `pr sync` or `pr wait` followed by the run id), including one run from inside a script tool, or when the run recorded the session's id. Only the session's own commands claim; a subagent's commands never do, and its logs count with the session that started it. Commands are read from the agent's tool calls, so a run id in tool output, a prompt or a file the agent read never counts. The rule is the same for Claude Code, Codex and Copilot, and Token usage and the request analysis both use it.
 

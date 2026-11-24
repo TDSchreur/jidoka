@@ -22,6 +22,23 @@ pub(crate) enum FindingClassification {
     Behavior,
 }
 
+impl FindingClassification {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Wording => "wording",
+            Self::Behavior => "behavior",
+        }
+    }
+}
+
+/// The Coordinator's classification of the proposed fix for one Finding.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ClassifiedFinding {
+    pub(crate) id: String,
+    pub(crate) classification: FindingClassification,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) enum LifecycleRequest {
@@ -32,8 +49,7 @@ pub(crate) enum LifecycleRequest {
         source: String,
     },
     Rework {
-        finding: String,
-        classification: FindingClassification,
+        findings: Vec<ClassifiedFinding>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         decision: Option<String>,
     },
@@ -73,6 +89,13 @@ impl Run {
         self.block_source = None;
         self.lifecycle_event(RunEventKind::Resumed, reason, source, at);
         Ok(())
+    }
+
+    /// Whether a blocked run may require a person's attention.
+    pub(crate) fn needs_you(&self) -> bool {
+        self.status == RunStatus::Blocked
+            && !(self.automatically_blocked()
+                && self.blocking_reason.as_deref() == Some(PauseKind::Compaction.reason()))
     }
 
     pub(crate) fn automatically_blocked(&self) -> bool {
@@ -152,10 +175,9 @@ pub(crate) fn parse_lifecycle(action: &str, options: &[&str]) -> Result<Lifecycl
 
 fn parse_rework(options: &[&str]) -> Result<LifecycleRequest, String> {
     let usage = || {
-        "Use jidoka run rework <id> --finding <id> --classification <wording|behavior> [--decision <text>]".to_string()
+        "Use jidoka run rework <id> --finding <id>=<wording|behavior> ... [--decision <text>]; include each open Finding once".to_string()
     };
-    let mut finding = None;
-    let mut classification = None;
+    let mut findings = Vec::new();
     let mut decision = None;
     let (pairs, extra) = options.as_chunks::<2>();
     if !extra.is_empty() {
@@ -163,12 +185,19 @@ fn parse_rework(options: &[&str]) -> Result<LifecycleRequest, String> {
     }
     for pair in pairs {
         match pair {
-            ["--finding", value] if finding.is_none() => finding = Some((*value).into()),
-            ["--classification", value] if classification.is_none() => {
-                classification = Some(match *value {
+            ["--finding", value] => {
+                let (id, classification) = value.split_once('=').ok_or_else(usage)?;
+                let classification = match classification {
                     "wording" => FindingClassification::Wording,
                     "behavior" => FindingClassification::Behavior,
                     _ => return Err(usage()),
+                };
+                if id.is_empty() {
+                    return Err(usage());
+                }
+                findings.push(ClassifiedFinding {
+                    id: id.to_owned(),
+                    classification,
                 });
             }
             ["--decision", value] if decision.is_none() => {
@@ -178,9 +207,8 @@ fn parse_rework(options: &[&str]) -> Result<LifecycleRequest, String> {
             _ => return Err(usage()),
         }
     }
-    Ok(LifecycleRequest::Rework {
-        finding: finding.ok_or_else(usage)?,
-        classification: classification.ok_or_else(usage)?,
-        decision,
-    })
+    if findings.is_empty() {
+        return Err(usage());
+    }
+    Ok(LifecycleRequest::Rework { findings, decision })
 }
