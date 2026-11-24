@@ -432,16 +432,17 @@ a:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline
 .line-row { position: relative; grid-template-areas: "title rail" "meta where" "activity activity"; align-items: center; }
 .line-row + .line-row { border-top: var(--stroke-thin) solid var(--color-rule); }
 .line-row:has(.line-open:hover) { background: var(--color-tint); }
-.line-row.blocked::before { content: ''; position: absolute; inset: 0 auto 0 0; width: calc(var(--stroke-thick) * 3); background: var(--color-amber); }
+.line-row.needs-attention::before { content: ''; position: absolute; inset: 0 auto 0 0; width: calc(var(--stroke-thick) * 3); background: var(--color-amber); }
 .line-title { grid-area: title; margin: 0; font-size: var(--text-s); line-height: var(--leading-s); font-weight: var(--weight-strong); overflow-wrap: anywhere; }
 .line-row .where { grid-area: where; margin: 0; font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); text-align: center; }
-.line-row.blocked .where { color: var(--color-slate); font-weight: var(--weight-strong); }
+.line-row.needs-attention .where { color: var(--color-slate); font-weight: var(--weight-strong); }
 .line-row .meta { grid-area: meta; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-5); font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--color-muted); }
 .line-row .meta a { position: relative; z-index: 1; }
 /* Links in the scrolling rows keep their focus ring inside the row, so the scroller cannot clip it. */
 .line-row .meta a:focus-visible { outline-offset: 0; }
 .meta .links { display: inline-flex; gap: var(--space-4); }
-.line-row .activity { grid-area: activity; margin: 0; color: var(--color-slate); overflow-wrap: anywhere; }
+.line-notes { grid-area: activity; color: var(--color-slate); overflow-wrap: anywhere; }
+.line-notes p { margin: 0; }
 .line .empty { margin: 0; padding: var(--space-5) var(--space-6); }
 /* The rail: four stations, done ones filled, the current one half filled with a marker on it. */
 .rail { grid-area: rail; position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-1); align-items: center; height: var(--space-8); }
@@ -449,7 +450,7 @@ a:focus-visible { outline: var(--stroke-thick) solid var(--color-slate); outline
 .station.past { background: var(--color-blue); }
 .station.current { background: linear-gradient(90deg, var(--color-blue) 50%, var(--color-rule) 50%); }
 .rail-marker { position: absolute; top: 50%; left: calc((var(--station) + 0.5) * 25%); width: var(--space-6); height: var(--space-6); margin: calc(var(--space-6) / -2) 0 0 calc(var(--space-6) / -2); box-sizing: border-box; border: var(--stroke-thick) solid var(--color-panel); border-radius: var(--radius-round); background: var(--color-blue); transition: left var(--duration-move) var(--ease); }
-.line-row.blocked .rail-marker { border-color: var(--color-on-amber); border-radius: var(--radius-s); background: var(--color-amber); transform: rotate(45deg); }
+.line-row.needs-attention .rail-marker { border-color: var(--color-on-amber); border-radius: var(--radius-s); background: var(--color-amber); transform: rotate(45deg); }
 @media (max-width: 48rem) {
   .line-head, .line-row { grid-template-columns: minmax(0, 1fr); padding: var(--space-5) var(--space-5); }
   .line-row { grid-template-areas: "title" "rail" "where" "meta" "activity"; }

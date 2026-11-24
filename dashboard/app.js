@@ -73,10 +73,8 @@ function ProjectName({ path }) {
 const projectOf = (run) => run.repository ?? run.project;
 const runKey = (run) => `${projectOf(run)}\n${run.id}`;
 
-// Blocked first, then the most recently updated; Runs without a timestamp go last, newest record first.
+// The most recently updated first; Runs without a timestamp go last, newest record first.
 function compare(a, b) {
-  const blocked = (b.run.status === 'blocked') - (a.run.status === 'blocked');
-  if (blocked) return blocked;
   const ta = timestamp(a.run);
   const tb = timestamp(b.run);
   if (ta !== null && tb !== null && ta !== tb) return tb - ta;
@@ -415,15 +413,17 @@ function Updated({ run, now }) {
 
 /**
  * One active Run on the line: its title (opens the detail), a rail of the four stations with a marker at the
- * current one, the position in words, and a meta line. A blocked Run is marked amber, with a word, not only a colour.
+ * current one, the position in words, and a meta line. Amber marks Runs that need attention.
  */
 function LineRow({ run, now, onOpen, group }) {
   const index = STATIONS.indexOf(run.stage);
-  const blocked = needsYou(run);
+  const blocked = run.status === 'blocked';
   const station = index === -1 ? String(run.stage) : GROUPS[index][1];
   const where = blocked ? `${station}, blocked` : station;
+  const attention = needsYou(run);
+  const reason = blocked ? run.blocking_reason : null;
   const rework = Number.isInteger(run.rework) && run.rework > 0 ? run.rework : null;
-  return html`<li class=${blocked ? 'line-row blocked' : 'line-row'} style=${`--station: ${index}`}>
+  return html`<li class=${attention ? 'line-row needs-attention' : 'line-row'} style=${`--station: ${index}`}>
     <h3 class="line-title">
       <button type="button" class="line-open" data-run-key=${runKey(run)} onClick=${() => onOpen(runKey(run))}>
         ${run.title}
@@ -435,7 +435,7 @@ function LineRow({ run, now, onOpen, group }) {
       )}
       ${index === -1 ? null : html`<span class="rail-marker"></span>`}
     </div>
-    <p class="where">${where}</p>
+    <p class="where">${where}${attention ? ' · Needs you' : ''}</p>
     <div class="meta">
       <span class="meta-project"><${ProjectName} path=${projectOf(run)} /></span>
       <${ContextChips} run=${run} />
@@ -444,7 +444,10 @@ function LineRow({ run, now, onOpen, group }) {
       <${ContextLinks} run=${run} /><${PrStateLabel} run=${run} />
       <${Updated} run=${run} now=${now} />
     </div>
-    ${run.activity ? html`<p class="activity">${run.activity}</p>` : null}
+    ${reason || run.activity ? html`<div class="line-notes">
+      ${reason ? html`<p class="line-reason">${reason}</p>` : null}
+      ${run.activity ? html`<p>${run.activity}</p>` : null}
+    </div>` : null}
   </li>`;
 }
 
@@ -1291,8 +1294,8 @@ function useNow() {
 }
 
 const TITLE = 'Jidoka';
-/** A Run needs the user when it is blocked. */
-const needsYou = (run) => run.status === 'blocked';
+/** A missing attention indication leaves a blocked Run visible. */
+const needsYou = (run) => run.status === 'blocked' && run.needs_you !== false;
 
 
 const supportsNotifications = () => typeof Notification === 'function';
@@ -1543,10 +1546,10 @@ function App() {
     else text = '';
   }
   const indexed = (visibleRuns ?? []).map((run, index) => ({ run, index }));
-  // Blocked Runs first, then the Project the page was opened on (`?project=`), then the most recent.
-  const blockedFirst = (a, b) => Number(needsYou(b.run)) - Number(needsYou(a.run));
+  // Runs needing attention first, then the Project the page was opened on (`?project=`), then the most recent.
+  const attentionFirst = (a, b) => Number(needsYou(b.run)) - Number(needsYou(a.run));
   const first = (run) => Number(projectOf(run) === wanted);
-  const byPriority = (a, b) => blockedFirst(a, b) || first(b.run) - first(a.run) || compare(a, b);
+  const byPriority = (a, b) => attentionFirst(a, b) || first(b.run) - first(a.run) || compare(a, b);
   const line = indexed
     .filter((entry) => entry.run.status !== 'done' && (!onlyWaiting || needsYou(entry.run)))
     .sort(byPriority);
