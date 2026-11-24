@@ -38,7 +38,7 @@
 
 **Setup**: Putting Jidoka's skills and default model routing policy in place for the chosen agents. `jidoka install` does it, and Jidoka keeps it current automatically after the binary changes version.
 
-**Run context**: What a new agent session needs to continue a run: the repository, worktree, branch and base commit it started from, the workflow mode, a reference to the spec, the ordered tickets with their progress, the pull request, a short summary per Stage and the status reason. It holds references and summaries only, never transcripts or secrets, and is changed only through `jidoka run update`. Anything a run never recorded is shown as unknown, not guessed.
+**Run context**: The recorded information a Coordinator uses to continue a run: the repository, the Workspace (worktree, branch and base commit), the workflow mode, a reference to the spec, the ordered tickets with their progress, the pull request, a short summary per Stage and the status reason. It holds references and summaries only, never transcripts or secrets. `jidoka run begin` and `jidoka run update` record it and `jidoka run cleanup` clears the Workspace from it; `jidoka run inspect` shows it. Anything a run never recorded is shown as unknown, not guessed, so a missing worktree, branch or base commit means "not recorded", not a path to look for. A done run's Completion says how Jidoka ended work and does not prove a merge; the pull request's state is read from the pull request.
 
 **Repository**: The canonical main checkout of the project a run belongs to. Every linked worktree of a checkout has the same repository, so the dashboard groups their runs in one row.
 
