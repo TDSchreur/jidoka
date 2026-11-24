@@ -317,6 +317,43 @@ fn a_rework_is_classified_by_every_open_finding_in_either_order() {
 }
 
 #[test]
+fn a_wording_only_rework_needs_a_decision_from_the_fourth() {
+    let dir = TestDir::new();
+    let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+    let run = new_run(&store, "task");
+    let id = run.id.as_str();
+    let update = |options: &[&str]| {
+        let parsed = parse_update(options).map_err(io_invalid)?;
+        store.update_with(id, parsed, &FixedGit)
+    };
+    update(&["--mode", "jidoka-balanced", "--worktree", "/work/wt"]).unwrap();
+    advance_to(&store, id, Stage::Check);
+    for count in 1..=4 {
+        update(&["--finding", "code-review", "-", "Typo"]).unwrap();
+        let finding = format!("F{count}=wording");
+        let request = parse_lifecycle("rework", &["--finding", &finding]).unwrap();
+        if count == 4 {
+            let saved = std::fs::read(dir.0.path().join("runs.json")).unwrap();
+            let error = store.transition(id, request).unwrap_err();
+            assert!(
+                error.to_string().contains("requires the user's decision"),
+                "{error}"
+            );
+            assert_eq!(
+                std::fs::read(dir.0.path().join("runs.json")).unwrap(),
+                saved
+            );
+            break;
+        }
+        // Reworks 1 to 3 need no decision when every Finding is wording.
+        let moved = store.transition(id, request).unwrap().unwrap();
+        assert_eq!((moved.stage, moved.rework), (Stage::Build, Some(count)));
+        update(&["--finding-status", &format!("F{count}=fixed")]).unwrap();
+        advance_to(&store, id, Stage::Check);
+    }
+}
+
+#[test]
 fn failed_updates_leave_the_store_unchanged() {
     let dir = TestDir::new();
     let path = dir.0.path().join("runs.json");
