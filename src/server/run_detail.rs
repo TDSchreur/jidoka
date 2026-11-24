@@ -18,14 +18,14 @@ use serde::Serialize;
 
 /// A run as the run list shows it, without inspecting Git.
 ///
-/// It is the stored record plus the estimated cost of its usage, from the price table as it is now.
-/// The cost is never stored.
+/// It adds the attention indication and the estimated cost of usage to the stored record.
 ///
 /// # Errors
 ///
 /// Fails when the record or its cost cannot be serialized.
 pub(super) fn summary(run: &Run) -> serde_json::Result<serde_json::Value> {
     let mut value = serde_json::to_value(run)?;
+    value["needs_you"] = serde_json::Value::Bool(run.needs_you());
     if let Some(usage) = &run.usage {
         value["usage"] = crate::cost::usage_json(usage, crate::cost::PRICES)?;
     }

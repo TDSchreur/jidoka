@@ -75,6 +75,13 @@ impl Run {
         Ok(())
     }
 
+    /// Whether a blocked run may require a person's attention.
+    pub(crate) fn needs_you(&self) -> bool {
+        self.status == RunStatus::Blocked
+            && !(self.automatically_blocked()
+                && self.blocking_reason.as_deref() == Some(PauseKind::Compaction.reason()))
+    }
+
     pub(crate) fn automatically_blocked(&self) -> bool {
         self.status == RunStatus::Blocked
             && match self.block_source {

@@ -1242,6 +1242,53 @@ async fn stage_exits_preserve_passes_and_distinguish_refused_and_forced_advances
 }
 
 #[rocket::async_test]
+async fn attention_in_dashboard_responses_preserves_legacy_block_reasons() {
+    let dir = TestDir::new();
+    let runs: Vec<_> = [
+        ("41", "Context compaction in progress"),
+        ("42", "Context compaction in progress"),
+        ("43", "An unfamiliar failure"),
+    ]
+    .into_iter()
+    .map(|(id, reason)| {
+        let mut run = serde_json::json!({
+            "id": id, "title": "task", "project": "/work", "stage": "build",
+            "status": "blocked", "blocking_reason": reason, "gates": []
+        });
+        if id == "41" {
+            run["block_source"] = serde_json::json!("pause");
+        }
+        run
+    })
+    .collect();
+    fs::write(
+        dir.0.path().join("runs.json"),
+        serde_json::to_vec(&runs).unwrap(),
+    )
+    .unwrap();
+    let api = client(&dir).await;
+    let list = api
+        .get("/api/runs")
+        .header(Header::new("Host", "127.0.0.1:4311"))
+        .dispatch()
+        .await;
+    let list: Vec<serde_json::Value> = list.into_json().await.unwrap();
+    for (id, expected) in [("41", false), ("42", false), ("43", true)] {
+        let listed = list.iter().find(|entry| entry["id"] == id).unwrap();
+        assert_eq!(listed["needs_you"], expected, "list entry for run {id}");
+        let detail = api
+            .get(format!("/api/runs/{id}"))
+            .header(Header::new("Host", "127.0.0.1:4311"))
+            .dispatch()
+            .await;
+        let detail: serde_json::Value = detail.into_json().await.unwrap();
+        assert_eq!(detail["needs_you"], expected, "detail for run {id}");
+        assert_eq!(detail["status"], "blocked");
+        assert_eq!(detail["blocking_reason"], listed["blocking_reason"]);
+    }
+}
+
+#[rocket::async_test]
 async fn check_selection_explains_missing_diff_and_is_not_computed_on_list() {
     let dir = TestDir::new();
     fs::write(dir.0.path().join("runs.json"), r#"[{"id":"42","title":"t","project":"/work","mode":"jidoka-balanced","stage":"check","status":"running","gates":[]}]"#).unwrap();

@@ -1157,6 +1157,7 @@ mod auto_block {
         f.agent_update(RunStatus::Running, None);
         collect_and_store(&f.store, &f.id, &f.settings).unwrap();
         assert_eq!(f.run().status, RunStatus::Blocked);
+        assert!(f.run().needs_you(), "an explicit request needs attention");
         collect_and_store(&f.store, &f.id, &f.settings).unwrap();
         assert_eq!(f.run().status, RunStatus::Blocked);
         let resumed = f.log(
@@ -1168,6 +1169,10 @@ mod auto_block {
             2_000,
         );
         assert_eq!(resumed.status, RunStatus::Running);
+        assert!(
+            !resumed.needs_you(),
+            "the answer clears the attention indication"
+        );
     }
 
     #[test]
@@ -1233,21 +1238,48 @@ mod auto_block {
     }
 
     #[test]
-    fn an_agent_reported_block_is_not_replaced_by_attention_detection() {
+    fn a_manual_block_with_compaction_wording_stays_visible_after_log_activity() {
         let mut f = Fixture::new();
-        f.agent_update(RunStatus::Blocked, Some("Need a project decision"));
-        let run = f.log(
+        let reason = "Context compaction in progress";
+        f.agent_update(RunStatus::Blocked, Some(reason));
+        let after_response = f.log(
             |ts| {
-                json!({"type":"assistant", "timestamp":ts,
-            "message":{"stop_reason":"end_turn", "content":[{"type":"text", "text":"What next?"}]}})
-                .to_string()
+                json!({"type":"assistant", "timestamp":ts, "message":{"stop_reason":"end_turn"}})
+                    .to_string()
             },
             1_000,
         );
-        assert_eq!(
-            run.blocking_reason.as_deref(),
-            Some("Need a project decision")
+        assert_eq!(after_response.blocking_reason.as_deref(), Some(reason));
+        assert!(after_response.needs_you());
+        let after_answer = f.log(
+            |ts| {
+                json!({"type":"user", "timestamp":ts, "message":{"content":"Continue"}}).to_string()
+            },
+            2_000,
         );
+        assert_eq!(after_answer.status, RunStatus::Blocked);
+        assert_eq!(after_answer.blocking_reason.as_deref(), Some(reason));
+        assert!(after_answer.needs_you());
+        assert_eq!(after_answer.events, after_response.events);
+    }
+
+    #[test]
+    fn compaction_blocks_and_resumes_without_requesting_attention() {
+        let mut f = Fixture::new();
+        let blocked = f.log(
+            |ts| json!({"type":"system", "subtype":"compact_boundary", "timestamp":ts}).to_string(),
+            1_000,
+        );
+        assert_eq!(blocked.status, RunStatus::Blocked);
+        assert_eq!(
+            blocked.blocking_reason.as_deref(),
+            Some("Context compaction in progress")
+        );
+        assert!(!blocked.needs_you());
+        assert_eq!(blocked.events[0].kind, RunEventKind::Blocked);
+        let resumed = f.activity(2_000);
+        assert_eq!(resumed.status, RunStatus::Running);
+        assert_eq!(resumed.events[1].kind, RunEventKind::Resumed);
     }
 
     #[test]
@@ -1255,6 +1287,7 @@ mod auto_block {
         let mut f = Fixture::new();
         let blocked = f.limit(1_000);
         assert_eq!(blocked.status, RunStatus::Blocked);
+        assert!(blocked.needs_you(), "a usage limit may need attention");
         assert_eq!(
             blocked.blocking_reason.as_deref(),
             Some("Usage limit reached")
