@@ -113,13 +113,13 @@ jidoka run update <id> --ticket-report "https://github.com/owner/repo/issues/42"
 jidoka run block <id> --reason "Waiting for credentials"
 jidoka run resume <id> --source "User supplied credentials"
 jidoka run update <id> --finding code-review src/main.rs:42 "Unchecked index panics on empty input"
-jidoka run rework <id> --finding F1 --classification behavior
+jidoka run rework <id> --finding F1=behavior --finding F2=wording
 jidoka run advance <id> --summary finish="<what was completed>"
 ```
 
 Omitted fields keep their stored values. `jidoka run update` reports metadata and can initialize the workflow mode once. Setting the same mode again is allowed. Use `--clear-activity` to clear the activity. Activity, block reasons, resume sources and Rework decisions must be nonblank and at most 2,000 bytes. A ticket reference must be an HTTP(S) URL, local path or identifier of at most 4,096 bytes without spaces. `--agent-home <agent>=<absolute-path>` records the home folder of agent `claude`, `codex` or `copilot`, where the run's [token usage](usage-tracking.md#token-usage) is read; the commands that record a session record its agent home on their own.
 
-`jidoka run block` requires a running run and `jidoka run resume` requires a blocked run. Their events include the stage, time, reason and source. `jidoka run rework` requires a running run in Check and an open Finding ID. The server assigns the next [Rework](../GLOSSARY.md) number and includes all open findings in the round. The agent classifies the proposed fixes as `wording` or `behavior` and records the user's authorization with `--decision` for behavior fixes in Rework 3 and for any Rework after 3. After success it prints the Build instructions.
+`jidoka run block` requires a running run and `jidoka run resume` requires a blocked run. Their events include the stage, time, reason and source. `jidoka run rework` requires a running run in Check and one `--finding <id>=<wording|behavior>` for every open Finding, each exactly once. The server assigns the next [Rework](../GLOSSARY.md) number. The agent classifies the proposed fix for each Finding. The Rework counts as `behavior` when any Finding is `behavior`, whatever the order, and then Rework 3 needs the user's authorization with `--decision`, as does any Rework after 3 ([ADR-0006](adr/0006-limit-reworks-and-gate-late-ones-on-the-user.md)). A request that misses, repeats or names a Finding that is not open is rejected before anything changes, and the Run stays in Check. After success it prints the Build instructions.
 
 `POST /api/runs/<id>` accepts metadata such as `activity`, `tickets` and `ticket_status`. Use `"unticketed": true` to declare unticketed work or `"tickets": null` to clear the plan. Run responses show each ticket's `status` and `work_attempt`, plus `unticketed_attempt` when explicitly unticketed. Omit a field to preserve it, send a value to replace it or send `null` to clear a clearable field. `sessions` adds agent session IDs, and `agent_homes` records agent home folders keyed by `claude`, `codex` or `copilot`; each must be an absolute path and replaces the one recorded for that agent. `POST /api/runs` accepts `session` and `agent_homes` the same way when it creates a run. Unknown fields, including the old `status`, `blocking_reason`, `rework` and `current_ticket` update fields, are rejected.
 
@@ -128,10 +128,10 @@ Use the authenticated `POST /api/runs/<id>/lifecycle` endpoint to block, resume 
 ```json
 {"action":"block","reason":"Waiting for credentials"}
 {"action":"resume","source":"User supplied credentials"}
-{"action":"rework","finding":"F1","classification":"behavior","decision":"User approved the behavior fix"}
+{"action":"rework","findings":[{"id":"F1","classification":"behavior"},{"id":"F2","classification":"wording"}],"decision":"User approved the behavior fix"}
 ```
 
-Send one object per request. Responses include the updated run. The server owns `rework`, `block_source`, and `rework_history`. Each Rework history entry records the time, number, triggering finding, open findings and classification, plus the recorded decision when present. Older records keep their stored counter and may have no historical entries.
+Send one object per request. Responses include the updated run. The server owns `rework`, `block_source`, and `rework_history`. Each Rework history entry records the time, number, the classified Findings, the overall classification plus the recorded decision when present. Older records keep their stored counter and may have no historical entries.
 
 The dashboard’s **Needs you** indication includes blocked runs that may require attention. These appear first on the line, count in the page title and drive the andon strip, its filter and opt-in browser notifications. Automatic context compaction stays blocked and displays its reason on the line and in the run detail until agent activity resumes. Both `GET /api/runs` and `GET /api/runs/<id>` return the derived `needs_you` boolean alongside the recorded status.
 

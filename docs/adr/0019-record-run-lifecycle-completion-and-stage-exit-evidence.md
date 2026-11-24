@@ -14,7 +14,7 @@ Callers that used `jidoka run update <id> done` or posted `status: "done"` to th
 
 Ordinary reporting preserves the status, stage, block reason and Rework number. The workflow mode can be initialized once, including on an older run that has no mode. Dedicated block and resume commands validate the source state and record the reason or what resumed work. Log pauses and PR observations share those transition rules. A successful workspace retry resumes a workspace failure when it records the worktree.
 
-A Rework is a separate Check-to-Build transition that names an open finding. The server derives the count and records the set of open findings and the agent's classification. [ADR-0006](0006-reworks-are-capped-and-the-user-decides-past-the-cap.md) governs when a recorded user decision is required. A rejected transition leaves the run record intact.
+A Rework is a separate Check-to-Build transition that classifies every open finding. The server derives the count and records each finding with the agent's classification and the overall classification. [ADR-0006](0006-reworks-are-capped-and-the-user-decides-past-the-cap.md) governs when a recorded user decision is required. A rejected transition leaves the run record intact.
 
 Advance now submits its summary, activity and session attribution to the stage transition endpoint. The server evaluates gates using that metadata and saves it with the exit in one write. Earlier CLI versions reported the metadata in a separate request, which persisted it even when the move was refused. Callers that want a report saved independently can still submit it to the reporting endpoint.
 

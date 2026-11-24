@@ -1132,11 +1132,7 @@ mod tests {
         store
             .transition(
                 "1",
-                crate::run::parse_lifecycle(
-                    "rework",
-                    &["--finding", "F1", "--classification", "behavior"],
-                )
-                .unwrap(),
+                crate::run::parse_lifecycle("rework", &["--finding", "F1=behavior"]).unwrap(),
             )
             .unwrap();
         let reopened = "https://example.com/2";
