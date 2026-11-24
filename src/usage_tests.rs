@@ -1250,7 +1250,12 @@ mod auto_block {
             1_000,
         );
         assert_eq!(after_response.blocking_reason.as_deref(), Some(reason));
-        assert!(after_response.needs_you());
+        assert!(
+            after_response.needs_you(),
+            "a manual block should still need attention after an agent response (source {:?}, reason {:?})",
+            after_response.block_source,
+            after_response.blocking_reason
+        );
         let after_answer = f.log(
             |ts| {
                 json!({"type":"user", "timestamp":ts, "message":{"content":"Continue"}}).to_string()
@@ -1259,7 +1264,12 @@ mod auto_block {
         );
         assert_eq!(after_answer.status, RunStatus::Blocked);
         assert_eq!(after_answer.blocking_reason.as_deref(), Some(reason));
-        assert!(after_answer.needs_you());
+        assert!(
+            after_answer.needs_you(),
+            "a manual block should still need attention after a user reply (source {:?}, reason {:?})",
+            after_answer.block_source,
+            after_answer.blocking_reason
+        );
         assert_eq!(after_answer.events, after_response.events);
     }
 
@@ -1275,7 +1285,12 @@ mod auto_block {
             blocked.blocking_reason.as_deref(),
             Some("Context compaction in progress")
         );
-        assert!(!blocked.needs_you());
+        assert!(
+            !blocked.needs_you(),
+            "an automatic compaction block should clear on its own (source {:?}, reason {:?})",
+            blocked.block_source,
+            blocked.blocking_reason
+        );
         assert_eq!(blocked.events[0].kind, RunEventKind::Blocked);
         let resumed = f.activity(2_000);
         assert_eq!(resumed.status, RunStatus::Running);
