@@ -164,11 +164,14 @@ fn findings_are_recorded_resolved_and_gate_the_rework() {
     advance_to(&store, id, Stage::Check);
 
     update(&["--finding", "code-review", "-", "Bug"]).unwrap();
-    let rework = |finding, classification, decision: Option<&str>| LifecycleRequest::Rework {
-        finding,
-        classification,
-        decision: decision.map(str::to_owned),
-    };
+    let rework =
+        |finding: String, classification, decision: Option<&str>| LifecycleRequest::Rework {
+            findings: vec![ClassifiedFinding {
+                id: finding,
+                classification,
+            }],
+            decision: decision.map(str::to_owned),
+        };
     let start = || rework("F1".into(), FindingClassification::Behavior, None);
     assert!(
         store
@@ -188,7 +191,15 @@ fn findings_are_recorded_resolved_and_gate_the_rework() {
     let fixed = update(&["--finding-status", "F1=fixed"]).unwrap().unwrap();
     assert_eq!(fixed.findings[0].fix_commit.as_deref(), Some("abc1234"));
     assert!(fixed.findings[0].resolved_at.is_some());
-    assert_eq!(moved.rework_history[0].finding, "F1");
+    assert_eq!(
+        moved.rework_history[0].included,
+        ReworkFindings::Classified {
+            findings: vec![ClassifiedFinding {
+                id: "F1".into(),
+                classification: FindingClassification::Behavior
+            }]
+        }
+    );
     for (count, finding, decision) in [
         (2, "F2", None),
         (3, "F3", Some("User approved the behavior fix")),
@@ -224,9 +235,84 @@ fn findings_are_recorded_resolved_and_gate_the_rework() {
             .unwrap();
         assert_eq!((moved.stage, moved.rework), (Stage::Build, Some(count)));
         let recorded = moved.rework_history.last().unwrap();
-        assert_eq!(recorded.finding, finding);
+        assert!(
+            matches!(&recorded.included, ReworkFindings::Classified { findings } if findings[0].id == finding)
+        );
         assert_eq!(recorded.decision.as_deref(), decision);
         update(&["--finding-status", &format!("{finding}=fixed")]).unwrap();
+    }
+}
+
+#[test]
+fn a_rework_is_classified_by_every_open_finding_in_either_order() {
+    for order in [["F1=wording", "F2=behavior"], ["F1=behavior", "F2=wording"]] {
+        let dir = TestDir::new();
+        let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
+        let run = new_run(&store, "task");
+        let id = run.id.as_str();
+        let update = |options: &[&str]| {
+            let parsed = parse_update(options).map_err(io_invalid)?;
+            store.update_with(id, parsed, &FixedGit)
+        };
+        update(&["--mode", "jidoka-balanced", "--worktree", "/work/wt"]).unwrap();
+        advance_to(&store, id, Stage::Check);
+        update(&["--finding", "code-review", "-", "One"]).unwrap();
+        update(&["--finding", "code-review", "-", "Two"]).unwrap();
+        // Make this the third Rework so behavior needs the user's decision.
+        for count in 1..=2 {
+            let moved = store
+                .transition(
+                    id,
+                    parse_lifecycle(
+                        "rework",
+                        &["--finding", "F1=wording", "--finding", "F2=wording"],
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(moved.rework, Some(count));
+            update(&[
+                "--finding-status",
+                "F1=fixed",
+                "--finding-status",
+                "F2=fixed",
+            ])
+            .unwrap();
+            advance_to(&store, id, Stage::Check);
+            update(&["--finding-status", "F1=open", "--finding-status", "F2=open"]).unwrap();
+        }
+        let saved = std::fs::read(dir.0.path().join("runs.json")).unwrap();
+        let request = |extra: &[&str]| {
+            let mut options = Vec::new();
+            for finding in extra {
+                options.extend(["--finding", finding]);
+            }
+            parse_lifecycle("rework", &options).unwrap()
+        };
+        // Missing, repeated, unknown and undecided requests change nothing.
+        for (extra, wanted) in [
+            (vec![order[0]], "Missing classifications"),
+            (vec![order[0], order[0], order[1]], "more than once"),
+            (vec![order[0], order[1], "F9=wording"], "not open"),
+            (vec![order[0], order[1]], "requires the user's decision"),
+        ] {
+            let error = store.transition(id, request(&extra)).unwrap_err();
+            assert!(error.to_string().contains(wanted), "{error}");
+            assert_eq!(
+                std::fs::read(dir.0.path().join("runs.json")).unwrap(),
+                saved
+            );
+        }
+        let mut with_decision = request(&order);
+        if let LifecycleRequest::Rework { decision, .. } = &mut with_decision {
+            *decision = Some("User approved the behavior fix".into());
+        }
+        let moved = store.transition(id, with_decision).unwrap().unwrap();
+        assert_eq!((moved.stage, moved.rework), (Stage::Build, Some(3)));
+        let recorded = moved.rework_history.last().unwrap();
+        assert_eq!(recorded.classification, FindingClassification::Behavior);
+        assert!(moved.findings.iter().all(|f| f.rework == Some(3)));
     }
 }
 

@@ -19,13 +19,13 @@ use tickets::TicketsUpdate;
 mod findings;
 mod lifecycle;
 use lifecycle::FindingClassification;
-pub(crate) use lifecycle::{LifecycleRequest, LifecycleSource, parse_lifecycle};
+pub(crate) use lifecycle::{ClassifiedFinding, LifecycleRequest, LifecycleSource, parse_lifecycle};
 mod model_routing;
 mod reports;
 mod stage_exit;
 pub(crate) use stage_exit::{
     CiEvidence, Evaluation, Exit, ExitOutcome, GateResult, GateStatus, MAX_GATE_RESULTS,
-    ReworkRecord, SkippedCheck, StageExit, next_rework,
+    ReworkFindings, ReworkRecord, SkippedCheck, StageExit, next_rework,
 };
 mod store;
 pub(crate) use store::{AdvanceMetadata, PrResult};

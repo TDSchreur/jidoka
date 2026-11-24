@@ -1,7 +1,7 @@
 //! Leaving a Stage: the one way a run moves along the Stage graph, and the evidence it records.
 
 use super::{
-    CiOutcome, Completion, FindingClassification, FindingState, MAX_NOTE_BYTES,
+    CiOutcome, ClassifiedFinding, Completion, FindingClassification, FindingState, MAX_NOTE_BYTES,
     MAX_REPORTS_PER_RUN, MAX_REWORK, MAX_TEXT_BYTES, ReportKind, Run, RunReport, RunStatus, Stage,
     Ticket, check_text,
 };
@@ -10,6 +10,7 @@ use crate::{
     stages::{self, Destination, Gate, Transition},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 /// Bound the gate history, which is normally only a handful of entries per stage.
 pub(crate) const MAX_GATE_RESULTS: usize = 1000;
@@ -119,20 +120,43 @@ impl BuildPlan {
 #[serde(tag = "outcome", rename_all = "kebab-case")]
 pub(crate) enum ExitOutcome {
     Accepted,
-    Override { reason: String },
-    Merged { url: String },
-    Rework { number: u32, finding: String },
+    Override {
+        reason: String,
+    },
+    Merged {
+        url: String,
+    },
+    Rework {
+        number: u32,
+        #[serde(flatten)]
+        included: ReworkFindings,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct ReworkRecord {
     pub(crate) number: u32,
     pub(crate) at: u64,
-    pub(crate) finding: String,
-    pub(crate) findings: Vec<String>,
+    #[serde(flatten)]
+    pub(crate) included: ReworkFindings,
     pub(crate) classification: FindingClassification,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) decision: Option<String>,
+}
+
+/// Finding evidence saved when Check starts a Rework.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum ReworkFindings {
+    Classified {
+        findings: Vec<ClassifiedFinding>,
+    },
+    Historical {
+        finding: String,
+        // Older Stage exits only record the triggering Finding. Rework history also has the IDs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        findings: Option<Vec<String>>,
+    },
 }
 
 /// The live CI result that lets a run leave Finish.
@@ -164,8 +188,7 @@ pub(crate) enum Exit {
     Merged { url: String },
     /// Check found something to fix: back to Build.
     Rework {
-        finding: String,
-        classification: FindingClassification,
+        findings: Vec<ClassifiedFinding>,
         decision: Option<String>,
     },
 }
@@ -243,17 +266,18 @@ impl Run {
                 outcome: ExitOutcome::Merged { url },
                 skipped_checks: Vec::new(),
             },
-            Exit::Rework {
-                finding,
-                classification,
-                decision,
-            } => {
+            Exit::Rework { findings, decision } => {
                 let mode = mode.map_err(|_| "Record the run's mode before starting a Rework")?;
                 let to = stages::rework(mode, stage, self.status)?.to;
-                let number = self.start_rework(&finding, classification, decision, at)?;
+                let record = self.start_rework(findings, decision, at)?;
+                let outcome = ExitOutcome::Rework {
+                    number: record.number,
+                    included: record.included.clone(),
+                };
+                self.rework_history.push(record);
                 Leaving {
                     to,
-                    outcome: ExitOutcome::Rework { number, finding },
+                    outcome,
                     gates: Vec::new(),
                     skipped_checks: Vec::new(),
                 }
@@ -377,33 +401,29 @@ impl Run {
         ])
     }
 
-    /// Checks a Rework against ADR-0006, tags the open Findings and records it in the Rework history.
+    /// Validates the included Findings and decision before assigning the Rework.
     fn start_rework(
         &mut self,
-        finding: &str,
-        classification: FindingClassification,
+        findings: Vec<ClassifiedFinding>,
         decision: Option<String>,
         at: u64,
-    ) -> Result<u32, String> {
+    ) -> Result<ReworkRecord, String> {
         let number = next_rework(self.rework)?;
+        self.check_rework_findings(&findings)?;
+        let classification = if findings
+            .iter()
+            .any(|finding| finding.classification == FindingClassification::Behavior)
+        {
+            FindingClassification::Behavior
+        } else {
+            FindingClassification::Wording
+        };
         if let Some(decision) = &decision {
             check_text("Rework decision", decision, MAX_NOTE_BYTES)?;
         }
-        if (number > WORDING_REWORK
-            || (number == WORDING_REWORK && classification == FindingClassification::Behavior))
-            && decision.is_none()
-        {
+        if rework_requires_decision(number, classification) && decision.is_none() {
             return Err(format!(
                 "Rework {number} requires the user's decision; record it with --decision"
-            ));
-        }
-        let findings: Vec<_> = self
-            .open_findings()
-            .map(|finding| finding.id.clone())
-            .collect();
-        if !findings.iter().any(|open| open == finding) {
-            return Err(format!(
-                "Rework requires a recorded open finding; {finding} is not open"
             ));
         }
         for open in self
@@ -414,15 +434,49 @@ impl Run {
             open.rework = Some(number);
         }
         self.rework = Some(number);
-        self.rework_history.push(ReworkRecord {
+        Ok(ReworkRecord {
             number,
             at,
-            finding: finding.to_owned(),
-            findings,
+            included: ReworkFindings::Classified { findings },
             classification,
             decision,
-        });
-        Ok(number)
+        })
+    }
+
+    /// Checks that the request classifies exactly the current open Findings.
+    fn check_rework_findings(&self, findings: &[ClassifiedFinding]) -> Result<(), String> {
+        let retry = "Inspect the run and submit one classification for each open Finding";
+        if findings.is_empty() {
+            return Err(format!(
+                "Rework requires at least one classified open Finding. {retry}"
+            ));
+        }
+        let mut open: BTreeSet<_> = self
+            .open_findings()
+            .map(|finding| finding.id.as_str())
+            .collect();
+        let mut seen = BTreeSet::new();
+        for finding in findings {
+            if !seen.insert(finding.id.as_str()) {
+                return Err(format!(
+                    "Finding {} was classified more than once. {retry}",
+                    finding.id
+                ));
+            }
+            if !open.remove(finding.id.as_str()) {
+                return Err(format!(
+                    "Finding {} is not open on this run. {retry}",
+                    finding.id
+                ));
+            }
+        }
+        if !open.is_empty() {
+            let missing = open.into_iter().collect::<Vec<_>>().join(", ");
+            return Err(format!(
+                "Missing classifications for open Findings: {missing}. {retry}"
+            ));
+        }
+        Ok(())
     }
 
     /// Completes Finish with evidence, retaining the summary or supplying one for a merge.
@@ -448,6 +502,12 @@ impl Run {
         summary.detail = self.summaries.get(&Stage::Finish).cloned();
         summary
     }
+}
+
+/// Applies the decision threshold from ADR-0006 to the complete Rework.
+fn rework_requires_decision(number: u32, classification: FindingClassification) -> bool {
+    number > WORDING_REWORK
+        || (number == WORDING_REWORK && classification == FindingClassification::Behavior)
 }
 
 /// The number of the next Rework, refused past the Rework limit.
@@ -650,14 +710,49 @@ mod tests {
         assert_eq!(exit.gates[1].status, GateStatus::Bypassed);
     }
 
+    fn classified(items: &[(&str, FindingClassification)]) -> Vec<ClassifiedFinding> {
+        items
+            .iter()
+            .map(|(id, classification)| ClassifiedFinding {
+                id: (*id).into(),
+                classification: *classification,
+            })
+            .collect()
+    }
+
+    fn exit_included(exit: &StageExit) -> ReworkFindings {
+        match &exit.outcome {
+            ExitOutcome::Rework { included, .. } => included.clone(),
+            other => panic!("not a Rework exit: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn historical_rework_records_still_load() {
+        let old = r#"{"number":1,"at":5,"finding":"F1","findings":["F1","F2"],"classification":"wording"}"#;
+        let record: ReworkRecord = serde_json::from_str(old).unwrap();
+        assert!(matches!(record.included, ReworkFindings::Historical { .. }));
+        let old = r#"{"outcome":"rework","number":1,"finding":"F1"}"#;
+        let outcome: ExitOutcome = serde_json::from_str(old).unwrap();
+        assert!(matches!(
+            outcome,
+            ExitOutcome::Rework {
+                included: ReworkFindings::Historical { .. },
+                ..
+            }
+        ));
+    }
+
     #[test]
     fn a_rework_returns_to_build_and_records_its_history() {
         let mut run = run_in(Stage::Check);
         run.findings = vec![finding("F1"), fixed("F2"), finding("F3")];
         run.leave(
             Exit::Rework {
-                finding: "F1".into(),
-                classification: FindingClassification::Wording,
+                findings: classified(&[
+                    ("F1", FindingClassification::Wording),
+                    ("F3", FindingClassification::Wording),
+                ]),
                 decision: None,
             },
             AT,
@@ -672,14 +767,19 @@ mod tests {
             exit.outcome,
             ExitOutcome::Rework {
                 number: 1,
-                finding: "F1".into()
+                included: ReworkFindings::Classified {
+                    findings: classified(&[
+                        ("F1", FindingClassification::Wording),
+                        ("F3", FindingClassification::Wording)
+                    ])
+                }
             }
         );
         let tagged: Vec<_> = run.findings.iter().map(|f| f.rework).collect();
         assert_eq!(tagged, [Some(1), None, Some(1)]);
         let history = &run.rework_history[0];
         assert_eq!((history.number, history.at), (1, AT));
-        assert_eq!(history.findings, ["F1", "F3"]);
+        assert_eq!(history.included, exit_included(exit));
     }
 
     #[test]
@@ -688,8 +788,7 @@ mod tests {
         run.mode = None;
         let result = run.leave(
             Exit::Rework {
-                finding: "F1".into(),
-                classification: FindingClassification::Wording,
+                findings: classified(&[("F1", FindingClassification::Wording)]),
                 decision: None,
             },
             AT,
@@ -703,8 +802,7 @@ mod tests {
     #[test]
     fn a_refused_exit_leaves_the_run_unchanged() {
         let rework = |finding: &str, decision: Option<&str>| Exit::Rework {
-            finding: finding.into(),
-            classification: FindingClassification::Behavior,
+            findings: classified(&[(finding, FindingClassification::Behavior)]),
             decision: decision.map(str::to_owned),
         };
         let mut check = run_in(Stage::Check);
