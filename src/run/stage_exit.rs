@@ -153,7 +153,7 @@ pub(crate) enum ReworkFindings {
     },
     Historical {
         finding: String,
-        // Older Stage exits only record the triggering Finding. Rework history also has the IDs.
+        // Records saved before classifications hold the triggering Finding and, in history, the open IDs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         findings: Option<Vec<String>>,
     },
