@@ -299,6 +299,47 @@ fn create(tools: &dyn Tools, dir: &Path, pr: &NewPr) -> Result<String, ToolProbl
     Ok(url.to_string())
 }
 
+/// A github.com repository identified by its origin URL.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct GitHubRepo {
+    pub(crate) owner: String,
+    pub(crate) repository: String,
+}
+
+impl GitHubRepo {
+    /// The github.com repository an origin URL (HTTPS or SSH, with or without `.git`) names; `None` for a URL
+    /// of another host or one that does not name one repository.
+    pub(crate) fn from_remote(remote: &str) -> Option<Self> {
+        let path = remote_path(remote)?;
+        let path = path.trim_end_matches('/');
+        let path = path.strip_suffix(".git").unwrap_or(path);
+        match path.split('/').collect::<Vec<_>>().as_slice() {
+            [owner, repository] if !owner.is_empty() && !repository.is_empty() => Some(Self {
+                owner: (*owner).to_string(),
+                repository: (*repository).to_string(),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Whether `remote` is a github.com origin URL in any of its usual spellings.
+pub(super) fn is_remote(remote: &str) -> bool {
+    remote_path(remote).is_some()
+}
+
+/// The repository path of a github.com remote, after the host; `None` for a remote of another host. The user
+/// and port in the URL are ignored.
+fn remote_path(remote: &str) -> Option<&str> {
+    if let Some(path) = remote.strip_prefix("git@github.com:") {
+        return Some(path);
+    }
+    let (_, rest) = remote.split_once("://")?;
+    let (authority, path) = rest.split_once('/')?;
+    let host = authority.rsplit('@').next()?.split(':').next()?;
+    host.eq_ignore_ascii_case("github.com").then_some(path)
+}
+
 /// The GitHub (or GitHub Enterprise) pull request a link points to, as `<repository>/pull/<number>`: a link to
 /// one of its tabs (`/files`) or comments (`#issuecomment-1`) is cut back to the pull request. None for a link
 /// that is not a pull request.

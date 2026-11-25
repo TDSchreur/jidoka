@@ -3,8 +3,9 @@
 //! Everything else is a warning or skipped: model routing is optional, and without it a stage uses the
 //! session's model. Nothing here changes a file or calls a model; at most it asks an agent for its `--version`.
 
-use super::{Check, Machine, find_program, read_doc};
+use super::{Check, Machine, read_doc};
 use crate::agent::Agent;
+use crate::program::find_program;
 use crate::routing::{
     COPILOT_EFFORTS, Coverage, ModelChoice, ModelRouting, Policy, policy_path_in, read,
 };

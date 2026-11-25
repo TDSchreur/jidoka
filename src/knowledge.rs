@@ -6,7 +6,7 @@
 
 use crate::{
     git::Git,
-    pr_host::{AzureRepo, encode_segment},
+    pr_host::{AzureRepo, GitHubRepo, encode_segment},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -230,7 +230,7 @@ fn web_link(remote: &str, branch: &str, relative: &str) -> Result<String, String
             encode_segment(branch)
         ));
     }
-    let (owner, repository) = github_repo(remote).ok_or_else(|| {
+    let github = GitHubRepo::from_remote(remote).ok_or_else(|| {
         "the knowledge repo's origin is not a GitHub or Azure DevOps remote, so its files have no web link"
             .to_string()
     })?;
@@ -241,30 +241,10 @@ fn web_link(remote: &str, branch: &str, relative: &str) -> Result<String, String
         .join("/");
     Ok(format!(
         "https://github.com/{}/{}/blob/{branch}/{}",
-        encode_segment(&owner),
-        encode_segment(&repository),
+        encode_segment(&github.owner),
+        encode_segment(&github.repository),
         path("/")
     ))
-}
-
-/// Owner and repository of a github.com remote in any of its usual spellings.
-fn github_repo(remote: &str) -> Option<(String, String)> {
-    let remote = remote.trim_end_matches('/');
-    let path = if let Some(path) = remote.strip_prefix("git@github.com:") {
-        path
-    } else {
-        let (_, rest) = remote.split_once("://")?;
-        let (authority, path) = rest.split_once('/')?;
-        let host = authority.rsplit('@').next()?.split(':').next()?;
-        host.eq_ignore_ascii_case("github.com").then_some(path)?
-    };
-    let path = path.strip_suffix(".git").unwrap_or(path);
-    match path.split('/').collect::<Vec<_>>().as_slice() {
-        [owner, repository] if !owner.is_empty() && !repository.is_empty() => {
-            Some(((*owner).to_string(), (*repository).to_string()))
-        }
-        _ => None,
-    }
 }
 
 /// What `jidoka run next` adds to Define and Finish when a knowledge repo is configured.

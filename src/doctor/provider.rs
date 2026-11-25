@@ -2,8 +2,9 @@
 //! host's command line tool is installed, and whether it is signed in, as far as a read-only command shows.
 //! None of these checks blocks readiness: a missing tool or sign-in is a warning.
 
-use super::{Check, Machine, find_program, git_output};
+use super::{Check, Machine, git_output};
 use crate::pr_host::{Host, detect_host};
+use crate::program::find_program;
 use std::{
     path::Path,
     process::{Command, Stdio},
