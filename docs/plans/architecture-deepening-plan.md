@@ -72,14 +72,14 @@ Done when: main.rs holds dispatch and nothing else, the run id check and Hosts c
 
 Prerequisite: none.
 
-- [ ] Timestamp parsing and formatting live in one module used by `usage`, `agent_logs` and every other caller
-- [ ] `civil_day` in `agent_logs.rs` and the date math in `usage.rs` are one implementation
-- [ ] Shell-option parsing (`skip_git_options` in `request_logs.rs`) lives in `shell_commands.rs`
-- [ ] The token-usage and request-analysis modules are grouped in a directory with the pipeline readable from its top
-- [ ] `scripts/verify.sh` passes
-- [ ] PR merged into `develop`
+- [x] Timestamp parsing and formatting live in one module used by `usage`, `agent_logs` and every other caller
+- [x] `civil_day` in `agent_logs.rs` and the date math in `usage.rs` are one implementation
+- [x] Shell-option parsing (`skip_git_options` in `request_logs.rs`) lives in `shell_commands.rs`
+- [x] The token-usage and request-analysis modules are grouped in a directory with the pipeline readable from its top
+- [x] `scripts/verify.sh` passes
+- [x] PR merged into `develop`
 
-Run / PR / verification: —
+Run / PR / verification: run 1795635317363767223, [#610](https://github.com/TDSchreur/jidoka/pull/610) merged as 3d5a228; `scripts/verify.sh` (with browser tests) and CI passed, 490 tests unchanged. Deviation: timestamps live in `src/timestamps.rs`; the ten pipeline modules (including requests and attention) sit under `src/usage/`; `Mark`/`mark_at` moved to `session_attribution` and `overlaps` to `agent_logs`.
 
 ```text
 Split the dumping-ground usage.rs and give timestamps one home.
@@ -97,14 +97,14 @@ Done when: there is one timestamp implementation, one place for shell-option par
 
 Prerequisite: Step 3 merged.
 
-- [ ] `Agent` is defined in [GLOSSARY.md](../../GLOSSARY.md)
-- [ ] Reading logs for Claude, Codex and Copilot goes through one interface; `match Agent::...` dispatch in `agent_logs.rs` is gone
-- [ ] Per-agent facts (home, log roots, attention rules) sit behind the same interface where it removes repeated matches in `attention.rs` and `routing/policy.rs`
-- [ ] Adding an agent means one new adapter, not edits in many modules
-- [ ] `scripts/verify.sh` passes
-- [ ] PR merged into `develop`
+- [x] `Agent` is defined in [GLOSSARY.md](../../GLOSSARY.md)
+- [x] Reading logs for Claude, Codex and Copilot goes through one interface; `match Agent::...` dispatch in `agent_logs.rs` is gone
+- [x] Per-agent facts (home, log roots, attention rules) sit behind the same interface where it removes repeated matches in `attention.rs` and `routing/policy.rs`
+- [x] Adding an agent means one new adapter, not edits in many modules
+- [x] `scripts/verify.sh` passes
+- [x] PR merged into `develop`
 
-Run / PR / verification: —
+Run / PR / verification: run 1795636065439221484, [#611](https://github.com/TDSchreur/jidoka/pull/611) merged as 9bc05fe; `scripts/verify.sh` (with browser tests) and CI passed. Deviation: `AgentLogs` interface with three adapters in `src/usage/agent_logs.rs`; attention matches gone; `routing/policy.rs` left alone because its matches are policy facts, not log facts.
 
 ```text
 Give the three agent log readers one interface.
@@ -122,14 +122,14 @@ Done when: no match on the agent is repeated for log reading, the tests for all 
 
 Prerequisite: none.
 
-- [ ] Option and request parsing, local gate evaluation, changed-file check selection and CI evaluation are separate modules behind one gate interface
-- [ ] Stage-exit knowledge is in one place: `run_gate::accepted_exit` and `run/stage_exit.rs` no longer split it
-- [ ] "Check" (the Stage) and a named check that reports Findings are named differently in the code and in [GLOSSARY.md](../../GLOSSARY.md)
-- [ ] Tests that call private helpers (`changed_paths`, `tickets_verified`) go through the gate interface
-- [ ] `scripts/verify.sh` passes
-- [ ] PR merged into `develop`
+- [x] Option and request parsing, local gate evaluation, changed-file check selection and CI evaluation are separate modules behind one gate interface
+- [x] Stage-exit knowledge is in one place: `run_gate::accepted_exit` and `run/stage_exit.rs` no longer split it
+- [x] "Check" (the Stage) and a named check that reports Findings are named differently in the code and in [GLOSSARY.md](../../GLOSSARY.md)
+- [x] Tests that call private helpers (`changed_paths`, `tickets_verified`) go through the gate interface
+- [x] `scripts/verify.sh` passes
+- [x] PR merged into `develop`
 
-Run / PR / verification: —
+Run / PR / verification: run 1795636744643321921, [#612](https://github.com/TDSchreur/jidoka/pull/612) merged as 1b7e13b; `scripts/verify.sh` (with browser tests) and CI passed; gate interface down from 15 to 9 items. Deviation: a named check is now a "Review" (`src/checks.rs` became `src/reviews.rs`) while CLI and JSON still say "check"; `Exit::Finished` merged into `Exit::Accepted`; two `changed_paths` tests stay as unit tests because no Review is path-triggered yet; `run_check.rs` untouched.
 
 ```text
 Split run_gate.rs by job and bring stage-exit knowledge together.
@@ -147,13 +147,13 @@ Done when: the gate interface is smaller than today's 12 items or the extra item
 
 Prerequisite: Step 1 merged.
 
-- [ ] Remote and URL parsing for GitHub and Azure Repos lives in `pr_host`; `knowledge.rs` uses it instead of its own `github_repo`
-- [ ] `pr_host` no longer depends on `doctor` for tool lookup (`doctor::az_program`)
-- [ ] GitHub and Azure DevOps keep the same support
-- [ ] `scripts/verify.sh` passes
-- [ ] PR merged into `develop`
+- [x] Remote and URL parsing for GitHub and Azure Repos lives in `pr_host`; `knowledge.rs` uses it instead of its own `github_repo`
+- [x] `pr_host` no longer depends on `doctor` for tool lookup (`doctor::az_program`)
+- [x] GitHub and Azure DevOps keep the same support
+- [x] `scripts/verify.sh` passes
+- [x] PR merged into `develop`
 
-Run / PR / verification: —
+Run / PR / verification: run 1795637689924587032, [#613](https://github.com/TDSchreur/jidoka/pull/613) merged as 9f44a70; `scripts/verify.sh` (with browser tests) and CI passed. Deviation: `GitHubRepo::from_remote` sits beside `AzureRepo::from_remote`; tool lookup moved to `src/program.rs`; small behavior change: github.com remotes with an unusual port are now recognized and `git://` remotes no longer get knowledge spec links (no ADR, judged too small).
 
 ```text
 Consolidate host URL and origin parsing behind the pull request host seam.
@@ -171,12 +171,12 @@ Done when: there is one remote parser per host, no dependency from pr_host to do
 
 Prerequisite: Steps 2, 5 and 6 merged. Check `src/server.rs` first and only move files when the new grouping is clearly easier to navigate.
 
-- [ ] The command implementations `run_begin`, `run_check`, `run_cleanup`, `run_gate`, `run_next` and the `pr_*` files sit in directories by concern, not flat in `src/`
-- [ ] `server.rs` route handlers hold no orchestration that belongs in a module (for example the pr-status handler and the background refresh)
-- [ ] `scripts/verify.sh` passes
-- [ ] PR merged into `develop`
+- [x] The command implementations `run_begin`, `run_check`, `run_cleanup`, `run_gate`, `run_next` and the `pr_*` files sit in directories by concern, not flat in `src/`
+- [x] `server.rs` route handlers hold no orchestration that belongs in a module (for example the pr-status handler and the background refresh)
+- [x] `scripts/verify.sh` passes
+- [x] PR merged into `develop`
 
-Run / PR / verification: —
+Run / PR / verification: run 1795638434480587063, [#614](https://github.com/TDSchreur/jidoka/pull/614) merged as 83700e9; `scripts/verify.sh` (with browser tests) and CI passed; `main.rs` went from 45 to 34 modules. Deviation: run commands sit in `src/run/` (matching the CLI words) and `pr_*` in `src/pr/`; route orchestration moved to `src/server/background.rs`; the pr-status handler was already thin and stayed.
 
 ```text
 Group the flat run_* and pr_* modules and move orchestration out of server routes.
@@ -194,13 +194,13 @@ Done when: the layout is easier to navigate, no behavior changed, and tests move
 
 Prerequisite: Step 2 merged.
 
-- [ ] `new_run`, `advance_to` and `force_advance` (and similar helpers) live in a shared `test_support` module
-- [ ] `main.rs` has no `pub(crate)` items that exist only for tests
-- [ ] Tests that call private items of another module use that module's interface where one exists
-- [ ] `scripts/verify.sh` passes
-- [ ] PR merged into `develop`
+- [x] `new_run`, `advance_to` and `force_advance` (and similar helpers) live in a shared `test_support` module
+- [x] `main.rs` has no `pub(crate)` items that exist only for tests
+- [x] Tests that call private items of another module use that module's interface where one exists
+- [x] `scripts/verify.sh` passes
+- [x] PR merged into `develop`
 
-Run / PR / verification: —
+Run / PR / verification: run 1795639166061347397, [#615](https://github.com/TDSchreur/jidoka/pull/615) merged as 344c032; `scripts/verify.sh` (with browser tests) and CI passed. Deviation: #608 had already moved the helpers to `src/test_support.rs`; this PR moved eight hand-written `NewRun` values to `test_support::new_run`; a few `#[cfg(test)]` items in other modules stay because moving them would expose private code.
 
 ```text
 Move test-only helpers out of main.rs.
