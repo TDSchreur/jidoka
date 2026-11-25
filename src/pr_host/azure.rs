@@ -57,7 +57,7 @@ impl Adapter for Azure {
         let confirmed_source = pr.watch_source(&after)?;
         let live_head = pr.live_head(tools, &confirmed_source)?;
         let checks: Vec<_> = if live_head == head
-            && confirmed_source == source
+            && confirmed_source.same_identity(&source)
             && calculated_source(&before) == calculated_source(&after)
         {
             let same_merge =
@@ -808,12 +808,12 @@ impl BuildSources<'_> {
         let repository = build["repository"]["id"].as_str()?;
         let reference = build["sourceBranch"].as_str()?;
         let version = build["sourceVersion"].as_str()?;
-        if repository == self.source_repository
+        if same_azure_id(repository, self.source_repository)
             && reference == self.source_ref
             && version == self.head
         {
             Some(BuildSource::Branch)
-        } else if repository == self.target_repository
+        } else if same_azure_id(repository, self.target_repository)
             && reference == self.merge_ref
             && self.merge_commit == Some(version)
         {
@@ -833,7 +833,6 @@ fn branch_name(reference: &str) -> Result<&str, ToolProblem> {
 }
 
 /// The source branch read by a watch, together with the target repository that owns the checks.
-#[derive(PartialEq, Eq)]
 struct WatchSource<'a> {
     target_repository: &'a str,
     project: &'a str,
@@ -841,20 +840,41 @@ struct WatchSource<'a> {
     reference: &'a str,
 }
 
-/// Azure project and repository IDs must be non-nil UUIDs.
+impl WatchSource<'_> {
+    /// Whether both snapshots read the same source branch and target repository.
+    fn same_identity(&self, other: &Self) -> bool {
+        same_azure_id(self.target_repository, other.target_repository)
+            && same_azure_id(self.project, other.project)
+            && same_azure_id(self.repository, other.repository)
+            && self.reference == other.reference
+    }
+}
+
+/// Compares Azure UUIDs by value and other identifiers by exact text.
+fn same_azure_id(left: &str, right: &str) -> bool {
+    left == right || (left.eq_ignore_ascii_case(right) && is_azure_id(left))
+}
+
+/// Reads a non-nil UUID from an Azure project or repository ID field.
+///
+/// # Errors
+/// Returns a problem naming `label` when the field is missing or lacks a valid ID.
 fn azure_id<'a>(value: &'a Value, label: &str) -> Result<&'a str, ToolProblem> {
-    // Azure's IDs are written in the five groups of a hyphenated UUID.
-    const UUID_GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
     let id = required(value, label)?;
-    if !id.split('-').map(str::len).eq(UUID_GROUPS)
-        || !id
-            .bytes()
-            .all(|byte| byte == b'-' || byte.is_ascii_hexdigit())
-        || id.bytes().all(|byte| matches!(byte, b'-' | b'0'))
-    {
+    if !is_azure_id(id) {
         return Err(ToolProblem(format!("Azure response has no valid {label}.")));
     }
     Ok(id)
+}
+
+fn is_azure_id(id: &str) -> bool {
+    // Azure's IDs are written in the five groups of a hyphenated UUID.
+    const UUID_GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
+    id.split('-').map(str::len).eq(UUID_GROUPS)
+        && id
+            .bytes()
+            .all(|byte| byte == b'-' || byte.is_ascii_hexdigit())
+        && id.bytes().any(|byte| !matches!(byte, b'-' | b'0'))
 }
 
 /// An Azure Repos pull request, as its URL names it.
@@ -1015,7 +1035,11 @@ impl AzurePr {
         }
         Ok(data)
     }
-    /// Resolves the live source from the PR's structured metadata inside the recorded organization.
+    /// Resolves the live source branch using pull request metadata inside the recorded organization.
+    ///
+    /// # Errors
+    /// Returns a problem when the source or target identity is missing or inconsistent, or the
+    /// source ref is invalid or unsafe to pass to the Azure CLI.
     fn watch_source<'a>(&'a self, data: &'a Value) -> Result<WatchSource<'a>, ToolProblem> {
         let target_repository = required(&data["repository"]["id"], "target repository ID")?;
         if !target_repository
@@ -1026,7 +1050,9 @@ impl AzurePr {
                 "Azure response has no valid target repository ID.".into(),
             ));
         }
-        let pr_reference = required(&data["sourceRefName"], "source branch")?;
+        let pr_reference = data["sourceRefName"]
+            .as_str()
+            .ok_or_else(|| ToolProblem("Azure response has no valid source branch.".into()))?;
         let fork = &data["forkSource"];
         let (repository, project, reference) = if fork.is_null() {
             (target_repository, self.project.as_str(), pr_reference)
@@ -1034,10 +1060,12 @@ impl AzurePr {
             azure_id(&data["repository"]["id"], "target repository ID")?;
             let repository = azure_id(&fork["repository"]["id"], "fork repository ID")?;
             let project = azure_id(&fork["repository"]["project"]["id"], "fork project ID")?;
-            let reference = required(&fork["name"], "fork source branch")?;
+            let reference = fork["name"].as_str().ok_or_else(|| {
+                ToolProblem("Azure response has no valid fork source branch.".into())
+            })?;
             // Azure can report the PR's synthetic source ref alongside the actual fork branch.
             let synthetic = format!("refs/pull/{}/source", self.id.trim_start_matches('0'));
-            if target_repository.eq_ignore_ascii_case(repository)
+            if same_azure_id(target_repository, repository)
                 || (reference != pr_reference && pr_reference != synthetic)
             {
                 return Err(ToolProblem(
@@ -1047,10 +1075,16 @@ impl AzurePr {
             (repository, project, reference)
         };
         let branch = branch_name(reference)?;
-        if !crate::git::valid_branch_name(reference)
+        // Git's full ref rules restrict ASCII bytes and allow Unicode whitespace.
+        if reference.ends_with('.')
+            || reference.contains("..")
+            || reference.contains("@{")
+            || reference
+                .bytes()
+                .any(|byte| byte.is_ascii_control() || b" ~^:?*[\\".contains(&byte))
             || branch
                 .split('/')
-                .any(|part| part.starts_with('.') || part.ends_with(".lock"))
+                .any(|part| part.is_empty() || part.starts_with('.') || part.ends_with(".lock"))
         {
             return Err(ToolProblem(
                 "Azure pull request has an invalid source branch.".into(),
@@ -1064,7 +1098,11 @@ impl AzurePr {
             reference,
         })
     }
-    /// The commit the source branch has now, read from the live branch ref.
+    /// Reads the current source commit from the exact live branch ref in its repository.
+    ///
+    /// # Errors
+    /// Returns a problem when the ref cannot be read, the exact match is missing or ambiguous,
+    /// or its object ID is invalid.
     fn live_head(
         &self,
         tools: &dyn Tools,
