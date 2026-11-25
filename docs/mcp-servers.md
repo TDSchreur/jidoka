@@ -8,10 +8,11 @@ The repository's `.mcp.json` lists project-wide servers and has no credentials, 
 
 | | GitHub | Azure DevOps |
 |---|---|---|
-| Server | [GitHub MCP server](https://github.com/github/github-mcp-server), remote at `https://api.githubcopilot.com/mcp/` | [`@azure-devops/mcp`](https://github.com/microsoft/azure-devops-mcp), run locally with `npx` |
+| Server | [GitHub MCP server](https://github.com/github/github-mcp-server), remote at `https://api.githubcopilot.com/mcp` | [`@azure-devops/mcp`](https://github.com/microsoft/azure-devops-mcp), run locally with `npx` |
 | Needs | A GitHub personal access token | Node.js 20 or later and your organization name |
-| Auth with no secret in a file | Keep the token in the `GITHUB_PAT` environment variable | `--authentication azcli` uses your `az login` session |
-| Auth with a token | `Authorization: Bearer` header | `--authentication pat`, token in `PERSONAL_ACCESS_TOKEN` |
+| Install command | `claude mcp add-json --scope user github ...` | `claude mcp add --scope user azure-devops -- npx -y @azure-devops/mcp <org> ...` |
+| Auth without a stored token | Not available: the remote server needs a token | `--authentication azcli` uses your `az login` session |
+| Auth with a token | `Authorization: Bearer` header, stored in your user settings | `--authentication pat`, token in `PERSONAL_ACCESS_TOKEN` |
 
 Microsoft also hosts a remote Azure DevOps server, but its sign-in needs dynamic OAuth client registration, which Microsoft lists as unsupported for Claude Code and Codex. Use the local server for them, as below. See [Microsoft's overview](https://learn.microsoft.com/en-us/azure/devops/mcp-server/mcp-server-overview) for the current state.
 
@@ -25,11 +26,16 @@ claude mcp add --scope user azure-devops -- npx -y @azure-devops/mcp <org> --aut
 ```
 
 ```bash
-export GITHUB_PAT=<token>
-claude mcp add-json --scope user github '{"type":"http","url":"https://api.githubcopilot.com/mcp/","headers":{"Authorization":"Bearer ${GITHUB_PAT}"}}'
+claude mcp add-json --scope user github '{"type":"http","url":"https://api.githubcopilot.com/mcp","headers":{"Authorization":"Bearer <token>"}}'
 ```
 
-Claude Code expands `${GITHUB_PAT}` when it starts, so the token stays in your environment and not in the settings file. Start Claude Code from a shell that has `GITHUB_PAT` set. GitHub's guide notes that `claude mcp add-json` can reject an HTTP server on Windows; use `claude mcp add --transport http github https://api.githubcopilot.com/mcp/ --header "Authorization: Bearer ${GITHUB_PAT}"` there.
+Claude Code writes the GitHub token into your user settings file, outside the repository, so it never reaches a commit. Claude Code documents `${VAR}` expansion for `.mcp.json` only, so this guide does not rely on it for user settings. Never paste the token into the repository's `.mcp.json`. The Azure DevOps entry above stores no token.
+
+GitHub's guide notes that `claude mcp add-json` can reject an HTTP server on Windows. Use this form there:
+
+```powershell
+claude mcp add --scope user --transport http github https://api.githubcopilot.com/mcp -H "Authorization: Bearer <token>"
+```
 
 ## Azure DevOps with a token
 
@@ -40,7 +46,11 @@ export PERSONAL_ACCESS_TOKEN="$(printf '%s' '<email>:<pat>' | base64)"
 claude mcp add --scope user azure-devops -- npx -y @azure-devops/mcp <org> --authentication pat
 ```
 
-The value must be the base64 encoding of `<email>:<pat>`; any non-empty email works. `--authentication envvar` instead reads a bearer token from `ADO_MCP_AUTH_TOKEN`. In PowerShell, set the variable with `$env:PERSONAL_ACCESS_TOKEN = ...` before you start the agent.
+The value must be the base64 encoding of `<email>:<pat>`; the server's guide says the email can be any non-empty value. `--authentication envvar` instead reads a bearer token from `ADO_MCP_AUTH_TOKEN`. In PowerShell, set the variable for the current session before you start the agent:
+
+```powershell
+$env:PERSONAL_ACCESS_TOKEN = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('<email>:<pat>'))
+```
 
 ## Codex and GitHub Copilot
 
