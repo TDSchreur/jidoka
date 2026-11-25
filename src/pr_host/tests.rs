@@ -2,9 +2,12 @@
 //! `Hosts`, with a scripted `gh` and `az`. Only these tests script the hosts' tools.
 
 use super::*;
-use crate::pr_wait::BaseState;
+use crate::pr_wait::{BaseState, Outcome};
 use serde_json::{Value, json};
-use std::cell::RefCell;
+use std::{
+    cell::{Cell, RefCell},
+    time::Duration,
+};
 
 /// Answers the calls from a script and records them, as `gh <args>` or `az <args>`. An error answer
 /// stands for a tool that is not installed.
@@ -251,6 +254,8 @@ struct AzureWatch {
     policies: Value,
     iterations: Value,
     iteration_statuses: Value,
+    statuses: Value,
+    build: Value,
 }
 
 impl AzureWatch {
@@ -276,6 +281,8 @@ impl AzureWatch {
             policies: json!([]),
             iterations: json!({"value": [{"id": 1, "createdDate": "2026-01-01T00:00:00Z", "sourceRefCommit": {"commitId": "abc1234"}}]}),
             iteration_statuses: json!({"value": statuses}),
+            statuses: json!({"value": []}),
+            build: Value::Null,
         }
     }
 
@@ -289,7 +296,8 @@ impl AzureWatch {
                 "repository": {"id": "repo-id", "name": "Repo", "project": {"name": "Proj"}},
                 "forkSource": null,
                 "sourceRefName": "refs/heads/feature/x",
-                "lastMergeSourceCommit": {"commitId": "abc1234"}
+                "lastMergeSourceCommit": {"commitId": "abc1234"},
+                "lastMergeCommit": {"commitId": "merge123"}
             })
         } else if call.starts_with("az repos ref list") {
             json!([{"name": "refs/heads/feature/x", "objectId": "abc1234"}])
@@ -300,7 +308,9 @@ impl AzureWatch {
         } else if call.contains(" pullRequestIterationStatuses ") {
             self.iteration_statuses.clone()
         } else if call.contains(" pullRequestStatuses ") {
-            json!({"value": []})
+            self.statuses.clone()
+        } else if call == AZURE_BUILD_CALL {
+            self.build.clone()
         } else {
             panic!("unexpected call {call}")
         };
@@ -518,6 +528,8 @@ fn both_hosts_read_no_checks_of_a_merged_or_closed_pull_request() {
 }
 
 const AZURE_PR: &str = "https://dev.azure.com/org/Proj/_git/Repo/pullrequest/535";
+const AZURE_BUILD_LINK: &str = "https://dev.azure.com/org/Proj/_build/results?buildId=42";
+const AZURE_BUILD_CALL: &str = "az devops invoke --organization https://dev.azure.com/org --area build --resource builds --route-parameters project=Proj buildId=42 --api-version 7.1 --output json --detect false";
 
 /// The checks of the Azure pull request `azure` prints, as `(name, bucket)`.
 fn azure_checks(azure: AzureWatch) -> Vec<(String, String)> {
@@ -563,6 +575,267 @@ fn azure_counts_a_build_only_for_the_current_iteration() {
         azure_checks(stale_reviewers),
         check("Minimum number of reviewers", "pending")
     );
+}
+
+/// A PR-wide status whose target names a pipeline build of the live source branch.
+fn azure_status_watch(state: &str, iteration_statuses: &[(&str, &str)]) -> AzureWatch {
+    let mut azure = AzureWatch::new(iteration_statuses);
+    azure.statuses = json!({"value": [{
+        "id": 9,
+        "state": state,
+        "context": {"genre": "Pipeline", "name": "External scan"},
+        "targetUrl": AZURE_BUILD_LINK
+    }]});
+    azure.build = json!({
+        "id": 42,
+        "repository": {"id": "repo-id"},
+        "sourceBranch": "refs/heads/feature/x",
+        "sourceVersion": "abc1234",
+        "status": "inProgress",
+        "result": "failed"
+    });
+    azure
+}
+
+/// Evaluates the wait's first poll with an expired timeout and no real sleeping.
+fn watch_azure_once(tools: &Script) -> crate::pr_wait::Waited {
+    Hosts::new(tools)
+        .watch(
+            AZURE_PR,
+            &Options {
+                timeout: Duration::ZERO,
+                ..Options::default()
+            },
+            &ImmediateClock,
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap()
+}
+
+#[test]
+fn azure_wait_uses_the_proven_status_outcome_and_only_requests_build_metadata() {
+    for (state, bucket, outcome) in [
+        ("succeeded", "pass", Outcome::Passed),
+        ("failed", "fail", Outcome::Failed),
+        ("canceled", "cancel", Outcome::Cancelled),
+        ("notApplicable", "skipping", Outcome::Passed),
+    ] {
+        let mut azure = azure_status_watch(state, &[("Build validation", "pass")]);
+        if state == "failed" {
+            azure.build["status"] = json!("completed");
+            azure.build["result"] = json!("succeeded");
+        }
+        let tools = Script::printing_for(move |call| azure.print(call));
+        let waited = watch_azure_once(&tools);
+        assert_eq!(waited.outcome, outcome, "{state}");
+        assert!(waited.checks.iter().any(|check| {
+            check.name == "Pipeline: External scan"
+                && check.bucket == bucket
+                && check.link == AZURE_PR
+        }));
+        if outcome == Outcome::Failed {
+            assert_eq!(waited.failures.len(), 1);
+            assert_eq!(waited.failures[0].link, AZURE_PR);
+            assert_eq!(waited.failures[0].excerpt, None);
+        }
+        assert_eq!(
+            tools
+                .calls
+                .borrow()
+                .iter()
+                .filter(|call| call.contains("--area build "))
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [AZURE_BUILD_CALL; 2],
+            "{state}"
+        );
+    }
+
+    let azure = azure_status_watch("notApplicable", &[]);
+    let tools = Script::printing_for(move |call| azure.print(call));
+    assert_eq!(watch_azure_once(&tools).outcome, Outcome::NoCi);
+}
+
+#[test]
+fn azure_wait_accepts_a_build_of_the_current_synthetic_merge_commit() {
+    let mut azure = azure_status_watch("succeeded", &[]);
+    azure.statuses["value"][0]["targetUrl"] = json!(format!("{AZURE_BUILD_LINK}&view=results"));
+    azure.build["sourceBranch"] = json!("refs/pull/535/merge");
+    azure.build["sourceVersion"] = json!("merge123");
+    let tools = Script::printing_for(move |call| azure.print(call));
+    assert_eq!(watch_azure_once(&tools).outcome, Outcome::Passed);
+}
+
+#[test]
+fn azure_keeps_the_latest_status_pending_without_an_unambiguous_build_link() {
+    for link in [
+        "",
+        "https://example.com/org/Proj/_build/results?buildId=42",
+        "https://dev.azure.com/other/Proj/_build/results?buildId=42",
+        "https://dev.azure.com/org/Other/_build/results?buildId=42",
+        "https://someone@dev.azure.com/org/Proj/_build/results?buildId=42",
+        "https://dev.azure.com/org/Proj/_build/results?buildId=+42",
+        "https://dev.azure.com/org/Proj/_build/results?buildId=0",
+        "https://dev.azure.com/org/Proj/_build/results?buildId=42&buildId=43",
+        "https://dev.azure.com/org/Proj/_build/results?buildId=42&bu%69ldId=43",
+    ] {
+        let mut azure = azure_status_watch("succeeded", &[]);
+        let mut newest = azure.statuses["value"][0].clone();
+        newest["id"] = json!(10);
+        newest["state"] = json!("notApplicable");
+        newest["targetUrl"] = json!(link);
+        azure.statuses["value"].as_array_mut().unwrap().push(newest);
+        let tools = Script::printing_for(move |call| azure.print(call));
+        let snapshot = azure::Azure.snapshot(&tools, AZURE_PR).unwrap();
+        assert_eq!(
+            buckets(&snapshot),
+            [("Pipeline: External scan", "pending")],
+            "{link:?}"
+        );
+        assert!(snapshot.applies);
+        assert!(
+            tools
+                .calls
+                .borrow()
+                .iter()
+                .all(|call| !call.contains("--area build ")),
+            "{link:?} must not select a build"
+        );
+    }
+}
+
+#[test]
+fn azure_keeps_nonterminal_and_malformed_iteration_statuses_pending_without_build_lookups() {
+    for (field, value) in [
+        ("state", json!("pending")),
+        ("state", json!("futureState")),
+        ("iterationId", Value::Null),
+        ("iterationId", json!(0)),
+        ("iterationId", json!("1")),
+    ] {
+        let mut azure = azure_status_watch("failed", &[]);
+        azure.statuses["value"][0][field] = value;
+        let tools = Script::printing_for(move |call| azure.print(call));
+        let waited = watch_azure_once(&tools);
+        assert_eq!(waited.outcome, Outcome::Timeout, "{field}");
+        assert!(
+            tools
+                .calls
+                .borrow()
+                .iter()
+                .all(|call| !call.contains("--area build "))
+        );
+    }
+}
+
+#[test]
+fn azure_wait_times_out_if_build_metadata_cannot_prove_the_current_source() {
+    for (field, value) in [
+        ("id", json!(43)),
+        ("repository", json!({"id": "other-repo"})),
+        ("sourceBranch", json!("refs/heads/other")),
+        ("sourceVersion", json!("old")),
+        ("sourceVersion", Value::Null),
+    ] {
+        let mut azure = azure_status_watch("succeeded", &[]);
+        azure.build[field] = value;
+        let tools = Script::printing_for(move |call| azure.print(call));
+        assert_eq!(
+            watch_azure_once(&tools).outcome,
+            Outcome::Timeout,
+            "{field}"
+        );
+        assert!(
+            tools
+                .calls
+                .borrow()
+                .iter()
+                .any(|call| call == AZURE_BUILD_CALL)
+        );
+    }
+
+    let azure = azure_status_watch("succeeded", &[]);
+    let tools = Script {
+        answer: Box::new(move |call, _| {
+            Ok(if call == AZURE_BUILD_CALL {
+                ToolOutput {
+                    code: Some(1),
+                    stdout: String::new(),
+                    stderr: "Access denied".into(),
+                }
+            } else {
+                success(azure.print(call))
+            })
+        }),
+        calls: RefCell::new(Vec::new()),
+    };
+    assert_eq!(watch_azure_once(&tools).outcome, Outcome::Timeout);
+}
+
+#[test]
+fn azure_drops_checks_when_the_live_source_head_moves_during_a_build_lookup() {
+    let azure = azure_status_watch("failed", &[]);
+    let build_read = Cell::new(false);
+    let tools = Script::printing_for(move |call| {
+        if call == AZURE_BUILD_CALL {
+            build_read.set(true);
+        }
+        if call.starts_with("az repos ref list") && build_read.get() {
+            return json!([{"name": "refs/heads/feature/x", "objectId": "new1234"}]).to_string();
+        }
+        azure.print(call)
+    });
+    let snapshot = azure::Azure.snapshot(&tools, AZURE_PR).unwrap();
+    assert_eq!(snapshot.head, "new1234");
+    assert_eq!(
+        buckets(&snapshot),
+        [("Azure is updating the current PR iteration", "pending")]
+    );
+    assert!(
+        tools
+            .calls
+            .borrow()
+            .iter()
+            .any(|call| call == AZURE_BUILD_CALL)
+    );
+}
+
+#[test]
+fn azure_wait_leaves_synthetic_merge_evidence_pending_when_the_merge_changes_during_the_poll() {
+    for (field, value) in [
+        ("mergeStatus", json!("queued")),
+        ("lastMergeCommit", json!({"commitId": "new-merge"})),
+        ("lastMergeSourceCommit", json!({"commitId": "old-source"})),
+    ] {
+        let mut azure = azure_status_watch("failed", &[("Build validation", "pass")]);
+        azure.build["sourceBranch"] = json!("refs/pull/535/merge");
+        azure.build["sourceVersion"] = json!("merge123");
+        let pr_views = Cell::new(0);
+        let tools = Script::printing_for(move |call| {
+            let output = azure.print(call);
+            if !call.starts_with("az repos pr show") {
+                return output;
+            }
+            let prior = pr_views.replace(pr_views.get() + 1);
+            if prior % 2 == 0 {
+                return output;
+            }
+            let mut updated: Value = serde_json::from_str(&output).unwrap();
+            updated[field] = value.clone();
+            updated.to_string()
+        });
+        let waited = watch_azure_once(&tools);
+        assert_eq!(waited.outcome, Outcome::Timeout, "{field}");
+        assert!(waited.checks.iter().any(|check| check.bucket == "pending"));
+        assert!(
+            tools
+                .calls
+                .borrow()
+                .iter()
+                .any(|call| call == AZURE_BUILD_CALL)
+        );
+    }
 }
 
 #[test]
