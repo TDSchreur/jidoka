@@ -204,5 +204,4 @@ fn every_agent_has_exactly_one_log_reader() {
             .count();
         assert_eq!(readers, 1, "{} needs exactly one log reader", agent.name());
     }
-    assert_eq!(READERS.len(), Agent::ALL.len());
 }

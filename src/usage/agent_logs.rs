@@ -68,9 +68,10 @@ pub(crate) trait AgentLogs: Sync {
     /// The log folder inside the Agent home, such as `projects` in `~/.claude`.
     fn log_folder(&self) -> &'static str;
 
-    /// Reads the logs under `root`, the Agent's log folder: every session that executed a Jidoka command
-    /// naming a run in the window, or was recorded for one (the Session claim), within `deadline` and
-    /// `limits`.
+    /// Reads the sessions under `root` that the window's runs claim.
+    ///
+    /// `root` is the Agent's log folder. A session is read when it executed a Jidoka command naming a run in
+    /// the window or was recorded for one (the Session claim), within `deadline` and `limits`.
     fn read(
         &self,
         root: &Path,
@@ -122,8 +123,9 @@ impl Roots {
             .unwrap_or_else(|| panic!("{} has no log reader", agent.name()))
     }
 
-    /// These roots with the log folder of each agent home `run` recorded in place of this environment's, so
-    /// a run is read from the home its agent ran in. A recorded home that is not absolute is ignored, and so
+    /// These roots with the Agent homes `run` recorded in place of this environment's.
+    ///
+    /// A run is read from the home its agent ran in. A recorded home that is not absolute is ignored, and so
     /// is one of an unknown agent in an edited record (the server accepts only known agents).
     pub(crate) fn for_run(&self, run: &Run) -> Self {
         let mut roots = self.clone();
