@@ -15,7 +15,7 @@ use crate::{
 };
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::Path,
@@ -48,16 +48,35 @@ impl Adapter for Azure {
             return ended(&before);
         }
         let head = pr.live_head(tools, &before)?;
-        let (checks, applies) = checks_for(&pr, tools, &before, &head, url)?;
+        let checks = checks_for(&pr, tools, &before, &head, url)?;
         let after = pr.show(tools)?;
         if !is_active(&after)? {
             return ended(&after);
         }
+        let live_head = pr.live_head(tools, &after)?;
+        let checks: Vec<_> = if live_head == head && same_source(&before, &after) {
+            let same_merge =
+                merge_commit(&before).is_some_and(|id| merge_commit(&after) == Some(id));
+            checks
+                .into_iter()
+                .map(|check| match check {
+                    AzureCheck::Ordinary(check) => check,
+                    AzureCheck::MergeStatus(mut check) => {
+                        if !same_merge {
+                            check.bucket = "pending".into();
+                        }
+                        check
+                    }
+                })
+                .collect()
+        } else {
+            vec![updating_iteration(url)]
+        };
         Ok(Snapshot {
             state: state_of(&after)?,
-            head: pr.live_head(tools, &after)?,
+            head: live_head,
+            applies: checks.iter().any(|check| check.bucket != "skipping"),
             checks,
-            applies,
             base: Some(base_state(&after)),
         })
     }
@@ -111,7 +130,7 @@ impl Adapter for Azure {
     }
 }
 
-/// The Azure Pipelines build named by a failed check's link.
+/// An Azure Pipelines build in a specific organization and project.
 struct Build<'a> {
     org: &'a str,
     project: String,
@@ -121,7 +140,7 @@ struct Build<'a> {
 impl<'a> Build<'a> {
     /// Reads the build-results link created from a policy evaluation's build ID.
     ///
-    /// Posted statuses always link to the validated PR URL. Their target URLs never select a build.
+    /// Posted statuses always link to the validated PR URL so they cannot select a log.
     fn from_link(link: &'a str) -> Option<Self> {
         let (project_url, id) = link.split_once("/_build/results?buildId=")?;
         let (org, project) = project_url.rsplit_once('/')?;
@@ -448,35 +467,56 @@ fn base_state(data: &Value) -> BaseState {
     }
 }
 
-/// The checks of `head` from the policies and statuses of the latest iteration, and whether any of them
-/// applies. While Azure has not caught up with `head`, one pending check says so.
-#[expect(
-    clippy::too_many_lines,
-    reason = "walks iterations, statuses and policy evaluations into check results in one go"
-)]
+/// Whether both PR responses describe the same source ref and calculated source commit.
+fn same_source(before: &Value, after: &Value) -> bool {
+    before["sourceRefName"] == after["sourceRefName"]
+        && before["repository"]["id"] == after["repository"]["id"]
+        && before["lastMergeSourceCommit"]["commitId"] == after["lastMergeSourceCommit"]["commitId"]
+}
+
+/// The synthetic merge commit after Azure has finished calculating it.
+fn merge_commit(data: &Value) -> Option<&str> {
+    if data["mergeStatus"].as_str() != Some("succeeded") {
+        return None;
+    }
+    data["lastMergeCommit"]["commitId"]
+        .as_str()
+        .filter(|commit| !commit.is_empty())
+}
+
+/// A message shown while the PR's iteration and merge source catch up to the live ref.
+fn updating_iteration(url: &str) -> CheckResult {
+    CheckResult {
+        name: "Azure is updating the current PR iteration".into(),
+        bucket: "pending".into(),
+        link: url.into(),
+    }
+}
+
+enum AzureCheck {
+    Ordinary(CheckResult),
+    /// A posted status whose build used the synthetic merge commit. Recheck the merge before reporting it.
+    MergeStatus(CheckResult),
+}
+
+/// The policies and statuses for the live head, or a pending check while Azure catches up.
 fn checks_for(
     pr: &AzurePr,
     tools: &dyn Tools,
     data: &Value,
     head: &str,
     url: &str,
-) -> Result<(Vec<CheckResult>, bool), ToolProblem> {
+) -> Result<Vec<AzureCheck>, ToolProblem> {
     let repo = required(&data["repository"]["id"], "repository ID")?;
     let iterations = pr.invoke(tools, "pullRequestIterations", repo, None)?;
     let latest = iterations
         .iter()
         .max_by_key(|item| item["id"].as_u64().unwrap_or(0));
-    let mut checks = Vec::new();
     let current = latest
         .is_some_and(|item| item["sourceRefCommit"]["commitId"].as_str() == Some(head))
         && data["lastMergeSourceCommit"]["commitId"].as_str() == Some(head);
     if !current {
-        checks.push(CheckResult {
-            name: "Azure is updating the current PR iteration".into(),
-            bucket: "pending".into(),
-            link: url.into(),
-        });
-        return Ok((checks, true));
+        return Ok(vec![AzureCheck::Ordinary(updating_iteration(url))]);
     }
     let iteration_time = latest
         .and_then(|item| item["createdDate"].as_str())
@@ -485,6 +525,86 @@ fn checks_for(
         .and_then(|item| item["id"].as_u64())
         .filter(|id| *id > 0)
         .ok_or_else(|| ToolProblem("Azure PR iteration has no valid ID.".into()))?;
+
+    let mut checks = policy_checks(pr, tools, iteration_time, url)?;
+    let statuses = latest_statuses(pr, tools, repo, iteration)?;
+    let source = BuildSources {
+        repository: repo,
+        source_ref: required(&data["sourceRefName"], "source branch")?,
+        head,
+        merge_ref: format!("refs/pull/{}/merge", pr.id),
+        merge_commit: merge_commit(data),
+    };
+    let candidates: BTreeMap<_, _> = statuses
+        .iter()
+        .filter(|(_, status)| {
+            status.get("iterationId").is_none()
+                && status_bucket(status["state"].as_str()) != "pending"
+        })
+        .filter_map(|(context, status)| {
+            pr.status_build_id(status["targetUrl"].as_str())
+                .map(|id| (context, id))
+        })
+        .collect();
+    let ids = candidates.values().copied().collect();
+    let builds = pr.build_sources(tools, &ids, &source).unwrap_or_default();
+    for (context, status) in &statuses {
+        let (genre, name) = context;
+        let scoped = status["iterationId"].as_u64() == Some(iteration);
+        let state = if scoped {
+            Some(required(&status["state"], "status state")?)
+        } else {
+            status["state"].as_str()
+        };
+        let evidence = candidates
+            .get(context)
+            .and_then(|id| builds.get(id))
+            .copied()
+            .flatten();
+        let bucket = if scoped || evidence.is_some() {
+            status_bucket(state)
+        } else {
+            "pending"
+        };
+        let check = CheckResult {
+            name: if genre.is_empty() {
+                name.clone()
+            } else {
+                format!("{genre}: {name}")
+            },
+            bucket: bucket.into(),
+            link: url.into(),
+        };
+        checks.push(match evidence {
+            Some(BuildSource::Merge) => AzureCheck::MergeStatus(check),
+            Some(BuildSource::Branch) | None => AzureCheck::Ordinary(check),
+        });
+    }
+    Ok(checks)
+}
+
+/// The buckets a status can report for the current PR head.
+fn status_bucket(state: Option<&str>) -> &'static str {
+    match state {
+        Some("failed" | "error") => "fail",
+        Some("canceled" | "cancelled") => "cancel",
+        Some("notApplicable") => "skipping",
+        Some("succeeded") => "pass",
+        _ => "pending",
+    }
+}
+
+/// The enabled policy checks evaluated against the latest iteration.
+#[expect(
+    clippy::too_many_lines,
+    reason = "walks the policy pages and classifies each policy evaluation"
+)]
+fn policy_checks(
+    pr: &AzurePr,
+    tools: &dyn Tools,
+    iteration_time: Option<time::OffsetDateTime>,
+    url: &str,
+) -> Result<Vec<AzureCheck>, ToolProblem> {
     let mut policies = Vec::new();
     let top = POLICY_PAGE_SIZE.to_string();
     for page in 0..MAX_POLICY_PAGES {
@@ -523,7 +643,7 @@ fn checks_for(
             ));
         }
     }
-    let mut applicable = false;
+    let mut checks = Vec::new();
     for policy in &policies {
         let enabled = policy["configuration"]["isEnabled"]
             .as_bool()
@@ -539,9 +659,6 @@ fn checks_for(
                 ToolProblem("Azure policy does not say whether it is required.".into())
             })?;
         let state = required(&policy["status"], "policy state")?;
-        if required_policy && state != "notApplicable" {
-            applicable = true;
-        }
         let build_id = policy["context"]["buildId"].as_u64();
         let build_policy = build_id.is_some()
             || policy["configuration"]["type"]["id"].as_str() == Some(BUILD_POLICY_TYPE)
@@ -610,7 +727,7 @@ fn checks_for(
                 )
             })
             .unwrap_or_else(|| url.into());
-        checks.push(CheckResult {
+        checks.push(AzureCheck::Ordinary(CheckResult {
             name: if required_policy {
                 name.into()
             } else {
@@ -618,15 +735,25 @@ fn checks_for(
             },
             bucket: bucket.into(),
             link,
-        });
+        }));
     }
+    Ok(checks)
+}
+
+/// The latest status in each context, excluding statuses that belong to an earlier iteration.
+fn latest_statuses(
+    pr: &AzurePr,
+    tools: &dyn Tools,
+    repo: &str,
+    iteration: u64,
+) -> Result<BTreeMap<(String, String), Value>, ToolProblem> {
     let mut statuses = pr.invoke(tools, "pullRequestStatuses", repo, None)?;
     statuses.extend(pr.invoke(tools, "pullRequestIterationStatuses", repo, Some(iteration))?);
     let mut latest_status: BTreeMap<(String, String), Value> = BTreeMap::new();
     for status in statuses {
         if status["iterationId"]
             .as_u64()
-            .is_some_and(|id| id != iteration)
+            .is_some_and(|id| id > 0 && id != iteration)
         {
             continue;
         }
@@ -649,34 +776,40 @@ fn checks_for(
             latest_status.insert(key, status);
         }
     }
-    for ((genre, name), status) in latest_status {
-        let state = required(&status["state"], "status state")?;
-        let scoped = status["iterationId"].as_u64() == Some(iteration);
-        if !scoped || state != "notApplicable" {
-            applicable = true;
+    Ok(latest_status)
+}
+
+#[derive(Clone, Copy)]
+enum BuildSource {
+    Branch,
+    Merge,
+}
+
+/// The refs and commits that a build could have run against for the current pull request.
+struct BuildSources<'a> {
+    repository: &'a str,
+    source_ref: &'a str,
+    head: &'a str,
+    merge_ref: String,
+    merge_commit: Option<&'a str>,
+}
+
+impl BuildSources<'_> {
+    /// The pull request source identified by an authenticated build record.
+    fn prove(&self, build: &Value) -> Option<BuildSource> {
+        if build["repository"]["id"].as_str() != Some(self.repository) {
+            return None;
         }
-        let bucket = if !scoped {
-            "pending"
+        let reference = build["sourceBranch"].as_str()?;
+        let version = build["sourceVersion"].as_str()?;
+        if reference == self.source_ref && version == self.head {
+            Some(BuildSource::Branch)
+        } else if reference == self.merge_ref && self.merge_commit == Some(version) {
+            Some(BuildSource::Merge)
         } else {
-            match state {
-                "failed" | "error" => "fail",
-                "canceled" | "cancelled" => "cancel",
-                "notApplicable" => "skipping",
-                "succeeded" => "pass",
-                _ => "pending",
-            }
-        };
-        checks.push(CheckResult {
-            name: if genre.is_empty() {
-                name
-            } else {
-                format!("{genre}: {name}")
-            },
-            bucket: bucket.into(),
-            link: url.into(),
-        });
+            None
+        }
     }
-    Ok((checks, applicable))
 }
 
 /// The branch name of a source ref such as `refs/heads/feature/x`.
@@ -728,6 +861,95 @@ impl AzurePr {
             id: parts[5].into(),
         })
     }
+    /// The numeric build ID in a posted results link within this PR's organization and project.
+    fn status_build_id(&self, link: Option<&str>) -> Option<u64> {
+        let link = link?;
+        if link
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '#' | ';'))
+            || !valid_percent_escapes(link)
+        {
+            return None;
+        }
+        let (path, query) = link.split_once('?')?;
+        let (org, project) = path.strip_suffix("/_build/results")?.rsplit_once('/')?;
+        if org != self.org || decode_segment(project)? != self.project {
+            return None;
+        }
+        let mut id = None;
+        for parameter in query.split('&') {
+            let (key, value) = parameter.split_once('=').unwrap_or((parameter, ""));
+            // An encoded or differently cased key must not mask another build ID in the link.
+            let decoded = percent_encoding::percent_decode_str(key)
+                .decode_utf8()
+                .ok()?;
+            if decoded.eq_ignore_ascii_case("buildId") {
+                if id.is_some() || key != "buildId" || !value.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                // The Builds API accepts a signed 32-bit ID.
+                id = Some(u64::try_from(value.parse::<i32>().ok()?).ok()?);
+            }
+        }
+        id.filter(|number| *number > 0)
+    }
+
+    /// Reads all candidate builds in one authenticated metadata request for the current snapshot.
+    fn build_sources(
+        &self,
+        tools: &dyn Tools,
+        ids: &BTreeSet<u64>,
+        source: &BuildSources<'_>,
+    ) -> Option<BTreeMap<u64, Option<BuildSource>>> {
+        if ids.is_empty() {
+            return Some(BTreeMap::new());
+        }
+        let project = format!("project={}", self.project);
+        let query = format!(
+            "buildIds={}",
+            ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",")
+        );
+        let data = az_json(
+            tools,
+            &[
+                "devops",
+                "invoke",
+                "--organization",
+                &self.org,
+                "--area",
+                "build",
+                "--resource",
+                "builds",
+                "--route-parameters",
+                &project,
+                "--query-parameters",
+                &query,
+                "--api-version",
+                "7.1",
+                "--output",
+                "json",
+                "--detect",
+                "false",
+            ],
+        )
+        .ok()?;
+        // A partial response cannot establish that a returned ID is unambiguous.
+        if !data["continuation_token"].is_null() {
+            return None;
+        }
+        let mut builds = BTreeMap::new();
+        for build in data["value"].as_array()? {
+            let id = build["id"].as_u64().filter(|id| *id > 0)?;
+            if ids.contains(&id) {
+                builds
+                    .entry(id)
+                    .and_modify(|evidence| *evidence = None)
+                    .or_insert_with(|| source.prove(build));
+            }
+        }
+        Some(builds)
+    }
+
     /// The pull request as Azure reports it, checked to be the one the URL names.
     fn fetch(&self, tools: &dyn Tools) -> Result<Value, ToolProblem> {
         let data = az_json(
@@ -942,6 +1164,14 @@ impl AzureRepo {
             encode_segment(&self.repository)
         )
     }
+}
+
+/// Checks that every percent sign in a URL begins a complete hexadecimal escape.
+fn valid_percent_escapes(link: &str) -> bool {
+    link.as_bytes()
+        .split(|&byte| byte == b'%')
+        .skip(1)
+        .all(|escape| matches!(escape, [first, second, ..] if first.is_ascii_hexdigit() && second.is_ascii_hexdigit()))
 }
 
 /// One percent-encoded segment of an Azure URL, decoded. `None` when it is not a plain name, so a decoded
