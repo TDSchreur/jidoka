@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     run::{Stage, load_runs},
-    test_support::{TestDir, advance_to},
+    test_support::{TestDir, advance_to, new_run},
 };
 use rocket::{http::Header, local::asynchronous::Client};
 use std::fs;
@@ -313,11 +313,7 @@ async fn fetch(api: &Client, id: &str) -> (HttpStatus, Option<Run>) {
 
 /// A dashboard whose usage collection reads fixture logs under `home` instead of a user's own.
 async fn client_collecting(dir: &TestDir, home: &Path, enabled: bool) -> Client {
-    let roots = crate::agent_logs::Roots {
-        claude: home.join("claude/projects"),
-        codex: home.join("codex/sessions"),
-        copilot: home.join("copilot/session-state"),
-    };
+    let roots = crate::usage::agent_logs::Roots::from_homes(|agent| home.join(agent.name()));
     let settings = UsageSettings {
         enabled,
         roots,
@@ -338,9 +334,9 @@ async fn client_collecting(dir: &TestDir, home: &Path, enabled: bool) -> Client 
 
 /// A Claude transcript for a run: one line running a command that names the run, one response at `ts` with `input` tokens.
 fn claude_fixture(home: &Path, session: &str, run_id: &str, response: &str, ts: u64, input: u64) {
-    let line = serde_json::json!({"type": "assistant", "timestamp": crate::usage::iso_timestamp(ts), "requestId": response,
+    let line = serde_json::json!({"type": "assistant", "timestamp": crate::timestamps::iso(ts), "requestId": response,
         "message": {"id": response, "model": "claude-test", "usage": {"input_tokens": input, "output_tokens": 1}}});
-    let mention = serde_json::json!({"type": "assistant", "isVirtual": true, "timestamp": crate::usage::iso_timestamp(ts),
+    let mention = serde_json::json!({"type": "assistant", "isVirtual": true, "timestamp": crate::timestamps::iso(ts),
         "message": {"model": "<synthetic>", "content": [{"type": "tool_use", "name": "Bash", "input": {"command": format!("jidoka run update {run_id}")}}],
             "usage": {"input_tokens": 0, "output_tokens": 0}}});
     let path = home
@@ -390,11 +386,7 @@ async fn usage_is_collected_in_the_background_when_a_run_moves_on() {
     let holder = std::thread::spawn(move || {
         let settings = UsageSettings {
             enabled: false,
-            roots: crate::agent_logs::Roots {
-                claude: Default::default(),
-                codex: Default::default(),
-                copilot: Default::default(),
-            },
+            roots: crate::usage::agent_logs::Roots::from_homes(|_| Default::default()),
             budget: std::time::Duration::from_secs(5),
             settle: Vec::new(),
         };
@@ -599,20 +591,11 @@ async fn ticket_reports_are_recorded_and_rejected_atomically_via_api() {
 
 #[rocket::async_test]
 async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
-    use crate::pr_state::{PrState, PrStatus};
+    use crate::pr::state::{PrState, PrStatus};
     let dir = TestDir::new();
     let path = dir.0.path().join("runs.json");
     let store = RunStore::open(&path).unwrap();
-    let run = store
-        .create(NewRun {
-            title: "t".into(),
-            project: "/work".into(),
-            repository: None,
-            session: None,
-            agent_homes: Default::default(),
-            model_routing: None,
-        })
-        .unwrap();
+    let run = new_run(&store, "t");
     let pr = "https://github.com/o/r/pull/7";
     advance_to(&store, &run.id, Stage::Finish);
     store
@@ -669,15 +652,15 @@ async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
 }
 
 /// A pull request host whose pull requests are all merged.
-fn merged_host() -> std::sync::Arc<crate::pr_host::FakeHost> {
-    std::sync::Arc::new(crate::pr_host::FakeHost::states(&[
-        crate::pr_state::PrState::Merged,
+fn merged_host() -> std::sync::Arc<crate::pr::host::FakeHost> {
+    std::sync::Arc::new(crate::pr::host::FakeHost::states(&[
+        crate::pr::state::PrState::Merged,
     ]))
 }
 
 async fn client_with_pr_tool(
     dir: &TestDir,
-    tool: std::sync::Arc<dyn crate::pr_host::PrHost + Send + Sync>,
+    tool: std::sync::Arc<dyn crate::pr::host::PrHost + Send + Sync>,
 ) -> Client {
     Client::tracked(
         build_rocket_with_tool(&dir.0.path().join("runs.json"), DEFAULT_PORT, tool).unwrap(),
@@ -688,16 +671,7 @@ async fn client_with_pr_tool(
 
 fn waiting_run(api: &Client, pr: Option<&str>) -> String {
     let store = api.rocket().state::<RunStore>().unwrap();
-    let run = store
-        .create(NewRun {
-            title: "t".into(),
-            project: "/work".into(),
-            repository: None,
-            session: None,
-            agent_homes: Default::default(),
-            model_routing: None,
-        })
-        .unwrap();
+    let run = new_run(store, "t");
     let pr = pr.map_or(String::new(), |pr| format!(r#","pr":"{pr}""#));
     let update = format!(r#"{{"activity":"Waiting for CI"{pr}}}"#);
     advance_to(store, &run.id, Stage::Finish);
@@ -913,15 +887,7 @@ async fn delete_removes_only_the_record_and_survives_restart() {
     let dir = TestDir::new();
     let api = client(&dir).await;
     let store = api.rocket().state::<RunStore>().unwrap();
-    let new = |title: &str| NewRun {
-        title: title.into(),
-        project: "/work".into(),
-        repository: None,
-        session: None,
-        agent_homes: Default::default(),
-        model_routing: None,
-    };
-    let kept = store.create(new("kept")).unwrap();
+    let kept = new_run(store, "kept");
     let token = session_token(&api).await;
     // A request without an Origin (curl) and the dashboard's own same-origin requests are allowed.
     for origin in [
@@ -929,7 +895,7 @@ async fn delete_removes_only_the_record_and_survives_restart() {
         Some("http://127.0.0.1:4311"),
         Some("http://localhost:4311"),
     ] {
-        let run = store.create(new("gone")).unwrap();
+        let run = new_run(store, "gone");
         let mut headers = vec![
             ("Host", "127.0.0.1:4311".to_string()),
             (TOKEN_HEADER, token.clone()),
@@ -1461,25 +1427,7 @@ async fn run_details_after_rework_prefer_the_latest_accepted_check_exit() {
 /// A Git repository at `path` with one commit; returns that commit.
 fn committed_repository(path: &Path) -> String {
     fs::create_dir_all(path).unwrap();
-    let git = |args: &[&str]| {
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .env("GIT_CONFIG_GLOBAL", path.join("no-config"))
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
-            .args(["-c", "commit.gpgsign=false"])
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    };
+    let git = |args: &[&str]| crate::git::fixture::run_git(path, args);
     git(&["init", "-q"]);
     git(&["commit", "-q", "--allow-empty", "-m", "base"]);
     git(&["rev-parse", "HEAD"])
@@ -1599,19 +1547,7 @@ async fn post_json(api: &Client, route: &str, body: serde_json::Value) -> (HttpS
 async fn groups_are_managed_through_the_api_and_a_grouped_run_cannot_be_deleted() {
     let dir = TestDir::new();
     let api = client(&dir).await;
-    let run = api
-        .rocket()
-        .state::<RunStore>()
-        .unwrap()
-        .create(NewRun {
-            title: "t".into(),
-            project: "/work".into(),
-            repository: None,
-            session: None,
-            agent_homes: Default::default(),
-            model_routing: None,
-        })
-        .unwrap();
+    let run = new_run(api.rocket().state::<RunStore>().unwrap(), "t");
     let (status, body) = post_json(
         &api,
         "/api/groups",
@@ -1705,7 +1641,7 @@ async fn cli_pr_result_updates_the_cache_and_the_run_together() {
     let saved = fetch(&api, &run.id).await.1.unwrap();
     assert_eq!(saved.status, crate::run::RunStatus::Blocked);
     let status = saved.pr_status.unwrap();
-    assert_eq!(status.state, crate::pr_state::PrState::Closed);
+    assert_eq!(status.state, crate::pr::state::PrState::Closed);
     assert_eq!(status.checked_at, 123);
 }
 
@@ -1739,4 +1675,55 @@ async fn cli_pr_result_distinguishes_discarded_and_missing_runs() {
     let saved = fetch(&api, &run.id).await.1.unwrap();
     assert_eq!(saved.status, crate::run::RunStatus::Running);
     assert!(saved.pr_status.is_none());
+}
+
+#[test]
+fn ports_are_numbers_from_1_to_65535() {
+    assert_eq!(parse_port("4400"), Ok(4400));
+    for bad in ["0", "65536", "-1", "abc", ""] {
+        assert!(parse_port(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn a_free_port_is_chosen_when_the_default_is_taken() {
+    let taken = std::net::TcpListener::bind((LOOPBACK_HOST, 0)).unwrap();
+    let port = taken.local_addr().unwrap().port();
+    assert_eq!(choose_port(None, port), Ok(0));
+}
+
+#[test]
+fn a_requested_port_that_is_taken_is_an_error() {
+    let taken = std::net::TcpListener::bind((LOOPBACK_HOST, 0)).unwrap();
+    let port = taken.local_addr().unwrap().port();
+    let error = choose_port(Some(port), DEFAULT_PORT).unwrap_err();
+    assert!(error.contains("already in use"), "{error}");
+}
+
+#[test]
+fn dashboard_options_set_the_port_and_the_usage_switch_in_any_order() {
+    assert_eq!(parse_dashboard_options(&[], None), Ok((None, true)));
+    assert_eq!(
+        parse_dashboard_options(&["--no-usage", "--port", "4400"], None),
+        Ok((Some(4400), false))
+    );
+    assert_eq!(
+        parse_dashboard_options(&["--port", "4400"], Some("off")),
+        Ok((Some(4400), false))
+    );
+    for on in [None, Some(""), Some("on"), Some("1"), Some("true")] {
+        assert!(parse_dashboard_options(&[], on).unwrap().1, "{on:?}");
+    }
+    for off in ["off", "OFF", " false ", "0", "no"] {
+        assert!(!parse_dashboard_options(&[], Some(off)).unwrap().1, "{off}");
+    }
+    for bad in [
+        &["--port"][..],
+        &["--port", "0"],
+        &["--port", "1", "--port", "2"],
+        &["--nope"],
+        &["4400"],
+    ] {
+        assert!(parse_dashboard_options(bad, None).is_err(), "{bad:?}");
+    }
 }

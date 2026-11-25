@@ -9,10 +9,10 @@
 use crate::{
     agent::Agent,
     git::Git,
-    inspect::{self, RouteEntry},
-    run::{ExitOutcome, Run, SkippedCheck, Stage},
-    run_gate::{self, AssessmentPurpose, CheckSelection},
-    run_next::{self, Checks, StageGates},
+    run::gate::{self, AssessmentPurpose, ReviewSelection},
+    run::inspect::{self, RouteEntry},
+    run::next::{self, Reviews, StageGates},
+    run::{ExitOutcome, Run, SkippedReview, Stage},
 };
 use serde::Serialize;
 
@@ -27,7 +27,7 @@ pub(super) fn summary(run: &Run) -> serde_json::Result<serde_json::Value> {
     let mut value = serde_json::to_value(run)?;
     value["needs_you"] = serde_json::Value::Bool(run.needs_you());
     if let Some(usage) = &run.usage {
-        value["usage"] = crate::cost::usage_json(usage, crate::cost::PRICES)?;
+        value["usage"] = crate::usage::cost::usage_json(usage, crate::usage::cost::PRICES)?;
     }
     Ok(value)
 }
@@ -42,18 +42,18 @@ pub(super) fn summary(run: &Run) -> serde_json::Result<serde_json::Value> {
 ///
 /// Fails when the projection cannot be serialized.
 pub(super) fn detail(run: &Run, git: &dyn Git) -> serde_json::Result<serde_json::Value> {
-    let assessment = run_gate::assess_local(run, git, AssessmentPurpose::Dashboard);
-    let (checks, checks_unavailable) = match assessment.checks {
-        CheckSelection::Selected { mode, selection } => (
-            Some(run_next::checks_for(
+    let assessment = gate::assess_local(run, git, AssessmentPurpose::Dashboard);
+    let (checks, checks_unavailable) = match assessment.reviews {
+        ReviewSelection::Selected { mode, selection } => (
+            Some(next::reviews_for(
                 mode,
                 &selection,
                 run.model_routing.as_ref(),
             )),
             None,
         ),
-        CheckSelection::Unavailable(reason) => (None, Some(reason)),
-        CheckSelection::NotApplicable => (None, None),
+        ReviewSelection::Unavailable(reason) => (None, Some(reason)),
+        ReviewSelection::NotApplicable => (None, None),
     };
     let recorded = RecordedSkips::of(run);
     serde_json::to_value(Detail {
@@ -64,7 +64,7 @@ pub(super) fn detail(run: &Run, git: &dyn Git) -> serde_json::Result<serde_json:
         }),
         recorded_skipped_checks: recorded.as_ref().map(|skips| skips.checks),
         recorded_skipped_rework: recorded.map(|skips| skips.rework),
-        stage_gates: run_next::stage_gates(run, assessment.evaluations),
+        stage_gates: next::stage_gates(run, assessment.evaluations),
         checks,
         checks_unavailable,
     })
@@ -79,13 +79,13 @@ struct Detail<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     model_route: Option<ModelRoute>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    recorded_skipped_checks: Option<&'a [SkippedCheck]>,
+    recorded_skipped_checks: Option<&'a [SkippedReview]>,
     /// Present (possibly `null`) exactly when `recorded_skipped_checks` is.
     #[serde(skip_serializing_if = "Option::is_none")]
     recorded_skipped_rework: Option<Option<u32>>,
     stage_gates: Vec<StageGates<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    checks: Option<Checks>,
+    checks: Option<Reviews>,
     #[serde(skip_serializing_if = "Option::is_none")]
     checks_unavailable: Option<String>,
 }
@@ -99,7 +99,7 @@ struct ModelRoute {
 
 /// The checks skipped when the run last left Check, and the Rework of that pass.
 struct RecordedSkips<'a> {
-    checks: &'a [SkippedCheck],
+    checks: &'a [SkippedReview],
     rework: Option<u32>,
 }
 

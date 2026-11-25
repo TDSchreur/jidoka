@@ -2,8 +2,9 @@
 //! host's command line tool is installed, and whether it is signed in, as far as a read-only command shows.
 //! None of these checks blocks readiness: a missing tool or sign-in is a warning.
 
-use super::{Check, Machine, find_program, git_output};
-use crate::pr_host::{Host, detect_host};
+use super::{Check, Machine, git_output};
+use crate::pr::host::{Host, detect_host};
+use crate::program::find_program;
 use std::{
     path::Path,
     process::{Command, Stdio},
@@ -13,10 +14,10 @@ use std::{
 const AZURE_PAT: &str = "AZURE_DEVOPS_EXT_PAT";
 
 pub(super) fn checks(project: &Path, machine: &Machine) -> Vec<Check> {
-    let host = match detect_host(&|args| git_output(project, args)) {
+    let host = match detect_host(&|args| git_output(machine.git, project, args)) {
         Ok(origin) => origin.host,
         // Detection asks for origin first, so a failure here with no origin means there is none.
-        Err(_) if git_output(project, &["remote", "get-url", "origin"]).is_none() => {
+        Err(_) if git_output(machine.git, project, &["remote", "get-url", "origin"]).is_none() => {
             return vec![Check::skipped(
                 "host",
                 "there is no `origin` remote, so the pull request host was not checked",

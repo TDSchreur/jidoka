@@ -105,7 +105,7 @@ fn update_never_changes_the_stage_and_rejects_a_stage_field() {
 
 #[test]
 fn recording_the_mode_reports_the_workflow_skill_and_observed_skills_are_stored_once() {
-    use crate::usage::UsedSkill;
+    use crate::usage::token_usage::UsedSkill;
     let dir = TestDir::new();
     let store = RunStore::open(&dir.0.path().join("runs.json")).unwrap();
     let run = new_run(&store, "task");
@@ -1088,7 +1088,7 @@ fn sessions_are_recorded_once_validated_and_kept_across_updates() {
 
 #[test]
 fn usage_is_replaced_atomically_and_a_failed_save_keeps_the_old_usage() {
-    use crate::usage::{Usage, UsageStatus};
+    use crate::usage::token_usage::{Usage, UsageStatus};
     let dir = TestDir::new();
     let path = dir.0.path().join("runs.json");
     let store = RunStore::open(&path).unwrap();
@@ -1130,7 +1130,7 @@ fn usage_is_replaced_atomically_and_a_failed_save_keeps_the_old_usage() {
 
 #[test]
 fn only_subagent_usage_on_another_model_warns_when_a_routed_stage_is_done() {
-    use crate::usage::Usage;
+    use crate::usage::token_usage::Usage;
     let dir = TestDir::new();
     let path = dir.0.path().join("runs.json");
     let store = RunStore::open(&path).unwrap();
@@ -1351,7 +1351,7 @@ fn mode_aliases_store_canonical_names() {
         ("full", "jidoka-full"),
     ] {
         assert!(
-            crate::run_begin::parse_options("task", &["--mode", alias]).is_ok(),
+            crate::run::begin::parse_options("task", &["--mode", alias]).is_ok(),
             "mode alias {alias} should be accepted"
         );
         let run = new_run(&store, "task");

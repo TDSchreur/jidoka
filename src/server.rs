@@ -1,12 +1,15 @@
 use crate::{
-    current_build,
+    cli::current_build,
     document::{self, DocumentError},
     groups::{Group, GroupError, GroupStore, GroupView, NewGroup, Target, valid_group_id},
-    pr_host::{Hosts, PrHost, RealTools},
-    pr_state,
+    pr::{
+        self,
+        host::{PrHost, real_hosts},
+    },
     run::{NewRun, Run, RunStore, UpdateRun},
-    usage::{UsageSettings, collect_and_store},
+    usage::collection::UsageSettings,
 };
+use background::{Collector, SyncFailure};
 use rocket::{
     Build, Rocket, State,
     data::{Limits, ToByteUnit},
@@ -20,7 +23,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     io,
     path::{Path, PathBuf},
-    sync::Mutex,
 };
 
 /// The host the dashboard server binds to and the CLI talks to: loopback only, so nothing outside this machine
@@ -507,13 +509,13 @@ fn transition_run(
 fn record_gate(
     _access: PostAccess,
     id: &str,
-    record: Json<crate::run_gate::Record>,
+    record: Json<crate::run::gate::Record>,
     store: &State<RunStore>,
 ) -> Result<&'static str, (HttpStatus, String)> {
     let record = record.into_inner();
     store
         .record_gate(id, |run| {
-            crate::run_gate::record(run, record, &crate::git::RealGit)
+            crate::run::gate::record(run, record, &crate::git::RealGit)
         })
         .map_err(|error| (HttpStatus::BadRequest, error))?;
     Ok("Gate recorded")
@@ -523,7 +525,7 @@ fn record_gate(
 fn advance_run(
     _access: PostAccess,
     id: &str,
-    request: Json<crate::run_gate::AdvanceRequest>,
+    request: Json<crate::run::gate::AdvanceRequest>,
     store: &State<RunStore>,
     tool: &State<PrTool>,
     collector: &State<Collector>,
@@ -961,7 +963,7 @@ fn reopen_milestone(
 fn record_pr_status(
     request: Security,
     id: &str,
-    status: Json<pr_state::PrStatus>,
+    status: Json<pr::state::PrStatus>,
     store: &State<RunStore>,
     collector: &State<Collector>,
 ) -> Result<Json<bool>, HttpStatus> {
@@ -983,9 +985,6 @@ fn record_pr_status(
     }
 }
 
-/// How long a sync may wait for the host before the dashboard gives up on it.
-const SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// Reads the state of the Run's pull request from its host now, and brings the Run in line with it: a merged
 /// pull request finishes the Run, a closed one blocks it. Needs the session token, like delete.
 #[rocket::post("/api/runs/<id>/sync")]
@@ -995,37 +994,25 @@ async fn sync_run(
     store: &State<RunStore>,
     tool: &State<PrTool>,
     collector: &State<Collector>,
-) -> Result<Json<pr_state::PrStatus>, HttpStatus> {
+) -> Result<Json<pr::state::PrStatus>, HttpStatus> {
     if !request.delete_allowed {
         return Err(HttpStatus::Forbidden);
     }
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(HttpStatus::BadRequest);
     }
-    let (read_store, read_tool, read_id) = (store.inner().clone(), tool.0.clone(), id.to_owned());
-    let read = rocket::tokio::task::spawn_blocking(move || {
-        let now = crate::run::updated_now()?;
-        pr_state::sync_run(&read_store, read_tool.as_ref(), &read_id, now)
-    });
-    let status = match rocket::tokio::time::timeout(SYNC_TIMEOUT, read).await {
-        Ok(Ok(Ok(Some((status, crate::run::PrResult::Accepted { changed }))))) => (status, changed),
-        Ok(Ok(Ok(Some((_, crate::run::PrResult::Discarded))))) => return Err(HttpStatus::Conflict),
-        Ok(Ok(Ok(Some((_, crate::run::PrResult::Missing))))) => return Err(HttpStatus::NotFound),
-        Ok(Ok(Ok(None))) => return Err(HttpStatus::NotFound),
-        Ok(Ok(Err(error))) => {
-            eprintln!("Run storage error: {error}");
-            return Err(HttpStatus::InternalServerError);
+    match background::sync_pr_now(store.inner().clone(), tool.0.clone(), id.to_owned()).await {
+        Ok(Some((status, crate::run::PrResult::Accepted { changed }))) => {
+            if changed {
+                collector.after_update(store, id);
+            }
+            Ok(Json(status))
         }
-        Ok(Err(error)) => {
-            eprintln!("Pull request sync stopped: {error}");
-            return Err(HttpStatus::InternalServerError);
-        }
-        Err(_) => return Err(HttpStatus::GatewayTimeout),
-    };
-    if status.1 {
-        collector.after_update(store, id);
+        Ok(Some((_, crate::run::PrResult::Discarded))) => Err(HttpStatus::Conflict),
+        Ok(Some((_, crate::run::PrResult::Missing)) | None) => Err(HttpStatus::NotFound),
+        Err(SyncFailure::Failed) => Err(HttpStatus::InternalServerError),
+        Err(SyncFailure::TimedOut) => Err(HttpStatus::GatewayTimeout),
     }
-    Ok(Json(status.0))
 }
 
 #[rocket::catch(413)]
@@ -1048,102 +1035,6 @@ fn not_found() -> (HttpStatus, &'static str) {
     (HttpStatus::NotFound, "Not found")
 }
 
-/// Collects token usage in the background after an update that moves a run on. Without settings
-/// (as in most tests) nothing is collected.
-pub(crate) struct Collector {
-    settings: Option<UsageSettings>,
-    pending: Mutex<Vec<rocket::tokio::task::JoinHandle<()>>>,
-    /// The latest collection chain per run: a newer one replaces an older one's later passes, so a flurry
-    /// of updates does not pile up scans.
-    chains: std::sync::Arc<Mutex<std::collections::HashMap<String, u64>>>,
-    /// How many passes ran, for tests.
-    #[cfg(test)]
-    passes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-}
-
-impl Collector {
-    pub(crate) fn new(settings: Option<UsageSettings>) -> Self {
-        Self {
-            settings,
-            pending: Mutex::new(Vec::new()),
-            chains: std::sync::Arc::default(),
-            #[cfg(test)]
-            passes: std::sync::Arc::default(),
-        }
-    }
-
-    /// Starts background collection after a successful update requires it.
-    fn after_update(&self, store: &RunStore, id: &str) {
-        let Some(settings) = self.settings.clone() else {
-            return;
-        };
-        let (store, id) = (store.clone(), id.to_owned());
-        let chains = self.chains.clone();
-        let generation = chains.lock().map_or(0, |mut chains| {
-            let latest = chains.entry(id.clone()).or_insert(0);
-            *latest += 1;
-            *latest
-        });
-        #[cfg(test)]
-        let passes = self.passes.clone();
-        let handle = rocket::tokio::spawn(async move {
-            // One pass now, and one after each delay: the agents' logs lag behind the work.
-            let delays = std::iter::once(std::time::Duration::ZERO).chain(settings.settle.clone());
-            for delay in delays {
-                if !delay.is_zero() {
-                    rocket::tokio::time::sleep(delay).await;
-                }
-                // A newer update started its own chain, which does these passes again.
-                if chains
-                    .lock()
-                    .is_ok_and(|chains| chains.get(&id) != Some(&generation))
-                {
-                    return;
-                }
-                let (store, id, settings) = (store.clone(), id.clone(), settings.clone());
-                #[cfg(test)]
-                passes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let joined = rocket::tokio::task::spawn_blocking({
-                    let id = id.clone();
-                    move || {
-                        if let Err(error) = collect_and_store(&store, &id, &settings) {
-                            eprintln!("Usage was not collected for run {id}: {error}");
-                        }
-                    }
-                })
-                .await;
-                if let Err(error) = joined {
-                    eprintln!(
-                        "Usage was not collected for run {id}: the collection stopped: {error}"
-                    );
-                }
-            }
-            if let Ok(mut chains) = chains.lock()
-                && chains.get(&id) == Some(&generation)
-            {
-                chains.remove(&id);
-            }
-        });
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.retain(|task| !task.is_finished());
-            pending.push(handle);
-        }
-    }
-
-    /// Waits for the collections started so far, for tests.
-    #[cfg(test)]
-    pub(crate) async fn wait_idle(&self) {
-        let handles: Vec<_> = self
-            .pending
-            .lock()
-            .map(|mut p| p.drain(..).collect())
-            .unwrap_or_default();
-        for handle in handles {
-            let _ = handle.await;
-        }
-    }
-}
-
 /// The host that pull requests are read from, shared by the background pass and the sync endpoint.
 struct PrTool(std::sync::Arc<dyn PrHost + Send + Sync>);
 
@@ -1154,7 +1045,7 @@ pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> 
         port,
         Collector::new(None),
         new_tokens()?,
-        std::sync::Arc::new(Hosts::new(RealTools)),
+        std::sync::Arc::new(real_hosts()),
     )
 }
 
@@ -1192,7 +1083,7 @@ pub(crate) fn build_rocket_with(
         port,
         collector,
         new_tokens()?,
-        std::sync::Arc::new(Hosts::new(RealTools)),
+        std::sync::Arc::new(real_hosts()),
     )
 }
 
@@ -1324,84 +1215,6 @@ fn announce(runs: &Path, token: &str, port: u16) -> Option<LiftoffStop> {
         .map(|error| LiftoffStop::Failed(format!("could not write the discovery file: {error}")))
 }
 
-/// How often the dashboard server looks for pull requests whose state is due to be read again. Every 20 seconds
-/// keeps the dashboard fresh while each pass only reads the pull requests that are due, so hosts are not hammered.
-const PR_STATE_PASS: std::time::Duration = std::time::Duration::from_secs(20);
-
-/// Reads the state of the Runs' pull requests from their hosts, one pass every `pass`, on a blocking thread so
-/// a slow or missing tool never holds up a request. Merged pull requests are not read again.
-fn watch_pr_states(
-    store: RunStore,
-    tool: std::sync::Arc<dyn PrHost + Send + Sync>,
-    pass: std::time::Duration,
-) -> rocket::tokio::task::JoinHandle<()> {
-    rocket::tokio::spawn(async move {
-        loop {
-            let (store, tool) = (store.clone(), tool.clone());
-            let joined = rocket::tokio::task::spawn_blocking(move || {
-                if let Err(error) = pr_state::refresh_live(&store, tool.as_ref()) {
-                    eprintln!("Pull request states were not stored: {error}");
-                }
-            })
-            .await;
-            if let Err(error) = joined {
-                eprintln!("Pull request states were not read: the read stopped: {error}");
-            }
-            rocket::tokio::time::sleep(pass).await;
-        }
-    })
-}
-
-/// How often the dashboard server looks in the logs of working runs for a usage limit or compaction. A minute is
-/// frequent enough to notice a pause promptly and rare enough that reading the logs stays cheap.
-const PAUSE_PASS: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// Collects the runs that are working or paused on their own every `pass`, on a blocking thread, so a
-/// pause is seen and cleared without an agent update. One pass is bounded by the collection budget per run.
-fn watch_pauses(
-    store: RunStore,
-    settings: UsageSettings,
-    pass: std::time::Duration,
-) -> rocket::tokio::task::JoinHandle<()> {
-    rocket::tokio::spawn(async move {
-        loop {
-            rocket::tokio::time::sleep(pass).await;
-            let (store, settings) = (store.clone(), settings.clone());
-            let joined = rocket::tokio::task::spawn_blocking(move || {
-                let result = crate::run::updated_now()
-                    .and_then(|now| crate::usage::collect_active(&store, &settings, now));
-                if let Err(error) = result {
-                    eprintln!("Pauses were not checked: {error}");
-                }
-            })
-            .await;
-            if let Err(error) = joined {
-                eprintln!("Pauses were not checked: the check stopped: {error}");
-            }
-        }
-    })
-}
-
-/// Collects, once at startup and on a blocking thread, the recent done runs whose usage was not tracked, so
-/// a dashboard started in the agents' environment recovers runs an earlier dashboard could not read.
-fn collect_missed_once(store: RunStore, settings: UsageSettings) {
-    rocket::tokio::spawn(async move {
-        let joined = rocket::tokio::task::spawn_blocking(move || {
-            let result = crate::run::updated_now()
-                .and_then(|now| crate::usage::collect_missed(&store, &settings, now));
-            if let Err(error) = result {
-                eprintln!("Usage of finished runs was not collected again: {error}");
-            }
-        })
-        .await;
-        if let Err(error) = joined {
-            eprintln!(
-                "Usage of finished runs was not collected again: the collection stopped: {error}"
-            );
-        }
-    });
-}
-
 /// Serves the dashboard on `port` (0 lets the operating system pick one). `url` turns the bound port into the
 /// address printed to the user. Returns `Ok` without serving when another dashboard is already running.
 pub(crate) fn serve(
@@ -1423,7 +1236,7 @@ pub(crate) fn serve(
             port,
             Collector::new(Some(usage)),
             tokens,
-            std::sync::Arc::new(Hosts::new(RealTools)),
+            std::sync::Arc::new(real_hosts()),
         )
         .map_err(|error| {
             io::Error::new(error.kind(), format!("could not open run storage: {error}"))
@@ -1445,9 +1258,7 @@ pub(crate) fn serve(
                     if let (Some(store), Some(tool)) =
                         (rocket.state::<RunStore>(), rocket.state::<PrTool>())
                     {
-                        collect_missed_once(store.clone(), pause_settings.clone());
-                        watch_pauses(store.clone(), pause_settings, PAUSE_PASS);
-                        watch_pr_states(store.clone(), tool.0.clone(), PR_STATE_PASS);
+                        background::start(store, tool.0.clone(), pause_settings);
                     }
                 })
             },
@@ -1477,6 +1288,172 @@ pub(crate) fn serve(
     })
 }
 
+/// How long one dashboard usage collection may read logs, so the dashboard stays responsive.
+const DASHBOARD_USAGE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The dashboard's `runs.json`; its folder also holds the CLI token, the plans and `dashboard.json`.
+pub(crate) fn runs_path() -> io::Result<PathBuf> {
+    runs_path_in(&|name| std::env::var_os(name))
+}
+
+fn runs_path_in(var: &impl Fn(&str) -> Option<std::ffi::OsString>) -> io::Result<PathBuf> {
+    #[cfg(windows)]
+    let base = var("LOCALAPPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let base = var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| var("HOME").map(|home| PathBuf::from(home).join(".local/share")));
+    let base = base.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "cannot determine the user data directory",
+        )
+    })?;
+    Ok(base.join("jidoka").join("runs.json"))
+}
+
+/// `jidoka dashboard [--port <port>] [--no-usage]`: serves the dashboard.
+///
+/// When a Jidoka dashboard is already running, it prints that one's URL instead.
+pub(crate) struct DashboardCommand;
+
+impl crate::cli::Command for DashboardCommand {
+    /// The requested port, and whether usage is collected.
+    type Options = (Option<u16>, bool);
+    type Outcome = ();
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        Ok(parse_dashboard_options(
+            words,
+            std::env::var("JIDOKA_USAGE").ok().as_deref(),
+        )?)
+    }
+
+    fn run(&(port, usage): &Self::Options) -> Result<(), Box<dyn std::error::Error>> {
+        serve_dashboard(port, usage)
+    }
+
+    fn render(_: &Self::Options, (): ()) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        Ok(crate::cli::Output::default())
+    }
+}
+
+/// `[--port <port>] [--no-usage]` in any order. Usage collection is on unless `--no-usage` or `JIDOKA_USAGE=off`.
+fn parse_dashboard_options(
+    options: &[&str],
+    jidoka_usage: Option<&str>,
+) -> Result<(Option<u16>, bool), String> {
+    let (mut port, mut usage) = (None, true);
+    let mut args = options.iter();
+    while let Some(arg) = args.next() {
+        match *arg {
+            "--port" if port.is_none() => {
+                port = Some(parse_port(
+                    args.next().ok_or("--port needs a port number.")?,
+                )?);
+            }
+            "--no-usage" => usage = false,
+            other => {
+                return Err(crate::cli::usage_error(format!(
+                    "Invalid dashboard option {other:?}."
+                )));
+            }
+        }
+    }
+    if crate::usage::collection::switched_off_by(jidoka_usage) {
+        usage = false;
+    }
+    Ok((port, usage))
+}
+
+fn parse_port(port: &str) -> Result<u16, String> {
+    match port.parse::<u16>() {
+        Ok(port) if port != 0 => Ok(port),
+        _ => Err(format!(
+            "Invalid port '{port}': use a number from 1 to 65535."
+        )),
+    }
+}
+
+/// Escapes everything but unreserved characters, so a path can sit in a query string.
+fn percent_encode(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
+/// The dashboard URL that opens on `project`: a Project's id is its path.
+fn dashboard_url(port: u16, project: &str) -> String {
+    format!(
+        "http://127.0.0.1:{port}/?project={}",
+        percent_encode(project)
+    )
+}
+
+/// The port to bind. An explicit port must be free, else this fails. Without one, `default` if it is free, else 0,
+/// which lets the operating system pick a free port.
+fn choose_port(requested: Option<u16>, default: u16) -> Result<u16, String> {
+    let is_free = |port| std::net::TcpListener::bind((LOOPBACK_HOST, port)).is_ok();
+    match requested {
+        Some(port) if is_free(port) => Ok(port),
+        Some(port) => Err(format!(
+            "Port {port} is already in use. Pick another with 'jidoka dashboard --port <port>', or leave --port out to let Jidoka choose a free port."
+        )),
+        None if is_free(default) => Ok(default),
+        None => Ok(0),
+    }
+}
+
+/// Serves the dashboard, or, when a Jidoka dashboard is already running, prints its URL.
+fn serve_dashboard(requested: Option<u16>, usage: bool) -> Result<(), Box<dyn std::error::Error>> {
+    // A Project is identified by its repository, so a linked worktree opens its main checkout's row.
+    let dir = std::env::current_dir()?;
+    let project =
+        crate::repository::canonical_repository(&dir).unwrap_or_else(|| dir.display().to_string());
+    let runs = runs_path()?;
+    if let Some(running) = crate::discovery::running(data_dir(&runs)) {
+        println!(
+            "Dashboard already running (pid {}): {}",
+            running.pid,
+            dashboard_url(running.port, &project)
+        );
+        if !usage {
+            eprintln!(
+                "Note: --no-usage and JIDOKA_USAGE only apply to a dashboard this command starts."
+            );
+        }
+        let ours = current_build();
+        if running.version != ours {
+            eprintln!(
+                "Warning: the running dashboard is jidoka {}, this is jidoka {ours}. It was left running; stop it and run 'jidoka dashboard' again to use this version.",
+                running.version
+            );
+        }
+        return Ok(());
+    }
+    let port = choose_port(requested, DEFAULT_PORT)?;
+    let home = crate::install::home_dir()?;
+    let settings = UsageSettings {
+        enabled: usage,
+        roots: crate::usage::agent_logs::Roots::from_home(&home, &|name| std::env::var_os(name)),
+        budget: DASHBOARD_USAGE_BUDGET,
+        settle: UsageSettings::default_settle(),
+    };
+    serve(
+        &runs,
+        port,
+        move |bound| dashboard_url(bound, &project),
+        settings,
+    )?;
+    Ok(())
+}
+
+mod background;
 mod run_detail;
 #[cfg(test)]
 mod tests;

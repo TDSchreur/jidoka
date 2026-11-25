@@ -6,7 +6,7 @@
 //! and cannot be deleted while another request attaches it.
 
 use crate::{
-    pr_state::PrStatus,
+    pr::state::PrStatus,
     run::{Run, RunStore, check_reference, check_text, lock_error, new_id, save_records},
 };
 use serde::{Deserialize, Serialize};
@@ -620,14 +620,14 @@ fn pr_condition(run: Option<&Run>) -> (bool, String, Option<u64>) {
         return (false, "unchecked".to_string(), None);
     };
     let state = match status.state {
-        crate::pr_state::PrState::Merged => "merged".to_string(),
-        crate::pr_state::PrState::Open => "open".to_string(),
-        crate::pr_state::PrState::Draft => "a draft".to_string(),
-        crate::pr_state::PrState::Closed => "closed without merge".to_string(),
-        crate::pr_state::PrState::Unknown => "unknown".to_string(),
+        crate::pr::state::PrState::Merged => "merged".to_string(),
+        crate::pr::state::PrState::Open => "open".to_string(),
+        crate::pr::state::PrState::Draft => "a draft".to_string(),
+        crate::pr::state::PrState::Closed => "closed without merge".to_string(),
+        crate::pr::state::PrState::Unknown => "unknown".to_string(),
     };
     (
-        status.state == crate::pr_state::PrState::Merged,
+        status.state == crate::pr::state::PrState::Merged,
         state,
         Some(status.checked_at),
     )
@@ -736,7 +736,7 @@ impl GroupView {
                 member
                     .pr_status
                     .as_ref()
-                    .is_some_and(|status| status.state == crate::pr_state::PrState::Merged)
+                    .is_some_and(|status| status.state == crate::pr::state::PrState::Merged)
             })
             .count();
         let milestones: Vec<MilestoneView> = group

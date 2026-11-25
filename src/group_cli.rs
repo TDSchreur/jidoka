@@ -3,7 +3,7 @@
 use crate::{
     client::{api_get, api_post},
     groups::{DependencyView, Group, GroupView, Member, MilestoneView, Target},
-    inspect::shown,
+    run::inspect::shown,
 };
 use std::path::Path;
 
@@ -199,7 +199,9 @@ fn spec_reference(spec: &str) -> Result<String, Failure> {
         return Ok(spec.to_string());
     }
     // A file of the knowledge repo becomes its web link, so reviewers can open it.
-    if let Some(link) = crate::knowledge::spec_link(spec, &crate::knowledge::load()?)? {
+    if let Some(link) =
+        crate::knowledge::spec_link(spec, &crate::knowledge::load()?, &crate::git::RealGit)?
+    {
         return Ok(link);
     }
     let absolute = std::path::absolute(spec)?;

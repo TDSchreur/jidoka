@@ -77,7 +77,7 @@ Useful commands:
 | `jidoka doctor` | Checks that the repository and your machine are ready. |
 | `jidoka run inspect <id>` | Shows a run's stage, workspace, tickets and pull request. |
 | `jidoka run stats <id>` | Shows a run's token usage and token-based estimated cost at API list prices (not subscription charges). |
-| `jidoka run cleanup <id>` | Removes a run's worktree and branch after its pull request merged. |
+| `jidoka run cleanup <id> [--discard [--force]]` | Removes a run's worktree and branch after its pull request merged. `--discard` does it for a run whose pull request did not merge; `--force` also loses uncommitted or unpushed work. |
 
 Run `jidoka --help` for every command.
 
@@ -135,6 +135,7 @@ There is one data folder and one dashboard per user. The dashboard owns `runs.js
 | [Token usage](docs/usage-tracking.md) | Token counts, estimated cost, pauses, request analysis |
 | [Model routing](docs/model-routing.md) | Choosing the model and effort per Stage |
 | [Checking readiness](docs/doctor.md) | What `jidoka doctor` checks |
+| [MCP servers](docs/mcp-servers.md) | Setting up the GitHub and Azure DevOps MCP servers for your agent, without committing secrets |
 | [Glossary](GLOSSARY.md) | The terms Jidoka uses |
 
 ## Network and privacy

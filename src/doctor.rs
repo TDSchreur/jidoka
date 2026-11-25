@@ -6,7 +6,9 @@
 //! only when `--create-model-routing` asks for it.
 
 use crate::agent::Agent;
+use crate::git::{Git, RealGit};
 use crate::install::{bundled_skill_files, skills_root};
+use crate::program::find_program;
 use crate::routing::{POLICY_ORDER, create_starter, created_message, policy_path_in};
 use serde::Serialize;
 use std::{
@@ -166,6 +168,8 @@ pub(crate) struct Machine<'a> {
     pub(crate) version: &'a dyn Fn(&Path) -> Option<String>,
     /// What `rustup target list --installed` prints, if rustup can be asked.
     pub(crate) rustup_targets: &'a dyn Fn(&OsString, &Path) -> Option<String>,
+    /// How git is run.
+    pub(crate) git: &'a dyn Git,
 }
 
 /// Checks the project at `project` and the listed agents (all of them when `agent` is `None`).
@@ -174,9 +178,9 @@ pub(crate) fn diagnose(project: &Path, agent: Option<Agent>, machine: &Machine) 
         None => Agent::ALL.to_vec(),
         Some(agent) => vec![agent],
     };
-    let git = git_checks(project);
+    let git = git_checks(machine.git, project);
     // Later checks read from the work tree root, so they work from a subfolder or a linked worktree.
-    let root = git_output(project, &["rev-parse", "--show-toplevel"])
+    let root = git_output(machine.git, project, &["rev-parse", "--show-toplevel"])
         .map_or_else(|| project.to_path_buf(), PathBuf::from);
     let mut project_checks = git;
     project_checks.push(setup_docs_check(&root));
@@ -214,24 +218,16 @@ pub(crate) fn diagnose(project: &Path, agent: Option<Agent>, machine: &Machine) 
     }
 }
 
-pub(crate) fn git_output(project: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(project)
-        .args(args)
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .filter(|text| !text.is_empty())
+/// What a git command that succeeded printed, or `None` when it failed or printed nothing.
+pub(crate) fn git_output(git: &dyn Git, project: &Path, args: &[&str]) -> Option<String> {
+    git.git(project, args).ok().filter(|text| !text.is_empty())
 }
 
-fn git_checks(project: &Path) -> Vec<Check> {
-    match Command::new("git").arg("--version").output() {
-        Ok(out) if out.status.success() => {}
-        _ => {
+fn git_checks(git: &dyn Git, project: &Path) -> Vec<Check> {
+    // Asked in the current folder, so a project folder that cannot be entered is not mistaken for no git.
+    match git.git(Path::new("."), &["--version"]) {
+        Ok(_) => {}
+        Err(_) => {
             return vec![Check::fail(
                 "git",
                 "git is not available",
@@ -239,7 +235,8 @@ fn git_checks(project: &Path) -> Vec<Check> {
             )];
         }
     }
-    if git_output(project, &["rev-parse", "--is-inside-work-tree"]).as_deref() != Some("true") {
+    if git_output(git, project, &["rev-parse", "--is-inside-work-tree"]).as_deref() != Some("true")
+    {
         return vec![Check::fail(
             "git",
             "this folder is not inside a Git repository",
@@ -247,7 +244,7 @@ fn git_checks(project: &Path) -> Vec<Check> {
         )];
     }
     let mut checks = vec![Check::pass("git", "inside a Git repository")];
-    match git_output(project, &["remote", "get-url", "origin"]) {
+    match git_output(git, project, &["remote", "get-url", "origin"]) {
         None => {
             checks.push(Check::fail(
                 "origin",
@@ -262,7 +259,7 @@ fn git_checks(project: &Path) -> Vec<Check> {
         )),
     }
     checks.push(
-        match git_output(project, &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]) {
+        match git_output(git, project, &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]) {
             Some(head) => {
                 let branch = head.strip_prefix("origin/").unwrap_or(&head);
                 Check::pass("base-branch", format!("origin's default branch is {branch}"))
@@ -460,80 +457,6 @@ fn verification_check(root: &Path, path: &OsString) -> Check {
     }
 }
 
-/// Finds `name` in the `PATH` folders. On Windows a name without a `PATHEXT` extension is tried with each
-/// extension, and a name that already ends in one, such as `npm.cmd`, is tried as given first.
-pub(crate) fn find_program(name: &str, path: &OsString) -> Option<PathBuf> {
-    let extensions = if cfg!(windows) {
-        let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-        windows_extensions(&pathext)
-    } else {
-        vec![String::new()]
-    };
-    find_with_extensions(name, path, &extensions)
-}
-
-/// What to run for `az`. Windows starts only `az.exe` for a bare name, but the Azure CLI installs `az.cmd`,
-/// so the launcher found on `PATH` is used.
-pub(crate) fn az_program() -> PathBuf {
-    std::env::var_os("PATH").map_or_else(|| PathBuf::from("az"), |path| az_program_in(&path))
-}
-
-fn az_program_in(path: &OsString) -> PathBuf {
-    find_program("az", path)
-        .filter(|found| found.is_absolute())
-        .unwrap_or_else(|| PathBuf::from("az"))
-}
-
-/// The extensions Windows runs, in `PATHEXT` order. A file without one, such as the Bash launcher
-/// next to `az.cmd`, is not something Windows can run, so it is not a candidate.
-fn windows_extensions(pathext: &str) -> Vec<String> {
-    pathext
-        .split(';')
-        .filter(|ext| ext.starts_with('.'))
-        .map(str::to_string)
-        .collect()
-}
-
-/// The suffixes to append to `name`: the extensions, preceded by the empty suffix when `name` already
-/// ends in one of them (compared case-insensitively).
-fn candidate_suffixes(name: &str, extensions: &[String]) -> Vec<String> {
-    let lower = name.to_lowercase();
-    let has_extension = extensions
-        .iter()
-        .any(|ext| !ext.is_empty() && lower.ends_with(&ext.to_lowercase()));
-    let mut suffixes = Vec::new();
-    if has_extension {
-        suffixes.push(String::new());
-    }
-    suffixes.extend(extensions.iter().cloned());
-    suffixes
-}
-
-fn find_with_extensions(name: &str, path: &OsString, extensions: &[String]) -> Option<PathBuf> {
-    let suffixes = candidate_suffixes(name, extensions);
-    std::env::split_paths(path).find_map(|dir| {
-        suffixes.iter().find_map(|suffix| {
-            let candidate = dir.join(format!("{name}{suffix}"));
-            is_executable(&candidate).then_some(candidate)
-        })
-    })
-}
-
-fn is_executable(path: &Path) -> bool {
-    let Ok(meta) = fs::metadata(path) else {
-        return false;
-    };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        meta.is_file() && meta.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        meta.is_file()
-    }
-}
-
 fn executable_check(agent: &'static str, path: &OsString) -> Check {
     match find_program(agent, path) {
         Some(found) => Check::pass(
@@ -692,6 +615,7 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
         var: &|name| std::env::var_os(name),
         version: &agent_version,
         rustup_targets: &rustup_targets,
+        git: &RealGit,
     };
     let Args {
         agent,
@@ -717,7 +641,7 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
 }
 
 /// What `jidoka doctor` was asked to do.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Args {
     pub(crate) agent: Option<Agent>,
     pub(crate) json: bool,
@@ -793,6 +717,27 @@ pub(crate) fn parse_args(args: &[&str]) -> Result<Args, String> {
         json,
         create_model_routing,
     })
+}
+
+/// `jidoka doctor`: checks the installation and prints what it found. The exit status is 1 when something is wrong.
+pub(crate) struct DoctorCommand;
+
+impl crate::cli::Command for DoctorCommand {
+    type Options = Args;
+    /// Whether every check passed.
+    type Outcome = bool;
+
+    fn parse(words: &[&str]) -> Result<Args, Box<dyn std::error::Error>> {
+        Ok(parse_args(words).map_err(crate::cli::usage_error)?)
+    }
+
+    fn run(args: &Args) -> Result<bool, Box<dyn std::error::Error>> {
+        run(args.clone())
+    }
+
+    fn render(_: &Args, ok: bool) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        Ok(crate::cli::Output::default().with_exit_code(u8::from(!ok)))
+    }
 }
 
 #[cfg(test)]
