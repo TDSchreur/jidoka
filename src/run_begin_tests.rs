@@ -1,57 +1,9 @@
 //! `jidoka run begin` with a fake server and real git in temporary repositories with a local bare remote.
 
 use super::*;
-use std::{cell::RefCell, fs, path::PathBuf, process::Command};
+use crate::git::fixture::{real_path, run_git as git};
+use std::{cell::RefCell, fs, path::PathBuf};
 use tempfile::TempDir;
-
-/// The real path of `path` in the plain form git prints. On Windows `canonicalize` gives a `\\?\` path, which
-/// git reads as a URL when it is used as a remote.
-fn real_path(path: &Path) -> PathBuf {
-    let real = path.canonicalize().unwrap();
-    match real.to_string_lossy().strip_prefix(r"\\?\") {
-        Some(plain) => PathBuf::from(plain),
-        None => real,
-    }
-}
-
-/// A user's own git settings (a signing key, hooks) must not reach the tests: this file never exists.
-fn no_global_config() -> PathBuf {
-    std::env::temp_dir().join("jidoka-tests-no-such-gitconfig")
-}
-
-fn isolated(command: &mut Command) -> &mut Command {
-    command
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_COUNT", "1")
-        .env("GIT_CONFIG_KEY_0", "safe.bareRepository")
-        .env("GIT_CONFIG_VALUE_0", "all")
-        .env("GIT_CONFIG_GLOBAL", no_global_config())
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-}
-
-fn git(dir: &Path, args: &[&str]) -> String {
-    let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(dir)
-        .args([
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@example.com",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(args);
-    let output = isolated(&mut command).output().unwrap();
-    assert!(
-        output.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
-}
 
 /// A bare remote with branches `develop` and `release`, and a clone of it named `repo`.
 struct Project {
@@ -98,16 +50,15 @@ fn template() -> &'static Path {
             git(&seed, &["commit", "-q", "--allow-empty", "-m", "second"]);
             git(&seed, &["push", "-q", "origin", "develop", "release"]);
             fs::remove_dir_all(&seed).unwrap();
-            let mut clone_command = Command::new("git");
-            clone_command
-                .args(["clone", "-q"])
-                .arg(&remote)
-                .arg(root.join("repo"));
-            let clone = isolated(&mut clone_command).output().unwrap();
-            assert!(
-                clone.status.success(),
-                "{}",
-                String::from_utf8_lossy(&clone.stderr)
+            let repo = root.join("repo");
+            git(
+                &root,
+                &[
+                    "clone",
+                    "-q",
+                    remote.to_str().unwrap(),
+                    repo.to_str().unwrap(),
+                ],
             );
             dir
         })

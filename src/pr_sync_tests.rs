@@ -1,58 +1,13 @@
 //! `jidoka pr sync` with real git in temporary repositories and a local bare remote.
 
 use super::*;
+use crate::git::fixture::{self, real_path, run_git};
 use std::{
     cell::RefCell,
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 use tempfile::TempDir;
-
-/// The plain path form git prints; on Windows `canonicalize` gives a `\\?\` path that git reads as a URL.
-fn real_path(path: &Path) -> PathBuf {
-    let real = path.canonicalize().unwrap();
-    match real.to_string_lossy().strip_prefix(r"\\?\") {
-        Some(plain) => PathBuf::from(plain),
-        None => real,
-    }
-}
-
-/// Git without the user's own settings, with a fixed author so that merges can be committed.
-fn isolated(command: &mut Command) -> &mut Command {
-    command
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_COUNT", "1")
-        .env("GIT_CONFIG_KEY_0", "safe.bareRepository")
-        .env("GIT_CONFIG_VALUE_0", "all")
-        .env(
-            "GIT_CONFIG_GLOBAL",
-            std::env::temp_dir().join("jidoka-tests-no-such-gitconfig"),
-        )
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .env("LC_ALL", "C")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-}
-
-fn run_git(dir: &Path, args: &[&str]) -> String {
-    let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(dir)
-        .args(["-c", "commit.gpgsign=false"])
-        .args(args);
-    let output = isolated(&mut command).output().unwrap();
-    assert!(
-        output.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
-}
 
 /// The code's git, isolated like the tests' own; `fail_merge_base` makes `merge-base --is-ancestor` fail oddly.
 #[derive(Default)]
@@ -75,21 +30,7 @@ impl TestGit {
 impl Git for TestGit {
     fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
         self.record(args);
-        let mut command = Command::new("git");
-        command
-            .arg("-C")
-            .arg(dir)
-            .args(["-c", "commit.gpgsign=false"])
-            .args(args);
-        let output = isolated(&mut command).output().map_err(|e| e.to_string())?;
-        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_string();
-        if output.status.success() {
-            Ok(text(&output.stdout))
-        } else if output.stderr.is_empty() {
-            Err(text(&output.stdout))
-        } else {
-            Err(text(&output.stderr))
-        }
+        fixture::git(dir, args)
     }
 
     fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
@@ -104,10 +45,7 @@ impl Git for TestGit {
         {
             return Ok(128);
         }
-        let mut command = Command::new("git");
-        command.arg("-C").arg(dir).args(args);
-        let output = isolated(&mut command).output().map_err(|e| e.to_string())?;
-        output.status.code().ok_or_else(|| "signal".into())
+        fixture::status(dir, args)
     }
 }
 
@@ -143,9 +81,15 @@ impl Project {
         run_git(&seed, &["push", "-q", "origin", "develop"]);
         let clone = |name: &str| {
             let path = root.join(name);
-            let mut command = Command::new("git");
-            command.args(["clone", "-q"]).arg(&remote).arg(&path);
-            assert!(isolated(&mut command).output().unwrap().status.success());
+            run_git(
+                &root,
+                &[
+                    "clone",
+                    "-q",
+                    remote.to_str().unwrap(),
+                    path.to_str().unwrap(),
+                ],
+            );
             path
         };
         let repo = clone("repo");

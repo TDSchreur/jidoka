@@ -1,87 +1,9 @@
 //! `jidoka run check` with real git in temporary repositories and a local bare remote.
 
 use super::*;
-use std::{fs, process::Command};
+use crate::git::fixture::{TestGit, real_path, run_git};
+use std::fs;
 use tempfile::TempDir;
-
-/// The plain path form git prints; on Windows `canonicalize` gives a `\\?\` path that git reads as a URL.
-fn real_path(path: &Path) -> PathBuf {
-    canonical_dir(path).unwrap()
-}
-
-/// Git without the user's own settings, with a fixed author so that commits can be made.
-fn isolated(command: &mut Command) -> &mut Command {
-    command
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_COUNT", "1")
-        .env("GIT_CONFIG_KEY_0", "safe.bareRepository")
-        .env("GIT_CONFIG_VALUE_0", "all")
-        .env(
-            "GIT_CONFIG_GLOBAL",
-            std::env::temp_dir().join("jidoka-tests-no-such-gitconfig"),
-        )
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .env("LC_ALL", "C")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-}
-
-fn output(dir: &Path, args: &[&str]) -> std::process::Output {
-    let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(dir)
-        .args(["-c", "commit.gpgsign=false"])
-        .args(args);
-    isolated(&mut command).output().unwrap()
-}
-
-fn run_git(dir: &Path, args: &[&str]) -> String {
-    let out = output(dir, args);
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
-/// The code's git, isolated like the tests' own. It records every command so a test can see that the
-/// check only reads.
-#[derive(Default)]
-struct TestGit {
-    commands: std::cell::RefCell<Vec<Vec<String>>>,
-}
-
-impl Git for TestGit {
-    fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
-        self.commands
-            .borrow_mut()
-            .push(args.iter().map(|a| a.to_string()).collect());
-        let out = output(dir, args);
-        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_string();
-        if out.status.success() {
-            Ok(text(&out.stdout))
-        } else if out.stderr.is_empty() {
-            Err(text(&out.stdout))
-        } else {
-            Err(text(&out.stderr))
-        }
-    }
-
-    fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
-        self.commands
-            .borrow_mut()
-            .push(args.iter().map(|a| a.to_string()).collect());
-        output(dir, args)
-            .status
-            .code()
-            .ok_or_else(|| "signal".to_string())
-    }
-}
 
 /// A bare remote with `develop`, a clone `repo`, and a worktree `wt` on `feature` with one pushed commit.
 struct Fixture {

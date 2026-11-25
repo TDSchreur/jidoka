@@ -1,72 +1,12 @@
 //! `jidoka run cleanup` with real git in temporary repositories and a fake pull request host.
 
 use super::*;
+use crate::git::fixture::{self, TestGit, run_git};
 use crate::pr_host::{FakeHost, Head};
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, path::PathBuf};
 use tempfile::TempDir;
 
 const PR: &str = "https://github.com/o/r/pull/7";
-
-/// Git without the user's own settings, with a fixed author so that commits can be made.
-fn isolated(command: &mut Command) -> &mut Command {
-    command
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_COUNT", "1")
-        .env("GIT_CONFIG_KEY_0", "safe.bareRepository")
-        .env("GIT_CONFIG_VALUE_0", "all")
-        .env(
-            "GIT_CONFIG_GLOBAL",
-            std::env::temp_dir().join("jidoka-tests-no-such-gitconfig"),
-        )
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .env("LC_ALL", "C")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-}
-
-fn output(dir: &Path, args: &[&str]) -> std::process::Output {
-    let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(dir)
-        .args(["-c", "commit.gpgsign=false"])
-        .args(args);
-    isolated(&mut command).output().unwrap()
-}
-
-fn run_git(dir: &Path, args: &[&str]) -> String {
-    let out = output(dir, args);
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
-struct TestGit;
-
-impl Git for TestGit {
-    fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
-        let out = output(dir, args);
-        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_string();
-        if out.status.success() {
-            Ok(text(&out.stdout))
-        } else {
-            Err(text(&out.stderr))
-        }
-    }
-
-    fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
-        output(dir, args)
-            .status
-            .code()
-            .ok_or_else(|| "signal".to_string())
-    }
-}
 
 /// A repository `repo` on `develop` and a worktree `wt` on `feature` with one commit.
 struct Fixture {
@@ -137,17 +77,15 @@ impl Fixture {
     }
 
     fn branch_exists(&self) -> bool {
-        output(
+        fixture::status(
             &self.repo,
             &["rev-parse", "--verify", "--quiet", "refs/heads/feature"],
-        )
-        .status
-        .success()
+        ) == Ok(0)
     }
 
     /// Cleans up from the root, which is outside the worktree.
     fn cleanup(&self, run: &Recorded, host: &FakeHost) -> Result<Cleaned, ToolProblem> {
-        cleanup(run, host, &TestGit, &self.root, Mode::Merged)
+        cleanup(run, host, &TestGit::default(), &self.root, Mode::Merged)
     }
 
     fn assert_untouched(&self) {
@@ -216,7 +154,7 @@ fn running_inside_the_worktree_refuses() {
     let message = refusal(cleanup(
         &fx.recorded(),
         &fx.host(),
-        &TestGit,
+        &TestGit::default(),
         &fx.wt,
         Mode::Merged,
     ));
@@ -254,11 +192,11 @@ impl Git for MovingGit<'_> {
             );
             run_git(&self.0.repo, &["update-ref", "refs/heads/feature", &moved]);
         }
-        TestGit.git(dir, args)
+        fixture::git(dir, args)
     }
 
     fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
-        TestGit.status(dir, args)
+        fixture::status(dir, args)
     }
 }
 
@@ -352,7 +290,13 @@ fn discard(
     host: &FakeHost,
     force: bool,
 ) -> Result<Cleaned, ToolProblem> {
-    cleanup(run, host, &TestGit, &fx.root, Mode::Discard { force })
+    cleanup(
+        run,
+        host,
+        &TestGit::default(),
+        &fx.root,
+        Mode::Discard { force },
+    )
 }
 
 fn no_host() -> FakeHost {
@@ -433,7 +377,7 @@ fn discard_keeps_the_safety_refusals() {
     let inside = cleanup(
         &run,
         &no_host(),
-        &TestGit,
+        &TestGit::default(),
         &fx.wt,
         Mode::Discard { force: true },
     );

@@ -1,4 +1,5 @@
 use super::*;
+use crate::git::fixture::{TestGit, run_git as git};
 use crate::install::bundled_skill_names;
 use std::collections::HashMap;
 use tempfile::TempDir;
@@ -13,16 +14,6 @@ struct World {
     versions: HashMap<String, String>,
     /// What `rustup target list --installed` prints; `None` when rustup is not available.
     rustup_targets: Option<String>,
-}
-
-fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .status()
-        .unwrap();
-    assert!(status.success(), "git {args:?}");
 }
 
 fn program(bin: &Path, name: &str) {
@@ -100,6 +91,7 @@ impl World {
                 self.versions.get(name).cloned()
             },
             rustup_targets: &|_, _| self.rustup_targets.clone(),
+            git: &TestGit::default(),
         };
         diagnose(self.project.path(), agent, &machine)
     }
@@ -219,6 +211,15 @@ fn skills_are_looked_up_where_install_would_put_them() {
     assert!(agent(&report, "copilot").usable);
 }
 
+/// A machine where git cannot be started.
+struct NoGit;
+
+impl Git for NoGit {
+    fn git(&self, _: &Path, _: &[&str]) -> Result<String, String> {
+        Err("git could not be started: not found".into())
+    }
+}
+
 #[test]
 fn project_problems_are_named_with_a_fix_and_make_the_report_not_ok() {
     // Nothing but an empty folder.
@@ -231,10 +232,27 @@ fn project_problems_are_named_with_a_fix_and_make_the_report_not_ok() {
 
         version: &|_| None,
         rustup_targets: &|_, _| None,
+        git: &TestGit::default(),
     };
     let report = diagnose(empty.path(), Some(Agent::Claude), &machine);
     assert!(!report.ok);
     assert_eq!(project_check(&report, "git").status, Status::Fail);
+
+    let no_git = World::ready().with_agent(Agent::Claude);
+    let machine = Machine {
+        home: no_git.home.path().into(),
+        path: no_git.bin.path().into(),
+        var: &|_| None,
+        version: &|_| None,
+        rustup_targets: &|_, _| None,
+        git: &NoGit,
+    };
+    let report = diagnose(no_git.project.path(), Some(Agent::Claude), &machine);
+    assert!(!report.ok);
+    assert_eq!(
+        project_check(&report, "git").message,
+        "git is not available"
+    );
 
     let no_origin = World::ready().with_agent(Agent::Claude);
     git(no_origin.project.path(), &["remote", "remove", "origin"]);
@@ -393,6 +411,7 @@ impl World {
 
             version: &|_| None,
             rustup_targets: &|_, _| None,
+            git: &TestGit::default(),
         };
         create_model_routing(agents, &machine)
     }

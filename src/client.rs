@@ -241,7 +241,7 @@ fn api_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{server::build_rocket, test_support::TestDir};
+    use crate::{git::fixture::run_git, server::build_rocket, test_support::TestDir};
     use std::{fs, path::Path};
 
     /// An address nobody listens on: a port the tests' own servers can never be assigned.
@@ -318,36 +318,8 @@ mod tests {
         let dir = TestDir::new();
         let repo = dir.0.path().join("repo");
         fs::create_dir(&repo).unwrap();
-        for args in [
-            vec!["init"],
-            vec![
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "--allow-empty",
-                "-m",
-                "Initial",
-            ],
-        ] {
-            let output = std::process::Command::new("git")
-                .current_dir(&repo)
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env("GIT_CONFIG_GLOBAL", dir.0.path().join("no-config"))
-                .env_remove("GIT_DIR")
-                .env_remove("GIT_WORK_TREE")
-                .args(&args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "git {args:?}: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["commit", "--allow-empty", "-m", "Initial"]);
         let path = dir.0.path().join("runs.json");
         let server = TestServer::start(&path);
         let id = start_run(

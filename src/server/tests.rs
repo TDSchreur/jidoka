@@ -1461,25 +1461,7 @@ async fn run_details_after_rework_prefer_the_latest_accepted_check_exit() {
 /// A Git repository at `path` with one commit; returns that commit.
 fn committed_repository(path: &Path) -> String {
     fs::create_dir_all(path).unwrap();
-    let git = |args: &[&str]| {
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .env("GIT_CONFIG_GLOBAL", path.join("no-config"))
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
-            .args(["-c", "commit.gpgsign=false"])
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    };
+    let git = |args: &[&str]| crate::git::fixture::run_git(path, args);
     git(&["init", "-q"]);
     git(&["commit", "-q", "--allow-empty", "-m", "base"]);
     git(&["rev-parse", "HEAD"])

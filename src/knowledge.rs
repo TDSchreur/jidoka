@@ -4,14 +4,16 @@
 //! The setting is `knowledge.json` in Jidoka's configuration folder (see ADR-0015). It is per user, not per
 //! project, because a platform has one knowledge repo and checkout paths differ per machine.
 
-use crate::pr_host::{AzureRepo, encode_segment};
+use crate::{
+    git::Git,
+    pr_host::{AzureRepo, encode_segment},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     ffi::OsString,
     fs, io,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 type Failure = Box<dyn std::error::Error>;
@@ -120,7 +122,11 @@ pub(crate) fn run(words: &[&str]) -> Result<(), Failure> {
 ///
 /// A message when the file is in the knowledge repo but cannot be linked: no usable origin, an unsupported
 /// host, or the file is not pushed.
-pub(crate) fn spec_link(spec: &str, knowledge: &Knowledge) -> Result<Option<String>, String> {
+pub(crate) fn spec_link(
+    spec: &str,
+    knowledge: &Knowledge,
+    git: &dyn Git,
+) -> Result<Option<String>, String> {
     let Some(root) = &knowledge.path else {
         return Ok(None);
     };
@@ -147,62 +153,56 @@ pub(crate) fn spec_link(spec: &str, knowledge: &Knowledge) -> Result<Option<Stri
         .collect();
     let relative = relative.join("/");
 
-    let remote = git(&root, &["remote", "get-url", "origin"])
+    let remote = git
+        .git(&root, &["remote", "get-url", "origin"])
         .map_err(|_| "the knowledge repo has no origin remote".to_string())?;
-    let branch = default_branch(&root)?;
-    ensure_pushed(&root, &relative, &branch)?;
+    let branch = default_branch(git, &root)?;
+    ensure_pushed(git, &root, &relative, &branch)?;
     web_link(&remote, &branch, &relative).map(Some)
 }
 
-fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .map_err(|error| format!("cannot run git: {error}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-    }
-}
-
 /// The remote's default branch, or the checked out one when origin does not say.
-fn default_branch(root: &Path) -> Result<String, String> {
-    if let Ok(head) = git(
+fn default_branch(git: &dyn Git, root: &Path) -> Result<String, String> {
+    if let Ok(head) = git.git(
         root,
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
     ) && let Some(branch) = head.strip_prefix("origin/")
     {
         return Ok(branch.to_string());
     }
-    git(root, &["rev-parse", "--abbrev-ref", "HEAD"])
+    git.git(root, &["rev-parse", "--abbrev-ref", "HEAD"])
         .map_err(|error| format!("cannot find the knowledge repo's default branch: {error}"))
 }
 
 /// Refuses a spec that reviewers could not open: untracked, changed since its commit, or not on origin.
-fn ensure_pushed(root: &Path, relative: &str, branch: &str) -> Result<(), String> {
+fn ensure_pushed(git: &dyn Git, root: &Path, relative: &str, branch: &str) -> Result<(), String> {
     let hint = "commit it and push it to the default branch first";
-    if git(root, &["ls-files", "--error-unmatch", "--", relative]).is_err() {
+    if git
+        .git(root, &["ls-files", "--error-unmatch", "--", relative])
+        .is_err()
+    {
         return Err(format!(
             "{relative} is not committed in the knowledge repo; {hint}"
         ));
     }
-    if !git(root, &["status", "--porcelain", "--", relative])?.is_empty() {
+    if !git
+        .git(root, &["status", "--porcelain", "--", relative])?
+        .is_empty()
+    {
         return Err(format!(
             "{relative} has changes that are not committed; {hint}"
         ));
     }
     let remote_branch = format!("refs/remotes/origin/{branch}");
-    git(root, &["rev-parse", "--verify", "--quiet", &remote_branch])
+    git.git(root, &["rev-parse", "--verify", "--quiet", &remote_branch])
         .map_err(|_| format!("origin/{branch} is unknown in the knowledge repo; {hint}"))?;
-    let commit = git(root, &["log", "-1", "--format=%H", "--", relative])?;
-    if git(
-        root,
-        &["merge-base", "--is-ancestor", &commit, &remote_branch],
-    )
-    .is_err()
+    let commit = git.git(root, &["log", "-1", "--format=%H", "--", relative])?;
+    if git
+        .git(
+            root,
+            &["merge-base", "--is-ancestor", &commit, &remote_branch],
+        )
+        .is_err()
     {
         return Err(format!(
             "{relative} is not pushed to origin/{branch}; {hint}"

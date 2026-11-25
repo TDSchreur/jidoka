@@ -1,15 +1,17 @@
 //! Which repository a folder belongs to, the same for the main checkout and every linked worktree.
 
-use crate::doctor::git_output;
+use crate::git::{Git, RealGit};
 use std::path::Path;
 
 /// The canonical repository path of `dir`: the main checkout, found through git's common directory.
 /// `None` when `dir` is not in a repository or git cannot be run, so the caller records nothing.
 pub(crate) fn canonical_repository(dir: &Path) -> Option<String> {
-    let common = git_output(
-        dir,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?;
+    let common = RealGit
+        .git(
+            dir,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )
+        .ok()?;
     let common = Path::new(&common);
     // A normal repository keeps its data in `<checkout>/.git`; a bare one is the directory itself.
     let root = if common.file_name().is_some_and(|name| name == ".git") {
@@ -29,20 +31,7 @@ pub(crate) fn canonical_repository(dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
-
-    fn git(dir: &Path, args: &[&str]) {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
-            .args(args)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .status()
-            .unwrap();
-        assert!(status.success(), "git {args:?}");
-    }
+    use crate::git::fixture::run_git as git;
 
     #[test]
     fn a_linked_worktree_has_the_identity_of_its_main_checkout() {

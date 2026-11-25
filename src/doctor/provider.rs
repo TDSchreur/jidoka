@@ -13,10 +13,10 @@ use std::{
 const AZURE_PAT: &str = "AZURE_DEVOPS_EXT_PAT";
 
 pub(super) fn checks(project: &Path, machine: &Machine) -> Vec<Check> {
-    let host = match detect_host(&|args| git_output(project, args)) {
+    let host = match detect_host(&|args| git_output(machine.git, project, args)) {
         Ok(origin) => origin.host,
         // Detection asks for origin first, so a failure here with no origin means there is none.
-        Err(_) if git_output(project, &["remote", "get-url", "origin"]).is_none() => {
+        Err(_) if git_output(machine.git, project, &["remote", "get-url", "origin"]).is_none() => {
             return vec![Check::skipped(
                 "host",
                 "there is no `origin` remote, so the pull request host was not checked",

@@ -1,55 +1,10 @@
 //! `jidoka pr open` with real git in temporary repositories (a local bare remote) and a fake host.
 
 use super::*;
+use crate::git::fixture::{self, real_path, run_git};
 use crate::pr_host::{FakeHost, Host, OpenPr, Origin};
-use std::{cell::RefCell, fs, path::Path, process::Command};
+use std::{cell::RefCell, fs, path::Path};
 use tempfile::TempDir;
-
-/// The plain path form git prints; on Windows `canonicalize` gives a `\\?\` path that git reads as a URL.
-fn real_path(path: &Path) -> PathBuf {
-    let real = path.canonicalize().unwrap();
-    match real.to_string_lossy().strip_prefix(r"\\?\") {
-        Some(plain) => PathBuf::from(plain),
-        None => real,
-    }
-}
-
-fn isolated(command: &mut Command) -> &mut Command {
-    command
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_COUNT", "1")
-        .env("GIT_CONFIG_KEY_0", "safe.bareRepository")
-        .env("GIT_CONFIG_VALUE_0", "all")
-        .env(
-            "GIT_CONFIG_GLOBAL",
-            std::env::temp_dir().join("jidoka-tests-no-such-gitconfig"),
-        )
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-}
-
-fn run_git(dir: &Path, args: &[&str]) -> String {
-    let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(dir)
-        .args([
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@example.com",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(args);
-    let output = isolated(&mut command).output().unwrap();
-    assert!(
-        output.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
-}
 
 /// A bare remote with `develop`, a clone `repo` (not kept), and a worktree `wt` on a branch `feature` with one commit.
 struct Project {
@@ -75,9 +30,15 @@ impl Project {
         );
         run_git(&seed, &["push", "-q", "origin", "develop"]);
         let repo = root.join("repo");
-        let mut clone = Command::new("git");
-        clone.args(["clone", "-q"]).arg(&remote).arg(&repo);
-        assert!(isolated(&mut clone).output().unwrap().status.success());
+        run_git(
+            &root,
+            &[
+                "clone",
+                "-q",
+                remote.to_str().unwrap(),
+                repo.to_str().unwrap(),
+            ],
+        );
         let wt = root.join("wt");
         run_git(
             &repo,
@@ -100,18 +61,16 @@ impl Project {
     }
 
     fn remote_branch(&self, branch: &str) -> Option<String> {
-        let mut command = Command::new("git");
-        command.arg("-C").arg(&self.remote).args([
-            "rev-parse",
-            "--verify",
-            "-q",
-            &format!("refs/heads/{branch}"),
-        ]);
-        let output = isolated(&mut command).output().unwrap();
-        output
-            .status
-            .success()
-            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        fixture::git(
+            &self.remote,
+            &[
+                "rev-parse",
+                "--verify",
+                "-q",
+                &format!("refs/heads/{branch}"),
+            ],
+        )
+        .ok()
     }
 }
 
@@ -131,17 +90,7 @@ impl Git for FakeGit {
                 .clone()
                 .unwrap_or_else(|| "https://github.com/o/r.git".into()));
         }
-        let mut command = Command::new("git");
-        command.arg("-C").arg(dir).args(args).env("LC_ALL", "C");
-        let output = isolated(&mut command).output().map_err(|e| e.to_string())?;
-        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_string();
-        if output.status.success() {
-            Ok(text(&output.stdout))
-        } else if output.stderr.is_empty() {
-            Err(text(&output.stdout))
-        } else {
-            Err(text(&output.stderr))
-        }
+        fixture::git(dir, args)
     }
 }
 
@@ -299,9 +248,15 @@ fn a_rejected_push_says_to_merge_and_never_forces() {
     let project = Project::new();
     // The remote already has a different commit on the branch.
     let other = project.wt.parent().unwrap().join("other");
-    let mut clone = Command::new("git");
-    clone.args(["clone", "-q"]).arg(&project.remote).arg(&other);
-    assert!(isolated(&mut clone).output().unwrap().status.success());
+    run_git(
+        project.wt.parent().unwrap(),
+        &[
+            "clone",
+            "-q",
+            project.remote.to_str().unwrap(),
+            other.to_str().unwrap(),
+        ],
+    );
     run_git(
         &other,
         &["checkout", "-q", "-b", "feature", "origin/develop"],
