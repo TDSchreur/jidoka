@@ -5,6 +5,7 @@
 //! belongs to neither. Totals and categories stay with the reports.
 
 use crate::{
+    agent::Agent,
     run::{Run, Stage},
     usage::agent_logs::{
         LogSession, ReadLimits, ReadResult, Response, Roots, RunWindow, read_sessions,
@@ -162,13 +163,14 @@ impl<'a> SessionScan<'a> {
     fn recorded_not_found_note(&self) -> String {
         let roots = &self.roots;
         // CLAUDE_CONFIG_DIR points to the directory that contains projects.
-        let claude = roots.claude.parent().unwrap_or(&roots.claude);
+        let claude = roots.get(Agent::Claude);
+        let claude = claude.parent().unwrap_or(claude);
         format!(
             "{RECORDED_NOT_FOUND}: {} (scanned folders: {}, {}, {}); for Claude Code, set CLAUDE_CONFIG_DIR to the Claude folder that holds the sessions",
             self.target.sessions.join(", "),
             claude.display(),
-            roots.codex.display(),
-            roots.copilot.display()
+            roots.get(Agent::Codex).display(),
+            roots.get(Agent::Copilot).display()
         )
     }
 

@@ -47,11 +47,10 @@ fn write_session(home: &Path, session: &str, lines: &[String]) {
 
 /// The log folders of an environment whose Claude Code home is `home`.
 fn roots(home: &Path) -> Roots {
-    Roots {
-        claude: home.join("projects"),
-        codex: home.join("codex/sessions"),
-        copilot: home.join("copilot/session-state"),
-    }
+    Roots::from_homes(|agent| match agent {
+        Agent::Claude => home.to_path_buf(),
+        Agent::Codex | Agent::Copilot => home.join(agent.name()),
+    })
 }
 
 fn scan_of<'a>(target: &'a Run, runs: &'a [Run], home: &Path) -> SessionScan<'a> {

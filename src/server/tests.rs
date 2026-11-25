@@ -313,11 +313,7 @@ async fn fetch(api: &Client, id: &str) -> (HttpStatus, Option<Run>) {
 
 /// A dashboard whose usage collection reads fixture logs under `home` instead of a user's own.
 async fn client_collecting(dir: &TestDir, home: &Path, enabled: bool) -> Client {
-    let roots = crate::usage::agent_logs::Roots {
-        claude: home.join("claude/projects"),
-        codex: home.join("codex/sessions"),
-        copilot: home.join("copilot/session-state"),
-    };
+    let roots = crate::usage::agent_logs::Roots::from_homes(|agent| home.join(agent.name()));
     let settings = UsageSettings {
         enabled,
         roots,
@@ -390,11 +386,7 @@ async fn usage_is_collected_in_the_background_when_a_run_moves_on() {
     let holder = std::thread::spawn(move || {
         let settings = UsageSettings {
             enabled: false,
-            roots: crate::usage::agent_logs::Roots {
-                claude: Default::default(),
-                codex: Default::default(),
-                copilot: Default::default(),
-            },
+            roots: crate::usage::agent_logs::Roots::from_homes(|_| Default::default()),
             budget: std::time::Duration::from_secs(5),
             settle: Vec::new(),
         };

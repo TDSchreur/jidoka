@@ -7,16 +7,12 @@
 //! compaction) and of activity, as timestamps only.
 //!
 //! Formats (see the README for what is validated): Claude Code transcripts and their subagent transcripts,
-//! Codex rollout files, and Copilot `events.jsonl` files. Each agent has one adapter, and both reports read
-//! from it.
+//! Codex rollout files, and Copilot `events.jsonl` files. Each Agent has one adapter, an [`AgentLogs`] in
+//! [`READERS`], and both reports read through it.
 
 mod claude;
 mod codex;
 mod copilot;
-
-pub(crate) use claude::read_claude;
-pub(crate) use codex::read_codex;
-pub(crate) use copilot::read_copilot;
 
 use crate::{
     agent::Agent,
@@ -63,51 +59,88 @@ impl Default for ReadLimits {
     }
 }
 
-/// Where each agent keeps its session logs.
+/// The adapter that reads one Agent's session logs. Each Agent has exactly one, in [`READERS`]; adding an
+/// Agent means adding its adapter there.
+pub(crate) trait AgentLogs: Sync {
+    /// The Agent whose logs this adapter reads.
+    fn agent(&self) -> Agent;
+
+    /// The log folder inside the Agent home, such as `projects` in `~/.claude`.
+    fn log_folder(&self) -> &'static str;
+
+    /// Reads the logs under `root`, the Agent's log folder: every session that executed a Jidoka command
+    /// naming a run in the window, or was recorded for one (the Session claim), within `deadline` and
+    /// `limits`.
+    fn read(
+        &self,
+        root: &Path,
+        window: &RunWindow,
+        deadline: Instant,
+        limits: ReadLimits,
+    ) -> LogRead;
+}
+
+/// The adapter of every Agent, in the order their logs are read and their notes listed.
+pub(crate) const READERS: [&dyn AgentLogs; 3] = [
+    &claude::ClaudeLogs,
+    &codex::CodexLogs,
+    &copilot::CopilotLogs,
+];
+
+/// Where each Agent keeps its session logs.
 #[derive(Clone, Debug)]
 pub(crate) struct Roots {
-    pub(crate) claude: PathBuf,
-    pub(crate) codex: PathBuf,
-    pub(crate) copilot: PathBuf,
+    folders: BTreeMap<&'static str, PathBuf>,
 }
 
 impl Roots {
+    /// The log folder in each Agent home that `home_of` gives.
+    pub(crate) fn from_homes(home_of: impl Fn(Agent) -> PathBuf) -> Self {
+        let folders = READERS
+            .iter()
+            .map(|reader| {
+                let agent = reader.agent();
+                (agent.name(), home_of(agent).join(reader.log_folder()))
+            })
+            .collect();
+        Self { folders }
+    }
+
     /// The log folders in each Agent home under the user's `home`, as `Agent::home` finds them.
     pub(crate) fn from_home(home: &Path, var: &dyn Fn(&str) -> Option<OsString>) -> Self {
-        Self {
-            claude: Agent::Claude.home(home, var).join(CLAUDE_LOGS),
-            codex: Agent::Codex.home(home, var).join(CODEX_LOGS),
-            copilot: Agent::Copilot.home(home, var).join(COPILOT_LOGS),
-        }
+        Self::from_homes(|agent| agent.home(home, var))
+    }
+
+    /// The log folder of `agent`.
+    ///
+    /// # Panics
+    ///
+    /// When `agent` has no adapter in [`READERS`], which a test rules out.
+    pub(crate) fn get(&self, agent: Agent) -> &Path {
+        self.folders
+            .get(agent.name())
+            .unwrap_or_else(|| panic!("{} has no log reader", agent.name()))
     }
 
     /// These roots with the log folder of each agent home `run` recorded in place of this environment's, so
-    /// a run is read from the home its agent ran in. A recorded home that is not absolute is ignored.
+    /// a run is read from the home its agent ran in. A recorded home that is not absolute is ignored, and so
+    /// is one of an unknown agent in an edited record (the server accepts only known agents).
     pub(crate) fn for_run(&self, run: &Run) -> Self {
         let mut roots = self.clone();
-        for (name, home) in &run.agent_homes {
-            let home = Path::new(home);
-            // The server accepts only known agents; an unknown one in an edited record is ignored.
-            let Some(agent) = Agent::parse(name) else {
+        for reader in READERS {
+            let Some(home) = run.agent_homes.get(reader.agent().name()) else {
                 continue;
             };
-            if !home.is_absolute() {
-                continue;
-            }
-            match agent {
-                Agent::Claude => roots.claude = home.join(CLAUDE_LOGS),
-                Agent::Codex => roots.codex = home.join(CODEX_LOGS),
-                Agent::Copilot => roots.copilot = home.join(COPILOT_LOGS),
+            let home = Path::new(home);
+            if home.is_absolute() {
+                roots
+                    .folders
+                    .insert(reader.agent().name(), home.join(reader.log_folder()));
             }
         }
         roots
     }
 }
-
-/// The log folder inside each agent's home.
-const CLAUDE_LOGS: &str = "projects";
-const CODEX_LOGS: &str = "sessions";
-const COPILOT_LOGS: &str = "session-state";
 
 /// Something that limits what a session's usage covers.
 #[derive(Debug)]
@@ -583,11 +616,8 @@ pub(crate) fn read_sessions(
     limits: ReadLimits,
 ) -> ReadResult {
     let mut out = ReadResult::default();
-    for read in [
-        read_claude(&roots.claude, window, deadline, limits),
-        read_codex(&roots.codex, window, deadline, limits),
-        read_copilot(&roots.copilot, window, deadline, limits),
-    ] {
+    for reader in READERS {
+        let read = reader.read(roots.get(reader.agent()), window, deadline, limits);
         out.roots_found += usize::from(read.root_found);
         out.timed_out |= read.timed_out;
         out.truncated |= read.truncated;

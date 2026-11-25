@@ -3,6 +3,29 @@
 
 use super::*;
 
+/// The Claude Code adapter.
+pub(crate) struct ClaudeLogs;
+
+impl AgentLogs for ClaudeLogs {
+    fn agent(&self) -> Agent {
+        Agent::Claude
+    }
+
+    fn log_folder(&self) -> &'static str {
+        "projects"
+    }
+
+    fn read(
+        &self,
+        root: &Path,
+        window: &RunWindow,
+        deadline: Instant,
+        limits: ReadLimits,
+    ) -> LogRead {
+        read_claude(root, window, deadline, limits)
+    }
+}
+
 /// What one Claude Code log file gave. Lines that looked like a response but could not be used are
 /// counted, so the notes can say so instead of silently looking complete.
 #[derive(Default)]
@@ -217,12 +240,7 @@ fn claude_skills(text: &str, parsed: &mut Markers) {
     clippy::too_many_lines,
     reason = "walks the session folders, parses each log with its subagents and merges the responses in one pass"
 )]
-pub(crate) fn read_claude(
-    root: &Path,
-    window: &RunWindow,
-    deadline: Instant,
-    limits: ReadLimits,
-) -> LogRead {
+fn read_claude(root: &Path, window: &RunWindow, deadline: Instant, limits: ReadLimits) -> LogRead {
     let mut out = LogRead {
         root_found: root.is_dir(),
         ..LogRead::default()
@@ -264,8 +282,7 @@ pub(crate) fn read_claude(
             let mut markers = Markers::default();
             claude_pauses(&text, &mut markers);
             claude_skills(&text, &mut markers);
-            markers.attention =
-                crate::usage::attention::signals(crate::agent::Agent::Claude, &text);
+            markers.attention = crate::usage::attention::claude_signals(&text);
             drop(text);
             // The subagents of a session are in its own folder, which is not followed if it is a link.
             let session_dir = slug.path().join(&stem);

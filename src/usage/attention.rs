@@ -1,5 +1,5 @@
 //! Input and response boundaries in coordinator session logs. Conversation text is never retained.
-use crate::{agent::Agent, usage::agent_logs::timestamp};
+use crate::usage::agent_logs::timestamp;
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -228,19 +228,31 @@ impl Parser {
     }
 }
 
-/// Extract signals from one coordinator transcript in log order. The caller must associate each
-/// transcript with a run and keep sessions separate. Malformed and untimestamped records are ignored.
-pub(crate) fn signals(agent: Agent, text: &str) -> Vec<(u64, Signal)> {
+/// The signals of one Claude Code coordinator transcript; see [`signals`].
+pub(crate) fn claude_signals(text: &str) -> Vec<(u64, Signal)> {
+    signals(text, Parser::claude)
+}
+
+/// The signals of one Codex coordinator rollout; see [`signals`].
+pub(crate) fn codex_signals(text: &str) -> Vec<(u64, Signal)> {
+    signals(text, Parser::codex)
+}
+
+/// The signals of one Copilot CLI coordinator transcript; see [`signals`].
+pub(crate) fn copilot_signals(text: &str) -> Vec<(u64, Signal)> {
+    signals(text, Parser::copilot)
+}
+
+/// Extract signals from one coordinator transcript in log order, reading each record with the agent's
+/// `rule`. The caller must associate each transcript with a run and keep sessions separate. Malformed and
+/// untimestamped records are ignored.
+fn signals(text: &str, rule: fn(&mut Parser, &Value) -> Option<Signal>) -> Vec<(u64, Signal)> {
     let mut parser = Parser::default();
     text.lines()
         .filter_map(|line| {
             let record: Value = serde_json::from_str(line).ok()?;
             let at = timestamp(record.get("timestamp"))?;
-            let signal = match agent {
-                Agent::Claude => parser.claude(&record),
-                Agent::Codex => parser.codex(&record),
-                Agent::Copilot => parser.copilot(&record),
-            }?;
+            let signal = rule(&mut parser, &record)?;
             Some((at, signal))
         })
         .collect()
@@ -263,8 +275,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n")
     }
-    fn kinds(agent: Agent, records: &[Value]) -> Vec<Signal> {
-        signals(agent, &transcript(records))
+    fn kinds(read: fn(&str) -> Vec<(u64, Signal)>, records: &[Value]) -> Vec<Signal> {
+        read(&transcript(records))
             .into_iter()
             .map(|(_, signal)| signal)
             .collect()
@@ -274,7 +286,7 @@ mod tests {
     fn claude_requests_responses_and_unrelated_tool_results() {
         assert_eq!(
             kinds(
-                Agent::Claude,
+                claude_signals,
                 &[
                     json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"AskUserQuestion","id":"a"}]}}),
                     json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"other"}]}}),
@@ -309,7 +321,7 @@ mod tests {
     fn claude_background_agent_and_command_do_not_finish() {
         assert_eq!(
             kinds(
-                Agent::Claude,
+                claude_signals,
                 &[
                     launched("a1"),
                     command("c1"),
@@ -329,7 +341,7 @@ mod tests {
     fn claude_question_during_background_work_is_requested_and_kept() {
         assert_eq!(
             kinds(
-                Agent::Claude,
+                claude_signals,
                 &[
                     launched("a1"),
                     json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"AskUserQuestion","id":"q"}]}}),
@@ -345,7 +357,7 @@ mod tests {
     fn claude_consumes_all_results_in_one_message() {
         assert_eq!(
             kinds(
-                Agent::Claude,
+                claude_signals,
                 &[
                     json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"AskUserQuestion","id":"a"},{"type":"tool_use","name":"AskUserQuestion","id":"b"}]}}),
                     json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a"},{"type":"tool_result","tool_use_id":"b"}]}}),
@@ -360,7 +372,7 @@ mod tests {
     fn codex_async_tool_output_does_not_resume() {
         assert_eq!(
             kinds(
-                Agent::Codex,
+                codex_signals,
                 &[
                     json!({"type":"event_msg","payload":{"type":"task_started"}}),
                     json!({"type":"response_item","payload":{"type":"function_call","name":"request_user_input_async","call_id":"a"}}),
@@ -383,7 +395,7 @@ mod tests {
     fn codex_matching_synchronous_answer_and_user_message_resume() {
         assert_eq!(
             kinds(
-                Agent::Codex,
+                codex_signals,
                 &[
                     json!({"type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"a"}}),
                     json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"other"}}),
@@ -405,7 +417,7 @@ mod tests {
     fn copilot_matches_human_response_and_final_turn() {
         assert_eq!(
             kinds(
-                Agent::Copilot,
+                copilot_signals,
                 &[
                     json!({"type":"tool.execution_start","data":{"toolName":"ask_user","toolCallId":"a"}}),
                     json!({"type":"human_response.recorded","data":{"toolCallId":"other"}}),
@@ -428,7 +440,7 @@ mod tests {
     fn copilot_subagent_events_do_not_change_coordinator_attention() {
         assert_eq!(
             kinds(
-                Agent::Copilot,
+                copilot_signals,
                 &[
                     json!({"type":"tool.execution_start","data":{"toolName":"ask_user","toolCallId":"coordinator"}}),
                     json!({"type":"user.message","data":{"parentAgentTaskId":"subagent","content":"continue"}}),
@@ -463,7 +475,7 @@ mod tests {
         records
             .push(json!({"type":"subagent.completed","agentId":"a1","data":{"toolCallId":"t1"}}));
         records.extend(final_turn());
-        assert_eq!(kinds(Agent::Copilot, &records), [Signal::Finished]);
+        assert_eq!(kinds(copilot_signals, &records), [Signal::Finished]);
     }
 
     #[test]
@@ -474,14 +486,14 @@ mod tests {
         records.extend(final_turn());
         records.push(json!({"type":"system.notification","data":{"kind":{"type":"shell_completed","shellId":"41","exitCode":0}}}));
         records.extend(final_turn());
-        assert_eq!(kinds(Agent::Copilot, &records), [Signal::Finished]);
+        assert_eq!(kinds(copilot_signals, &records), [Signal::Finished]);
     }
 
     #[test]
     fn copilot_ask_user_is_requested_while_background_work_runs() {
         assert_eq!(
             kinds(
-                Agent::Copilot,
+                copilot_signals,
                 &[
                     json!({"type":"tool.execution_start","data":{"toolCallId":"t1","toolName":"task","arguments":{"mode":"background"}}}),
                     json!({"type":"tool.execution_start","data":{"toolName":"ask_user","toolCallId":"q"}}),
@@ -493,8 +505,8 @@ mod tests {
 
     #[test]
     fn ignores_bad_lines_and_unfinished_copilot_messages() {
-        assert!(signals(Agent::Codex, "bad json\n{\"type\":\"event_msg\"}").is_empty());
-        assert!(kinds(Agent::Copilot, &[
+        assert!(codex_signals("bad json\n{\"type\":\"event_msg\"}").is_empty());
+        assert!(kinds(copilot_signals, &[
             json!({"type":"assistant.message","data":{"content":"working","toolRequests":[{"name":"shell"}]}}),
             json!({"type":"assistant.turn_end","data":{}}),
         ]).is_empty());

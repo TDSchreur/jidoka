@@ -6,6 +6,29 @@
 
 use super::*;
 
+/// The Codex adapter.
+pub(crate) struct CodexLogs;
+
+impl AgentLogs for CodexLogs {
+    fn agent(&self) -> Agent {
+        Agent::Codex
+    }
+
+    fn log_folder(&self) -> &'static str {
+        "sessions"
+    }
+
+    fn read(
+        &self,
+        root: &Path,
+        window: &RunWindow,
+        deadline: Instant,
+        limits: ReadLimits,
+    ) -> LogRead {
+        read_codex(root, window, deadline, limits)
+    }
+}
+
 /// The most of one JavaScript snippet that is read. A patch can carry whole files.
 const MAX_SNIPPET_CHARS: usize = 256 * 1024;
 
@@ -672,12 +695,7 @@ fn recorded_in_name<'a>(name: &str, recorded: &HashSet<&'a str>) -> Option<&'a s
     clippy::too_many_lines,
     reason = "walks the day folders, picks the claimed roots, parses their rollouts and merges the responses in one pass"
 )]
-pub(crate) fn read_codex(
-    root: &Path,
-    window: &RunWindow,
-    deadline: Instant,
-    limits: ReadLimits,
-) -> LogRead {
+fn read_codex(root: &Path, window: &RunWindow, deadline: Instant, limits: ReadLimits) -> LogRead {
     let mut out = LogRead {
         root_found: root.is_dir(),
         ..LogRead::default()
@@ -767,8 +785,7 @@ pub(crate) fn read_codex(
             continue;
         };
         let parsed = parse_codex(&text, &rollout.root, rollout.subagent, &window.ids);
-        let attention = (!rollout.subagent)
-            .then(|| crate::usage::attention::signals(crate::agent::Agent::Codex, &text));
+        let attention = (!rollout.subagent).then(|| crate::usage::attention::codex_signals(&text));
         drop(text);
         let entry = by_root.entry(rollout.root.clone()).or_insert_with(|| Root {
             claims: HashSet::new(),
