@@ -245,6 +245,21 @@ fn build_instructions_are_focused_and_full_explains_each_ticket_gate() {
 }
 
 #[test]
+fn codex_approvals_are_shown_only_to_codex_or_an_unknown_agent() {
+    let shown = |routing: Option<ModelRouting>| {
+        build(&run(Mode::Balanced, Stage::Finish, routing))
+            .unwrap()
+            .instructions
+            .contains("## Codex command approvals")
+    };
+    let with = |agent| ModelRouting { agent, ..routing() };
+    assert!(!shown(Some(with(Agent::Claude))));
+    assert!(!shown(Some(with(Agent::Copilot))));
+    assert!(shown(Some(with(Agent::Codex))));
+    assert!(shown(None));
+}
+
+#[test]
 fn finish_includes_the_pull_request_procedure_and_a_done_run_has_no_instructions() {
     let finish = build(&run(Mode::Balanced, Stage::Finish, None)).unwrap();
     assert!(finish.instructions.contains("## Pull request and CI"));

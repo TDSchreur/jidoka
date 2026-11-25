@@ -241,7 +241,8 @@ pub(crate) fn stage_gates(run: &Run, mut current: Vec<Evaluation>) -> Vec<StageG
 
 include!(concat!(env!("OUT_DIR"), "/stage_chunks.rs"));
 
-fn instructions(mode: Mode, stage: Stage, routing: Option<Agent>) -> String {
+/// `agent` is the run's coding agent when known; `routing` is the agent only when this stage is routed.
+fn instructions(mode: Mode, stage: Stage, agent: Option<Agent>, routing: Option<Agent>) -> String {
     let mode_dir = match mode {
         Mode::Fast => "fast",
         Mode::Balanced => "balanced",
@@ -276,9 +277,13 @@ fn instructions(mode: Mode, stage: Stage, routing: Option<Agent>) -> String {
         Stage::Check => "routing-check",
         Stage::Finish => "routing-finish",
     });
-    for name in shared
-        .iter()
-        .copied()
+    // Only Codex needs its approval rules; show them when the agent is unknown too.
+    let codex_approvals = matches!(agent, None | Some(Agent::Codex)).then_some("codex-approvals");
+    let reporting = shared.iter().copied().take(1);
+    let rest = shared.iter().copied().skip(1);
+    for name in reporting
+        .chain(codex_approvals)
+        .chain(rest)
         .chain(routing.map(|_| "stage-routing"))
         .chain(routed)
         .chain(stage_routing)
@@ -446,6 +451,7 @@ fn stage_instructions(run: &Run, mode: Mode, selection: Option<&checks::Selectio
     let mut stage_instructions = instructions(
         mode,
         run.stage,
+        run.model_routing.as_ref().map(|routing| routing.agent),
         run.model_routing
             .as_ref()
             .filter(|routing| {
