@@ -1,5 +1,7 @@
 //! `jidoka run cleanup`: removes the worktree and local branch of a Run whose pull request merged, and only
-//! when no work would be lost. The remote branch is never touched.
+//! when no work would be lost. With `--discard` it also removes the worktree and branch of a Run whose pull
+//! request did not merge (none recorded, or closed), refusing to lose work unless `--force` is given. The
+//! remote branch is never touched.
 
 use crate::{
     git::{self, Git, Worktree, first_line, valid_branch_name},
@@ -44,6 +46,32 @@ impl Cleaned {
     }
 }
 
+/// What `jidoka run cleanup` is asked to remove.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// The run's pull request merged and nothing may be lost.
+    Merged,
+    /// The run's pull request did not merge. Uncommitted changes and unpushed commits are lost only with `force`.
+    Discard { force: bool },
+}
+
+/// Reads the options after the run id: `--discard`, and `--force` together with it.
+pub(crate) fn parse_options(options: &[&str]) -> Result<Mode, String> {
+    let (mut discard, mut force) = (false, false);
+    for option in options {
+        match *option {
+            "--discard" => discard = true,
+            "--force" => force = true,
+            other => return Err(format!("Unknown option: {other}")),
+        }
+    }
+    match (discard, force) {
+        (false, false) => Ok(Mode::Merged),
+        (true, force) => Ok(Mode::Discard { force }),
+        (false, true) => Err("`--force` only works together with `--discard`".to_string()),
+    }
+}
+
 fn refuse<T>(message: impl Into<String>) -> Result<T, ToolProblem> {
     Err(ToolProblem(message.into()))
 }
@@ -52,8 +80,9 @@ fn git_problem(what: &str, error: &str) -> ToolProblem {
     ToolProblem(format!("`git {what}` failed: {}", shown(first_line(error))))
 }
 
-/// Removes the Run's worktree and local branch when its pull request is merged and nothing would be lost.
-/// Every refusal comes before anything is removed. `cwd` is where the command runs.
+/// Removes the Run's worktree and local branch when its pull request is merged (or, with `Mode::Discard`, is
+/// not open) and nothing would be lost. Every refusal comes before anything is removed. `cwd` is where the
+/// command runs.
 #[expect(
     clippy::too_many_lines,
     reason = "checks PR merge state, then removes worktree and branch with a step report for each"
@@ -63,6 +92,7 @@ pub(crate) fn cleanup(
     host: &dyn PrHost,
     git: &dyn Git,
     cwd: &Path,
+    mode: Mode,
 ) -> Result<Cleaned, ToolProblem> {
     if run.worktree.is_none() && run.branch.is_none() {
         return Ok(Cleaned {
@@ -70,19 +100,34 @@ pub(crate) fn cleanup(
             branch: Step::NotRecorded,
         });
     }
-    let Some(url) = run.pr.as_deref() else {
-        return refuse(
-            "The run has no pull request recorded, so nothing shows its work is merged. Nothing was removed.",
-        );
+    let pull_request = match (mode, run.pr.as_deref()) {
+        (Mode::Merged, None) => {
+            return refuse(
+                "The run has no pull request recorded, so nothing shows its work is merged. Nothing was removed. To remove the worktree and branch anyway, use `--discard`.",
+            );
+        }
+        (Mode::Discard { .. }, None) => None,
+        (_, Some(url)) => Some(host.head(url)?),
     };
-    let pull_request = host.head(url)?;
-    if pull_request.state != PrState::Merged {
-        return refuse(format!(
-            "The pull request is not merged (it is {}). Nothing was removed.",
-            pull_request.state.label()
-        ));
+    if let Some(pull_request) = &pull_request {
+        match (mode, pull_request.state) {
+            (Mode::Merged, PrState::Merged)
+            | (Mode::Discard { .. }, PrState::Merged | PrState::Closed) => {}
+            (Mode::Merged, state) => {
+                return refuse(format!(
+                    "The pull request is not merged (it is {}). Nothing was removed. To remove the worktree and branch anyway, close the pull request and use `--discard`.",
+                    state.label()
+                ));
+            }
+            (Mode::Discard { .. }, state) => {
+                return refuse(format!(
+                    "The pull request is still {}. Close it first. Nothing was removed.",
+                    state.label()
+                ));
+            }
+        }
     }
-    if run.worktree.is_some() && run.branch.is_none() {
+    if mode == Mode::Merged && run.worktree.is_some() && run.branch.is_none() {
         return refuse(
             "The run records a worktree but no branch, so nothing ties that worktree to the pull request. Nothing was removed.",
         );
@@ -108,16 +153,21 @@ pub(crate) fn cleanup(
             if !valid_branch_name(branch) {
                 return refuse("The recorded branch name is not valid. Nothing was removed.");
             }
-            if pull_request.branch != branch {
-                return refuse(format!(
-                    "The pull request comes from branch {}, not the run's branch {}. Nothing was removed.",
-                    shown(&pull_request.branch),
-                    shown(branch)
-                ));
+            // Only a merge says anything about the branch; a discard rests on the work check below.
+            match (mode, pull_request.as_ref()) {
+                (Mode::Merged, Some(pull_request)) if pull_request.branch != branch => {
+                    return refuse(format!(
+                        "The pull request comes from branch {}, not the run's branch {}. Nothing was removed.",
+                        shown(&pull_request.branch),
+                        shown(branch)
+                    ));
+                }
+                (Mode::Merged, pull_request) => pull_request,
+                (Mode::Discard { .. }, _) => None,
             }
-            Some(pull_request)
         }
     };
+    let force = matches!(mode, Mode::Discard { force: true });
 
     // Is the worktree still registered with the repository? `listed` is the path as git printed it.
     let entries = worktrees(git, repository)?;
@@ -187,9 +237,13 @@ pub(crate) fn cleanup(
         let status = git
             .git(Path::new(path), &["status", "--porcelain"])
             .map_err(|e| git_problem("status", &e))?;
-        if !status.is_empty() {
+        if !status.is_empty() && !force {
+            let hint = match mode {
+                Mode::Merged => "Commit or discard them yourself.",
+                Mode::Discard { .. } => "Commit them, or use `--force` to lose them.",
+            };
             return refuse(format!(
-                "The worktree has uncommitted changes. Commit or discard them yourself. Nothing was removed.\n{}",
+                "The worktree has uncommitted changes. {hint} Nothing was removed.\n{}",
                 shown(&status)
             ));
         }
@@ -209,17 +263,33 @@ pub(crate) fn cleanup(
         }
     };
     let mut checked = None;
-    if let (true, Some(branch), Some(head)) = (branch_exists, run.branch.as_deref(), &head) {
+    if let (true, Some(branch)) = (branch_exists, run.branch.as_deref()) {
         let reference = format!("refs/heads/{branch}");
         let local = git
             .git(repository, &["rev-parse", &reference])
             .map_err(|e| git_problem("rev-parse", &e))?;
-        let merged = &head.commit;
-        if !local.eq_ignore_ascii_case(merged) {
-            return refuse(format!(
-                "The local branch {} is at {local}, but the merged pull request ended at {merged}. It may hold commits that were never pushed. Nothing was removed.",
-                shown(branch)
-            ));
+        if let Some(head) = &head {
+            let merged = &head.commit;
+            if !local.eq_ignore_ascii_case(merged) {
+                return refuse(format!(
+                    "The local branch {} is at {local}, but the merged pull request ended at {merged}. It may hold commits that were never pushed. Nothing was removed.",
+                    shown(branch)
+                ));
+            }
+        } else if !force {
+            let unpushed = git
+                .git(
+                    repository,
+                    &["rev-list", "--oneline", &reference, "--not", "--remotes"],
+                )
+                .map_err(|e| git_problem("rev-list", &e))?;
+            if !unpushed.is_empty() {
+                return refuse(format!(
+                    "The local branch {} has commits that no remote branch has (as of the last fetch). Push them, or use `--force` to lose them. Nothing was removed.\n{}",
+                    shown(branch),
+                    shown(&unpushed)
+                ));
+            }
         }
         checked = Some(local);
     }
@@ -238,7 +308,13 @@ pub(crate) fn cleanup(
         },
     };
     if let Some(Target { listed, .. }) = worktree {
-        git.git(repository, &["worktree", "remove", "--", &listed])
+        // Only a forced discard may remove a worktree that has uncommitted changes.
+        let remove: &[&str] = if force {
+            &["worktree", "remove", "--force", "--", &listed]
+        } else {
+            &["worktree", "remove", "--", &listed]
+        };
+        git.git(repository, remove)
             .map_err(|e| git_problem("worktree remove", &e))?;
         // The pre-checks already ran, so this re-list only guards against a race since then.
         if worktrees(git, repository)?
