@@ -1,5 +1,4 @@
-//! Categories of model requests for `jidoka run requests`, and the shell-command parsing that finds which runs
-//! a session's commands name.
+//! Categories of model requests for `jidoka run requests`, read from the shell commands of their tool calls.
 //!
 //! Of each request it keeps the token counts and a category taken from the Bash commands of its
 //! tool calls. The command text is dropped as soon as it is classified: nothing but categories, flags and
