@@ -1,5 +1,5 @@
 use super::*;
-use crate::{run::NewRun, test_support::TestDir};
+use crate::test_support::{TestDir, new_run};
 
 struct Fixture {
     dir: TestDir,
@@ -19,17 +19,7 @@ fn fixture() -> Fixture {
 
 impl Fixture {
     fn run(&self) -> String {
-        self.runs
-            .create(NewRun {
-                title: "task".into(),
-                project: "/work".into(),
-                repository: Some("/work".into()),
-                session: None,
-                agent_homes: Default::default(),
-                model_routing: None,
-            })
-            .unwrap()
-            .id
+        new_run(&self.runs, "task").id
     }
 
     fn group(&self, runs: &[&str]) -> Group {
