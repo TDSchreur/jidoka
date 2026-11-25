@@ -119,6 +119,11 @@ pub(crate) fn cleanup(
                     state.label()
                 ));
             }
+            (Mode::Discard { .. }, PrState::Unknown) => {
+                return refuse(
+                    "The state of the pull request is unknown, so it cannot be told whether it is still open. Nothing was removed.",
+                );
+            }
             (Mode::Discard { .. }, state) => {
                 return refuse(format!(
                     "The pull request is still {}. Close it first. Nothing was removed.",
