@@ -33,7 +33,7 @@ fn response(seconds: u64, id: &str, claims: Option<&str>) -> String {
             "input": {"command": format!("jidoka run update {run} build running")}}),
         None => json!({"type": "text", "text": "done"}),
     };
-    json!({"type": "assistant", "timestamp": crate::usage::iso_timestamp(at(seconds)), "requestId": format!("req-{id}"),
+    json!({"type": "assistant", "timestamp": crate::timestamps::iso(at(seconds)), "requestId": format!("req-{id}"),
         "isSidechain": false, "message": {"id": id, "model": "claude-test", "role": "assistant", "content": [block],
         "usage": {"input_tokens": 1, "output_tokens": 1}}})
     .to_string()

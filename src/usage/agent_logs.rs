@@ -21,8 +21,12 @@ pub(crate) use copilot::read_copilot;
 use crate::{
     agent::Agent,
     run::Run,
-    shell_commands::{MAX_COMMAND_BYTES, Variables, run_claims, truncate},
-    usage::{PauseKind, Tokens, overlaps, parse_timestamp},
+    timestamps,
+    usage::{
+        pauses::PauseKind,
+        shell_commands::{MAX_COMMAND_BYTES, Variables, run_claims, truncate},
+        token_usage::Tokens,
+    },
 };
 use serde_json::Value;
 use std::{
@@ -158,7 +162,7 @@ pub(crate) fn count(value: Option<&Value>) -> Option<u64> {
 }
 
 pub(crate) fn timestamp(value: Option<&Value>) -> Option<u64> {
-    parse_timestamp(value?.as_str()?)
+    timestamps::parse(value?.as_str()?)
 }
 
 pub(crate) fn modified_ms(path: &Path) -> Option<u64> {
@@ -228,7 +232,7 @@ pub(crate) fn merge_largest(into: &mut Tokens, other: &Tokens) {
 struct Markers {
     pauses: Vec<(PauseKind, u64)>,
     activity: Vec<u64>,
-    attention: Vec<(u64, crate::attention::Signal)>,
+    attention: Vec<(u64, crate::usage::attention::Signal)>,
     skills: Vec<(u64, String)>,
 }
 
@@ -337,7 +341,7 @@ pub(crate) struct LogSession {
     pub(crate) responses: Vec<Response>,
     pub(crate) pauses: Vec<(PauseKind, u64)>,
     pub(crate) activity: Vec<u64>,
-    pub(crate) attention: Vec<(u64, crate::attention::Signal)>,
+    pub(crate) attention: Vec<(u64, crate::usage::attention::Signal)>,
     pub(crate) skills: Vec<(u64, String)>,
 }
 
@@ -358,6 +362,18 @@ pub(crate) struct LogRead {
     pub(crate) root_found: bool,
     pub(crate) timed_out: bool,
     pub(crate) truncated: bool,
+}
+
+/// Whether two runs were active at the same time.
+pub(crate) fn overlaps(a: &Run, b: &Run) -> bool {
+    let window = |run: &Run| {
+        (
+            run.timeline.first().map_or(u64::MAX, |m| m.at),
+            run.finished_at.unwrap_or(u64::MAX),
+        )
+    };
+    let ((a_start, a_end), (b_start, b_end)) = (window(a), window(b));
+    a_start <= b_end && b_start <= a_end
 }
 
 /// The runs whose sessions one reading looks for, and since when: the target and the runs that overlap its
@@ -485,11 +501,6 @@ fn plain_id(id: &str) -> bool {
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
-}
-
-/// `YYYY-MM-DD` for milliseconds since the epoch, to compare with the day folders.
-pub(crate) fn civil_day(millis: u64) -> String {
-    crate::usage::format_timestamp(millis)[..10].to_string()
 }
 
 // --- reading ----------------------------------------------------------------------------------------

@@ -4,7 +4,10 @@
 #![expect(clippy::too_many_lines, reason = "tests walk whole scenarios")]
 
 use super::*;
-use crate::run::{Run, Stage};
+use crate::{
+    run::{Run, Stage},
+    timestamps,
+};
 use serde_json::json;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
@@ -15,7 +18,7 @@ const RUN_A: &str = "1793872800000000001";
 const RUN_B: &str = "1793872800000000002";
 
 fn iso(offset_seconds: u64) -> String {
-    iso_timestamp(T0 + offset_seconds * 1000)
+    timestamps::iso(T0 + offset_seconds * 1000)
 }
 
 fn run(
@@ -200,47 +203,6 @@ fn copilot_usage(
 
 fn rows_of(usage: &Usage, stage: Stage) -> Vec<&UsageRow> {
     usage.rows.iter().filter(|row| row.stage == stage).collect()
-}
-
-// --- time and numbers -------------------------------------------------------------------------------
-
-#[test]
-fn fresh_tokens_are_input_plus_cache_writes_plus_output_and_unknown_is_not_zero() {
-    let tokens = Tokens {
-        input: Some(10),
-        cache_read: Some(1000),
-        cache_write: Some(20),
-        output: Some(5),
-        reasoning: Some(2),
-    };
-    assert_eq!(
-        tokens.fresh(),
-        Some(35),
-        "cache reads and reasoning are not added"
-    );
-    assert_eq!(
-        Tokens {
-            cache_read: Some(5),
-            ..Tokens::default()
-        }
-        .fresh(),
-        None,
-        "nothing about input or output is unknown, not 0"
-    );
-    let mut sum = Tokens::default();
-    sum.add(&Tokens {
-        input: Some(1),
-        ..Tokens::default()
-    });
-    sum.add(&Tokens {
-        input: Some(2),
-        output: Some(4),
-        ..Tokens::default()
-    });
-    assert_eq!(
-        (sum.input, sum.cache_read, sum.output),
-        (Some(3), None, Some(4))
-    );
 }
 
 // --- the three formats ------------------------------------------------------------------------------
@@ -676,7 +638,7 @@ fn recorded_sessions_in_an_unscanned_folder_get_their_own_reason() {
     assert_eq!(usage.status, UsageStatus::NotTracked);
     let reason = usage.reason.unwrap();
     assert!(
-        reason.starts_with(crate::session_attribution::RECORDED_NOT_FOUND),
+        reason.starts_with(crate::usage::session_attribution::RECORDED_NOT_FOUND),
         "{reason}"
     );
 
@@ -698,7 +660,7 @@ fn recorded_sessions_in_an_unscanned_folder_get_their_own_reason() {
     assert_eq!(usage.status, UsageStatus::NotTracked);
     let reason = usage.reason.unwrap();
     assert!(
-        reason.starts_with(crate::session_attribution::RECORDED_NOT_FOUND),
+        reason.starts_with(crate::usage::session_attribution::RECORDED_NOT_FOUND),
         "{reason}"
     );
     assert!(reason.contains("elsewhere"), "{reason}");
@@ -1073,7 +1035,7 @@ mod auto_block {
 
         /// Appends a log line `ms` after the run began and collects.
         fn log(&mut self, make: impl Fn(&str) -> String, ms: u64) -> Run {
-            let ts = iso_timestamp(self.began + ms);
+            let ts = timestamps::iso(self.began + ms);
             self.lines.push(make(&ts));
             self.world.write("claude/projects/-w/S1.jsonl", &self.lines);
             collect_and_store(&self.store, &self.id, &self.settings).unwrap();
@@ -1149,7 +1111,7 @@ mod auto_block {
     fn explicit_request_survives_later_progress_until_session_response() {
         let mut f = Fixture::new();
         f.lines.push(
-            json!({"type":"assistant", "timestamp":iso_timestamp(f.began + 1_000),
+            json!({"type":"assistant", "timestamp":timestamps::iso(f.began + 1_000),
             "message":{"content":[{"type":"tool_use","name":"AskUserQuestion","id":"a"}]}})
             .to_string(),
         );
@@ -1179,7 +1141,7 @@ mod auto_block {
     fn finished_response_before_progress_does_not_alert() {
         let mut f = Fixture::new();
         f.lines.push(
-            json!({"type":"assistant", "timestamp":iso_timestamp(f.began + 1_000),
+            json!({"type":"assistant", "timestamp":timestamps::iso(f.began + 1_000),
             "message":{"stop_reason":"end_turn"}})
             .to_string(),
         );
@@ -1225,7 +1187,7 @@ mod auto_block {
             "claude/projects/-w/S2.jsonl",
             &[
                 mention(&f.id),
-                json!({"type":"user", "timestamp": iso_timestamp(f.began + 2_000),
+                json!({"type":"user", "timestamp": timestamps::iso(f.began + 2_000),
                 "message":{"content":"Other session"}})
                 .to_string(),
             ],
@@ -1335,7 +1297,7 @@ mod auto_block {
         f.limit(1_000);
         // A pause seen only by the watcher: wipe the block, keep the log, and let the watcher find it.
         f.lines.push(
-            json!({"type": "assistant", "timestamp": iso_timestamp(f.began + 3_600_000), "message": {"content": "x"}})
+            json!({"type": "assistant", "timestamp": timestamps::iso(f.began + 3_600_000), "message": {"content": "x"}})
                 .to_string(),
         );
         f.world.write("claude/projects/-w/S1.jsonl", &f.lines);
@@ -1347,7 +1309,7 @@ mod auto_block {
         let mut idle = Fixture::new();
         idle.lines.push(
             json!({"type": "assistant", "isApiErrorMessage": true, "error": "rate_limit",
-                "timestamp": iso_timestamp(idle.began + 1_000), "message": {"model": "<synthetic>", "usage": {}}}).to_string(),
+                "timestamp": timestamps::iso(idle.began + 1_000), "message": {"model": "<synthetic>", "usage": {}}}).to_string(),
         );
         idle.world.write("claude/projects/-w/S1.jsonl", &idle.lines);
         let later = crate::run::updated_now().unwrap() + 8 * 24 * 60 * 60 * 1000;
@@ -1408,7 +1370,7 @@ mod auto_block {
             false,
         ))
         .unwrap();
-        line["timestamp"] = json!(iso_timestamp(f.began + 1_000));
+        line["timestamp"] = json!(timestamps::iso(f.began + 1_000));
         f.world.write(
             &format!("claude/projects/-w/{session}.jsonl"),
             &[line.to_string()],
@@ -1429,76 +1391,6 @@ mod auto_block {
 
 // Making a file unreadable is a Unix permission trick; it is skipped when the tests run as root.
 // --- Codex attribution ------------------------------------------------------------------------------
-
-// --- cost of Codex usage ------------------------------------------------------------------------------
-
-fn priced_row(model: &str, tokens: serde_json::Value, long: serde_json::Value) -> UsageRow {
-    serde_json::from_value(
-        json!({"stage": "build", "model": model, "long_context": long, "tokens": 0}),
-    )
-    .map(|mut row: UsageRow| {
-        row.tokens = serde_json::from_value(tokens).unwrap();
-        row
-    })
-    .unwrap()
-}
-
-fn cost_of(row: &UsageRow) -> Option<f64> {
-    crate::cost::row_cost(row, crate::cost::PRICES)
-}
-
-#[test]
-fn long_context_tokens_are_priced_at_the_long_rates_and_the_rest_at_the_short_rates() {
-    // gpt-5.5: short 5/0.5/30, long 10/1/45 per 1M.
-    let all_long = priced_row(
-        "gpt-5.5",
-        json!({"input": 100_000, "cache_read": 200_000, "output": 1_000}),
-        json!({"input": 100_000, "cache_read": 200_000, "output": 1_000}),
-    );
-    // 0.1M*10 + 0.2M*1 + 0.001M*45 = 1.0 + 0.2 + 0.045
-    assert!((cost_of(&all_long).unwrap() - 1.245).abs() < 1e-9);
-    // Add a short request of 10,000 input, 20,000 cached, 500 output: 0.05 + 0.01 + 0.015 = 0.075
-    let mixed = priced_row(
-        "gpt-5.5",
-        json!({"input": 110_000, "cache_read": 220_000, "output": 1_500}),
-        json!({"input": 100_000, "cache_read": 200_000, "output": 1_000}),
-    );
-    assert!((cost_of(&mixed).unwrap() - 1.32).abs() < 1e-9);
-}
-
-#[test]
-fn codex_models_without_an_official_price_stay_unknown_and_make_totals_partial() {
-    let known = priced_row(
-        "gpt-5.2",
-        json!({"input": 1_000_000, "output": 0}),
-        json!({}),
-    );
-    let unknown = priced_row(
-        "codex-auto-review",
-        json!({"input": 10, "output": 10}),
-        json!({}),
-    );
-    for model in [
-        "gpt-5-codex",
-        "gpt-5.1-codex-max",
-        "gpt-5.2-codex",
-        "codex-mini-latest",
-    ] {
-        assert_eq!(
-            cost_of(&priced_row(
-                model,
-                json!({"input": 1, "output": 1}),
-                json!({})
-            )),
-            None
-        );
-    }
-    assert_eq!(cost_of(&unknown), None);
-    let total = crate::cost::total([&known, &unknown], crate::cost::PRICES);
-    assert!((total.usd.unwrap() - 1.75).abs() < 1e-9);
-    assert!(total.partial);
-    assert_eq!(total.unpriced_models, ["codex-auto-review"]);
-}
 
 #[test]
 fn completed_routed_stage_with_only_coordinator_usage_adds_no_model_warning() {

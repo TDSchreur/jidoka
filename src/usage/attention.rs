@@ -1,5 +1,5 @@
 //! Input and response boundaries in coordinator session logs. Conversation text is never retained.
-use crate::{agent::Agent, agent_logs::timestamp};
+use crate::{agent::Agent, usage::agent_logs::timestamp};
 use serde_json::Value;
 use std::collections::HashSet;
 

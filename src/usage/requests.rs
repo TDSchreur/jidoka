@@ -1,13 +1,15 @@
 //! `jidoka run requests`: the model requests of a run per category, with their tokens.
 
 use crate::{
-    agent_logs::{ReadLimits, Roots},
     inspect::shown,
-    request_logs::{Category, Request, request_of},
     run::Run,
-    session_attribution::{self, Attributed, LeadIn, Missing},
-    stats::{number, table_with},
-    usage::Tokens,
+    usage::{
+        agent_logs::{ReadLimits, Roots},
+        request_logs::{Category, Request, request_of},
+        session_attribution::{self, Attributed, LeadIn, Missing},
+        stats::{number, table_with},
+        token_usage::Tokens,
+    },
 };
 use serde::Serialize;
 use std::{collections::BTreeMap, time::Instant};

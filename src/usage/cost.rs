@@ -7,7 +7,7 @@
 
 use crate::{
     run::Stage,
-    usage::{Tokens, Usage, UsageRow},
+    usage::token_usage::{Tokens, Usage, UsageRow},
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -545,5 +545,75 @@ mod tests {
         assert_eq!(format(&stages["build"]), "$2.00");
         assert_eq!(format(&stages["check"]), "unknown");
         assert_eq!(stages["check"].unpriced_models, ["m-new"]);
+    }
+
+    // --- cost of Codex usage ------------------------------------------------------------------------------
+
+    fn priced_row(model: &str, tokens: serde_json::Value, long: serde_json::Value) -> UsageRow {
+        serde_json::from_value(
+            json!({"stage": "build", "model": model, "long_context": long, "tokens": 0}),
+        )
+        .map(|mut row: UsageRow| {
+            row.tokens = serde_json::from_value(tokens).unwrap();
+            row
+        })
+        .unwrap()
+    }
+
+    fn cost_of(row: &UsageRow) -> Option<f64> {
+        row_cost(row, PRICES)
+    }
+
+    #[test]
+    fn long_context_tokens_are_priced_at_the_long_rates_and_the_rest_at_the_short_rates() {
+        // gpt-5.5: short 5/0.5/30, long 10/1/45 per 1M.
+        let all_long = priced_row(
+            "gpt-5.5",
+            json!({"input": 100_000, "cache_read": 200_000, "output": 1_000}),
+            json!({"input": 100_000, "cache_read": 200_000, "output": 1_000}),
+        );
+        // 0.1M*10 + 0.2M*1 + 0.001M*45 = 1.0 + 0.2 + 0.045
+        assert!((cost_of(&all_long).unwrap() - 1.245).abs() < 1e-9);
+        // Add a short request of 10,000 input, 20,000 cached, 500 output: 0.05 + 0.01 + 0.015 = 0.075
+        let mixed = priced_row(
+            "gpt-5.5",
+            json!({"input": 110_000, "cache_read": 220_000, "output": 1_500}),
+            json!({"input": 100_000, "cache_read": 200_000, "output": 1_000}),
+        );
+        assert!((cost_of(&mixed).unwrap() - 1.32).abs() < 1e-9);
+    }
+
+    #[test]
+    fn codex_models_without_an_official_price_stay_unknown_and_make_totals_partial() {
+        let known = priced_row(
+            "gpt-5.2",
+            json!({"input": 1_000_000, "output": 0}),
+            json!({}),
+        );
+        let unknown = priced_row(
+            "codex-auto-review",
+            json!({"input": 10, "output": 10}),
+            json!({}),
+        );
+        for model in [
+            "gpt-5-codex",
+            "gpt-5.1-codex-max",
+            "gpt-5.2-codex",
+            "codex-mini-latest",
+        ] {
+            assert_eq!(
+                cost_of(&priced_row(
+                    model,
+                    json!({"input": 1, "output": 1}),
+                    json!({})
+                )),
+                None
+            );
+        }
+        assert_eq!(cost_of(&unknown), None);
+        let total = total([&known, &unknown], PRICES);
+        assert!((total.usd.unwrap() - 1.75).abs() < 1e-9);
+        assert!(total.partial);
+        assert_eq!(total.unpriced_models, ["codex-auto-review"]);
     }
 }

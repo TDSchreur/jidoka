@@ -27,7 +27,7 @@ pub(super) fn summary(run: &Run) -> serde_json::Result<serde_json::Value> {
     let mut value = serde_json::to_value(run)?;
     value["needs_you"] = serde_json::Value::Bool(run.needs_you());
     if let Some(usage) = &run.usage {
-        value["usage"] = crate::cost::usage_json(usage, crate::cost::PRICES)?;
+        value["usage"] = crate::usage::cost::usage_json(usage, crate::usage::cost::PRICES)?;
     }
     Ok(value)
 }

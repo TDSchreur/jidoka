@@ -1,6 +1,11 @@
 use crate::pr_state::PrStatus;
 use crate::routing::ModelRouting;
-use crate::usage::{Collection, Mark, Pause, PauseKind, Usage};
+use crate::usage::{
+    collection::Collection,
+    pauses::{Pause, PauseKind},
+    session_attribution::Mark,
+    token_usage::Usage,
+};
 use findings::{FindingsContext, FindingsUpdate};
 use model_routing::RoutingUpdate;
 use reports::ReportsUpdate;

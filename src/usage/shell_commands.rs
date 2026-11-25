@@ -416,3 +416,12 @@ pub(crate) fn command_words(segment: &str) -> Vec<&str> {
     }
     words[start.min(words.len())..].to_vec()
 }
+
+/// Removes the options that come before the subcommand of a git command: `git -C <path> <subcommand>`.
+pub(crate) fn skip_git_options(words: &mut Vec<&str>) {
+    let skipped = words[1..]
+        .chunks(2)
+        .take_while(|pair| pair[0] == "-C" || pair[0] == "-c")
+        .count();
+    words.drain(1..(1 + 2 * skipped).min(words.len()));
+}
