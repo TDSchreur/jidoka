@@ -64,41 +64,21 @@ fn the_setting_round_trips_and_a_missing_file_is_nothing_configured() {
 }
 
 #[test]
-fn github_links_come_from_every_remote_spelling() {
-    let want = "https://github.com/acme/platform/blob/main/changes/x.md";
-    for remote in [
-        "https://github.com/acme/platform",
-        "https://github.com/acme/platform.git",
-        "https://user@github.com/acme/platform.git/",
-        "git@github.com:acme/platform.git",
-        "ssh://git@github.com/acme/platform.git",
-        "ssh://git@github.com:22/acme/platform",
-    ] {
-        assert_eq!(
-            web_link(remote, "main", "changes/x.md").unwrap(),
-            want,
-            "{remote}"
-        );
-    }
-}
-
-#[test]
-fn azure_links_come_from_every_remote_spelling() {
-    let want =
-        "https://dev.azure.com/org/My%20Project/_git/platform?path=/changes/x.md&version=GBmain";
-    for remote in [
-        "https://dev.azure.com/org/My%20Project/_git/platform",
-        "https://org@dev.azure.com/org/My%20Project/_git/platform",
-        "git@ssh.dev.azure.com:v3/org/My%20Project/platform",
-        "https://org.visualstudio.com/My%20Project/_git/platform",
-        "https://org.visualstudio.com/DefaultCollection/My%20Project/_git/platform",
-    ] {
-        assert_eq!(
-            web_link(remote, "main", "changes/x.md").unwrap(),
-            want,
-            "{remote}"
-        );
-    }
+fn links_come_from_the_remote_of_either_host() {
+    // Every remote spelling of each host is covered by the pull request host's tests.
+    assert_eq!(
+        web_link("git@github.com:acme/platform.git", "main", "changes/x.md").unwrap(),
+        "https://github.com/acme/platform/blob/main/changes/x.md"
+    );
+    assert_eq!(
+        web_link(
+            "https://org.visualstudio.com/My%20Project/_git/platform",
+            "main",
+            "changes/x.md"
+        )
+        .unwrap(),
+        "https://dev.azure.com/org/My%20Project/_git/platform?path=/changes/x.md&version=GBmain"
+    );
 }
 
 #[test]

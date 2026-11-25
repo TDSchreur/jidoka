@@ -19,6 +19,7 @@ mod pr_state;
 mod pr_sync;
 mod pr_wait;
 mod pr_workspace;
+mod program;
 mod repository;
 mod reviews;
 mod routing;

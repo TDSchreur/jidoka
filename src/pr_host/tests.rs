@@ -427,6 +427,90 @@ fn only_http_links_to_github_or_azure_pull_requests_reach_a_tool() {
     }
 }
 
+/// The host a remote belongs to, as `detect_host` reads it, and the repository its host's parser finds.
+fn remote_of(remote: &str) -> (&'static str, Option<(String, String, String)>) {
+    let origin =
+        detect_host(&|args| (args == ["remote", "get-url", "origin"]).then(|| remote.to_string()))
+            .unwrap();
+    match origin.host {
+        Host::GitHub => (
+            "github",
+            GitHubRepo::from_remote(remote)
+                .map(|repo| (repo.owner, String::new(), repo.repository)),
+        ),
+        Host::Azure(repo) => (
+            "azure",
+            Some((repo.organization, repo.project, repo.repository)),
+        ),
+        Host::Unknown => ("unknown", None),
+    }
+}
+
+#[test]
+fn both_hosts_read_their_repository_from_every_remote_spelling() {
+    let github = Some(("acme".into(), String::new(), "platform".into()));
+    for remote in [
+        "https://github.com/acme/platform",
+        "https://github.com/acme/platform.git",
+        "https://user@github.com/acme/platform.git/",
+        "git@github.com:acme/platform.git",
+        "ssh://git@github.com/acme/platform.git",
+        "ssh://git@github.com:22/acme/platform",
+        "https://github.com:8443/acme/platform",
+    ] {
+        assert_eq!(remote_of(remote), ("github", github.clone()), "{remote}");
+    }
+    let azure = Some(("org".into(), "My Project".into(), "platform".into()));
+    for remote in [
+        "https://dev.azure.com/org/My%20Project/_git/platform",
+        "https://org@dev.azure.com/org/My%20Project/_git/platform/",
+        "git@ssh.dev.azure.com:v3/org/My%20Project/platform",
+        "ssh://git@ssh.dev.azure.com/v3/org/My%20Project/platform",
+        "ssh://git@ssh.dev.azure.com:22/v3/org/My%20Project/platform",
+        "https://org.visualstudio.com/My%20Project/_git/platform",
+        "https://org.visualstudio.com/DefaultCollection/My%20Project/_git/platform",
+    ] {
+        assert_eq!(remote_of(remote), ("azure", azure.clone()), "{remote}");
+    }
+}
+
+#[test]
+fn a_remote_of_another_host_belongs_to_neither() {
+    for remote in [
+        "https://gitlab.com/acme/platform",
+        "git@gitlab.com:acme/platform.git",
+        "https://github.example.com/acme/platform",
+        "git://github.com/acme/platform.git",
+        "file://github.com/acme/platform",
+        "/srv/git/platform.git",
+        r"C:\git\platform",
+    ] {
+        assert_eq!(remote_of(remote), ("unknown", None), "{remote}");
+        assert!(GitHubRepo::from_remote(remote).is_none(), "{remote}");
+        assert!(
+            AzureRepo::from_remote(remote).unwrap().is_none(),
+            "{remote}"
+        );
+    }
+}
+
+#[test]
+fn a_host_remote_that_names_no_single_repository_has_none() {
+    // GitHub Enterprise and partial github.com paths are left to `jidoka.prProvider` and give no repository.
+    for remote in [
+        "https://github.com/acme",
+        "https://github.com/acme/platform/extra",
+    ] {
+        assert!(GitHubRepo::from_remote(remote).is_none(), "{remote}");
+    }
+    for remote in [
+        "https://dev.azure.com/org/project/platform",
+        "https://org.visualstudio.com/project/platform",
+    ] {
+        assert!(AzureRepo::from_remote(remote).is_err(), "{remote}");
+    }
+}
+
 /// The origin of the host's repository, as `detect_host` reads it.
 fn origin(case: &Case) -> Origin {
     detect_host(&|args| (args == ["remote", "get-url", "origin"]).then(|| case.remote.to_string()))

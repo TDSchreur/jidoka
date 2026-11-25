@@ -8,6 +8,7 @@ mod github;
 mod watch;
 
 pub(crate) use azure::AzureRepo;
+pub(crate) use github::GitHubRepo;
 
 use crate::{
     git::last_line,
@@ -79,7 +80,7 @@ impl Tools for RealTools {
 
     fn az(&self, args: &[&str]) -> Result<ToolOutput, ToolError> {
         // Windows installs `az` as a `.cmd` launcher, which only starts by the path `az_program` finds.
-        let mut command = Command::new(crate::doctor::az_program());
+        let mut command = Command::new(crate::program::az_program());
         command
             .args(args)
             .env("AZURE_CORE_ONLY_SHOW_ERRORS", "true")
@@ -446,7 +447,7 @@ pub(crate) fn detect_host(git: &dyn Fn(&[&str]) -> Option<String>) -> Result<Ori
     };
     let host = match azure {
         Some(repo) => Host::Azure(repo),
-        None if provider.as_deref() == Some("github") || is_github_remote(&remote) => Host::GitHub,
+        None if provider.as_deref() == Some("github") || github::is_remote(&remote) => Host::GitHub,
         None => Host::Unknown,
     };
     Ok(Origin { url: remote, host })
@@ -528,23 +529,6 @@ pub(crate) fn push_problem(origin: &Origin, branch: &str, error: &str) -> ToolPr
         ));
     }
     ToolProblem(format!("Pushing {branch} to origin failed: {detail}"))
-}
-
-fn is_github_remote(remote: &str) -> bool {
-    if remote.starts_with("git@github.com:") {
-        return true;
-    }
-    let rest = remote
-        .strip_prefix("https://")
-        .or_else(|| remote.strip_prefix("http://"))
-        .or_else(|| remote.strip_prefix("ssh://"));
-    rest.and_then(|url| url.split_once('/'))
-        .is_some_and(|(authority, _)| {
-            let host = authority.rsplit('@').next().unwrap_or(authority);
-            host.eq_ignore_ascii_case("github.com")
-                || host.eq_ignore_ascii_case("github.com:22")
-                || host.eq_ignore_ascii_case("github.com:443")
-        })
 }
 
 /// What is percent-encoded in an Azure URL path segment: everything but letters, digits and the unreserved
