@@ -992,6 +992,7 @@ fn azure_fork_wait_needs_no_live_source_for_a_closed_or_merged_pull_request() {
 
 #[test]
 fn azure_wait_uses_the_proven_status_outcome_and_only_requests_build_metadata() {
+    // Git permits a nonbreaking space in a ref, and same-repository Azure watch must preserve it.
     const REFERENCE: &str = "refs/heads/feature/with\u{a0}space";
     for (state, repository, bucket, outcome) in [
         ("succeeded", "Repo-123", "pass", Outcome::Passed),
