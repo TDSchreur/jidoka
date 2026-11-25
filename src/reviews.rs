@@ -1,21 +1,21 @@
-//! The catalog of Checks a run can go through in the Check stage, as data, and the selection of
+//! The catalog of Reviews a run can go through in the Check stage, as data, and the selection of
 //! which ones apply to a diff.
 //!
-//! A Check applies when the Workflow mode's floor includes it or when a changed path matches one of
-//! its triggers. Adding a Check means adding one entry to [`CATALOG`].
+//! A Review applies when the Workflow mode's floor includes it or when a changed path matches one of
+//! its triggers. Adding a Review means adding one entry to [`CATALOG`].
 
 use crate::{
     run::{Mode, Stage},
     stages::Gate,
 };
 
-/// The completion gate for one selected Check.
+/// The completion gate for one selected Review.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum CheckGate {
+pub(crate) enum ReviewGate {
     Recorded,
 }
 
-impl CheckGate {
+impl ReviewGate {
     pub(crate) fn gate(self) -> Gate {
         match self {
             Self::Recorded => Gate::ChecksRecorded,
@@ -23,33 +23,33 @@ impl CheckGate {
     }
 }
 
-/// One Check in the catalog.
+/// One Review in the catalog.
 #[derive(Debug)]
-pub(crate) struct Check {
+pub(crate) struct Review {
     pub(crate) name: &'static str,
-    /// Path globs that make the Check apply when a changed path matches. A pattern without `/`
+    /// Path globs that make the Review apply when a changed path matches. A pattern without `/`
     /// matches the file name at any depth; `*` stays within a path segment and `**` crosses them.
     pub(crate) triggers: &'static [&'static str],
-    /// Embedded instruction chunk delivered when this Check applies.
+    /// Embedded instruction chunk delivered when this Review applies.
     pub(crate) instructions: &'static str,
-    /// Stage gate that records completion of this Check.
-    pub(crate) gate: CheckGate,
-    /// Policy stage whose model is used for this Check, if routed.
+    /// Stage gate that records completion of this Review.
+    pub(crate) gate: ReviewGate,
+    /// Policy stage whose model is used for this Review, if routed.
     pub(crate) model_route: Option<Stage>,
-    /// Modes that always run the Check, whatever the diff touches.
+    /// Modes that always run the Review, whatever the diff touches.
     pub(crate) floor: &'static [Mode],
 }
 
-pub(crate) const CATALOG: &[Check] = &[Check {
+pub(crate) const CATALOG: &[Review] = &[Review {
     name: "code-review",
     triggers: &[],
     instructions: include_str!("../stages/checks/code-review.md"),
-    gate: CheckGate::Recorded,
+    gate: ReviewGate::Recorded,
     model_route: Some(Stage::Check),
     floor: &[Mode::Balanced, Mode::Full],
 }];
 
-/// Why a Check applies.
+/// Why a Review applies.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum Reason {
     /// The mode always runs it.
@@ -60,13 +60,13 @@ pub(crate) enum Reason {
 
 #[derive(Debug)]
 pub(crate) struct Applicable {
-    pub(crate) check: &'static Check,
+    pub(crate) review: &'static Review,
     pub(crate) reason: Reason,
 }
 
 #[derive(Debug)]
 pub(crate) struct Skipped {
-    pub(crate) check: &'static Check,
+    pub(crate) review: &'static Review,
     pub(crate) reason: String,
 }
 
@@ -76,55 +76,55 @@ pub(crate) struct Selection {
     pub(crate) skipped: Vec<Skipped>,
 }
 
-/// Splits the catalog into the Checks that apply to `changed_paths` in `mode` and those skipped,
+/// Splits the catalog into the Reviews that apply to `changed_paths` in `mode` and those skipped,
 /// each with its reason. `jidoka-fast` has no Check stage, so everything is skipped there.
 pub(crate) fn select<S: AsRef<str>>(mode: Mode, changed_paths: &[S]) -> Selection {
     select_from(CATALOG, mode, changed_paths)
 }
 
 fn select_from<S: AsRef<str>>(
-    catalog: &'static [Check],
+    catalog: &'static [Review],
     mode: Mode,
     changed_paths: &[S],
 ) -> Selection {
     let mut selection = Selection::default();
-    for check in catalog {
+    for review in catalog {
         if mode == Mode::Fast {
             selection.skipped.push(Skipped {
-                check,
+                review,
                 reason: format!("{} has no check stage", mode.name()),
             });
-        } else if check.floor.contains(&mode) {
+        } else if review.floor.contains(&mode) {
             selection.applicable.push(Applicable {
-                check,
+                review,
                 reason: Reason::Floor,
             });
         } else if let Some(path) = changed_paths
             .iter()
             .map(AsRef::as_ref)
-            .find(|path| check.triggers.iter().any(|glob| matches(glob, path)))
+            .find(|path| review.triggers.iter().any(|glob| matches(glob, path)))
         {
             selection.applicable.push(Applicable {
-                check,
+                review,
                 reason: Reason::Triggered {
                     path: path.to_string(),
                 },
             });
         } else {
             selection.skipped.push(Skipped {
-                check,
-                reason: skip_reason(check, mode),
+                review,
+                reason: skip_reason(review, mode),
             });
         }
     }
     selection
 }
 
-fn skip_reason(check: &Check, mode: Mode) -> String {
-    if check.triggers.is_empty() {
+fn skip_reason(review: &Review, mode: Mode) -> String {
+    if review.triggers.is_empty() {
         format!("{} does not run it", mode.name())
     } else {
-        format!("no changed path matches {}", check.triggers.join(", "))
+        format!("no changed path matches {}", review.triggers.join(", "))
     }
 }
 
@@ -161,26 +161,26 @@ fn glob_match(glob: &[u8], text: &[u8]) -> bool {
 mod tests {
     use super::*;
 
-    const SECURITY: Check = Check {
+    const SECURITY: Review = Review {
         name: "security",
         triggers: &["Cargo.toml", "*.tf", ".github/workflows/**"],
         instructions: "Security review instructions",
-        gate: CheckGate::Recorded,
+        gate: ReviewGate::Recorded,
         model_route: None,
         floor: &[Mode::Full],
     };
-    static EXTENDED: [Check; 2] = [CATALOG_CODE_REVIEW, SECURITY];
-    const CATALOG_CODE_REVIEW: Check = Check {
+    static EXTENDED: [Review; 2] = [CATALOG_CODE_REVIEW, SECURITY];
+    const CATALOG_CODE_REVIEW: Review = Review {
         name: "code-review",
         triggers: &[],
         instructions: "Code review instructions",
-        gate: CheckGate::Recorded,
+        gate: ReviewGate::Recorded,
         model_route: Some(Stage::Check),
         floor: &[Mode::Balanced, Mode::Full],
     };
 
     fn names(applicable: &[Applicable]) -> Vec<&'static str> {
-        applicable.iter().map(|entry| entry.check.name).collect()
+        applicable.iter().map(|entry| entry.review.name).collect()
     }
 
     #[test]
@@ -205,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn a_matching_path_triggers_a_check_above_the_floor() {
+    fn a_matching_path_triggers_a_review_above_the_floor() {
         let selection = select_from(
             &EXTENDED,
             Mode::Balanced,
@@ -221,11 +221,11 @@ mod tests {
     }
 
     #[test]
-    fn an_untriggered_check_is_skipped_with_its_triggers_named() {
+    fn an_untriggered_review_is_skipped_with_its_triggers_named() {
         let selection = select_from(&EXTENDED, Mode::Balanced, &["src/main.rs"]);
         assert_eq!(names(&selection.applicable), ["code-review"]);
         assert_eq!(selection.skipped.len(), 1);
-        assert_eq!(selection.skipped[0].check.name, "security");
+        assert_eq!(selection.skipped[0].review.name, "security");
         assert_eq!(
             selection.skipped[0].reason,
             "no changed path matches Cargo.toml, *.tf, .github/workflows/**"

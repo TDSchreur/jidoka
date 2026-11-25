@@ -32,11 +32,11 @@ pub(crate) struct GateResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) check: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) skipped_checks: Vec<SkippedCheck>,
+    pub(crate) skipped_checks: Vec<SkippedReview>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SkippedCheck {
+pub(crate) struct SkippedReview {
     pub(crate) name: String,
     pub(crate) reason: String,
 }
@@ -90,7 +90,7 @@ pub(crate) struct StageExit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) build_plan: Option<BuildPlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) skipped_checks: Vec<SkippedCheck>,
+    pub(crate) skipped_checks: Vec<SkippedReview>,
 }
 
 /// Work recorded when a Build pass ended.
@@ -172,15 +172,12 @@ pub(crate) struct CiEvidence {
 /// Why a run leaves its current Stage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Exit {
-    /// Every exit gate passed, so the run moves to the next Stage. Finish is left with `Finished` instead.
+    /// Every exit gate passed, so the run moves to the next Stage. Leaving Finish also needs the live CI
+    /// result, which completes the run; no other Stage carries one.
     Accepted {
         gates: Vec<Evaluation>,
-        skipped_checks: Vec<SkippedCheck>,
-    },
-    /// Every exit gate of Finish passed, live CI included, so the run is done. Recorded as accepted.
-    Finished {
-        gates: Vec<Evaluation>,
-        ci: CiEvidence,
+        skipped_checks: Vec<SkippedReview>,
+        ci: Option<CiEvidence>,
     },
     /// The user moved the run on without checking the gates.
     Override { reason: String },
@@ -198,7 +195,7 @@ struct Leaving {
     to: Destination,
     outcome: ExitOutcome,
     gates: Vec<Evaluation>,
-    skipped_checks: Vec<SkippedCheck>,
+    skipped_checks: Vec<SkippedReview>,
 }
 
 impl Run {
@@ -223,30 +220,26 @@ impl Run {
             skipped_checks,
         } = match exit {
             Exit::Accepted {
-                gates,
+                mut gates,
                 skipped_checks,
+                ci,
             } => {
                 let to = stages::next(mode?, stage, self.status)?.to;
-                if to == Destination::Done {
-                    return Err("Finish needs a live CI result".into());
+                match (to, ci) {
+                    (Destination::Done, Some(ci)) => self.finish_with_ci(&mut gates, ci)?,
+                    (Destination::Done, None) => {
+                        return Err("Finish needs a live CI result".into());
+                    }
+                    (Destination::Stage(_), Some(_)) => {
+                        return Err("Only an exit from Finish carries a CI result".into());
+                    }
+                    (Destination::Stage(_), None) => {}
                 }
                 Leaving {
                     to,
                     outcome: ExitOutcome::Accepted,
                     gates,
                     skipped_checks,
-                }
-            }
-            Exit::Finished { mut gates, ci } => {
-                if stages::next(mode?, stage, self.status)?.to != Destination::Done {
-                    return Err("Only an exit from Finish carries a CI result".into());
-                }
-                self.finish_with_ci(&mut gates, ci)?;
-                Leaving {
-                    to: Destination::Done,
-                    outcome: ExitOutcome::Accepted,
-                    gates,
-                    skipped_checks: Vec::new(),
                 }
             }
             Exit::Override { reason } => {
@@ -568,16 +561,17 @@ mod tests {
             checked_at: 5,
         };
         run.leave(
-            Exit::Finished {
+            Exit::Accepted {
                 gates: vec![
                     Evaluation::with_status(Gate::FinishSummary, GateStatus::Passed),
                     Evaluation::with_status(Gate::CiPassed, GateStatus::AwaitingLiveCheck),
                 ],
-                ci: CiEvidence {
+                skipped_checks: Vec::new(),
+                ci: Some(CiEvidence {
                     head: "abc1234def".into(),
                     outcome: CiOutcome::Passed,
                     pr_status: status.clone(),
-                },
+                }),
             },
             AT,
         )
@@ -619,16 +613,17 @@ mod tests {
         };
         run.pr_status = Some(merged.clone());
         run.leave(
-            Exit::Finished {
+            Exit::Accepted {
                 gates: vec![Evaluation::with_status(
                     Gate::CiPassed,
                     GateStatus::AwaitingLiveCheck,
                 )],
-                ci: CiEvidence {
+                skipped_checks: Vec::new(),
+                ci: Some(CiEvidence {
                     head: "abc1234".into(),
                     outcome: CiOutcome::Passed,
                     pr_status: observed,
-                },
+                }),
             },
             AT,
         )
@@ -812,7 +807,35 @@ mod tests {
         blocked
             .block("waiting", crate::run::LifecycleSource::Agent, 1)
             .unwrap();
+        let accepted = |ci: Option<CiEvidence>| Exit::Accepted {
+            gates: vec![Evaluation::with_status(
+                Gate::CiPassed,
+                GateStatus::AwaitingLiveCheck,
+            )],
+            skipped_checks: Vec::new(),
+            ci,
+        };
+        let ci = CiEvidence {
+            head: "abc1234".into(),
+            outcome: CiOutcome::Passed,
+            pr_status: PrStatus {
+                url: "https://example.test/pr/1".into(),
+                state: PrState::Open,
+                reason: None,
+                checked_at: 5,
+            },
+        };
         let cases = [
+            (
+                check.clone(),
+                accepted(Some(ci)),
+                "Only an exit from Finish carries a CI result",
+            ),
+            (
+                run_in(Stage::Finish),
+                accepted(None),
+                "Finish needs a live CI result",
+            ),
             (check.clone(), rework("F2", Some("go")), "F2 is not open"),
             (
                 check.clone(),

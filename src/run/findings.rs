@@ -24,9 +24,9 @@ pub(super) use help;
 
 /// The checks a Finding may name: the catalog's checks and the security review.
 fn finding_checks() -> impl Iterator<Item = &'static str> {
-    crate::checks::CATALOG
+    crate::reviews::CATALOG
         .iter()
-        .map(|check| check.name)
+        .map(|review| review.name)
         .chain(std::iter::once(SECURITY_FINDING_CHECK))
 }
 
