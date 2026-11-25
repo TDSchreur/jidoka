@@ -11,7 +11,8 @@ pub(crate) fn canonical_repository(dir: &Path) -> Option<String> {
             dir,
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         )
-        .ok()?;
+        .ok()
+        .filter(|common| !common.is_empty())?;
     let common = Path::new(&common);
     // A normal repository keeps its data in `<checkout>/.git`; a bare one is the directory itself.
     let root = if common.file_name().is_some_and(|name| name == ".git") {

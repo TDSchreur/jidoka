@@ -223,7 +223,8 @@ pub(crate) fn git_output(git: &dyn Git, project: &Path, args: &[&str]) -> Option
 }
 
 fn git_checks(git: &dyn Git, project: &Path) -> Vec<Check> {
-    match git.git(project, &["--version"]) {
+    // Asked in the current folder, so a project folder that cannot be entered is not mistaken for no git.
+    match git.git(Path::new("."), &["--version"]) {
         Ok(_) => {}
         Err(_) => {
             return vec![Check::fail(

@@ -15,26 +15,16 @@ struct TestGit {
     fail_merge_base: bool,
     /// Plays a git older than 2.38, which has no `merge-tree --write-tree`.
     old_git: bool,
-    /// Every git command the code ran, so a test can see what it never does.
-    commands: RefCell<Vec<Vec<String>>>,
-}
-
-impl TestGit {
-    fn record(&self, args: &[&str]) {
-        self.commands
-            .borrow_mut()
-            .push(args.iter().map(|a| a.to_string()).collect());
-    }
+    /// Runs the git the code asks for and records every command, so a test can see what it never does.
+    inner: fixture::TestGit,
 }
 
 impl Git for TestGit {
     fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
-        self.record(args);
-        fixture::git(dir, args)
+        self.inner.git(dir, args)
     }
 
     fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
-        self.record(args);
         if self.old_git && args.first() == Some(&"merge-tree") {
             return Ok(129);
         }
@@ -45,7 +35,7 @@ impl Git for TestGit {
         {
             return Ok(128);
         }
-        fixture::status(dir, args)
+        self.inner.status(dir, args)
     }
 }
 
@@ -384,7 +374,7 @@ fn a_merged_or_closed_pull_request_is_refused_without_a_commit_or_push() {
         assert_eq!(project.head(), head);
         assert_eq!(project.remote_branch("feature"), pushed);
         assert!(
-            git.commands.borrow().is_empty(),
+            git.inner.commands.borrow().is_empty(),
             "git was not asked anything"
         );
     }
