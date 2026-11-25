@@ -6,6 +6,7 @@
 //! only when `--create-model-routing` asks for it.
 
 use crate::agent::Agent;
+use crate::git::{Git, RealGit};
 use crate::install::{bundled_skill_files, skills_root};
 use crate::routing::{POLICY_ORDER, create_starter, created_message, policy_path_in};
 use serde::Serialize;
@@ -166,6 +167,8 @@ pub(crate) struct Machine<'a> {
     pub(crate) version: &'a dyn Fn(&Path) -> Option<String>,
     /// What `rustup target list --installed` prints, if rustup can be asked.
     pub(crate) rustup_targets: &'a dyn Fn(&OsString, &Path) -> Option<String>,
+    /// How git is run.
+    pub(crate) git: &'a dyn Git,
 }
 
 /// Checks the project at `project` and the listed agents (all of them when `agent` is `None`).
@@ -174,9 +177,9 @@ pub(crate) fn diagnose(project: &Path, agent: Option<Agent>, machine: &Machine) 
         None => Agent::ALL.to_vec(),
         Some(agent) => vec![agent],
     };
-    let git = git_checks(project);
+    let git = git_checks(machine.git, project);
     // Later checks read from the work tree root, so they work from a subfolder or a linked worktree.
-    let root = git_output(project, &["rev-parse", "--show-toplevel"])
+    let root = git_output(machine.git, project, &["rev-parse", "--show-toplevel"])
         .map_or_else(|| project.to_path_buf(), PathBuf::from);
     let mut project_checks = git;
     project_checks.push(setup_docs_check(&root));
@@ -214,24 +217,16 @@ pub(crate) fn diagnose(project: &Path, agent: Option<Agent>, machine: &Machine) 
     }
 }
 
-pub(crate) fn git_output(project: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(project)
-        .args(args)
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .filter(|text| !text.is_empty())
+/// What a git command that succeeded printed, or `None` when it failed or printed nothing.
+pub(crate) fn git_output(git: &dyn Git, project: &Path, args: &[&str]) -> Option<String> {
+    git.git(project, args).ok().filter(|text| !text.is_empty())
 }
 
-fn git_checks(project: &Path) -> Vec<Check> {
-    match Command::new("git").arg("--version").output() {
-        Ok(out) if out.status.success() => {}
-        _ => {
+fn git_checks(git: &dyn Git, project: &Path) -> Vec<Check> {
+    // Asked in the current folder, so a project folder that cannot be entered is not mistaken for no git.
+    match git.git(Path::new("."), &["--version"]) {
+        Ok(_) => {}
+        Err(_) => {
             return vec![Check::fail(
                 "git",
                 "git is not available",
@@ -239,7 +234,8 @@ fn git_checks(project: &Path) -> Vec<Check> {
             )];
         }
     }
-    if git_output(project, &["rev-parse", "--is-inside-work-tree"]).as_deref() != Some("true") {
+    if git_output(git, project, &["rev-parse", "--is-inside-work-tree"]).as_deref() != Some("true")
+    {
         return vec![Check::fail(
             "git",
             "this folder is not inside a Git repository",
@@ -247,7 +243,7 @@ fn git_checks(project: &Path) -> Vec<Check> {
         )];
     }
     let mut checks = vec![Check::pass("git", "inside a Git repository")];
-    match git_output(project, &["remote", "get-url", "origin"]) {
+    match git_output(git, project, &["remote", "get-url", "origin"]) {
         None => {
             checks.push(Check::fail(
                 "origin",
@@ -262,7 +258,7 @@ fn git_checks(project: &Path) -> Vec<Check> {
         )),
     }
     checks.push(
-        match git_output(project, &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]) {
+        match git_output(git, project, &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]) {
             Some(head) => {
                 let branch = head.strip_prefix("origin/").unwrap_or(&head);
                 Check::pass("base-branch", format!("origin's default branch is {branch}"))
@@ -692,6 +688,7 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
         var: &|name| std::env::var_os(name),
         version: &agent_version,
         rustup_targets: &rustup_targets,
+        git: &RealGit,
     };
     let Args {
         agent,

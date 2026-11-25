@@ -1674,39 +1674,9 @@ mod tests {
     #[test]
     fn git_diff_preserves_unusual_paths_and_both_sides_of_renames() {
         let dir = tempfile::tempdir().unwrap();
-        let git = |args: &[&str]| {
-            let output = std::process::Command::new("git")
-                .current_dir(dir.path())
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env("GIT_CONFIG_GLOBAL", dir.path().join("no-config"))
-                .env_remove("GIT_DIR")
-                .env_remove("GIT_WORK_TREE")
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "git {args:?}: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
-        };
+        let git = |args: &[&str]| crate::git::fixture::run_git(dir.path(), args);
         git(&["init", "-q"]);
-        let commit = |message| {
-            git(&[
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-q",
-                "--allow-empty",
-                "-m",
-                message,
-            ])
-        };
+        let commit = |message| git(&["commit", "-q", "--allow-empty", "-m", message]);
         std::fs::write(dir.path().join("security.tf"), "resource").unwrap();
         git(&["add", "--all"]);
         commit("base");

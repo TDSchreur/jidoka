@@ -5,6 +5,7 @@ use super::{
     excerpt, unsupported, watch::Snapshot,
 };
 use crate::{
+    git::first_line,
     inspect::shown,
     pr_state::PrState,
     pr_wait::{BaseState, CheckResult, Failure},
@@ -329,13 +330,6 @@ fn started(result: Result<ToolOutput, ToolError>) -> Result<ToolOutput, ToolProb
         ),
         ToolError::Other(text) => ToolProblem(format!("Could not run `gh`: {text}")),
     })
-}
-
-fn first_line(text: &str) -> &str {
-    text.lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("")
-        .trim()
 }
 
 /// A failed `gh <what>` call as a message that says what to do.

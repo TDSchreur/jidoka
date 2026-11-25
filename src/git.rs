@@ -15,13 +15,7 @@ pub(crate) trait Git {
 
     /// The exit status of a git command whose status is the answer (such as `merge-base --is-ancestor`).
     fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
-        command(dir)
-            .args(args)
-            .output()
-            .map_err(|error| format!("git could not be started: {error}"))?
-            .status
-            .code()
-            .ok_or_else(|| "git was stopped by a signal".to_string())
+        exit_code(command(dir).args(args).output())
     }
 }
 
@@ -46,10 +40,13 @@ fn command(dir: &Path) -> Command {
 
 /// Runs git in `dir`. The error is what git printed, or why it could not be started.
 pub(crate) fn run(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = command(dir)
-        .args(args)
-        .output()
-        .map_err(|error| format!("git could not be started: {error}"))?;
+    finish(command(dir).args(args).output(), args)
+}
+
+/// What a finished git command printed: trimmed stdout (untouched with `-z`) on success, otherwise the
+/// trimmed stderr, or stdout when stderr is empty. The error says so when git could not be started.
+fn finish(output: std::io::Result<Output>, args: &[&str]) -> Result<String, String> {
+    let output = output.map_err(|error| format!("git could not be started: {error}"))?;
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         return Ok(if args.contains(&"-z") {
@@ -68,6 +65,7 @@ pub(crate) fn run(dir: &Path, args: &[&str]) -> Result<String, String> {
     Err(text.trim().to_string())
 }
 
+/// The first line that is not blank, trimmed.
 pub(crate) fn first_line(text: &str) -> &str {
     text.lines()
         .find(|l| !l.trim().is_empty())
@@ -137,37 +135,34 @@ pub(crate) fn worktrees(git: &dyn Git, repository: &Path) -> Result<Vec<Worktree
 pub(crate) struct ReadOnlyGit;
 
 impl ReadOnlyGit {
-    fn output(dir: &Path, args: &[&str]) -> Result<Output, String> {
-        command(dir)
+    fn command(dir: &Path, args: &[&str]) -> Command {
+        let mut command = command(dir);
+        command
             .args(args)
             .env("GIT_OPTIONAL_LOCKS", "0")
-            .env("GIT_NO_LAZY_FETCH", "1")
-            .output()
-            .map_err(|error| format!("git could not be started: {error}"))
+            .env("GIT_NO_LAZY_FETCH", "1");
+        command
     }
 }
 
 impl Git for ReadOnlyGit {
     fn git(&self, dir: &Path, args: &[&str]) -> Result<String, String> {
-        let output = Self::output(dir, args)?;
-        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_string();
-        if output.status.success() {
-            if args.contains(&"-z") {
-                Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-            } else {
-                Ok(text(&output.stdout))
-            }
-        } else if output.stderr.is_empty() {
-            Err(text(&output.stdout))
-        } else {
-            Err(text(&output.stderr))
-        }
+        finish(Self::command(dir, args).output(), args)
     }
 
     fn status(&self, dir: &Path, args: &[&str]) -> Result<i32, String> {
-        Self::output(dir, args)?
-            .status
-            .code()
-            .ok_or_else(|| "git was stopped by a signal".to_string())
+        exit_code(Self::command(dir, args).output())
     }
 }
+
+/// The exit status of a finished git command.
+fn exit_code(output: std::io::Result<Output>) -> Result<i32, String> {
+    output
+        .map_err(|error| format!("git could not be started: {error}"))?
+        .status
+        .code()
+        .ok_or_else(|| "git was stopped by a signal".to_string())
+}
+
+#[cfg(test)]
+pub(crate) mod fixture;
