@@ -1,5 +1,5 @@
-//! The work the dashboard server does off the request path: usage collection after an update, the periodic
-//! passes that read pull request states and look for pauses, and a pull request read with a time limit.
+//! The dashboard server's work on background tasks and blocking threads: usage collection after an update, the
+//! periodic passes that read pull request states and look for pauses, and the sync endpoint's time-limited read.
 
 use crate::{
     pr::{host::PrHost, state as pr_state},
@@ -127,8 +127,9 @@ pub(super) enum SyncFailure {
     TimedOut,
 }
 
-/// Reads the state of the Run's pull request from its host now, on a blocking thread, and stores it; gives up after
-/// `SYNC_TIMEOUT`. `None` when the Run has no pull request to read.
+/// Reads and stores the Run's pull request state now, giving up after `SYNC_TIMEOUT`.
+///
+/// The read runs on a blocking thread. `None` when the Run has no pull request to read.
 pub(super) async fn sync_pr_now(
     store: RunStore,
     tool: Arc<dyn PrHost + Send + Sync>,
