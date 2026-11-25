@@ -456,6 +456,7 @@ fn both_hosts_read_their_repository_from_every_remote_spelling() {
         "git@github.com:acme/platform.git",
         "ssh://git@github.com/acme/platform.git",
         "ssh://git@github.com:22/acme/platform",
+        "https://github.com:8443/acme/platform",
     ] {
         assert_eq!(remote_of(remote), ("github", github.clone()), "{remote}");
     }
@@ -479,6 +480,8 @@ fn a_remote_of_another_host_belongs_to_neither() {
         "https://gitlab.com/acme/platform",
         "git@gitlab.com:acme/platform.git",
         "https://github.example.com/acme/platform",
+        "git://github.com/acme/platform.git",
+        "file://github.com/acme/platform",
         "/srv/git/platform.git",
         r"C:\git\platform",
     ] {

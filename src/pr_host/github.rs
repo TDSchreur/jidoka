@@ -307,8 +307,10 @@ pub(crate) struct GitHubRepo {
 }
 
 impl GitHubRepo {
-    /// The github.com repository an origin URL (HTTPS or SSH, with or without `.git`) names; `None` for a URL
-    /// of another host or one that does not name one repository.
+    /// The github.com repository an origin URL names.
+    ///
+    /// The URL is HTTPS or SSH, with or without `.git`. `None` for a URL of another host or one that does not
+    /// name one repository.
     pub(crate) fn from_remote(remote: &str) -> Option<Self> {
         let path = remote_path(remote)?;
         let path = path.trim_end_matches('/');
@@ -329,12 +331,15 @@ pub(super) fn is_remote(remote: &str) -> bool {
 }
 
 /// The repository path of a github.com remote, after the host; `None` for a remote of another host. The user
-/// and port in the URL are ignored.
+/// and port in an HTTPS or SSH URL are ignored.
 fn remote_path(remote: &str) -> Option<&str> {
     if let Some(path) = remote.strip_prefix("git@github.com:") {
         return Some(path);
     }
-    let (_, rest) = remote.split_once("://")?;
+    let rest = remote
+        .strip_prefix("https://")
+        .or_else(|| remote.strip_prefix("http://"))
+        .or_else(|| remote.strip_prefix("ssh://"))?;
     let (authority, path) = rest.split_once('/')?;
     let host = authority.rsplit('@').next()?.split(':').next()?;
     host.eq_ignore_ascii_case("github.com").then_some(path)
