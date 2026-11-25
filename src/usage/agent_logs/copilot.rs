@@ -4,6 +4,29 @@
 
 use super::*;
 
+/// The Copilot CLI adapter.
+pub(crate) struct CopilotLogs;
+
+impl AgentLogs for CopilotLogs {
+    fn agent(&self) -> Agent {
+        Agent::Copilot
+    }
+
+    fn log_folder(&self) -> &'static str {
+        "session-state"
+    }
+
+    fn read(
+        &self,
+        root: &Path,
+        window: &RunWindow,
+        deadline: Instant,
+        limits: ReadLimits,
+    ) -> LogRead {
+        read_copilot(root, window, deadline, limits)
+    }
+}
+
 /// The tool calls of one `assistant.message`.
 #[derive(Default)]
 struct Calls {
@@ -248,12 +271,7 @@ struct Kept {
 
 /// Reads the Copilot sessions under `root`: every session that executed a Jidoka command naming a run in the
 /// window, or was recorded for one.
-pub(crate) fn read_copilot(
-    root: &Path,
-    window: &RunWindow,
-    deadline: Instant,
-    limits: ReadLimits,
-) -> LogRead {
+fn read_copilot(root: &Path, window: &RunWindow, deadline: Instant, limits: ReadLimits) -> LogRead {
     let mut out = LogRead {
         root_found: root.is_dir(),
         ..LogRead::default()
@@ -287,7 +305,7 @@ pub(crate) fn read_copilot(
             continue;
         }
         let skills = copilot_skills(&text);
-        let attention = crate::usage::attention::signals(crate::agent::Agent::Copilot, &text);
+        let attention = crate::usage::attention::copilot_signals(&text);
         drop(text);
         if !plain_id(&session) {
             continue;

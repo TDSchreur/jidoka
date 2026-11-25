@@ -39,11 +39,7 @@ impl World {
 
     fn roots(&self) -> Roots {
         let home = self.dir.path();
-        Roots {
-            claude: home.join("claude/projects"),
-            codex: home.join("codex/sessions"),
-            copilot: home.join("copilot/session-state"),
-        }
+        Roots::from_homes(|agent| home.join(agent.name()))
     }
 
     /// Writes the log of a session.

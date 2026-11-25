@@ -94,11 +94,7 @@ fn usage_and_requests_count_the_same_responses_and_tokens_for_every_agent() {
         let path = home.path().join(file);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, lines.join("\n") + "\n").unwrap();
-        let roots = Roots {
-            claude: home.path().join("claude/projects"),
-            codex: home.path().join("codex/sessions"),
-            copilot: home.path().join("copilot/session-state"),
-        };
+        let roots = Roots::from_homes(|agent| home.path().join(agent.name()));
         let target: Run = serde_json::from_value(json!({
             "id": RUN, "title": "t", "gates": [], "project": "/p", "stage": "build", "status": "running",
             "timeline": [{"at": T0, "stage": "build", "rework": null, "ticket": null}],
@@ -188,10 +184,24 @@ fn a_recorded_absolute_agent_home_wins_and_relative_or_unknown_ones_are_ignored(
         ),
     ]);
     let for_run = roots.for_run(&target);
-    assert_eq!(for_run.codex, recorded.path().join("sessions"));
-    assert_eq!(for_run.claude, own.path().join(".claude").join("projects"));
+    assert_eq!(for_run.get(Agent::Codex), recorded.path().join("sessions"));
     assert_eq!(
-        for_run.copilot,
+        for_run.get(Agent::Claude),
+        own.path().join(".claude").join("projects")
+    );
+    assert_eq!(
+        for_run.get(Agent::Copilot),
         own.path().join(".copilot").join("session-state")
     );
+}
+
+#[test]
+fn every_agent_has_exactly_one_log_reader() {
+    for agent in Agent::ALL {
+        let readers = READERS
+            .iter()
+            .filter(|reader| reader.agent() == agent)
+            .count();
+        assert_eq!(readers, 1, "{} needs exactly one log reader", agent.name());
+    }
 }
