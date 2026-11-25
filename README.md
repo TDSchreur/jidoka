@@ -77,7 +77,7 @@ Useful commands:
 | `jidoka doctor` | Checks that the repository and your machine are ready. |
 | `jidoka run inspect <id>` | Shows a run's stage, workspace, tickets and pull request. |
 | `jidoka run stats <id>` | Shows a run's token usage and token-based estimated cost at API list prices (not subscription charges). |
-| `jidoka run cleanup <id>` | Removes a run's worktree and branch after its pull request merged. |
+| `jidoka run cleanup <id> [--discard [--force]]` | Removes a run's worktree and branch after its pull request merged. `--discard` does it for a run whose pull request did not merge; `--force` also loses uncommitted or unpushed work. |
 
 Run `jidoka --help` for every command.
 
