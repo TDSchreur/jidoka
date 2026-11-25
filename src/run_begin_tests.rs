@@ -720,3 +720,126 @@ fn a_warned_session_is_not_recorded_on_the_new_run() {
     let updates = api.updates.borrow();
     assert!(!updates[0].2.iter().any(|a| a == "--session"));
 }
+
+fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<std::ffi::OsString> + 'a {
+    move |name| {
+        pairs
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| (*value).into())
+    }
+}
+
+fn sessions_from(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<String> {
+    agent_sessions_from(var, None)
+        .0
+        .into_iter()
+        .map(|session| session.id)
+        .collect()
+}
+
+#[test]
+fn each_session_is_sent_with_its_agent_home() {
+    let id = "019e1f00-aaaa-7bbb-8ccc-000000000001";
+    let user = std::env::temp_dir().join("user");
+    let profile = std::env::temp_dir().join("claude-work");
+    let profile_text = profile.to_str().unwrap();
+    let options = |pairs: &[(&str, &str)]| -> Vec<String> {
+        agent_sessions_from(&lookup(pairs), Some(&user))
+            .0
+            .iter()
+            .flat_map(AgentSession::update_options)
+            .collect()
+    };
+    // CLAUDE_CONFIG_DIR wins over the home directory, as it does for install.
+    assert_eq!(
+        options(&[
+            ("CLAUDE_CODE_SESSION_ID", id),
+            ("CLAUDE_CONFIG_DIR", profile_text)
+        ]),
+        [
+            "--session".to_owned(),
+            id.to_owned(),
+            "--agent-home".to_owned(),
+            format!("claude={profile_text}")
+        ]
+    );
+    let codex = user.join(".codex");
+    assert_eq!(
+        options(&[("CODEX_THREAD_ID", id)])[3],
+        format!("codex={}", codex.display())
+    );
+    let copilot = user.join(".copilot");
+    assert_eq!(
+        options(&[("COPILOT_AGENT_SESSION_ID", id)])[3],
+        format!("copilot={}", copilot.display())
+    );
+    // A relative home is not sent: the dashboard could not tell what it is relative to.
+    assert_eq!(
+        options(&[("CLAUDE_CODE_SESSION_ID", id), ("CLAUDE_CONFIG_DIR", "rel")]),
+        ["--session", id]
+    );
+    // It is named in one warning, even when two sessions of the agent share it.
+    let (_, warnings) = agent_sessions_from(
+        &lookup(&[
+            ("CODEX_SESSION_ID", id),
+            ("CODEX_THREAD_ID", "019e1f00-aaaa-7bbb-8ccc-000000000002"),
+            ("CODEX_HOME", "rel"),
+        ]),
+        Some(&user),
+    );
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("CODEX_HOME"), "{warnings:?}");
+    let homes = agent_homes(
+        &agent_sessions_from(
+            &lookup(&[
+                ("CLAUDE_CODE_SESSION_ID", id),
+                ("CLAUDE_CONFIG_DIR", profile_text),
+            ]),
+            None,
+        )
+        .0,
+    );
+    assert_eq!(homes.get("claude").map(String::as_str), Some(profile_text));
+}
+
+#[test]
+fn each_session_variable_names_its_agent() {
+    let agents = |pairs: &[(&str, &str)]| -> Vec<Option<Agent>> {
+        agent_sessions_from(&lookup(pairs), None)
+            .0
+            .into_iter()
+            .map(|session| session.agent)
+            .collect()
+    };
+    let id = "019e1f00-aaaa-7bbb-8ccc-000000000001";
+    assert_eq!(
+        agents(&[("CLAUDE_CODE_SESSION_ID", id)]),
+        [Some(Agent::Claude)]
+    );
+    assert_eq!(agents(&[("CODEX_SESSION_ID", id)]), [Some(Agent::Codex)]);
+    assert_eq!(agents(&[("CODEX_THREAD_ID", id)]), [Some(Agent::Codex)]);
+    assert_eq!(
+        agents(&[("COPILOT_AGENT_SESSION_ID", id)]),
+        [Some(Agent::Copilot)]
+    );
+}
+
+#[test]
+fn codex_sessions_are_recorded_from_the_environment() {
+    let id = "019e1f00-aaaa-7bbb-8ccc-000000000001";
+    let thread = "019e1f00-aaaa-7bbb-8ccc-000000000002";
+    let both = [("CODEX_SESSION_ID", id), ("CODEX_THREAD_ID", thread)];
+    assert_eq!(sessions_from(&lookup(&both)), [id, thread]);
+    let same = [("CODEX_SESSION_ID", id), ("CODEX_THREAD_ID", id)];
+    assert_eq!(sessions_from(&lookup(&same)), [id]);
+    let thread_only = [("CODEX_THREAD_ID", thread)];
+    assert_eq!(sessions_from(&lookup(&thread_only)), [thread]);
+    let claude = [("CLAUDE_CODE_SESSION_ID", id)];
+    assert_eq!(sessions_from(&lookup(&claude)), [id]);
+    let invalid = [("CODEX_SESSION_ID", "bad id!"), ("CODEX_THREAD_ID", "x")];
+    let copilot = [("COPILOT_AGENT_SESSION_ID", id)];
+    assert_eq!(sessions_from(&lookup(&copilot)), [id]);
+    assert!(sessions_from(&lookup(&invalid)).is_empty());
+    assert!(sessions_from(&lookup(&[])).is_empty());
+}

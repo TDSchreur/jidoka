@@ -1722,3 +1722,54 @@ async fn cli_pr_result_distinguishes_discarded_and_missing_runs() {
     assert_eq!(saved.status, crate::run::RunStatus::Running);
     assert!(saved.pr_status.is_none());
 }
+
+#[test]
+fn ports_are_numbers_from_1_to_65535() {
+    assert_eq!(parse_port("4400"), Ok(4400));
+    for bad in ["0", "65536", "-1", "abc", ""] {
+        assert!(parse_port(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn the_default_port_is_used_when_free_and_a_free_one_when_taken() {
+    let taken = std::net::TcpListener::bind((LOOPBACK_HOST, 0)).unwrap();
+    let port = taken.local_addr().unwrap().port();
+    assert_eq!(choose_port(None, port), Ok(0));
+}
+
+#[test]
+fn a_requested_port_that_is_taken_is_an_error() {
+    let taken = std::net::TcpListener::bind((LOOPBACK_HOST, 0)).unwrap();
+    let port = taken.local_addr().unwrap().port();
+    let error = choose_port(Some(port), DEFAULT_PORT).unwrap_err();
+    assert!(error.contains("already in use"), "{error}");
+}
+
+#[test]
+fn dashboard_options_set_the_port_and_the_usage_switch_in_any_order() {
+    assert_eq!(parse_dashboard_options(&[], None), Ok((None, true)));
+    assert_eq!(
+        parse_dashboard_options(&["--no-usage", "--port", "4400"], None),
+        Ok((Some(4400), false))
+    );
+    assert_eq!(
+        parse_dashboard_options(&["--port", "4400"], Some("off")),
+        Ok((Some(4400), false))
+    );
+    for on in [None, Some(""), Some("on"), Some("1"), Some("true")] {
+        assert!(parse_dashboard_options(&[], on).unwrap().1, "{on:?}");
+    }
+    for off in ["off", "OFF", " false ", "0", "no"] {
+        assert!(!parse_dashboard_options(&[], Some(off)).unwrap().1, "{off}");
+    }
+    for bad in [
+        &["--port"][..],
+        &["--port", "0"],
+        &["--port", "1", "--port", "2"],
+        &["--nope"],
+        &["4400"],
+    ] {
+        assert!(parse_dashboard_options(bad, None).is_err(), "{bad:?}");
+    }
+}

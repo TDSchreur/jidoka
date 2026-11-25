@@ -59,6 +59,11 @@ impl<T: Tools + ?Sized> Tools for &T {
 /// The real `gh` and `az`.
 pub(crate) struct RealTools;
 
+/// The hosts as the CLI and the dashboard reach them: through the real `gh` and `az`. The one place they are built.
+pub(crate) fn real_hosts() -> Hosts<RealTools> {
+    Hosts::new(RealTools)
+}
+
 impl Tools for RealTools {
     fn gh(&self, dir: Option<&Path>, args: &[&str]) -> Result<ToolOutput, ToolError> {
         let mut command = Command::new("gh");

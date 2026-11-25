@@ -752,6 +752,77 @@ pub(crate) fn parse_options(options: &[&str]) -> Result<bool, String> {
     }
 }
 
+/// `jidoka run next <id> [--json]`: the run's current stage, its instructions and the moves it allows.
+pub(crate) struct NextCommand;
+
+impl crate::cli::Command for NextCommand {
+    /// The run id, and whether to print JSON.
+    type Options = (String, bool);
+    type Outcome = Next;
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        let (id, options) = crate::cli::split_run_id(words);
+        let json = parse_options(options).map_err(crate::cli::usage_error)?;
+        crate::client::check_run_id(id)?;
+        Ok((id.to_owned(), json))
+    }
+
+    fn run((id, _): &Self::Options) -> Result<Next, Box<dyn std::error::Error>> {
+        next_for(id)
+    }
+
+    fn render(
+        &(_, json): &Self::Options,
+        next: Next,
+    ) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        Ok(crate::cli::Output::json_or_text(json, &next, || {
+            render(&next)
+        })?)
+    }
+}
+
+/// The `run next` data of run `id`, read from the dashboard; the changed paths are read only in Check.
+pub(crate) fn next_for(id: &str) -> Result<Next, Box<dyn std::error::Error>> {
+    let run = crate::client::get_run(id)?;
+    let next = build(&run, &crate::git::ReadOnlyGit)?;
+    // Only Finish uses the group, so other stages never ask the dashboard for it.
+    let group =
+        if run.stage == crate::run::Stage::Finish && run.status != crate::run::RunStatus::Done {
+            group_guidance(id)?
+        } else {
+            None
+        };
+    // Define and Finish carry the knowledge repo guidance, only when one is configured.
+    let knowledge = if matches!(
+        run.stage,
+        crate::run::Stage::Define | crate::run::Stage::Finish
+    ) && run.status != crate::run::RunStatus::Done
+    {
+        match crate::knowledge::load() {
+            Ok(setting) => crate::knowledge::Guidance::for_setting(&setting),
+            // A stale setting must not stop run work; `jidoka knowledge show` reports the same problem.
+            Err(problem) => {
+                eprintln!("Knowledge repo guidance skipped: {problem}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    Ok(next.with_group(group).with_knowledge(knowledge))
+}
+
+/// The change group guidance for run `id`, read from the dashboard; none for an ungrouped run.
+fn group_guidance(id: &str) -> Result<Option<GroupGuidance>, Box<dyn std::error::Error>> {
+    let Some(group) = crate::client::group_of_run(id)? else {
+        return Ok(None);
+    };
+    let bytes =
+        crate::client::api_get(&crate::client::address()?, &format!("/api/groups/{group}"))?;
+    let view: crate::groups::GroupView = serde_json::from_slice(&bytes)?;
+    Ok(GroupGuidance::from_view(&view, id))
+}
+
 #[cfg(test)]
 #[path = "run_next_tests.rs"]
 mod tests;

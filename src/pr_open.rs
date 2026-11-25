@@ -219,6 +219,48 @@ pub(crate) fn render(opened: &Opened, run: &PrRun) -> String {
     text
 }
 
+/// `jidoka pr open <run-id> --title <title> --body-file <path>`: pushes the run's branch and opens its pull
+/// request, or finds the one that is open, and records it on the run.
+pub(crate) struct OpenCommand;
+
+impl crate::cli::Command for OpenCommand {
+    type Options = (String, Options);
+    /// The pull request, and the run it belongs to.
+    type Outcome = (Opened, PrRun);
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        let (id, options) = crate::cli::split_run_id(words);
+        let parsed = parse_options(options).map_err(crate::cli::usage_error)?;
+        crate::client::check_run_id(id)?;
+        Ok((id.to_owned(), parsed))
+    }
+
+    fn run((id, parsed): &Self::Options) -> Result<Self::Outcome, Box<dyn std::error::Error>> {
+        let run = crate::client::get_run(id)?;
+        let info = PrRun::from_run(id, &run);
+        let opened = open(
+            &info,
+            parsed,
+            &crate::pr_host::real_hosts(),
+            &crate::git::RealGit,
+            &crate::client::ServerApi,
+        )
+        .map_err(|problem| shown(&problem.0))?;
+        Ok((opened, info))
+    }
+
+    fn render(
+        (_, parsed): &Self::Options,
+        (opened, info): Self::Outcome,
+    ) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        Ok(crate::cli::Output::json_or_text(
+            parsed.json,
+            &opened,
+            || render(&opened, &info),
+        )?)
+    }
+}
+
 #[cfg(test)]
 #[path = "pr_open_tests.rs"]
 mod tests;

@@ -645,7 +645,7 @@ fn gate_failure(run: &Run, gate: Gate, reason: &str) -> String {
 }
 
 /// The requested stage transition and metadata to save with it.
-#[derive(Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AdvanceRequest {
     #[serde(default)]
@@ -817,6 +817,96 @@ fn ci_passed(run: &Run, git: &dyn Git, host: &dyn PrHost) -> Result<CiEvidence, 
             checked_at,
         },
     })
+}
+
+/// `jidoka run gate <id> <gate> <pass|fail> [--check <name>] [--evidence <text>]`: records a gate result.
+pub(crate) struct GateCommand;
+
+impl crate::cli::Command for GateCommand {
+    /// The run id and the gate result to record.
+    type Options = (String, Record);
+    type Outcome = ();
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        let [id, gate, result, options @ ..] = words else {
+            return Err(crate::cli::usage_error("Invalid arguments.").into());
+        };
+        crate::client::check_run_id(id)?;
+        let gate = serde_json::from_value(serde_json::Value::String((*gate).to_string()))
+            .map_err(|_| "Unknown gate")?;
+        let passed = match *result {
+            "pass" => true,
+            "fail" => false,
+            _ => return Err("Use pass or fail".into()),
+        };
+        let (check, evidence) = parse_options(options)?;
+        let record = Record {
+            gate,
+            passed,
+            evidence,
+            check,
+        };
+        Ok(((*id).to_owned(), record))
+    }
+
+    fn run((id, record): &Self::Options) -> Result<(), Box<dyn std::error::Error>> {
+        crate::client::post(
+            &format!("/api/runs/{id}/gate"),
+            &serde_json::to_vec(record)?,
+        )?;
+        Ok(())
+    }
+
+    fn render(
+        (id, _): &Self::Options,
+        (): (),
+    ) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        Ok(crate::cli::Output::text(format!(
+            "Gate recorded for run {id}\n"
+        )))
+    }
+}
+
+/// `jidoka run advance <id> [options]`: leaves the current Stage, then shows the new one as `run next` does.
+pub(crate) struct AdvanceCommand;
+
+impl crate::cli::Command for AdvanceCommand {
+    type Options = (String, AdvanceOptions);
+    /// The new stage. Reading it can fail after the run moved on, which the output still reports.
+    type Outcome = Result<crate::run_next::Next, Box<dyn std::error::Error>>;
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        let (id, options) = crate::cli::split_run_id(words);
+        crate::client::check_run_id(id)?;
+        let parsed = parse_advance_options(options).map_err(crate::cli::usage_error)?;
+        Ok((id.to_owned(), parsed))
+    }
+
+    fn run((id, parsed): &Self::Options) -> Result<Self::Outcome, Box<dyn std::error::Error>> {
+        let mut request = parsed.request.clone();
+        let sessions = crate::run_begin::current_agent_sessions();
+        request.sessions = sessions.iter().map(|session| session.id.clone()).collect();
+        request.agent_homes = crate::run_begin::agent_homes(&sessions);
+        crate::client::post(
+            &format!("/api/runs/{id}/advance"),
+            &serde_json::to_vec(&request)?,
+        )?;
+        Ok(crate::run_next::next_for(id))
+    }
+
+    fn render(
+        (id, parsed): &Self::Options,
+        next: Self::Outcome,
+    ) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        if parsed.json {
+            return Ok(crate::cli::Output::json(&next?)?);
+        }
+        let advanced = crate::cli::Output::text(format!("Advanced run {id}\n\n"));
+        Ok(match next {
+            Ok(next) => crate::cli::Output::text(advanced.stdout + &crate::run_next::render(&next)),
+            Err(error) => advanced.failed(error),
+        })
+    }
 }
 
 #[cfg(test)]

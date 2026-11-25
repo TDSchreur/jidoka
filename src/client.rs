@@ -1,13 +1,13 @@
 use crate::{
     routing::ModelRouting,
-    run::{NewRun, Run, UpdateRun, parse_update},
+    run::{LifecycleRequest, NewRun, Run, UpdateRun, parse_update},
     run_begin::{AgentSession, agent_homes},
     server::{CLI_TOKEN_HEADER, DashboardIdentity},
 };
 use std::{
     io::{self, Read, Write},
     net::{TcpStream, ToSocketAddrs},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -236,6 +236,165 @@ fn api_request(
         .into());
     }
     Ok(response[end..].to_vec())
+}
+
+/// The server the CLI talks to: the dashboard `dashboard.json` points to, or an error saying to start one. Debug
+/// builds honor `JIDOKA_TEST_ADDRESS`, so CLI tests can use a fake server on an OS-assigned port.
+pub(crate) fn address() -> Result<String, String> {
+    #[cfg(debug_assertions)]
+    if let Ok(address) = std::env::var("JIDOKA_TEST_ADDRESS") {
+        return Ok(address);
+    }
+    let runs = crate::server::runs_path().map_err(|error| error.to_string())?;
+    crate::discovery::running(crate::server::data_dir(&runs))
+        .map(|running| format!("{}:{}", crate::server::LOOPBACK_HOST, running.port))
+        .ok_or_else(|| {
+            "no Jidoka dashboard is running; start it with 'jidoka dashboard'".to_string()
+        })
+}
+
+/// Where the dashboard writes the CLI token that POSTs must send.
+pub(crate) fn token_file() -> io::Result<PathBuf> {
+    Ok(crate::server::token_path(&crate::server::runs_path()?))
+}
+
+/// Where the plan of run `id` is saved, in the data dir; its folder is created.
+pub(crate) fn plan_path(id: &str) -> io::Result<PathBuf> {
+    crate::plans::plan_path_ready(&crate::server::runs_path()?, id)
+}
+
+/// POSTs `body` to `route` of the running dashboard, with the CLI token it wrote.
+pub(crate) fn post(route: &str, body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    api_post(&address()?, &token_file()?, route, body)
+}
+
+/// Reads run `id` from the running dashboard; a bad id is refused before the dashboard is looked for.
+pub(crate) fn get_run(id: &str) -> Result<Run, Box<dyn std::error::Error>> {
+    check_run_id(id)?;
+    fetch_run(&address()?, id)
+}
+
+/// Reports a run update to the running dashboard. A bad id or option is refused before the dashboard is
+/// looked for.
+pub(crate) fn report(id: &str, options: &[&str]) -> Result<(), String> {
+    let update = prepare_update(id, options).map_err(|e| e.to_string())?;
+    send_run_update(id, &update)
+}
+
+/// Sends an update that was already checked to the running dashboard.
+pub(crate) fn send_run_update(id: &str, update: &UpdateRun) -> Result<(), String> {
+    let token_file = token_file().map_err(|e| e.to_string())?;
+    send_update(&address()?, &token_file, id, update).map_err(|e| e.to_string())
+}
+
+/// Sends a lifecycle request for run `id` to the running dashboard.
+pub(crate) fn send_lifecycle(id: &str, request: &LifecycleRequest) -> Result<(), String> {
+    check_run_id(id).map_err(|error| error.to_string())?;
+    let body = serde_json::to_vec(request).map_err(|error| error.to_string())?;
+    post(&format!("/api/runs/{id}/lifecycle"), &body).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// The change group that holds run `id`. A dashboard older than change groups cannot list them and fails here;
+/// restart it with the updated CLI, as for any new API.
+pub(crate) fn group_of_run(id: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let groups = fetch_groups(&address()?)?;
+    Ok(groups
+        .into_iter()
+        .find(|group| group.runs.iter().any(|run| run == id))
+        .map(|group| group.id))
+}
+
+/// The running dashboard, behind the seams the commands use: the real side of `RunApi`, `RunReporter`,
+/// `PrStateRecorder` and `WaitRecorder`.
+pub(crate) struct ServerApi;
+
+impl crate::run_begin::RunApi for ServerApi {
+    fn create(
+        &self,
+        title: &str,
+        project: &str,
+        repository: Option<String>,
+        session: Option<&AgentSession>,
+        routing: Option<ModelRouting>,
+    ) -> Result<String, String> {
+        let token = token_file().map_err(|e| e.to_string())?;
+        start_run(
+            &address()?,
+            &token,
+            title,
+            project,
+            repository,
+            session,
+            routing,
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn get(&self, id: &str) -> Result<crate::run_begin::RunSummary, String> {
+        let run = get_run(id).map_err(|e| e.to_string())?;
+        Ok(crate::run_begin::RunSummary {
+            title: run.title,
+            finished: matches!(run.status, crate::run::RunStatus::Done),
+            worktree: run.worktree,
+        })
+    }
+
+    fn workspace_ready(&self, id: &str, options: &[&str]) -> Result<(), String> {
+        let update = prepare_update(id, options).map_err(|error| error.to_string())?;
+        send_lifecycle(
+            id,
+            &LifecycleRequest::WorkspaceReady {
+                update: Box::new(update),
+            },
+        )
+    }
+
+    fn workspace_blocked(&self, id: &str, reason: &str) -> Result<(), String> {
+        send_lifecycle(
+            id,
+            &LifecycleRequest::WorkspaceBlocked {
+                reason: reason.into(),
+            },
+        )
+    }
+
+    fn runs_with_session(&self, session: &str) -> Result<Vec<(String, String)>, String> {
+        let runs = fetch_runs(&address()?).map_err(|e| e.to_string())?;
+        Ok(runs
+            .into_iter()
+            .filter(|run| run.sessions.iter().any(|known| known == session))
+            .map(|run| (run.id, run.title))
+            .collect())
+    }
+}
+
+impl crate::pr_workspace::RunReporter for ServerApi {
+    fn report(&self, id: &str, report: &crate::pr_workspace::PrReport) -> Result<(), String> {
+        check_run_id(id).map_err(|error| error.to_string())?;
+        let update = report.update();
+        update.validate()?;
+        send_run_update(id, &update)
+    }
+}
+
+impl crate::pr_state::PrStateRecorder for ServerApi {
+    fn record_pr_state(
+        &self,
+        id: &str,
+        status: &crate::pr_state::PrStatus,
+    ) -> Result<bool, String> {
+        let body = serde_json::to_vec(status).map_err(|error| error.to_string())?;
+        let response =
+            post(&format!("/api/runs/{id}/pr-status"), &body).map_err(|error| error.to_string())?;
+        serde_json::from_slice(&response).map_err(|error| error.to_string())
+    }
+}
+
+impl crate::pr_wait::WaitRecorder for ServerApi {
+    fn activity(&self, id: &str, text: &str) -> Result<(), String> {
+        report(id, &["--activity", text])
+    }
 }
 
 #[cfg(test)]
@@ -691,7 +850,7 @@ mod tests {
         match probe_dashboard(&server.address).unwrap() {
             Probe::Running(info) => {
                 assert_eq!(info.pid, std::process::id());
-                assert_eq!(info.version, crate::current_build());
+                assert_eq!(info.version, crate::cli::current_build());
             }
             other => panic!("expected a running dashboard, got {other:?}"),
         }

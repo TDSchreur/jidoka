@@ -110,7 +110,7 @@ pub(crate) fn parse_options(options: &[&str]) -> Result<(PoolOptions, bool), Str
             "--include-partial" if !pool.include_partial => pool.include_partial = true,
             "--exclude" => {
                 let id = args.next().copied().unwrap_or("");
-                if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+                if crate::client::check_run_id(id).is_err() {
                     return Err("--exclude needs a run id".into());
                 }
                 pool.exclude.push(id.to_string());
@@ -387,4 +387,43 @@ pub(crate) fn render_pool(result: &PooledRequests) -> String {
         }
     }
     out
+}
+
+/// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
+const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// `jidoka run requests --all [--include-partial] [--exclude <id>]... [--json]`: the model requests of every run, pooled.
+pub(crate) struct PoolCommand;
+
+impl crate::cli::Command for PoolCommand {
+    /// Which runs to pool, and whether to print JSON.
+    type Options = (PoolOptions, bool);
+    type Outcome = PooledRequests;
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        Ok(parse_options(words).map_err(crate::cli::usage_error)?)
+    }
+
+    fn run(
+        (pool_options, _): &Self::Options,
+    ) -> Result<PooledRequests, Box<dyn std::error::Error>> {
+        let runs = crate::client::fetch_runs(&crate::client::address()?)?;
+        let roots = Roots::from_home(&crate::install::home_dir()?, &|name| std::env::var_os(name));
+        Ok(pool(
+            &runs,
+            &roots,
+            crate::run::updated_now()?,
+            Instant::now() + POOL_DEADLINE,
+            pool_options,
+        ))
+    }
+
+    fn render(
+        &(_, json): &Self::Options,
+        result: PooledRequests,
+    ) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        Ok(crate::cli::Output::json_or_text(json, &result, || {
+            render_pool(&result)
+        })?)
+    }
 }

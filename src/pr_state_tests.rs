@@ -330,3 +330,47 @@ fn repeated_merged_observation_reconciles_after_entering_finish() {
     );
     assert_eq!(the_run(&store, &id).status, RunStatus::Done);
 }
+
+/// Keeps the states the CLI records and answers with `changed`.
+struct Recorder {
+    recorded: std::cell::RefCell<Vec<(String, PrStatus)>>,
+    changed: Result<bool, String>,
+}
+
+impl PrStateRecorder for Recorder {
+    fn record_pr_state(&self, id: &str, status: &PrStatus) -> Result<bool, String> {
+        self.recorded
+            .borrow_mut()
+            .push((id.to_owned(), status.clone()));
+        self.changed.clone()
+    }
+}
+
+#[test]
+fn applying_a_state_records_it_for_the_run_and_says_whether_the_run_changed() {
+    let recorder = Recorder {
+        recorded: std::cell::RefCell::default(),
+        changed: Ok(true),
+    };
+    assert_eq!(apply(&recorder, "42", PR, PrState::Merged, 1_000), Ok(true));
+    assert_eq!(
+        recorder.recorded.into_inner(),
+        [(
+            "42".to_owned(),
+            PrStatus {
+                url: PR.into(),
+                state: PrState::Merged,
+                reason: None,
+                checked_at: 1_000,
+            }
+        )]
+    );
+    let refused = Recorder {
+        recorded: std::cell::RefCell::default(),
+        changed: Err("no dashboard".into()),
+    };
+    assert_eq!(
+        apply(&refused, "42", PR, PrState::Closed, 1_000),
+        Err("no dashboard".into())
+    );
+}

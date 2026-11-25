@@ -197,6 +197,89 @@ fn refresh_with_clock(
     Ok(checked)
 }
 
+/// Where the CLI records a pull request state it read: the Jidoka server, which applies it to the run, or a
+/// fake in tests.
+pub(crate) trait PrStateRecorder {
+    /// Records `status` for run `id` and returns whether the run changed.
+    fn record_pr_state(&self, id: &str, status: &PrStatus) -> Result<bool, String>;
+}
+
+/// Records that the pull request `url` of run `id` was `state` at `checked_at`. The server applies what that
+/// means for the run (see `follow_up`), deciding from the run as it is now: the host may have taken seconds
+/// to answer. Returns whether the run was changed.
+pub(crate) fn apply<R: PrStateRecorder + ?Sized>(
+    recorder: &R,
+    id: &str,
+    url: &str,
+    state: PrState,
+    checked_at: u64,
+) -> Result<bool, String> {
+    let status = PrStatus {
+        url: url.to_owned(),
+        state,
+        reason: None,
+        checked_at,
+    };
+    recorder.record_pr_state(id, &status)
+}
+
+/// `jidoka run sync <run-id> [--json]`: reads the state of the run's pull request from its host and brings the
+/// run in line with it: a merged pull request finishes the run, a closed one blocks it, and an open one changes
+/// nothing.
+pub(crate) struct RunSyncCommand;
+
+/// What `run sync` read and whether the run changed.
+pub(crate) struct Synced {
+    url: String,
+    state: PrState,
+    changed: bool,
+}
+
+impl crate::cli::Command for RunSyncCommand {
+    /// The run id, and whether to print JSON.
+    type Options = (String, bool);
+    type Outcome = Synced;
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        let (id, options) = crate::cli::split_run_id(words);
+        let json = crate::cli::parse_json_flag(options)?;
+        crate::client::check_run_id(id)?;
+        Ok((id.to_owned(), json))
+    }
+
+    fn run((id, _): &Self::Options) -> Result<Synced, Box<dyn std::error::Error>> {
+        let run = crate::client::get_run(id)?;
+        let Some(url) = run.pr else {
+            return Err("The run has no pull request recorded. Record it with `jidoka run update <id> --pr <url>`.".into());
+        };
+        let checked_at = crate::run::updated_now()?;
+        let state = crate::pr_host::real_hosts()
+            .state(&url)
+            .map_err(|problem| crate::inspect::shown(&problem.0))?;
+        let changed = apply(&crate::client::ServerApi, id, &url, state, checked_at)?;
+        Ok(Synced {
+            url,
+            state,
+            changed,
+        })
+    }
+
+    fn render(
+        (id, json): &Self::Options,
+        synced: Synced,
+    ) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        let shown = serde_json::json!({
+            "run": id,
+            "pull_request": synced.url,
+            "state": synced.state,
+            "run_updated": synced.changed,
+        });
+        Ok(crate::cli::Output::json_or_text(*json, &shown, || {
+            describe(synced.state, synced.changed)
+        })?)
+    }
+}
+
 #[cfg(test)]
 #[path = "pr_state_tests.rs"]
 mod tests;

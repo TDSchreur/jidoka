@@ -566,6 +566,46 @@ pub(crate) fn render(report: &Report) -> String {
     out
 }
 
+/// `jidoka run check <run-id>`: compares the run's recorded workspace with the repository. It only reads.
+/// The exit status is 0 when nothing differs, 2 when something does, and 1 for a problem.
+pub(crate) struct CheckCommand;
+
+impl crate::cli::Command for CheckCommand {
+    /// The run id, and whether to print JSON.
+    type Options = (String, bool);
+    type Outcome = Report;
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        let (id, options) = crate::cli::split_run_id(words);
+        let json = parse_options(options).map_err(crate::cli::usage_error)?;
+        crate::client::check_run_id(id)?;
+        Ok((id.to_owned(), json))
+    }
+
+    fn run((id, _): &Self::Options) -> Result<Report, Box<dyn std::error::Error>> {
+        let run = crate::client::get_run(id)?;
+        let recorded = Recorded {
+            id: id.clone(),
+            repository: run.repository,
+            worktree: run.worktree,
+            branch: run.branch,
+            base_commit: run.base_commit,
+        };
+        Ok(check(&recorded, &crate::git::ReadOnlyGit))
+    }
+
+    fn render(
+        &(_, json): &Self::Options,
+        report: Report,
+    ) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        let exit_code = report.exit_code;
+        Ok(
+            crate::cli::Output::json_or_text(json, &report, || render(&report))?
+                .with_exit_code(exit_code),
+        )
+    }
+}
+
 #[cfg(test)]
 #[path = "run_check_tests.rs"]
 mod tests;

@@ -8,7 +8,7 @@ These Rust standards are binding for this application. The other entries in the 
 - Return `Result<T, String>` from module functions. The message says what failed and includes context, for example `.map_err(|error| format!("git could not be started: {error}"))`.
 - Use a small `pub(crate)` error enum only when a caller must branch on the cause, as with `DocumentError`, `BeginError` and `ToolError`.
 - Plain file and process I/O helpers may return `io::Result`.
-- Return `Result<_, Box<dyn std::error::Error>>` from command entry points (`src/main.rs`, `src/client.rs`, `doctor::run`) so `?` converts both error kinds.
+- Return `Result<_, Box<dyn std::error::Error>>` from command entry points (the `cli::Command` methods, `src/client.rs`, `doctor::run`) so `?` converts both error kinds.
 - Let `main` print the error to stderr and exit with failure. Write every message for the user.
 - Do not introduce a second error approach.
 
