@@ -1351,7 +1351,7 @@ fn mode_aliases_store_canonical_names() {
         ("full", "jidoka-full"),
     ] {
         assert!(
-            crate::run_begin::parse_options("task", &["--mode", alias]).is_ok(),
+            crate::run::begin::parse_options("task", &["--mode", alias]).is_ok(),
             "mode alias {alias} should be accepted"
         );
         let run = new_run(&store, "task");

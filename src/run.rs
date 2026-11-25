@@ -1,4 +1,4 @@
-use crate::pr_state::PrStatus;
+use crate::pr::state::PrStatus;
 use crate::routing::ModelRouting;
 use crate::usage::{
     collection::Collection,
@@ -37,6 +37,16 @@ pub(crate) use store::{AdvanceMetadata, PrResult};
 mod summaries;
 mod tickets;
 
+// The commands that move a Run through its Stages, in the order a Run meets them: `begin` creates it with its
+// worktree, `next` prints the current Stage's instructions, `gate` records gates and advances, `check` compares
+// the record with the repository, `inspect` shows it, and `cleanup` removes the worktree once it is done.
+pub(crate) mod begin;
+pub(crate) mod check;
+pub(crate) mod cleanup;
+pub(crate) mod gate;
+pub(crate) mod inspect;
+pub(crate) mod next;
+
 pub(crate) const UPDATE_HELP: &str = concat!(
     "Run update options (the stage never changes here; use `jidoka run advance <id>`, or `--force --reason \"<text>\"` when a gate cannot be met):\n  --activity <text> | --clear-activity\n  --mode <full|balanced|fast|jidoka-full|jidoka-balanced|jidoka-fast>\n  --worktree <absolute-path> | --clear-worktree\n  --branch <name> | --clear-branch\n  --base-commit <sha> | --clear-base-commit\n  --spec <http(s)-url|path> | --clear-spec\n  --pr <http(s)-url> | --clear-pr\n",
     tickets::help!(),
@@ -70,7 +80,7 @@ const MAX_BRANCH_BYTES: usize = 255;
 /// Shortest and longest agent session id, in characters: a UUID is 36, and 8 rules out accidental short values.
 const SESSION_ID_LENGTH: std::ops::RangeInclusive<usize> = 8..=100;
 /// Shortest and longest base commit a run update accepts, in hex digits.
-/// 7 is git's default abbreviation and 64 a full SHA-256 id. Stricter than `run_check`'s `ACCEPTED_COMMIT_ID_LENGTH`,
+/// 7 is git's default abbreviation and 64 a full SHA-256 id. Stricter than `run::check`'s `ACCEPTED_COMMIT_ID_LENGTH`,
 /// which must also read older records.
 const BASE_COMMIT_LENGTH: std::ops::RangeInclusive<usize> = 7..=64;
 /// Ticket reports or run reports a run may hold in total, so a long run cannot grow its record without bound.

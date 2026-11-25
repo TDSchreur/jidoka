@@ -1,7 +1,7 @@
 use crate::{
     routing::ModelRouting,
+    run::begin::{AgentSession, agent_homes},
     run::{LifecycleRequest, NewRun, Run, UpdateRun, parse_update},
-    run_begin::{AgentSession, agent_homes},
     server::{CLI_TOKEN_HEADER, DashboardIdentity},
 };
 use std::{
@@ -312,7 +312,7 @@ pub(crate) fn group_of_run(id: &str) -> Result<Option<String>, Box<dyn std::erro
 /// It is the real side of `RunApi`, `RunReporter`, `PrStateRecorder` and `WaitRecorder`.
 pub(crate) struct ServerApi;
 
-impl crate::run_begin::RunApi for ServerApi {
+impl crate::run::begin::RunApi for ServerApi {
     fn create(
         &self,
         title: &str,
@@ -334,9 +334,9 @@ impl crate::run_begin::RunApi for ServerApi {
         .map_err(|e| e.to_string())
     }
 
-    fn get(&self, id: &str) -> Result<crate::run_begin::RunSummary, String> {
+    fn get(&self, id: &str) -> Result<crate::run::begin::RunSummary, String> {
         let run = get_run(id).map_err(|e| e.to_string())?;
-        Ok(crate::run_begin::RunSummary {
+        Ok(crate::run::begin::RunSummary {
             title: run.title,
             finished: matches!(run.status, crate::run::RunStatus::Done),
             worktree: run.worktree,
@@ -372,8 +372,8 @@ impl crate::run_begin::RunApi for ServerApi {
     }
 }
 
-impl crate::pr_workspace::RunReporter for ServerApi {
-    fn report(&self, id: &str, report: &crate::pr_workspace::PrReport) -> Result<(), String> {
+impl crate::pr::workspace::RunReporter for ServerApi {
+    fn report(&self, id: &str, report: &crate::pr::workspace::PrReport) -> Result<(), String> {
         check_run_id(id).map_err(|error| error.to_string())?;
         let update = report.update();
         update.validate()?;
@@ -381,11 +381,11 @@ impl crate::pr_workspace::RunReporter for ServerApi {
     }
 }
 
-impl crate::pr_state::PrStateRecorder for ServerApi {
+impl crate::pr::state::PrStateRecorder for ServerApi {
     fn record_pr_state(
         &self,
         id: &str,
-        status: &crate::pr_state::PrStatus,
+        status: &crate::pr::state::PrStatus,
     ) -> Result<bool, String> {
         let body = serde_json::to_vec(status).map_err(|error| error.to_string())?;
         let response =
@@ -394,7 +394,7 @@ impl crate::pr_state::PrStateRecorder for ServerApi {
     }
 }
 
-impl crate::pr_wait::WaitRecorder for ServerApi {
+impl crate::pr::wait::WaitRecorder for ServerApi {
     fn activity(&self, id: &str, text: &str) -> Result<(), String> {
         report(id, &["--activity", text])
     }
@@ -894,7 +894,7 @@ mod tests {
             .unwrap();
         // The run holds only the Codex entry as it was at the start, and a continued session sees the same.
         let run = fetch_run(&server.address, &id).unwrap();
-        assert!(crate::inspect::render(&run).contains("Model routing codex"));
+        assert!(crate::run::inspect::render(&run).contains("Model routing codex"));
         let routing = run.model_routing.unwrap();
         assert_eq!(routing.agent, Agent::Codex);
         assert_eq!(routing.stages[&Stage::Check].model, "gpt-6-astra");
@@ -993,7 +993,7 @@ mod tests {
         .unwrap();
         lifecycle(&server, &id, "block", &["--reason", "Need a decision"]);
         let run = fetch_run(&server.address, &id).unwrap();
-        let text = crate::inspect::render(&run);
+        let text = crate::run::inspect::render(&run);
         for expected in [
             "Stage         define (blocked)",
             "Status reason Need a decision",

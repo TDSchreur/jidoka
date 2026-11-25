@@ -252,7 +252,7 @@ fn a_summary_counts_attached_pull_requests_and_only_matching_statuses() {
             &a,
             PrStatus {
                 url: "https://example.com/pr/1".into(),
-                state: crate::pr_state::PrState::Merged,
+                state: crate::pr::state::PrState::Merged,
                 reason: None,
                 checked_at: 1,
             },
@@ -264,7 +264,7 @@ fn a_summary_counts_attached_pull_requests_and_only_matching_statuses() {
             &b,
             PrStatus {
                 url: "https://example.com/pr/old".into(),
-                state: crate::pr_state::PrState::Merged,
+                state: crate::pr::state::PrState::Merged,
                 reason: None,
                 checked_at: 1,
             },
@@ -296,7 +296,7 @@ fn a_run_given_twice_is_refused_and_nothing_is_saved() {
 fn merged(url: &str) -> PrStatus {
     PrStatus {
         url: url.into(),
-        state: crate::pr_state::PrState::Merged,
+        state: crate::pr::state::PrState::Merged,
         reason: None,
         checked_at: 5,
     }
@@ -539,7 +539,7 @@ fn a_pull_request_dependency_clears_only_for_the_current_urls_merged_status() {
             )
             .unwrap();
     };
-    use crate::pr_state::PrState;
+    use crate::pr::state::PrState;
     for (pr_state, shown) in [
         (PrState::Open, "open"),
         (PrState::Draft, "a draft"),

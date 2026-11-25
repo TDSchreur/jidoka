@@ -6,7 +6,7 @@ use super::{
     Ticket, check_text,
 };
 use crate::{
-    pr_state::PrStatus,
+    pr::state::PrStatus,
     stages::{self, Destination, Gate, Transition},
 };
 use serde::{Deserialize, Serialize};
@@ -522,7 +522,7 @@ pub(crate) fn next_rework(current: Option<u32>) -> Result<u32, String> {
 mod tests {
     use super::*;
     use crate::{
-        pr_state::PrState,
+        pr::state::PrState,
         run::{
             Finding, Mode,
             tests::{finding, sample_run},

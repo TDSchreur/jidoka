@@ -3,7 +3,7 @@
 use crate::{
     client::{api_get, api_post},
     groups::{DependencyView, Group, GroupView, Member, MilestoneView, Target},
-    inspect::shown,
+    run::inspect::shown,
 };
 use std::path::Path;
 

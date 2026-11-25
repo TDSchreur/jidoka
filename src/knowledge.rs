@@ -6,7 +6,7 @@
 
 use crate::{
     git::Git,
-    pr_host::{AzureRepo, GitHubRepo, encode_segment},
+    pr::host::{AzureRepo, GitHubRepo, encode_segment},
 };
 use serde::{Deserialize, Serialize};
 use std::{

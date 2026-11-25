@@ -1,7 +1,7 @@
 //! `jidoka run requests --all`: the model requests of many runs pooled, with how they spread over the runs.
 
 use crate::{
-    inspect::shown,
+    run::inspect::shown,
     run::{Run, RunStatus},
     usage::{
         agent_logs::Roots,

@@ -1,7 +1,7 @@
 //! `jidoka run stats`: token usage per stage, model and ticket, in plain text.
 
 use crate::{
-    inspect::shown,
+    run::inspect::shown,
     run::{Run, Stage},
     timestamps,
     usage::{

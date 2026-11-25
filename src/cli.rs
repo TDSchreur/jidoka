@@ -3,7 +3,7 @@
 //! `main` only picks the command; each command lives in the module that owns its work, and `execute` prints
 //! what it renders and returns its exit status.
 
-use crate::{client, run, run_begin, run_next};
+use crate::{client, run};
 use serde::Serialize;
 use std::{error::Error, fmt::Display};
 
@@ -147,7 +147,7 @@ impl Command for UpdateCommand {
     }
 
     fn run((id, options): &Self::Options) -> Result<(), Box<dyn Error>> {
-        let options = run_begin::with_sessions(options);
+        let options = run::begin::with_sessions(options);
         let options: Vec<&str> = options.iter().map(String::as_str).collect();
         Ok(client::report(id, &options)?)
     }
@@ -162,7 +162,7 @@ pub(crate) struct LifecycleCommand;
 
 impl Command for LifecycleCommand {
     type Options = (String, run::LifecycleRequest, bool);
-    type Outcome = Option<run_next::Next>;
+    type Outcome = Option<run::next::Next>;
 
     fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn Error>> {
         let [action, id, options @ ..] = words else {
@@ -175,7 +175,7 @@ impl Command for LifecycleCommand {
     fn run((id, request, rework): &Self::Options) -> Result<Self::Outcome, Box<dyn Error>> {
         client::send_lifecycle(id, request)?;
         Ok(if *rework {
-            Some(run_next::next_for(id)?)
+            Some(run::next::next_for(id)?)
         } else {
             None
         })
@@ -184,7 +184,7 @@ impl Command for LifecycleCommand {
     fn render((id, _, _): &Self::Options, next: Self::Outcome) -> Result<Output, Box<dyn Error>> {
         Ok(Output::text(next.map_or_else(
             || format!("Updated run {id}\n"),
-            |next| run_next::render(&next),
+            |next| run::next::render(&next),
         )))
     }
 }

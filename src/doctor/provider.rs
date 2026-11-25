@@ -3,7 +3,7 @@
 //! None of these checks blocks readiness: a missing tool or sign-in is a warning.
 
 use super::{Check, Machine, git_output};
-use crate::pr_host::{Host, detect_host};
+use crate::pr::host::{Host, detect_host};
 use crate::program::find_program;
 use std::{
     path::Path,

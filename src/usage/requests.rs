@@ -1,8 +1,8 @@
 //! `jidoka run requests`: the model requests of a run per category, with their tokens.
 
 use crate::{
-    inspect::shown,
     run::Run,
+    run::inspect::shown,
     usage::{
         agent_logs::{ReadLimits, Roots},
         request_logs::{Category, Request, request_of},

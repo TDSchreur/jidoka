@@ -694,7 +694,7 @@ mod tests {
                 offenders.push(format!("{path}: develop"));
             }
         }
-        for (path, content) in crate::run_next::STAGE_CHUNKS {
+        for (path, content) in crate::run::next::STAGE_CHUNKS {
             let text = String::from_utf8_lossy(content).to_lowercase();
             for term in PROJECT_SPECIFIC.into_iter().chain(["develop"]) {
                 if text

@@ -9,10 +9,10 @@
 use crate::{
     agent::Agent,
     git::Git,
-    inspect::{self, RouteEntry},
+    run::gate::{self, AssessmentPurpose, ReviewSelection},
+    run::inspect::{self, RouteEntry},
+    run::next::{self, Reviews, StageGates},
     run::{ExitOutcome, Run, SkippedReview, Stage},
-    run_gate::{self, AssessmentPurpose, ReviewSelection},
-    run_next::{self, Reviews, StageGates},
 };
 use serde::Serialize;
 
@@ -42,10 +42,10 @@ pub(super) fn summary(run: &Run) -> serde_json::Result<serde_json::Value> {
 ///
 /// Fails when the projection cannot be serialized.
 pub(super) fn detail(run: &Run, git: &dyn Git) -> serde_json::Result<serde_json::Value> {
-    let assessment = run_gate::assess_local(run, git, AssessmentPurpose::Dashboard);
+    let assessment = gate::assess_local(run, git, AssessmentPurpose::Dashboard);
     let (checks, checks_unavailable) = match assessment.reviews {
         ReviewSelection::Selected { mode, selection } => (
-            Some(run_next::reviews_for(
+            Some(next::reviews_for(
                 mode,
                 &selection,
                 run.model_routing.as_ref(),
@@ -64,7 +64,7 @@ pub(super) fn detail(run: &Run, git: &dyn Git) -> serde_json::Result<serde_json:
         }),
         recorded_skipped_checks: recorded.as_ref().map(|skips| skips.checks),
         recorded_skipped_rework: recorded.map(|skips| skips.rework),
-        stage_gates: run_next::stage_gates(run, assessment.evaluations),
+        stage_gates: next::stage_gates(run, assessment.evaluations),
         checks,
         checks_unavailable,
     })
