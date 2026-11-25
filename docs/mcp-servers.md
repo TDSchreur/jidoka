@@ -52,12 +52,35 @@ The value must be the base64 encoding of `<email>:<pat>`; the server's guide say
 $env:PERSONAL_ACCESS_TOKEN = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('<email>:<pat>'))
 ```
 
-## Codex and GitHub Copilot
+## Codex
 
-Codex uses the same server and arguments:
+Codex uses the same Azure DevOps server and arguments. For GitHub it reads the token from an environment variable, so the token is not written to `~/.codex/config.toml`:
 
 ```bash
+az login
 codex mcp add azure-devops -- npx -y @azure-devops/mcp <org> --authentication azcli
+export GITHUB_PAT_TOKEN=<token>
+codex mcp add github --url https://api.githubcopilot.com/mcp/ --bearer-token-env-var GITHUB_PAT_TOKEN
 ```
 
-For GitHub Copilot, follow the [Azure DevOps MCP README](https://github.com/microsoft/azure-devops-mcp) and the [GitHub MCP server guides](https://github.com/github/github-mcp-server/tree/main/docs/installation-guides), which cover the current setup for each client. The server, organization name and sign-in choices above are the same.
+In PowerShell, set the variable with `$env:GITHUB_PAT_TOKEN = "<token>"` before you start Codex. Run `/mcp` in Codex to check that both servers list their tools.
+
+## GitHub Copilot CLI
+
+The GitHub MCP server is built into Copilot CLI with read-only tools, so GitHub needs no setup. Run `/mcp show github-mcp-server` in a session to check it, or start `copilot` with `--add-github-mcp-toolset <name>` for more tools.
+
+Add Azure DevOps with `/mcp add` in a session, or edit `~/.copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "ado": {
+      "command": "npx",
+      "args": ["-y", "@azure-devops/mcp", "<org>", "--authentication", "azcli"],
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+Microsoft's example for Copilot CLI leaves out `--authentication`, which means browser sign-in; the guide adds `azcli` so all three agents use the same `az login` session.
