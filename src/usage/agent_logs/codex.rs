@@ -575,8 +575,12 @@ fn parse_codex(text: &str, session: &str, subagent: bool, ids: &HashSet<&str>) -
         "\"turn_context\"",
     ];
     let mut log = CodexLog::default();
+    // A subagent rollout that ran a Jidoka command naming a run is that run's coordinator (a plan step
+    // agent), so its responses are not subagent usage. It still does not claim the session.
+    let claims = codex_claims(text, ids);
+    let subagent_usage = subagent && claims.is_empty();
     if !subagent {
-        log.claims = codex_claims(text, ids);
+        log.claims = claims;
     }
     let mut open = Open::default();
     // The calls of the open response, and the index in `responses` of a closed response that made a call.
@@ -649,7 +653,7 @@ fn parse_codex(text: &str, session: &str, subagent: bool, ids: &HashSet<&str>) -
                         model: settings.model.clone(),
                         effort: settings.effort.clone(),
                         tokens: codex_tokens(usage),
-                        subagent,
+                        subagent: subagent_usage,
                         commands: closed.commands,
                         other_tool: closed.other_tool,
                         any_tool: closed.any_tool,

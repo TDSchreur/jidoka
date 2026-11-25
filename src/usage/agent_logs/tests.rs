@@ -162,6 +162,137 @@ fn copilot_claims_a_run_through_the_coordinator_but_not_through_a_subagent() {
     );
 }
 
+/// Reads the logs of `file`s under a fresh home for a run that recorded `session`, and returns the
+/// session the reader found: its claims and, per response in time order, whether it is subagent usage.
+fn read_recorded(files: &[(&str, Vec<String>)], session: &str) -> (HashSet<String>, Vec<bool>) {
+    let home = tempfile::tempdir().unwrap();
+    for (file, lines) in files {
+        let path = home.path().join(file);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, lines.join("\n") + "\n").unwrap();
+    }
+    let roots = Roots::from_homes(|agent| home.path().join(agent.name()));
+    let target: Run = serde_json::from_value(json!({
+        "id": RUN, "title": "t", "gates": [], "project": "/p", "stage": "build", "status": "running",
+        "timeline": [{"at": T0, "stage": "build", "rework": null, "ticket": null}],
+        "finished_at": T0 + 100_000, "sessions": [session],
+    }))
+    .unwrap();
+    let window = RunWindow::new(&target, std::slice::from_ref(&target), T0);
+    let read = read_sessions(
+        &roots,
+        &window,
+        Instant::now() + Duration::from_secs(30),
+        ReadLimits::default(),
+    );
+    assert_eq!(read.sessions.len(), 1);
+    let found = &read.sessions[0];
+    (
+        found.claims.clone(),
+        found.responses.iter().map(|r| r.subagent).collect(),
+    )
+}
+
+#[test]
+fn a_claude_subagent_naming_the_run_is_not_subagent_usage_and_does_not_claim() {
+    let line = |at: u64, id: &str, command: Option<String>| {
+        let content = match command {
+            Some(command) => {
+                json!([{"type": "tool_use", "id": format!("t-{id}"), "name": "Bash", "input": {"command": command}}])
+            }
+            None => json!([{"type": "text", "text": "ok"}]),
+        };
+        json!({"type": "assistant", "timestamp": iso(at), "requestId": format!("req-{id}"), "isSidechain": true,
+            "message": {"id": id, "model": "claude-test", "role": "assistant", "content": content,
+                "usage": {"input_tokens": 10, "output_tokens": 5}}})
+        .to_string()
+    };
+    let main =
+        json!({"type": "user", "timestamp": iso(1), "message": {"role": "user", "content": "go"}})
+            .to_string();
+    let (claims, subagent) = read_recorded(
+        &[
+            ("claude/projects/slug/s1.jsonl", vec![main]),
+            (
+                "claude/projects/slug/s1/subagents/agent-a.jsonl",
+                vec![line(10, "a1", Some(command()))],
+            ),
+            (
+                "claude/projects/slug/s1/subagents/agent-b.jsonl",
+                vec![line(20, "b1", None)],
+            ),
+        ],
+        "s1",
+    );
+    assert_eq!(subagent, [false, true]);
+    assert!(claims.is_empty());
+}
+
+#[test]
+fn a_codex_subagent_rollout_naming_the_run_is_not_subagent_usage_and_does_not_claim() {
+    let rollout = |id: &str, at: u64, with_command: bool| {
+        let mut lines = vec![
+            json!({"type": "session_meta", "timestamp": iso(0), "payload": {"id": id, "session_id": "cdx1",
+                "thread_source": "subagent", "source": {"subagent": {"thread_spawn": {"parent_thread_id": "cdx1"}}}}})
+            .to_string(),
+            json!({"type": "turn_context", "timestamp": iso(0), "payload": {"model": "gpt-test", "turn_id": "turn-1"}}).to_string(),
+        ];
+        if with_command {
+            lines.push(json!({"type": "response_item", "timestamp": iso(at - 1), "payload": {"type": "custom_tool_call",
+                "name": "exec", "call_id": "c1", "input": format!("tools.exec_command({{cmd: \"{}\"}})", command())}}).to_string());
+        }
+        lines.push(json!({"type": "token_usage_record", "timestamp": iso(at), "payload": {"response_id": format!("r-{id}"),
+            "turn_id": "turn-1", "usage": {"input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 5}}}).to_string());
+        lines
+    };
+    let (claims, subagent) = read_recorded(
+        &[
+            (
+                "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-sub-a.jsonl",
+                rollout("sub-a", 10, true),
+            ),
+            (
+                "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-sub-b.jsonl",
+                rollout("sub-b", 20, false),
+            ),
+        ],
+        "cdx1",
+    );
+    assert_eq!(subagent, [false, true]);
+    assert!(claims.is_empty());
+}
+
+#[test]
+fn a_copilot_sub_agent_naming_the_run_is_not_subagent_usage_and_does_not_claim() {
+    let message = |call: &str, command: &str| {
+        json!({"type": "assistant.message", "timestamp": iso(1), "data": {"apiCallId": call, "content": "",
+            "toolRequests": [{"toolCallId": format!("t-{call}"), "name": "bash", "arguments": {"command": command}}]}})
+        .to_string()
+    };
+    let record = |at: u64, call: &str, agent: &str| {
+        json!({"type": "session.usage_record", "timestamp": iso(at), "agentId": agent, "data": {"usage": {"apiCallId": call,
+            "model": "gpt-test", "inputTokens": 10, "outputTokens": 1, "initiator": "sub-agent"}}})
+        .to_string()
+    };
+    let (claims, subagent) = read_recorded(
+        &[(
+            "copilot/session-state/cop1/events.jsonl",
+            vec![
+                message("c1", &command()),
+                record(10, "c1", "agent-a"),
+                // The same agent's later request names nothing, but it is still the coordinator's.
+                message("c2", "ls"),
+                record(20, "c2", "agent-a"),
+                message("c3", "ls"),
+                record(30, "c3", "agent-b"),
+            ],
+        )],
+        "cop1",
+    );
+    assert_eq!(subagent, [false, false, true]);
+    assert!(claims.is_empty());
+}
+
 #[test]
 fn a_recorded_absolute_agent_home_wins_and_relative_or_unknown_ones_are_ignored() {
     let own = tempfile::tempdir().unwrap();
