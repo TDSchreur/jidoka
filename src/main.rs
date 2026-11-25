@@ -1,5 +1,4 @@
 mod agent;
-mod checks;
 mod cli;
 mod client;
 mod discovery;
@@ -21,6 +20,7 @@ mod pr_sync;
 mod pr_wait;
 mod pr_workspace;
 mod repository;
+mod reviews;
 mod routing;
 mod run;
 mod run_begin;

@@ -2,15 +2,15 @@
 
 use crate::{
     agent::Agent,
-    checks,
     git::Git,
     inspect::shown,
+    reviews,
     routing::{ModelChoice, ModelRouting},
     run::{
         Evaluation, ExitOutcome, GateResult, GateStatus, Mode, ReworkFindings, Run, RunStatus,
         Stage, StageExit, Ticket, TicketStatus,
     },
-    run_gate::{self, AssessmentPurpose, CheckSelection},
+    run_gate::{self, AssessmentPurpose, ReviewSelection},
     stages::{self, Destination, Gate},
 };
 use serde::Serialize;
@@ -37,7 +37,7 @@ pub(crate) struct Move {
 }
 
 #[derive(Serialize, Debug, PartialEq, Eq)]
-pub(crate) struct CheckEntry {
+pub(crate) struct ReviewEntry {
     name: &'static str,
     reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,11 +46,11 @@ pub(crate) struct CheckEntry {
     model: Option<ModelChoice>,
 }
 
-/// The Checks of the Check stage: those that apply to the diff and those skipped.
+/// The Reviews of the Check stage: those that apply to the diff and those skipped.
 #[derive(Serialize, Debug, PartialEq, Eq)]
-pub(crate) struct Checks {
-    applicable: Vec<CheckEntry>,
-    skipped: Vec<CheckEntry>,
+pub(crate) struct Reviews {
+    applicable: Vec<ReviewEntry>,
+    skipped: Vec<ReviewEntry>,
 }
 
 /// What the run's change group asks of its Finish: the shared spec and the conditions the run waits on.
@@ -114,7 +114,7 @@ pub(crate) struct Next {
     checks_unavailable: Option<String>,
     moves: Vec<Move>,
     /// Only in the Check stage.
-    checks: Option<Checks>,
+    checks: Option<Reviews>,
     summaries: BTreeMap<Stage, String>,
     tickets: Vec<Ticket>,
     unticketed_attempt: Option<u64>,
@@ -290,34 +290,34 @@ fn instructions(mode: Mode, stage: Stage, agent: Option<Agent>, routing: Option<
     output
 }
 
-pub(crate) fn checks_for(
+pub(crate) fn reviews_for(
     mode: Mode,
-    selection: &checks::Selection,
+    selection: &reviews::Selection,
     routing: Option<&ModelRouting>,
-) -> Checks {
-    Checks {
+) -> Reviews {
+    Reviews {
         applicable: selection
             .applicable
             .iter()
-            .map(|a| CheckEntry {
-                name: a.check.name,
-                gate: Some(a.check.gate.gate()),
+            .map(|a| ReviewEntry {
+                name: a.review.name,
+                gate: Some(a.review.gate.gate()),
                 model: a
-                    .check
+                    .review
                     .model_route
                     .and_then(|stage| routing.and_then(|r| r.choice_for(stage)))
                     .cloned(),
                 reason: match &a.reason {
-                    checks::Reason::Floor => format!("{} always runs it", mode.name()),
-                    checks::Reason::Triggered { path } => format!("{} changed", shown(path)),
+                    reviews::Reason::Floor => format!("{} always runs it", mode.name()),
+                    reviews::Reason::Triggered { path } => format!("{} changed", shown(path)),
                 },
             })
             .collect(),
         skipped: selection
             .skipped
             .iter()
-            .map(|s| CheckEntry {
-                name: s.check.name,
+            .map(|s| ReviewEntry {
+                name: s.review.name,
                 gate: None,
                 model: None,
                 reason: s.reason.clone(),
@@ -387,10 +387,10 @@ pub(crate) fn build(run: &Run, git: &dyn Git) -> Result<Next, String> {
         }
         Err(reason) => note = Some(reason),
     }
-    let (selection, checks_unavailable) = match &assessment.checks {
-        CheckSelection::NotApplicable => (None, None),
-        CheckSelection::Unavailable(reason) => (None, Some(reason.clone())),
-        CheckSelection::Selected { selection, .. } => (Some(selection), None),
+    let (selection, checks_unavailable) = match &assessment.reviews {
+        ReviewSelection::NotApplicable => (None, None),
+        ReviewSelection::Unavailable(reason) => (None, Some(reason.clone())),
+        ReviewSelection::Selected { selection, .. } => (Some(selection), None),
     };
     Ok(Next {
         run: run.id.clone(),
@@ -405,7 +405,7 @@ pub(crate) fn build(run: &Run, git: &dyn Git) -> Result<Next, String> {
         stage_exits: run.stage_exits.clone(),
         checks_unavailable,
         moves,
-        checks: selection.map(|selection| checks_for(mode, selection, run.model_routing.as_ref())),
+        checks: selection.map(|selection| reviews_for(mode, selection, run.model_routing.as_ref())),
         summaries: run.summaries.clone(),
         tickets: run.tickets.clone(),
         unticketed_attempt: run.unticketed_attempt,
@@ -438,7 +438,7 @@ pub(crate) fn build(run: &Run, git: &dyn Git) -> Result<Next, String> {
     })
 }
 
-fn stage_instructions(run: &Run, mode: Mode, selection: Option<&checks::Selection>) -> String {
+fn stage_instructions(run: &Run, mode: Mode, selection: Option<&reviews::Selection>) -> String {
     if run.status == RunStatus::Done {
         return String::new();
     }
@@ -457,7 +457,7 @@ fn stage_instructions(run: &Run, mode: Mode, selection: Option<&checks::Selectio
     if let Some(selection) = selection {
         for applicable in &selection.applicable {
             stage_instructions.push_str("\n\n");
-            stage_instructions.push_str(applicable.check.instructions);
+            stage_instructions.push_str(applicable.review.instructions);
         }
     }
     stage_instructions

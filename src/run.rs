@@ -30,7 +30,7 @@ mod reports;
 mod stage_exit;
 pub(crate) use stage_exit::{
     CiEvidence, Evaluation, Exit, ExitOutcome, GateResult, GateStatus, MAX_GATE_RESULTS,
-    ReworkFindings, ReworkRecord, SkippedCheck, StageExit, next_rework,
+    ReworkFindings, ReworkRecord, SkippedReview, StageExit, next_rework,
 };
 mod store;
 pub(crate) use store::{AdvanceMetadata, PrResult};
