@@ -147,7 +147,7 @@ impl Fixture {
 
     /// Cleans up from the root, which is outside the worktree.
     fn cleanup(&self, run: &Recorded, host: &FakeHost) -> Result<Cleaned, ToolProblem> {
-        cleanup(run, host, &TestGit, &self.root)
+        cleanup(run, host, &TestGit, &self.root, Mode::Merged)
     }
 
     fn assert_untouched(&self) {
@@ -213,7 +213,13 @@ fn uncommitted_changes_refuse() {
 #[test]
 fn running_inside_the_worktree_refuses() {
     let fx = Fixture::new();
-    let message = refusal(cleanup(&fx.recorded(), &fx.host(), &TestGit, &fx.wt));
+    let message = refusal(cleanup(
+        &fx.recorded(),
+        &fx.host(),
+        &TestGit,
+        &fx.wt,
+        Mode::Merged,
+    ));
     assert!(message.contains("main checkout"), "{message}");
     fx.assert_untouched();
 }
@@ -259,7 +265,13 @@ impl Git for MovingGit<'_> {
 #[test]
 fn a_branch_that_moved_after_the_check_is_not_deleted() {
     let fx = Fixture::new();
-    let result = cleanup(&fx.recorded(), &fx.host(), &MovingGit(&fx), &fx.root);
+    let result = cleanup(
+        &fx.recorded(),
+        &fx.host(),
+        &MovingGit(&fx),
+        &fx.root,
+        Mode::Merged,
+    );
     assert!(result.is_err());
     assert!(fx.branch_exists());
 }
@@ -318,4 +330,128 @@ fn a_branch_also_checked_out_in_the_main_checkout_refuses_before_removing() {
     assert!(message.contains("checked out"), "{message}");
     assert!(message.contains("Nothing was removed"), "{message}");
     fx.assert_untouched();
+}
+
+/// Makes the feature branch known to a remote, so that no commit counts as unpushed.
+fn push_feature(fx: &Fixture) {
+    let remote = fx.root.join("remote.git");
+    run_git(
+        &fx.root,
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    run_git(
+        &fx.repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    run_git(&fx.repo, &["push", "-q", "origin", "feature"]);
+}
+
+fn discard(
+    fx: &Fixture,
+    run: &Recorded,
+    host: &FakeHost,
+    force: bool,
+) -> Result<Cleaned, ToolProblem> {
+    cleanup(run, host, &TestGit, &fx.root, Mode::Discard { force })
+}
+
+fn no_host() -> FakeHost {
+    FakeHost::new(Vec::new())
+}
+
+#[test]
+fn discard_removes_a_pushed_run_without_a_pull_request() {
+    let fx = Fixture::new();
+    push_feature(&fx);
+    let mut run = fx.recorded();
+    run.pr = None;
+    let cleaned = discard(&fx, &run, &no_host(), false).unwrap();
+    assert_eq!(cleaned.worktree, Step::Removed);
+    assert_eq!(cleaned.branch, Step::Removed);
+    assert!(!fx.wt.exists());
+    assert!(!fx.branch_exists());
+}
+
+#[test]
+fn discard_removes_a_run_whose_pull_request_was_closed() {
+    let fx = Fixture::new();
+    push_feature(&fx);
+    discard(&fx, &fx.recorded(), &fx.host_in(PrState::Closed), false).unwrap();
+    assert!(!fx.wt.exists());
+    assert!(!fx.branch_exists());
+}
+
+#[test]
+fn discard_refuses_a_pull_request_that_is_still_open_even_with_force() {
+    let fx = Fixture::new();
+    push_feature(&fx);
+    for state in [PrState::Open, PrState::Draft] {
+        let message = refusal(discard(&fx, &fx.recorded(), &fx.host_in(state), true));
+        assert!(message.contains("Close it first"), "{state:?}: {message}");
+        fx.assert_untouched();
+    }
+}
+
+#[test]
+fn discard_lists_unpushed_commits_and_force_removes_them() {
+    let fx = Fixture::new();
+    let mut run = fx.recorded();
+    run.pr = None;
+    let message = refusal(discard(&fx, &run, &no_host(), false));
+    assert!(message.contains("no remote branch"), "{message}");
+    assert!(message.contains("feature work"), "{message}");
+    fx.assert_untouched();
+    discard(&fx, &run, &no_host(), true).unwrap();
+    assert!(!fx.wt.exists());
+    assert!(!fx.branch_exists());
+}
+
+#[test]
+fn discard_lists_uncommitted_changes_and_force_removes_them() {
+    let fx = Fixture::new();
+    push_feature(&fx);
+    fs::write(fx.wt.join("scratch.txt"), "x\n").unwrap();
+    let mut run = fx.recorded();
+    run.pr = None;
+    let message = refusal(discard(&fx, &run, &no_host(), false));
+    assert!(
+        message.contains("uncommitted") && message.contains("scratch.txt"),
+        "{message}"
+    );
+    fx.assert_untouched();
+    discard(&fx, &run, &no_host(), true).unwrap();
+    assert!(!fx.wt.exists());
+    assert!(!fx.branch_exists());
+}
+
+#[test]
+fn discard_keeps_the_safety_refusals() {
+    let fx = Fixture::new();
+    push_feature(&fx);
+    let mut run = fx.recorded();
+    run.pr = None;
+    let inside = cleanup(
+        &run,
+        &no_host(),
+        &TestGit,
+        &fx.wt,
+        Mode::Discard { force: true },
+    );
+    assert!(refusal(inside).contains("inside the worktree"));
+    fx.assert_untouched();
+}
+
+#[test]
+fn options_pick_the_mode() {
+    assert_eq!(parse_options(&[]), Ok(Mode::Merged));
+    assert_eq!(
+        parse_options(&["--discard"]),
+        Ok(Mode::Discard { force: false })
+    );
+    assert_eq!(
+        parse_options(&["--force", "--discard"]),
+        Ok(Mode::Discard { force: true })
+    );
+    assert!(parse_options(&["--force"]).is_err());
+    assert!(parse_options(&["--nope"]).is_err());
 }
