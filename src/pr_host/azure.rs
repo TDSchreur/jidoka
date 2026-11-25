@@ -15,7 +15,7 @@ use crate::{
 };
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::Path,
@@ -535,31 +535,40 @@ fn checks_for(
         merge_ref: format!("refs/pull/{}/merge", pr.id),
         merge_commit: merge_commit(data),
     };
-    let mut builds = BTreeMap::new();
-    for ((genre, name), status) in statuses {
+    let candidates: BTreeMap<_, _> = statuses
+        .iter()
+        .filter(|(_, status)| {
+            status.get("iterationId").is_none()
+                && status_bucket(status["state"].as_str()) != "pending"
+        })
+        .filter_map(|(context, status)| {
+            pr.status_build_id(status["targetUrl"].as_str())
+                .map(|id| (context, id))
+        })
+        .collect();
+    let ids = candidates.values().copied().collect();
+    let builds = pr.build_sources(tools, &ids, &source).unwrap_or_default();
+    for (context, status) in &statuses {
+        let (genre, name) = context;
         let scoped = status["iterationId"].as_u64() == Some(iteration);
         let state = if scoped {
             Some(required(&status["state"], "status state")?)
         } else {
             status["state"].as_str()
         };
-        let mut bucket = status_bucket(state);
-        let mut evidence = None;
-        if !scoped && bucket != "pending" {
-            if status.get("iterationId").is_none()
-                && let Some(id) = pr.status_build_id(status["targetUrl"].as_str())
-            {
-                evidence = *builds
-                    .entry(id)
-                    .or_insert_with(|| source.prove(pr, tools, id));
-            }
-            if evidence.is_none() {
-                bucket = "pending";
-            }
-        }
+        let evidence = candidates
+            .get(context)
+            .and_then(|id| builds.get(id))
+            .copied()
+            .flatten();
+        let bucket = if scoped || evidence.is_some() {
+            status_bucket(state)
+        } else {
+            "pending"
+        };
         let check = CheckResult {
             name: if genre.is_empty() {
-                name
+                name.clone()
             } else {
                 format!("{genre}: {name}")
             },
@@ -786,17 +795,9 @@ struct BuildSources<'a> {
 }
 
 impl BuildSources<'_> {
-    /// The source used by a matching build, as reported by Azure's authenticated Build API.
-    fn prove(&self, pr: &AzurePr, tools: &dyn Tools, id: u64) -> Option<BuildSource> {
-        let build = Build {
-            org: &pr.org,
-            project: pr.project.clone(),
-            id,
-        }
-        .invoke_json(tools, "builds")?;
-        if build["id"].as_u64() != Some(id)
-            || build["repository"]["id"].as_str() != Some(self.repository)
-        {
+    /// The pull request source identified by an authenticated build record.
+    fn prove(&self, build: &Value) -> Option<BuildSource> {
+        if build["repository"]["id"].as_str() != Some(self.repository) {
             return None;
         }
         let reference = build["sourceBranch"].as_str()?;
@@ -866,6 +867,7 @@ impl AzurePr {
         if link
             .chars()
             .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '#' | ';'))
+            || !valid_percent_escapes(link)
         {
             return None;
         }
@@ -890,6 +892,62 @@ impl AzurePr {
             }
         }
         id.filter(|number| *number > 0)
+    }
+
+    /// Reads all candidate builds in one authenticated metadata request for the current snapshot.
+    fn build_sources(
+        &self,
+        tools: &dyn Tools,
+        ids: &BTreeSet<u64>,
+        source: &BuildSources<'_>,
+    ) -> Option<BTreeMap<u64, Option<BuildSource>>> {
+        if ids.is_empty() {
+            return Some(BTreeMap::new());
+        }
+        let project = format!("project={}", self.project);
+        let query = format!(
+            "buildIds={}",
+            ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",")
+        );
+        let data = az_json(
+            tools,
+            &[
+                "devops",
+                "invoke",
+                "--organization",
+                &self.org,
+                "--area",
+                "build",
+                "--resource",
+                "builds",
+                "--route-parameters",
+                &project,
+                "--query-parameters",
+                &query,
+                "--api-version",
+                "7.1",
+                "--output",
+                "json",
+                "--detect",
+                "false",
+            ],
+        )
+        .ok()?;
+        // A partial response cannot establish that a returned ID is unambiguous.
+        if !data["continuation_token"].is_null() {
+            return None;
+        }
+        let mut builds = BTreeMap::new();
+        for build in data["value"].as_array()? {
+            let id = build["id"].as_u64().filter(|id| *id > 0)?;
+            if ids.contains(&id) {
+                builds
+                    .entry(id)
+                    .and_modify(|evidence| *evidence = None)
+                    .or_insert_with(|| source.prove(build));
+            }
+        }
+        Some(builds)
     }
 
     /// The pull request as Azure reports it, checked to be the one the URL names.
@@ -1106,6 +1164,14 @@ impl AzureRepo {
             encode_segment(&self.repository)
         )
     }
+}
+
+/// Checks that every percent sign in a URL begins a complete hexadecimal escape.
+fn valid_percent_escapes(link: &str) -> bool {
+    link.as_bytes()
+        .split(|&byte| byte == b'%')
+        .skip(1)
+        .all(|escape| matches!(escape, [first, second, ..] if first.is_ascii_hexdigit() && second.is_ascii_hexdigit()))
 }
 
 /// One percent-encoded segment of an Azure URL, decoded. `None` when it is not a plain name, so a decoded

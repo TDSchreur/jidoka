@@ -255,7 +255,7 @@ struct AzureWatch {
     iterations: Value,
     iteration_statuses: Value,
     statuses: Value,
-    build: Value,
+    builds: Value,
 }
 
 impl AzureWatch {
@@ -282,7 +282,7 @@ impl AzureWatch {
             iterations: json!({"value": [{"id": 1, "createdDate": "2026-01-01T00:00:00Z", "sourceRefCommit": {"commitId": "abc1234"}}]}),
             iteration_statuses: json!({"value": statuses}),
             statuses: json!({"value": []}),
-            build: Value::Null,
+            builds: json!({"value": []}),
         }
     }
 
@@ -309,8 +309,8 @@ impl AzureWatch {
             self.iteration_statuses.clone()
         } else if call.contains(" pullRequestStatuses ") {
             self.statuses.clone()
-        } else if call == AZURE_BUILD_CALL {
-            self.build.clone()
+        } else if call.contains("--area build --resource builds ") {
+            self.builds.clone()
         } else {
             panic!("unexpected call {call}")
         };
@@ -529,7 +529,7 @@ fn both_hosts_read_no_checks_of_a_merged_or_closed_pull_request() {
 
 const AZURE_PR: &str = "https://dev.azure.com/org/Proj/_git/Repo/pullrequest/535";
 const AZURE_BUILD_LINK: &str = "https://dev.azure.com/org/Proj/_build/results?buildId=42";
-const AZURE_BUILD_CALL: &str = "az devops invoke --organization https://dev.azure.com/org --area build --resource builds --route-parameters project=Proj buildId=42 --api-version 7.1 --output json --detect false";
+const AZURE_BUILD_CALL: &str = "az devops invoke --organization https://dev.azure.com/org --area build --resource builds --route-parameters project=Proj --query-parameters buildIds=42 --api-version 7.1 --output json --detect false";
 
 /// The checks of the Azure pull request `azure` prints, as `(name, bucket)`.
 fn azure_checks(azure: AzureWatch) -> Vec<(String, String)> {
@@ -586,14 +586,14 @@ fn azure_status_watch(state: &str, iteration_statuses: &[(&str, &str)]) -> Azure
         "context": {"genre": "Pipeline", "name": "External scan"},
         "targetUrl": AZURE_BUILD_LINK
     }]});
-    azure.build = json!({
+    azure.builds = json!({"value": [{
         "id": 42,
         "repository": {"id": "repo-id"},
         "sourceBranch": "refs/heads/feature/x",
         "sourceVersion": "abc1234",
         "status": "inProgress",
         "result": "failed"
-    });
+    }]});
     azure
 }
 
@@ -623,17 +623,21 @@ fn azure_wait_uses_the_proven_status_outcome_and_only_requests_build_metadata() 
     ] {
         let mut azure = azure_status_watch(state, &[("Build validation", "pass")]);
         if state == "failed" {
-            azure.build["status"] = json!("completed");
-            azure.build["result"] = json!("succeeded");
+            azure.builds["value"][0]["status"] = json!("completed");
+            azure.builds["value"][0]["result"] = json!("succeeded");
         }
         let tools = Script::printing_for(move |call| azure.print(call));
         let waited = watch_azure_once(&tools);
         assert_eq!(waited.outcome, outcome, "{state}");
-        assert!(waited.checks.iter().any(|check| {
-            check.name == "Pipeline: External scan"
-                && check.bucket == bucket
-                && check.link == AZURE_PR
-        }));
+        assert!(
+            waited.checks.iter().any(|check| {
+                check.name == "Pipeline: External scan"
+                    && check.bucket == bucket
+                    && check.link == AZURE_PR
+            }),
+            "{state} should report {bucket} and link to the PR: {:?}",
+            waited.checks
+        );
         if outcome == Outcome::Failed {
             assert_eq!(waited.failures.len(), 1);
             assert_eq!(waited.failures[0].link, AZURE_PR);
@@ -658,11 +662,58 @@ fn azure_wait_uses_the_proven_status_outcome_and_only_requests_build_metadata() 
 }
 
 #[test]
+fn azure_reads_distinct_build_ids_in_one_request_per_snapshot() {
+    let mut azure = azure_status_watch("succeeded", &[]);
+    let mut statuses = vec![azure.statuses["value"][0].clone()];
+    for (id, name, build_id) in [(10, "Reuse build", 42), (11, "Merge scan", 43)] {
+        statuses.push(json!({
+            "id": id,
+            "state": "succeeded",
+            "context": {"genre": "Pipeline", "name": name},
+            "targetUrl": format!("https://dev.azure.com/org/Proj/_build/results?buildId={build_id}")
+        }));
+    }
+    azure.statuses["value"] = json!(statuses);
+    let branch = azure.builds["value"][0].clone();
+    azure.builds["value"] = json!([
+        {
+            "id": 43,
+            "repository": {"id": "repo-id"},
+            "sourceBranch": "refs/pull/535/merge",
+            "sourceVersion": "merge123"
+        },
+        branch
+    ]);
+
+    let tools = Script::printing_for(move |call| azure.print(call));
+    let snapshot = azure::Azure.snapshot(&tools, AZURE_PR).unwrap();
+    assert_eq!(
+        buckets(&snapshot),
+        [
+            ("Pipeline: External scan", "pass"),
+            ("Pipeline: Merge scan", "pass"),
+            ("Pipeline: Reuse build", "pass")
+        ]
+    );
+    assert_eq!(
+        tools
+            .calls
+            .borrow()
+            .iter()
+            .filter(|call| call.contains("--area build "))
+            .cloned()
+            .collect::<Vec<_>>(),
+        [AZURE_BUILD_CALL.replace("buildIds=42 ", "buildIds=42,43 ")]
+    );
+}
+
+#[test]
 fn azure_wait_accepts_a_build_of_the_current_synthetic_merge_commit() {
     let mut azure = azure_status_watch("succeeded", &[]);
-    azure.statuses["value"][0]["targetUrl"] = json!(format!("{AZURE_BUILD_LINK}&view=results"));
-    azure.build["sourceBranch"] = json!("refs/pull/535/merge");
-    azure.build["sourceVersion"] = json!("merge123");
+    azure.statuses["value"][0]["targetUrl"] =
+        json!(format!("{AZURE_BUILD_LINK}&view=results%20summary"));
+    azure.builds["value"][0]["sourceBranch"] = json!("refs/pull/535/merge");
+    azure.builds["value"][0]["sourceVersion"] = json!("merge123");
     let tools = Script::printing_for(move |call| azure.print(call));
     assert_eq!(watch_azure_once(&tools).outcome, Outcome::Passed);
 }
@@ -679,6 +730,10 @@ fn azure_keeps_the_latest_status_pending_without_an_unambiguous_build_link() {
         "https://dev.azure.com/org/Proj/_build/results?buildId=0",
         "https://dev.azure.com/org/Proj/_build/results?buildId=42&buildId=43",
         "https://dev.azure.com/org/Proj/_build/results?buildId=42&bu%69ldId=43",
+        "https://dev.azure.com/org/Proj/_build/results?buildId=42&view=%",
+        "https://dev.azure.com/org/Proj/_build/results?buildId=42&view=%2",
+        "https://dev.azure.com/org/Proj/_build/results?buildId=42&view=%2g",
+        "https://dev.azure.com/org/Proj/_build/results?buildId=42&vi%ew=results",
     ] {
         let mut azure = azure_status_watch("succeeded", &[]);
         let mut newest = azure.statuses["value"][0].clone();
@@ -693,7 +748,10 @@ fn azure_keeps_the_latest_status_pending_without_an_unambiguous_build_link() {
             [("Pipeline: External scan", "pending")],
             "{link:?}"
         );
-        assert!(snapshot.applies);
+        assert!(
+            snapshot.applies,
+            "{link:?} must leave an applicable pending check"
+        );
         assert!(
             tools
                 .calls
@@ -724,7 +782,9 @@ fn azure_keeps_nonterminal_and_malformed_iteration_statuses_pending_without_buil
                 .calls
                 .borrow()
                 .iter()
-                .all(|call| !call.contains("--area build "))
+                .all(|call| !call.contains("--area build ")),
+            "{field} must not select a build: {:?}",
+            tools.calls.borrow()
         );
     }
 }
@@ -739,7 +799,7 @@ fn azure_wait_times_out_if_build_metadata_cannot_prove_the_current_source() {
         ("sourceVersion", Value::Null),
     ] {
         let mut azure = azure_status_watch("succeeded", &[]);
-        azure.build[field] = value;
+        azure.builds["value"][0][field] = value;
         let tools = Script::printing_for(move |call| azure.print(call));
         assert_eq!(
             watch_azure_once(&tools).outcome,
@@ -751,7 +811,9 @@ fn azure_wait_times_out_if_build_metadata_cannot_prove_the_current_source() {
                 .calls
                 .borrow()
                 .iter()
-                .any(|call| call == AZURE_BUILD_CALL)
+                .any(|call| call == AZURE_BUILD_CALL),
+            "a status with malformed {field} metadata should have requested the build: {:?}",
+            tools.calls.borrow()
         );
     }
 
@@ -771,6 +833,31 @@ fn azure_wait_times_out_if_build_metadata_cannot_prove_the_current_source() {
         calls: RefCell::new(Vec::new()),
     };
     assert_eq!(watch_azure_once(&tools).outcome, Outcome::Timeout);
+}
+
+#[test]
+fn azure_wait_leaves_ambiguous_or_incomplete_build_lists_pending() {
+    let azure = azure_status_watch("succeeded", &[]);
+    let build = &azure.builds["value"][0];
+    let mut stale = build.clone();
+    stale["sourceVersion"] = json!("old");
+
+    for (case, response) in [
+        ("missing", json!({"value": []})),
+        ("duplicate", json!({"value": [build, build]})),
+        ("conflicting", json!({"value": [build, stale]})),
+        ("malformed record", json!({"value": [build, {}]})),
+        ("malformed list", json!({"value": build})),
+        (
+            "partial list",
+            json!({"value": [build], "continuation_token": "next"}),
+        ),
+    ] {
+        let mut azure = azure_status_watch("succeeded", &[]);
+        azure.builds = response;
+        let tools = Script::printing_for(move |call| azure.print(call));
+        assert_eq!(watch_azure_once(&tools).outcome, Outcome::Timeout, "{case}");
+    }
 }
 
 #[test]
@@ -797,7 +884,9 @@ fn azure_drops_checks_when_the_live_source_head_moves_during_a_build_lookup() {
             .calls
             .borrow()
             .iter()
-            .any(|call| call == AZURE_BUILD_CALL)
+            .any(|call| call == AZURE_BUILD_CALL),
+        "the source head must move after the build read: {:?}",
+        tools.calls.borrow()
     );
 }
 
@@ -809,8 +898,8 @@ fn azure_wait_leaves_synthetic_merge_evidence_pending_when_the_merge_changes_dur
         ("lastMergeSourceCommit", json!({"commitId": "old-source"})),
     ] {
         let mut azure = azure_status_watch("failed", &[("Build validation", "pass")]);
-        azure.build["sourceBranch"] = json!("refs/pull/535/merge");
-        azure.build["sourceVersion"] = json!("merge123");
+        azure.builds["value"][0]["sourceBranch"] = json!("refs/pull/535/merge");
+        azure.builds["value"][0]["sourceVersion"] = json!("merge123");
         let pr_views = Cell::new(0);
         let tools = Script::printing_for(move |call| {
             let output = azure.print(call);
@@ -827,13 +916,19 @@ fn azure_wait_leaves_synthetic_merge_evidence_pending_when_the_merge_changes_dur
         });
         let waited = watch_azure_once(&tools);
         assert_eq!(waited.outcome, Outcome::Timeout, "{field}");
-        assert!(waited.checks.iter().any(|check| check.bucket == "pending"));
+        assert!(
+            waited.checks.iter().any(|check| check.bucket == "pending"),
+            "a change to {field} should leave the status pending: {:?}",
+            waited.checks
+        );
         assert!(
             tools
                 .calls
                 .borrow()
                 .iter()
-                .any(|call| call == AZURE_BUILD_CALL)
+                .any(|call| call == AZURE_BUILD_CALL),
+            "the change to {field} must follow the build read: {:?}",
+            tools.calls.borrow()
         );
     }
 }
