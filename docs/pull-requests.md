@@ -68,12 +68,14 @@ Next to the outcome it says whether the branch is up to date with its base, behi
 
 For Azure DevOps Services, record the canonical `https://dev.azure.com/<organization>/<project>/_git/<repository>/pullrequest/<id>` URL. Replace legacy `visualstudio.com` links with the canonical URL before watching CI. Jidoka checks the source branch against the latest PR iteration and merge calculation before accepting results, then checks it again after collecting them. It watches enabled, required policies and statuses for the current source commit.
 
+To watch an existing Azure fork pull request, record the **target** pull request URL. The fork can be in another project in the same organization. The signed-in Azure CLI account needs read access to the fork and its source branch as well as access to the target pull request and its checks. If Jidoka cannot verify the live fork branch, the wait exits with a tool problem.
+
 - Approved policies and successful statuses pass.
 - Rejected or broken policies and failed statuses fail. A rejected build policy is reported as cancelled only when its build run says it was cancelled.
 - Queued, running, expired, or unknown states remain pending.
 - A build policy counts only when its evaluation started at or after the current iteration; a missing or older start stays pending, even when Azure reports an approval. Other policies, such as minimum reviewers or linked work items, are re-evaluated by Azure, so their reported state counts as is.
 - The newest status in each context counts. For a PR-wide status, Jidoka looks for an Azure Pipelines results link of the form `https://dev.azure.com/<organization>/<project>/_build/results?buildId=<id>` in the PR's own organization and project.
-- Jidoka uses the signed-in Azure CLI to look up that build by ID. The build must match the PR repository and the live source ref and commit, or the PR's synthetic merge ref and current merge commit. Once verified, the posted status determines the outcome, with `notApplicable` shown as skipped. A PR-wide status remains pending if its build link is missing or invalid, the build cannot be read, or the metadata does not match the current PR.
+- Jidoka uses the signed-in Azure CLI to look up that build by ID. A branch build must match the source repository, the live source ref and its commit. A synthetic merge build must match the target repository, the PR's merge ref and its current merge commit. Once verified, the posted status determines the outcome, with `notApplicable` shown as skipped. A PR-wide status remains pending if its build link is missing or invalid, the build cannot be read, or the metadata does not match the current PR.
 - Optional policies are shown but do not block. Disabled and not-applicable policies do not count as CI.
 
-Build policy failures link to the build when available. Jidoka reads the end of the first failed pipeline task with a log reference for those failures. Other failures link to the PR. Azure fork PRs are unsupported.
+Build policy failures link to the build when available. Jidoka reads the end of the first failed pipeline task with a log reference for those failures. Other failures link to the PR.

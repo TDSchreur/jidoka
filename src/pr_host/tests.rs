@@ -104,7 +104,7 @@ struct Case {
     /// The start of the one call that creates the pull request, up to its description.
     create_call: &'static str,
     /// What the host's tool prints for `call` while the checks of a pull request in `state` at commit
-    /// `abc1234` are watched: `checks` as `(name, bucket)`, and whether the branch conflicts with its base.
+    /// `WATCH_HEAD` are watched: `checks` as `(name, bucket)`, and whether the branch conflicts with its base.
     watch: WatchPrint,
     /// The start of the call that reads the pull request in a watch.
     watch_view: &'static str,
@@ -186,7 +186,7 @@ fn github() -> Case {
             }
             let (state, draft) = github_state(state);
             let merge = if conflicts { "DIRTY" } else { "CLEAN" };
-            json!({"state": state, "isDraft": draft, "headRefOid": "abc1234", "mergeStateStatus": merge})
+            json!({"state": state, "isDraft": draft, "headRefOid": WATCH_HEAD, "mergeStateStatus": merge})
                 .to_string()
         },
         watch_view: "gh pr view",
@@ -247,10 +247,15 @@ fn azure() -> Case {
     }
 }
 
-/// What `az` prints while the checks of Azure pull request 535 at commit `abc1234` are watched.
+/// What `az` prints while the checks of Azure pull request 535 at `WATCH_HEAD` are watched.
 struct AzureWatch {
     status: (&'static str, bool),
     merge_status: &'static str,
+    target_repository: &'static str,
+    fork_source: Value,
+    source_ref: &'static str,
+    calculated_source: &'static str,
+    refs: Value,
     policies: Value,
     iterations: Value,
     iteration_statuses: Value,
@@ -278,12 +283,30 @@ impl AzureWatch {
         Self {
             status: ("active", false),
             merge_status: "succeeded",
+            target_repository: AZURE_TARGET_REPOSITORY,
+            fork_source: Value::Null,
+            source_ref: "refs/heads/feature/x",
+            calculated_source: WATCH_HEAD,
+            refs: json!([{"name": "refs/heads/feature/x", "objectId": WATCH_HEAD}]),
             policies: json!([]),
-            iterations: json!({"value": [{"id": 1, "createdDate": "2026-01-01T00:00:00Z", "sourceRefCommit": {"commitId": "abc1234"}}]}),
+            iterations: json!({"value": [{"id": 1, "createdDate": "2026-01-01T00:00:00Z", "sourceRefCommit": {"commitId": WATCH_HEAD}}]}),
             iteration_statuses: json!({"value": statuses}),
             statuses: json!({"value": []}),
             builds: json!({"value": []}),
         }
+    }
+
+    fn with_fork(mut self) -> Self {
+        self.fork_source = json!({
+            "name": "refs/heads/feature/x",
+            "objectId": MOVED_HEAD,
+            "repository": {
+                "id": AZURE_FORK_REPOSITORY,
+                "name": "ForkRepo",
+                "project": {"id": AZURE_FORK_PROJECT, "name": "ForkProj"}
+            }
+        });
+        self
     }
 
     fn print(&self, call: &str) -> String {
@@ -293,14 +316,14 @@ impl AzureWatch {
                 "status": self.status.0,
                 "isDraft": self.status.1,
                 "mergeStatus": self.merge_status,
-                "repository": {"id": "repo-id", "name": "Repo", "project": {"name": "Proj"}},
-                "forkSource": null,
-                "sourceRefName": "refs/heads/feature/x",
-                "lastMergeSourceCommit": {"commitId": "abc1234"},
+                "repository": {"id": self.target_repository, "name": "Repo", "project": {"id": AZURE_TARGET_PROJECT, "name": "Proj"}},
+                "forkSource": self.fork_source,
+                "sourceRefName": self.source_ref,
+                "lastMergeSourceCommit": {"commitId": self.calculated_source},
                 "lastMergeCommit": {"commitId": "merge123"}
             })
         } else if call.starts_with("az repos ref list") {
-            json!([{"name": "refs/heads/feature/x", "objectId": "abc1234"}])
+            self.refs.clone()
         } else if call.starts_with("az repos pr policy list") {
             self.policies.clone()
         } else if call.contains(" pullRequestIterations ") {
@@ -492,7 +515,7 @@ fn both_hosts_read_a_watch_snapshot_with_the_pull_request_before_and_after_its_c
         for state in [PrState::Open, PrState::Draft] {
             let (snapshot, calls) = snapshot(&case, state, CHECKS, false);
             assert_eq!(snapshot.state, state, "{}", case.url);
-            assert_eq!(snapshot.head, "abc1234");
+            assert_eq!(snapshot.head, WATCH_HEAD);
             assert_eq!(buckets(&snapshot), CHECKS, "{}", case.url);
             assert!(snapshot.applies);
             assert_eq!(snapshot.base, Some(case.clean_base), "{}", case.url);
@@ -520,13 +543,19 @@ fn both_hosts_read_no_checks_of_a_merged_or_closed_pull_request() {
         for state in [PrState::Merged, PrState::Closed] {
             let (snapshot, calls) = snapshot(&case, state, &[("build", "pass")], false);
             assert_eq!(snapshot.state, state, "{}", case.url);
-            assert_eq!(snapshot.head, "abc1234");
+            assert_eq!(snapshot.head, WATCH_HEAD);
             assert!(snapshot.checks.is_empty());
             assert_eq!(calls.len(), 1, "{calls:?}");
         }
     }
 }
 
+const WATCH_HEAD: &str = "abc12340abc12340abc12340abc12340abc12340";
+const MOVED_HEAD: &str = "fed43210fed43210fed43210fed43210fed43210";
+const AZURE_TARGET_REPOSITORY: &str = "8dc7998f-6255-4639-b63a-999abbd0c027";
+const AZURE_TARGET_PROJECT: &str = "0def4ab2-04ae-4e43-b3d4-cb712affb845";
+const AZURE_FORK_REPOSITORY: &str = "9cd20387-6bd4-4c09-85e4-c41e21701f5d";
+const AZURE_FORK_PROJECT: &str = "273c9362-71df-4440-9a6b-6e903c3c3151";
 const AZURE_PR: &str = "https://dev.azure.com/org/Proj/_git/Repo/pullrequest/535";
 const AZURE_BUILD_LINK: &str = "https://dev.azure.com/org/Proj/_build/results?buildId=42";
 const AZURE_BUILD_CALL: &str = "az devops invoke --organization https://dev.azure.com/org --area build --resource builds --route-parameters project=Proj --query-parameters buildIds=42 --api-version 7.1 --output json --detect false";
@@ -588,9 +617,9 @@ fn azure_status_watch(state: &str, iteration_statuses: &[(&str, &str)]) -> Azure
     }]});
     azure.builds = json!({"value": [{
         "id": 42,
-        "repository": {"id": "repo-id"},
+        "repository": {"id": AZURE_TARGET_REPOSITORY},
         "sourceBranch": "refs/heads/feature/x",
-        "sourceVersion": "abc1234",
+        "sourceVersion": WATCH_HEAD,
         "status": "inProgress",
         "result": "failed"
     }]});
@@ -599,36 +628,392 @@ fn azure_status_watch(state: &str, iteration_statuses: &[(&str, &str)]) -> Azure
 
 /// Evaluates the wait's first poll with an expired timeout and no real sleeping.
 fn watch_azure_once(tools: &Script) -> crate::pr_wait::Waited {
-    Hosts::new(tools)
-        .watch(
-            AZURE_PR,
-            &Options {
-                timeout: Duration::ZERO,
-                ..Options::default()
-            },
-            &ImmediateClock,
-            &mut |_| {},
-            &mut |_| {},
-        )
-        .unwrap()
+    try_watch_azure_once(tools).unwrap()
+}
+
+fn try_watch_azure_once(tools: &Script) -> Result<crate::pr_wait::Waited, ToolProblem> {
+    Hosts::new(tools).watch(
+        AZURE_PR,
+        &Options {
+            timeout: Duration::ZERO,
+            ..Options::default()
+        },
+        &ImmediateClock,
+        &mut |_| {},
+        &mut |_| {},
+    )
+}
+
+#[test]
+fn azure_fork_wait_reads_the_live_fork_and_collects_checks_from_the_target() {
+    let show = azure().state_call;
+    for (project, name, branch) in [
+        (AZURE_FORK_PROJECT, "ForkProj", "feature/with\u{a0}space"),
+        (AZURE_TARGET_PROJECT, "Proj", "feature/x"),
+    ] {
+        let mut azure = azure_status_watch("succeeded", &[("Iteration scan", "pass")]).with_fork();
+        let reference = format!("refs/heads/{branch}");
+        azure.fork_source["repository"]["project"] = json!({"id": project, "name": name});
+        if project == AZURE_FORK_PROJECT {
+            azure.source_ref = "refs/pull/535/source";
+        }
+        azure.fork_source["name"] = json!(reference);
+        azure.policies = json!([azure_policy("Build validation", "2026-01-01T00:00:01Z")]);
+        azure.builds["value"][0]["repository"]["id"] = json!(AZURE_FORK_REPOSITORY);
+        azure.builds["value"][0]["sourceBranch"] = json!(reference);
+        azure.refs = json!([
+            {"name": format!("{reference}-stale"), "objectId": MOVED_HEAD},
+            {"name": reference, "objectId": WATCH_HEAD}
+        ]);
+        let refs = format!(
+            "az repos ref list --organization https://dev.azure.com/org --project {project} --repository {AZURE_FORK_REPOSITORY} --filter=heads/{branch} --output json --detect false"
+        );
+        let fork_refs = refs.clone();
+        let tools = Script::printing_for(move |call| {
+            // The target has a same-named branch at a different commit.
+            if call.starts_with("az repos ref list") && call != fork_refs {
+                return json!([{"name": reference, "objectId": MOVED_HEAD}]).to_string();
+            }
+            azure.print(call)
+        });
+        let waited = watch_azure_once(&tools);
+        assert_eq!(waited.outcome, Outcome::Passed, "{name}");
+        assert_eq!(waited.head, WATCH_HEAD, "{name}");
+        assert_eq!(
+            waited.checks.len(),
+            3,
+            "policy, iteration and PR-wide status"
+        );
+
+        let target = |resource, iteration: &str| {
+            format!(
+                "az devops invoke --organization https://dev.azure.com/org --area git --resource {resource} --route-parameters project=Proj repositoryId={AZURE_TARGET_REPOSITORY} pullRequestId=535{iteration} --api-version 7.1 --output json --detect false"
+            )
+        };
+        let poll = [
+            show.into(),
+            refs.clone(),
+            target("pullRequestIterations", ""),
+            "az repos pr policy list --id 535 --organization https://dev.azure.com/org --top 100 --skip 0 --output json --detect false".into(),
+            target("pullRequestStatuses", ""),
+            target("pullRequestIterationStatuses", " iterationId=1"),
+            AZURE_BUILD_CALL.into(),
+            show.into(),
+            refs,
+        ];
+        assert_eq!(
+            *tools.calls.borrow(),
+            [poll.clone(), poll].concat(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn azure_fork_wait_counts_builds_only_for_the_repository_that_owns_the_ref() {
+    let uppercase_fork = AZURE_FORK_REPOSITORY.to_ascii_uppercase();
+    let uppercase_target = AZURE_TARGET_REPOSITORY.to_ascii_uppercase();
+    for (reference, version, repository, outcome) in [
+        (
+            "refs/heads/feature/x",
+            WATCH_HEAD,
+            AZURE_TARGET_REPOSITORY,
+            Outcome::Timeout,
+        ),
+        (
+            "refs/pull/535/merge",
+            "merge123",
+            AZURE_FORK_REPOSITORY,
+            Outcome::Timeout,
+        ),
+        (
+            "refs/heads/feature/x",
+            WATCH_HEAD,
+            uppercase_fork.as_str(),
+            Outcome::Passed,
+        ),
+        (
+            "refs/heads/feature/X",
+            WATCH_HEAD,
+            uppercase_fork.as_str(),
+            Outcome::Timeout,
+        ),
+        (
+            "refs/pull/535/merge",
+            "merge123",
+            uppercase_target.as_str(),
+            Outcome::Passed,
+        ),
+    ] {
+        let mut azure = azure_status_watch("succeeded", &[]).with_fork();
+        azure.builds["value"][0]["sourceBranch"] = json!(reference);
+        azure.builds["value"][0]["sourceVersion"] = json!(version);
+        azure.builds["value"][0]["repository"]["id"] = json!(repository);
+        let tools = Script::printing_for(move |call| azure.print(call));
+        assert_eq!(
+            watch_azure_once(&tools).outcome,
+            outcome,
+            "{repository} {reference}"
+        );
+    }
+}
+
+#[test]
+fn azure_fork_wait_stays_pending_until_both_azure_commits_match_the_live_head() {
+    for stale_iteration in [true, false] {
+        let mut azure = AzureWatch::new(&[("Iteration scan", "fail")]).with_fork();
+        if stale_iteration {
+            azure.iterations["value"][0]["sourceRefCommit"]["commitId"] = json!(MOVED_HEAD);
+        } else {
+            azure.calculated_source = MOVED_HEAD;
+        }
+        let tools = Script::printing_for(move |call| azure.print(call));
+        let waited = watch_azure_once(&tools);
+        assert_eq!(waited.outcome, Outcome::Timeout);
+        assert_eq!(waited.head, WATCH_HEAD);
+        assert_eq!(
+            waited.checks[0].name,
+            "Azure is updating the current PR iteration"
+        );
+        assert!(
+            !tools
+                .calls
+                .borrow()
+                .iter()
+                .any(|call| call.contains("Statuses ") || call.contains("policy list")),
+            "checks must not be collected against a stale head: {:?}",
+            tools.calls.borrow()
+        );
+    }
+}
+
+#[test]
+fn azure_fork_snapshot_retains_checks_only_when_the_source_and_target_are_the_same() {
+    for (path, value, same_identity) in [
+        (
+            "/forkSource/repository/id",
+            json!("446fcf85-27e5-4272-a6d2-33f8f6cce3a4"),
+            false,
+        ),
+        (
+            "/forkSource/repository/id",
+            json!(AZURE_FORK_REPOSITORY.to_ascii_uppercase()),
+            true,
+        ),
+        (
+            "/forkSource/repository/project/id",
+            json!(AZURE_TARGET_PROJECT),
+            false,
+        ),
+        (
+            "/forkSource/repository/project/id",
+            json!(AZURE_FORK_PROJECT.to_ascii_uppercase()),
+            true,
+        ),
+        ("/forkSource/name", json!("refs/heads/feature/X"), false),
+        (
+            "/repository/id",
+            json!("98e925df-9f6d-4675-a84a-1580cd68a5f6"),
+            false,
+        ),
+        (
+            "/repository/id",
+            json!(AZURE_TARGET_REPOSITORY.to_ascii_uppercase()),
+            true,
+        ),
+    ] {
+        let mut azure = AzureWatch::new(&[("Iteration scan", "fail")]).with_fork();
+        azure.source_ref = "refs/pull/535/source";
+        let collected = Cell::new(false);
+        let tools = Script::printing_for(move |call| {
+            if call.contains("--filter=heads/feature/X") {
+                return json!([{"name": "refs/heads/feature/X", "objectId": WATCH_HEAD}])
+                    .to_string();
+            }
+            let mut response = azure.print(call);
+            if call.contains(" pullRequestIterationStatuses ") {
+                collected.set(true);
+            }
+            if call.starts_with("az repos pr show") && collected.get() {
+                let mut data: Value = serde_json::from_str(&response).unwrap();
+                *data.pointer_mut(path).unwrap() = value.clone();
+                response = data.to_string();
+            }
+            response
+        });
+        let snapshot = azure::Azure.snapshot(&tools, AZURE_PR).unwrap();
+        assert_eq!(snapshot.head, WATCH_HEAD, "{path}");
+        let expected = if same_identity {
+            ("Iteration scan", "fail")
+        } else {
+            ("Azure is updating the current PR iteration", "pending")
+        };
+        assert_eq!(
+            buckets(&snapshot),
+            [expected],
+            "{path}, same identity: {same_identity}"
+        );
+    }
+}
+
+#[test]
+fn azure_fork_wait_reports_a_tool_problem_for_invalid_source_metadata() {
+    let show = azure().state_call;
+    for (path, value, message) in [
+        (
+            "/forkSource/name",
+            json!("refs/heads/different"),
+            "inconsistent fork source metadata",
+        ),
+        (
+            "/forkSource/name",
+            json!("refs/heads/../feature/x"),
+            "invalid source branch",
+        ),
+        (
+            "/forkSource/name",
+            json!("refs/heads/feature.lock/x"),
+            "invalid source branch",
+        ),
+        (
+            "/forkSource/name",
+            json!("refs/heads/feature/with space"),
+            "invalid source branch",
+        ),
+        (
+            "/forkSource/repository/id",
+            json!(AZURE_TARGET_REPOSITORY),
+            "inconsistent fork source metadata",
+        ),
+        (
+            "/forkSource/repository/id",
+            json!("ForkRepo"),
+            "fork repository ID",
+        ),
+        (
+            "/forkSource/repository/project/id",
+            Value::Null,
+            "fork project ID",
+        ),
+        ("/repository/id", json!("Repo"), "target repository ID"),
+        (
+            "/sourceRefName",
+            json!("refs/pull/536/source"),
+            "inconsistent fork source metadata",
+        ),
+    ] {
+        let mut azure = AzureWatch::new(&[("Iteration scan", "pass")]).with_fork();
+        if message == "invalid source branch" {
+            azure.source_ref = "refs/pull/535/source";
+        }
+        let tools = Script::printing_for(move |call| {
+            let mut data: Value = serde_json::from_str(&azure.print(call)).unwrap();
+            *data.pointer_mut(path).unwrap() = value.clone();
+            data.to_string()
+        });
+        let problem = try_watch_azure_once(&tools).unwrap_err();
+        assert!(problem.0.contains(message), "{path}: {}", problem.0);
+        assert_eq!(*tools.calls.borrow(), [show], "{path}");
+    }
+}
+
+#[test]
+fn azure_fork_wait_reports_a_tool_problem_when_the_exact_live_ref_cannot_be_proven() {
+    let exact = json!({"name": "refs/heads/feature/x", "objectId": WATCH_HEAD});
+    for (refs, message) in [
+        (
+            json!([{"name": "refs/heads/feature/x-more", "objectId": WATCH_HEAD}]),
+            "source branch was not found",
+        ),
+        (json!([exact, exact]), "more than one exact match"),
+        (
+            json!([{"name": "refs/heads/feature/x", "objectId": "stale"}]),
+            "no valid source head",
+        ),
+        (
+            json!([{"name": "refs/heads/feature/x", "objectId": "0000000000000000000000000000000000000000"}]),
+            "no valid source head",
+        ),
+    ] {
+        let mut azure = AzureWatch::new(&[]).with_fork();
+        azure.refs = refs;
+        let tools = Script::printing_for(move |call| azure.print(call));
+        let problem = try_watch_azure_once(&tools).unwrap_err();
+        assert!(problem.0.contains(message), "{}", problem.0);
+        assert_eq!(
+            tools.calls.borrow().len(),
+            2,
+            "read only the PR and source branch"
+        );
+    }
+
+    let azure = AzureWatch::new(&[]).with_fork();
+    let tools = Script {
+        answer: Box::new(move |call, _| {
+            Ok(if call.starts_with("az repos ref list") {
+                ToolOutput {
+                    code: Some(1),
+                    stdout: String::new(),
+                    stderr: "403 Forbidden".into(),
+                }
+            } else {
+                success(azure.print(call))
+            })
+        }),
+        calls: RefCell::new(Vec::new()),
+    };
+    let problem = try_watch_azure_once(&tools).unwrap_err();
+    assert!(
+        problem.0.contains("read the source branch"),
+        "{}",
+        problem.0
+    );
+    assert!(problem.0.contains("check your repository"), "{}", problem.0);
+    assert_eq!(
+        tools.calls.borrow().len(),
+        2,
+        "read only the PR and source branch"
+    );
+}
+
+#[test]
+fn azure_fork_wait_needs_no_live_source_for_a_closed_or_merged_pull_request() {
+    for state in [PrState::Merged, PrState::Closed] {
+        let mut response = AzureWatch::new(&[]).with_fork();
+        response.status = azure_state(state);
+        response.fork_source["repository"] = Value::Null;
+        let tools = Script::printing_for(move |call| response.print(call));
+        let waited = watch_azure_once(&tools);
+        assert_eq!(waited.outcome, Outcome::NotOpen);
+        assert_eq!(waited.state, state);
+        assert_eq!(*tools.calls.borrow(), [azure().state_call]);
+    }
 }
 
 #[test]
 fn azure_wait_uses_the_proven_status_outcome_and_only_requests_build_metadata() {
-    for (state, bucket, outcome) in [
-        ("succeeded", "pass", Outcome::Passed),
-        ("failed", "fail", Outcome::Failed),
-        ("canceled", "cancel", Outcome::Cancelled),
-        ("notApplicable", "skipping", Outcome::Passed),
+    // Git permits a nonbreaking space in a ref, and same-repository Azure watch must preserve it.
+    const REFERENCE: &str = "refs/heads/feature/with\u{a0}space";
+    for (state, repository, bucket, outcome) in [
+        ("succeeded", "Repo-123", "pass", Outcome::Passed),
+        ("succeeded", "repo-123", "pending", Outcome::Timeout),
+        ("failed", "Repo-123", "fail", Outcome::Failed),
+        ("canceled", "Repo-123", "cancel", Outcome::Cancelled),
+        ("notApplicable", "Repo-123", "skipping", Outcome::Passed),
     ] {
         let mut azure = azure_status_watch(state, &[("Build validation", "pass")]);
+        azure.target_repository = "Repo-123";
+        azure.source_ref = REFERENCE;
+        azure.refs[0]["name"] = json!(REFERENCE);
+        azure.builds["value"][0]["sourceBranch"] = json!(REFERENCE);
+        azure.builds["value"][0]["repository"]["id"] = json!(repository);
         if state == "failed" {
             azure.builds["value"][0]["status"] = json!("completed");
             azure.builds["value"][0]["result"] = json!("succeeded");
         }
         let tools = Script::printing_for(move |call| azure.print(call));
         let waited = watch_azure_once(&tools);
-        assert_eq!(waited.outcome, outcome, "{state}");
+        assert_eq!(waited.outcome, outcome, "{state} for {repository}");
         assert!(
             waited.checks.iter().any(|check| {
                 check.name == "Pipeline: External scan"
@@ -678,7 +1063,7 @@ fn azure_reads_distinct_build_ids_in_one_request_per_snapshot() {
     azure.builds["value"] = json!([
         {
             "id": 43,
-            "repository": {"id": "repo-id"},
+            "repository": {"id": AZURE_TARGET_REPOSITORY},
             "sourceBranch": "refs/pull/535/merge",
             "sourceVersion": "merge123"
         },
@@ -862,31 +1247,60 @@ fn azure_wait_leaves_ambiguous_or_incomplete_build_lists_pending() {
 
 #[test]
 fn azure_drops_checks_when_the_live_source_head_moves_during_a_build_lookup() {
-    let azure = azure_status_watch("failed", &[]);
-    let build_read = Cell::new(false);
+    let branch = azure_status_watch("failed", &[]);
+    let mut fork = azure_status_watch("failed", &[]).with_fork();
+    fork.builds["value"][0]["repository"]["id"] = json!(AZURE_FORK_REPOSITORY);
+    for azure in [branch, fork] {
+        let build_read = Cell::new(false);
+        let tools = Script::printing_for(move |call| {
+            if call == AZURE_BUILD_CALL {
+                build_read.set(true);
+            }
+            if call.starts_with("az repos ref list") && build_read.get() {
+                return json!([{"name": "refs/heads/feature/x", "objectId": MOVED_HEAD}])
+                    .to_string();
+            }
+            azure.print(call)
+        });
+        let snapshot = azure::Azure.snapshot(&tools, AZURE_PR).unwrap();
+        assert_eq!(snapshot.head, MOVED_HEAD);
+        assert_eq!(
+            buckets(&snapshot),
+            [("Azure is updating the current PR iteration", "pending")]
+        );
+        assert!(
+            tools
+                .calls
+                .borrow()
+                .iter()
+                .any(|call| call == AZURE_BUILD_CALL),
+            "the source head must move after the build read: {:?}",
+            tools.calls.borrow()
+        );
+    }
+}
+
+#[test]
+fn azure_fork_wait_reports_head_changed_after_a_push_during_the_poll() {
+    let azure = AzureWatch::new(&[("Iteration scan", "fail")]).with_fork();
+    let status_reads = Cell::new(0);
     let tools = Script::printing_for(move |call| {
-        if call == AZURE_BUILD_CALL {
-            build_read.set(true);
+        if call.contains(" pullRequestIterationStatuses ") {
+            status_reads.set(status_reads.get() + 1);
         }
-        if call.starts_with("az repos ref list") && build_read.get() {
-            return json!([{"name": "refs/heads/feature/x", "objectId": "new1234"}]).to_string();
+        if call.starts_with("az repos ref list") && status_reads.get() >= 2 {
+            return json!([{"name": "refs/heads/feature/x", "objectId": MOVED_HEAD}]).to_string();
         }
         azure.print(call)
     });
-    let snapshot = azure::Azure.snapshot(&tools, AZURE_PR).unwrap();
-    assert_eq!(snapshot.head, "new1234");
-    assert_eq!(
-        buckets(&snapshot),
-        [("Azure is updating the current PR iteration", "pending")]
-    );
+    let waited = watch_azure_once(&tools);
+    assert_eq!(waited.outcome, Outcome::HeadChanged);
+    assert_eq!(waited.head, WATCH_HEAD);
+    assert_eq!(waited.new_head.as_deref(), Some(MOVED_HEAD));
     assert!(
-        tools
-            .calls
-            .borrow()
-            .iter()
-            .any(|call| call == AZURE_BUILD_CALL),
-        "the source head must move after the build read: {:?}",
-        tools.calls.borrow()
+        waited.checks.is_empty(),
+        "discard work for the old head: {:?}",
+        waited.checks
     );
 }
 
@@ -898,6 +1312,9 @@ fn azure_wait_leaves_synthetic_merge_evidence_pending_when_the_merge_changes_dur
         ("lastMergeSourceCommit", json!({"commitId": "old-source"})),
     ] {
         let mut azure = azure_status_watch("failed", &[("Build validation", "pass")]);
+        if field == "lastMergeCommit" {
+            azure = azure.with_fork();
+        }
         azure.builds["value"][0]["sourceBranch"] = json!("refs/pull/535/merge");
         azure.builds["value"][0]["sourceVersion"] = json!("merge123");
         let pr_views = Cell::new(0);
