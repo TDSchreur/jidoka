@@ -576,7 +576,7 @@ impl crate::cli::Command for CheckCommand {
     type Outcome = Report;
 
     fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
-        let (id, options) = crate::cli::split_run_id(words);
+        let (id, options) = crate::cli::split_first(words);
         let json = parse_options(options).map_err(crate::cli::usage_error)?;
         crate::client::check_run_id(id)?;
         Ok((id.to_owned(), json))

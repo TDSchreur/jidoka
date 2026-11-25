@@ -197,14 +197,17 @@ fn refresh_with_clock(
     Ok(checked)
 }
 
-/// Where the CLI records a pull request state it read: the Jidoka server, which applies it to the run, or a
-/// fake in tests.
+/// Where the CLI records a pull request state it read.
+///
+/// That is the Jidoka server, which applies it to the run, or a fake in tests.
 pub(crate) trait PrStateRecorder {
     /// Records `status` for run `id` and returns whether the run changed.
     fn record_pr_state(&self, id: &str, status: &PrStatus) -> Result<bool, String>;
 }
 
-/// Records that the pull request `url` of run `id` was `state` at `checked_at`. The server applies what that
+/// Records that the pull request `url` of run `id` was `state` at `checked_at`.
+///
+/// The server applies what that
 /// means for the run (see `follow_up`), deciding from the run as it is now: the host may have taken seconds
 /// to answer. Returns whether the run was changed.
 pub(crate) fn apply<R: PrStateRecorder + ?Sized>(
@@ -223,8 +226,9 @@ pub(crate) fn apply<R: PrStateRecorder + ?Sized>(
     recorder.record_pr_state(id, &status)
 }
 
-/// `jidoka run sync <run-id> [--json]`: reads the state of the run's pull request from its host and brings the
-/// run in line with it: a merged pull request finishes the run, a closed one blocks it, and an open one changes
+/// `jidoka run sync <run-id> [--json]`: brings the run in line with its pull request's state.
+///
+/// It reads the state from the host: a merged pull request finishes the run, a closed one blocks it, and an open one changes
 /// nothing.
 pub(crate) struct RunSyncCommand;
 
@@ -241,7 +245,7 @@ impl crate::cli::Command for RunSyncCommand {
     type Outcome = Synced;
 
     fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
-        let (id, options) = crate::cli::split_run_id(words);
+        let (id, options) = crate::cli::split_first(words);
         let json = crate::cli::parse_json_flag(options)?;
         crate::client::check_run_id(id)?;
         Ok((id.to_owned(), json))

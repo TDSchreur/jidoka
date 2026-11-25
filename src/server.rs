@@ -1501,8 +1501,9 @@ fn runs_path_in(var: &impl Fn(&str) -> Option<std::ffi::OsString>) -> io::Result
     Ok(base.join("jidoka").join("runs.json"))
 }
 
-/// `jidoka dashboard [--port <port>] [--no-usage]`: serves the dashboard, or, when a Jidoka dashboard is already
-/// running, prints its URL.
+/// `jidoka dashboard [--port <port>] [--no-usage]`: serves the dashboard.
+///
+/// When a Jidoka dashboard is already running, it prints that one's URL instead.
 pub(crate) struct DashboardCommand;
 
 impl crate::cli::Command for DashboardCommand {

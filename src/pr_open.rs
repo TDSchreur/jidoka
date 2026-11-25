@@ -219,8 +219,9 @@ pub(crate) fn render(opened: &Opened, run: &PrRun) -> String {
     text
 }
 
-/// `jidoka pr open <run-id> --title <title> --body-file <path>`: pushes the run's branch and opens its pull
-/// request, or finds the one that is open, and records it on the run.
+/// `jidoka pr open <run-id> --title <title> --body-file <path>`: opens the run's pull request.
+///
+/// It pushes the run's branch, opens the pull request or finds the one that is open, and records it on the run.
 pub(crate) struct OpenCommand;
 
 impl crate::cli::Command for OpenCommand {
@@ -229,7 +230,7 @@ impl crate::cli::Command for OpenCommand {
     type Outcome = (Opened, PrRun);
 
     fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
-        let (id, options) = crate::cli::split_run_id(words);
+        let (id, options) = crate::cli::split_first(words);
         let parsed = parse_options(options).map_err(crate::cli::usage_error)?;
         crate::client::check_run_id(id)?;
         Ok((id.to_owned(), parsed))

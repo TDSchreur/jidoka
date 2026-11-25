@@ -436,8 +436,9 @@ pub(crate) fn render(synced: &Synced) -> String {
     out
 }
 
-/// `jidoka pr sync <run-id>`: brings the run's branch up to date with its base. The exit status is the
-/// outcome's; 1 is a problem.
+/// `jidoka pr sync <run-id>`: brings the run's branch up to date with its base.
+///
+/// The exit status is the outcome's; 1 is a problem.
 pub(crate) struct SyncCommand;
 
 impl crate::cli::Command for SyncCommand {
@@ -445,7 +446,7 @@ impl crate::cli::Command for SyncCommand {
     type Outcome = Synced;
 
     fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
-        let (id, options) = crate::cli::split_run_id(words);
+        let (id, options) = crate::cli::split_first(words);
         let parsed = parse_options(options).map_err(crate::cli::usage_error)?;
         crate::client::check_run_id(id)?;
         Ok((id.to_owned(), parsed))

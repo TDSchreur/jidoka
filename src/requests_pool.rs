@@ -392,7 +392,9 @@ pub(crate) fn render_pool(result: &PooledRequests) -> String {
 /// How long the request pool may read logs across all runs: it covers many runs, so it gets the longest wait.
 const POOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// `jidoka run requests --all [--include-partial] [--exclude <id>]... [--json]`: the model requests of every run, pooled.
+/// `jidoka run requests --all`: the model requests of every run, pooled.
+///
+/// Its options are `[--include-partial] [--exclude <id>]... [--json]`.
 pub(crate) struct PoolCommand;
 
 impl crate::cli::Command for PoolCommand {

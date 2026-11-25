@@ -776,7 +776,7 @@ impl crate::cli::Command for StartCommand {
     type Outcome = String;
 
     fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
-        let (title, options) = crate::cli::split_run_id(words);
+        let (title, options) = crate::cli::split_first(words);
         let host = crate::routing::parse_start_options(options).map_err(crate::cli::usage_error)?;
         Ok((title.to_owned(), host))
     }
@@ -936,8 +936,9 @@ impl crate::cli::Command for BeginCommand {
     }
 }
 
-/// `options` followed by `--session <id>` for each agent session this command runs in, and
-/// `--agent-home <agent>=<path>` for its agent, so the update records the session and its token usage can
+/// `options` followed by the `--session` and `--agent-home` options of each agent session this command runs in.
+///
+/// They are `--session <id>` and `--agent-home <agent>=<path>`, so the update records the session and its token usage can
 /// be read from the agent's own logs and attributed to the run.
 pub(crate) fn with_sessions(options: &[impl AsRef<str>]) -> Vec<String> {
     let mut all: Vec<String> = options.iter().map(|o| o.as_ref().to_owned()).collect();
@@ -947,8 +948,9 @@ pub(crate) fn with_sessions(options: &[impl AsRef<str>]) -> Vec<String> {
     all
 }
 
-/// The agent sessions this command runs in, when the agent exposes them, with the agent each belongs to and
-/// that agent's home folder: Claude Code sets `CLAUDE_CODE_SESSION_ID`; Codex sets `CODEX_SESSION_ID` (the
+/// The agent sessions this command runs in, when the agent exposes them.
+///
+/// Each has the agent it belongs to and that agent's home folder: Claude Code sets `CLAUDE_CODE_SESSION_ID`; Codex sets `CODEX_SESSION_ID` (the
 /// root session) and `CODEX_THREAD_ID`; Copilot CLI sets `COPILOT_AGENT_SESSION_ID`. A warning is printed
 /// for a home that is not recorded because the dashboard would refuse it.
 pub(crate) fn current_agent_sessions() -> Vec<AgentSession> {

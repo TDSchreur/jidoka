@@ -618,7 +618,7 @@ impl crate::cli::Command for InspectCommand {
     type Outcome = Inspected;
 
     fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
-        let (id, options) = crate::cli::split_run_id(words);
+        let (id, options) = crate::cli::split_first(words);
         let json = crate::cli::parse_json_flag(options)?;
         Ok((id.to_owned(), json))
     }

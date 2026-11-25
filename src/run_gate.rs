@@ -876,7 +876,7 @@ impl crate::cli::Command for AdvanceCommand {
     type Outcome = Result<crate::run_next::Next, Box<dyn std::error::Error>>;
 
     fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
-        let (id, options) = crate::cli::split_run_id(words);
+        let (id, options) = crate::cli::split_first(words);
         crate::client::check_run_id(id)?;
         let parsed = parse_advance_options(options).map_err(crate::cli::usage_error)?;
         Ok((id.to_owned(), parsed))

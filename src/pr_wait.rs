@@ -266,13 +266,16 @@ pub(crate) fn render(waited: &Waited) -> String {
     out
 }
 
-/// Where `pr wait` records what it sees: the run's activity, and the state of a pull request that is no longer
-/// open. The Jidoka server, or a fake in tests.
+/// Where `pr wait` records what it sees: the Jidoka server, or a fake in tests.
+///
+/// It records the run's activity, and the state of a pull request that is no longer open.
 pub(crate) trait WaitRecorder: crate::pr_state::PrStateRecorder {
     fn activity(&self, id: &str, text: &str) -> Result<(), String>;
 }
 
-/// Watches the CI of the pull request of `run` on `host`. While it waits, a running run's activity follows the
+/// Watches the CI of the pull request of `run` on `host`.
+///
+/// While it waits, a running run's activity follows the
 /// wait; when the pull request turns out not to be open, the run follows what happened to it. A problem
 /// recording either is shown through `progress` and does not end the wait.
 pub(crate) fn wait(
@@ -319,8 +322,9 @@ pub(crate) fn wait(
     Ok(waited)
 }
 
-/// `jidoka pr wait <run-id>`: watches the CI of the run's pull request and prints the outcome. The exit status
-/// is the outcome's; 1 is a problem with the tools or the run.
+/// `jidoka pr wait <run-id>`: watches the CI of the run's pull request and prints the outcome.
+///
+/// The exit status is the outcome's; 1 is a problem with the tools or the run.
 pub(crate) struct WaitCommand;
 
 impl crate::cli::Command for WaitCommand {
@@ -329,7 +333,7 @@ impl crate::cli::Command for WaitCommand {
     type Outcome = Waited;
 
     fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
-        let (id, options) = crate::cli::split_run_id(words);
+        let (id, options) = crate::cli::split_first(words);
         let (parsed, json) = parse_options(options).map_err(crate::cli::usage_error)?;
         crate::client::check_run_id(id)?;
         Ok((id.to_owned(), parsed, json))

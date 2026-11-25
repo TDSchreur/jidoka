@@ -238,8 +238,9 @@ fn api_request(
     Ok(response[end..].to_vec())
 }
 
-/// The server the CLI talks to: the dashboard `dashboard.json` points to, or an error saying to start one. Debug
-/// builds honor `JIDOKA_TEST_ADDRESS`, so CLI tests can use a fake server on an OS-assigned port.
+/// The address of the dashboard the CLI talks to, the one `dashboard.json` points to.
+///
+/// Without one, the error says to start it. Debug builds honor `JIDOKA_TEST_ADDRESS`, so CLI tests can use a fake server on an OS-assigned port.
 pub(crate) fn address() -> Result<String, String> {
     #[cfg(debug_assertions)]
     if let Ok(address) = std::env::var("JIDOKA_TEST_ADDRESS") {
@@ -274,8 +275,9 @@ pub(crate) fn get_run(id: &str) -> Result<Run, Box<dyn std::error::Error>> {
     fetch_run(&address()?, id)
 }
 
-/// Reports a run update to the running dashboard. A bad id or option is refused before the dashboard is
-/// looked for.
+/// Reports a run update to the running dashboard.
+///
+/// A bad id or option is refused before the dashboard is looked for.
 pub(crate) fn report(id: &str, options: &[&str]) -> Result<(), String> {
     let update = prepare_update(id, options).map_err(|e| e.to_string())?;
     send_run_update(id, &update)
@@ -305,8 +307,9 @@ pub(crate) fn group_of_run(id: &str) -> Result<Option<String>, Box<dyn std::erro
         .map(|group| group.id))
 }
 
-/// The running dashboard, behind the seams the commands use: the real side of `RunApi`, `RunReporter`,
-/// `PrStateRecorder` and `WaitRecorder`.
+/// The running dashboard, behind the seams the commands use.
+///
+/// It is the real side of `RunApi`, `RunReporter`, `PrStateRecorder` and `WaitRecorder`.
 pub(crate) struct ServerApi;
 
 impl crate::run_begin::RunApi for ServerApi {

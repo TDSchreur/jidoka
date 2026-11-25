@@ -418,8 +418,10 @@ pub(crate) fn render(run: &Recorded, cleaned: Cleaned) -> String {
     text
 }
 
-/// `jidoka run cleanup <run-id>`: removes the worktree and local branch of a run whose pull request merged
-/// (or, with `--discard`, did not merge), then clears them from the run. It refuses, removing nothing, when work could be lost.
+/// `jidoka run cleanup <run-id>`: removes the run's worktree and local branch, then clears them from the run.
+///
+/// The run's pull request must have merged, unless `--discard` is given. It refuses, removing nothing, when
+/// work could be lost.
 pub(crate) struct CleanupCommand;
 
 /// What `run cleanup` removed, and whether the run could be told; a failure there is reported after the removal.
@@ -434,7 +436,7 @@ impl crate::cli::Command for CleanupCommand {
     type Outcome = CleanupOutcome;
 
     fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
-        let (id, options) = crate::cli::split_run_id(words);
+        let (id, options) = crate::cli::split_first(words);
         crate::client::check_run_id(id)?;
         let mode = parse_options(options).map_err(crate::cli::usage_error)?;
         Ok((id.to_owned(), mode))

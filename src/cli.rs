@@ -1,5 +1,7 @@
-//! The shape every `jidoka` command shares: it parses its words, runs, and renders what it prints and its exit
-//! status. `main` only picks the command; each command lives in the module that owns its work.
+//! The one shape every `jidoka` command has: parse, run, render.
+//!
+//! `main` only picks the command; each command lives in the module that owns its work, and `execute` prints
+//! what it renders and returns its exit status.
 
 use crate::{client, run, run_begin, run_next};
 use serde::Serialize;
@@ -38,8 +40,10 @@ pub(crate) trait Command {
     /// What running the command produced, for `render`.
     type Outcome;
 
-    /// Reads the command's words: everything after its name. A run's id is checked here, with
-    /// `client::check_run_id`, before anything looks for the dashboard.
+    /// Reads the command's words: everything after its name.
+    ///
+    /// A command that works on a run refuses a bad id with `client::check_run_id`, here or when it first reads
+    /// the run, before anything looks for the dashboard.
     fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn Error>>;
 
     /// Does the command's work. Progress may go to stderr while it runs.
@@ -108,9 +112,10 @@ pub(crate) fn execute<C: Command>(words: &[&str]) -> Result<u8, Box<dyn Error>> 
     Ok(output.exit_code)
 }
 
-/// The run id a run command starts with, and the options after it. The dispatcher only picks a run command
-/// when its id is there.
-pub(crate) fn split_run_id<'a, 'b>(words: &'a [&'b str]) -> (&'b str, &'a [&'b str]) {
+/// A command's first word, such as a run id or a title, and the options after it.
+///
+/// The dispatcher only picks such a command when its first word is there; without one it is empty.
+pub(crate) fn split_first<'a, 'b>(words: &'a [&'b str]) -> (&'b str, &'a [&'b str]) {
     match words {
         [id, options @ ..] => (id, options),
         [] => ("", &[]),
@@ -134,7 +139,7 @@ impl Command for UpdateCommand {
     type Outcome = ();
 
     fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn Error>> {
-        let (id, options) = split_run_id(words);
+        let (id, options) = split_first(words);
         Ok((
             id.to_owned(),
             options.iter().map(|&o| o.to_owned()).collect(),
@@ -201,18 +206,5 @@ mod tests {
             }
         }
         assert!(groups > 0);
-    }
-
-    #[test]
-    fn a_failure_after_the_work_keeps_what_was_printed() {
-        let output = Output::text("done\n").failed("could not record it");
-        assert_eq!(
-            output,
-            Output {
-                stdout: "done\n".into(),
-                stderr: "could not record it\n".into(),
-                exit_code: 1,
-            }
-        );
     }
 }

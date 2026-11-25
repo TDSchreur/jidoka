@@ -1732,7 +1732,7 @@ fn ports_are_numbers_from_1_to_65535() {
 }
 
 #[test]
-fn the_default_port_is_used_when_free_and_a_free_one_when_taken() {
+fn a_free_port_is_chosen_when_the_default_is_taken() {
     let taken = std::net::TcpListener::bind((LOOPBACK_HOST, 0)).unwrap();
     let port = taken.local_addr().unwrap().port();
     assert_eq!(choose_port(None, port), Ok(0));
