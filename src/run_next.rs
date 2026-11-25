@@ -241,7 +241,8 @@ pub(crate) fn stage_gates(run: &Run, mut current: Vec<Evaluation>) -> Vec<StageG
 
 include!(concat!(env!("OUT_DIR"), "/stage_chunks.rs"));
 
-fn instructions(mode: Mode, stage: Stage, routing: Option<Agent>) -> String {
+/// `agent` is the run's coding agent when known; `routing` is the agent only when this stage is routed.
+fn instructions(mode: Mode, stage: Stage, agent: Option<Agent>, routing: Option<Agent>) -> String {
     let mode_dir = match mode {
         Mode::Fast => "fast",
         Mode::Balanced => "balanced",
@@ -255,15 +256,10 @@ fn instructions(mode: Mode, stage: Stage, routing: Option<Agent>) -> String {
         .unwrap_or("No instructions for this stage in this mode.");
     let mut output = stage_text.to_owned();
     let shared: &[&str] = match stage {
-        Stage::Define => &["stage-reporting", "define-rules", "tracker-setup"],
-        Stage::Build => &["stage-reporting", "verification", "skill-change"],
-        Stage::Check => &[
-            "stage-reporting",
-            "verification",
-            "committing-for-check",
-            "check-review",
-        ],
-        Stage::Finish => &["stage-reporting", "finish", "pull-request-and-ci"],
+        Stage::Define => &["define-rules", "tracker-setup"],
+        Stage::Build => &["verification", "skill-change"],
+        Stage::Check => &["verification", "committing-for-check", "check-review"],
+        Stage::Finish => &["finish", "pull-request-and-ci"],
     };
     let routed = routing.map(|agent| match agent {
         Agent::Claude => "routing-claude",
@@ -276,9 +272,12 @@ fn instructions(mode: Mode, stage: Stage, routing: Option<Agent>) -> String {
         Stage::Check => "routing-check",
         Stage::Finish => "routing-finish",
     });
-    for name in shared
-        .iter()
-        .copied()
+    // Every stage starts with stage-reporting. Only Codex needs its approval rules right after it;
+    // show them when the agent is unknown too.
+    let codex_approvals = matches!(agent, None | Some(Agent::Codex)).then_some("codex-approvals");
+    for name in std::iter::once("stage-reporting")
+        .chain(codex_approvals)
+        .chain(shared.iter().copied())
         .chain(routing.map(|_| "stage-routing"))
         .chain(routed)
         .chain(stage_routing)
@@ -446,6 +445,7 @@ fn stage_instructions(run: &Run, mode: Mode, selection: Option<&checks::Selectio
     let mut stage_instructions = instructions(
         mode,
         run.stage,
+        run.model_routing.as_ref().map(|routing| routing.agent),
         run.model_routing
             .as_ref()
             .filter(|routing| {
