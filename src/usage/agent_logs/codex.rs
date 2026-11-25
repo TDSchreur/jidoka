@@ -661,12 +661,31 @@ fn parse_codex(text: &str, session: &str, subagent: bool, ids: &HashSet<&str>) -
             _ => {}
         }
     }
+    // A subagent rollout whose own responses ran a Jidoka command naming a run is that run's coordinator (a
+    // plan step agent), so its responses are not subagent usage. The copied parent history is not its own
+    // work: only the responses above count. It still does not claim the session.
+    if subagent && names_a_run(&log.responses, ids) {
+        for (_, response) in &mut log.responses {
+            response.subagent = false;
+        }
+    }
     log.skills = {
         let mut markers = Markers::default();
         codex_skills(text, &mut markers);
         markers.skills
     };
     log
+}
+
+/// Whether the commands of these responses, in time order, name a run in `ids`.
+fn names_a_run(responses: &[(String, Response)], ids: &HashSet<&str>) -> bool {
+    let mut ordered: Vec<&Response> = responses.iter().map(|(_, response)| response).collect();
+    ordered.sort_by_key(|response| response.ts);
+    let mut variables = Variables::new();
+    ordered
+        .iter()
+        .flat_map(|response| &response.commands)
+        .any(|command| !run_claims(truncate(command), ids, &mut variables).is_empty())
 }
 
 /// A rollout seen on the first pass: its ids and where it is, not its text, so unclaimed rollouts cost no

@@ -32,6 +32,8 @@ impl AgentLogs for ClaudeLogs {
 struct ClaudeLog {
     /// Responses by key; Claude Code writes one per content block, so a response counts once.
     responses: BTreeMap<String, Response>,
+    /// The run ids its executed commands name. For a subagent file these are kept apart from the session's
+    /// claims by the caller: they only show that the subagent is a run's own coordinator.
     claims: HashSet<String>,
     skipped: Skipped,
 }
@@ -47,7 +49,7 @@ struct ToolCalls {
 }
 
 /// The tool calls in a line's content blocks. When `claiming`, the run ids their Bash commands name are
-/// added to `claims`: a coordinator's executed command claims, a subagent's does not.
+/// added to `claims`.
 fn tool_calls(
     blocks: &[Value],
     claiming: bool,
@@ -120,7 +122,14 @@ fn parse_claude(text: &str, session: &str, subagent_file: bool, ids: &HashSet<&s
         }
         let not_a_response = data["isApiErrorMessage"].as_bool() == Some(true)
             || data["isVirtual"].as_bool() == Some(true);
-        let calls = tool_calls(blocks, !subagent, &mut parsed.claims, ids, &mut variables);
+        // A subagent file's own commands are collected too; `read_claude` does not add them to the session.
+        let calls = tool_calls(
+            blocks,
+            subagent_file || !subagent,
+            &mut parsed.claims,
+            ids,
+            &mut variables,
+        );
         let usage = &message["usage"];
         // Another kind of line that mentions "usage", such as a task's totals, is not a response either.
         if not_a_response || !usage.is_object() {
@@ -301,7 +310,11 @@ fn read_claude(root: &Path, window: &RunWindow, deadline: Instant, limits: ReadL
                     if let Some(sub_text) = pass.load(&sub_path, &stem, &mut state) {
                         let more = parse_claude(&sub_text, &stem, true, &window.ids);
                         parsed.skipped.add(&more.skipped);
-                        for (key, response) in more.responses {
+                        // A subagent that ran a Jidoka command naming a run is that run's coordinator (a
+                        // plan step agent), not a subagent of it. It still does not claim the session.
+                        let own_run = !more.claims.is_empty();
+                        for (key, mut response) in more.responses {
+                            response.subagent &= !own_run;
                             parsed.responses.entry(key).or_insert(response);
                         }
                         let mut sub_markers = Markers::default();

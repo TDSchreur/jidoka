@@ -108,6 +108,8 @@ struct Record {
     effort: Option<String>,
     tokens: Tokens,
     subagent: bool,
+    /// The `agentId` of a sub-agent record.
+    agent: Option<String>,
 }
 
 /// Gives each usage record the tool calls of its message and the size of their results.
@@ -147,6 +149,46 @@ fn join_calls(
         ));
     }
     responses
+}
+
+/// Decides which calls claim and which records are subagent usage. A subagent's commands never claim; only
+/// a call whose usage record says `sub-agent` is left out, so a call without a record still claims. A
+/// sub-agent whose calls name a run is that run's coordinator (a plan step agent): its records are not
+/// subagent usage, although its commands still do not claim the session.
+fn settle_subagents(
+    records: &mut [Record],
+    calls: &HashMap<String, Calls>,
+    claims: &mut HashSet<String>,
+) {
+    let subagent_calls: HashSet<&str> = records
+        .iter()
+        .filter(|record| record.subagent)
+        .filter_map(|record| record.call.as_deref())
+        .collect();
+    let coordinators: HashSet<String> = records
+        .iter()
+        .filter(|record| record.subagent)
+        .filter_map(|record| {
+            let named = calls.get(record.call.as_deref()?)?;
+            (!named.claims.is_empty())
+                .then(|| record.agent.clone())
+                .flatten()
+        })
+        .collect();
+    for (call, entry) in calls {
+        if !subagent_calls.contains(call.as_str()) {
+            claims.extend(entry.claims.iter().cloned());
+        }
+    }
+    for record in records {
+        if record
+            .agent
+            .as_ref()
+            .is_some_and(|agent| coordinators.contains(agent))
+        {
+            record.subagent = false;
+        }
+    }
 }
 
 /// The responses and claims of one log. A response is a `session.usage_record`; the `assistant.message`
@@ -234,23 +276,13 @@ fn parse_copilot(text: &str, session: &str, ids: &HashSet<&str>) -> CopilotLog {
                     effort: effort_name(&usage["reasoningEffort"]),
                     tokens,
                     subagent: usage["initiator"] == "sub-agent",
+                    agent: data["agentId"].as_str().map(str::to_string),
                 });
             }
             _ => {}
         }
     }
-    // A subagent's commands never claim; only a call whose usage record says `sub-agent` is left out, so a
-    // call without a record still claims.
-    let subagent_calls: HashSet<&str> = records
-        .iter()
-        .filter(|record| record.subagent)
-        .filter_map(|record| record.call.as_deref())
-        .collect();
-    for (call, entry) in &calls {
-        if !subagent_calls.contains(call.as_str()) {
-            log.claims.extend(entry.claims.iter().cloned());
-        }
-    }
+    settle_subagents(&mut records, &calls, &mut log.claims);
     log.responses = join_calls(records, &calls, &results, session);
     log
 }
