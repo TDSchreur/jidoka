@@ -15,8 +15,9 @@ pub(crate) enum ReviewSelection {
     Selected { mode: Mode, selection: Selection },
 }
 
-/// The Reviews to show or require for `purpose`: in the Check stage from the diff, and as a preview
-/// outside it where `purpose` asks for one.
+/// The Reviews to show or require for `purpose`.
+///
+/// In the Check stage they come from the diff; outside it, `purpose` decides whether to preview them.
 pub(super) fn for_assessment(
     run: &Run,
     git: &dyn Git,

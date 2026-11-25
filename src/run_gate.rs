@@ -1,5 +1,6 @@
-//! Gates: the conditions a run must meet before it may leave a Stage (ADR-0001), and the evidence an
-//! accepted exit carries (ADR-0019).
+//! Gates: the conditions a run must meet before it may leave a Stage.
+//!
+//! The CLI owns them (ADR-0001), and an accepted exit carries their evidence (ADR-0019).
 //!
 //! The gate interface is what this module re-exports. Behind it each job has its own module:
 //!
@@ -33,8 +34,9 @@ use local::LocalAssessment;
 /// The remedy `advance` names for this gate, which fails either on open Findings or on no recorded pass.
 const RECORD_OR_RESOLVE_FINDINGS: &str = "record `jidoka run gate <id> no-actionable-findings pass` once no Finding is open; resolve open Findings with `jidoka run update <id> --finding-status <finding-id>=<fixed|dismissed|deferred>[:<reason>]` or start it with `jidoka run rework`";
 
-/// Evaluates the exit gates of the current Stage, live CI included when they name it, and returns their
-/// evidence as an accepted exit. Where the exit leads is for [`Run::leave`] to decide.
+/// Evaluates the exit gates of the current Stage and returns their evidence as an accepted exit.
+///
+/// Live CI is included when the gates name it. Where the exit leads is for [`Run::leave`] to decide.
 ///
 /// # Errors
 ///

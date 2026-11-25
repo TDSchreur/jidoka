@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 /// Allow the existing 90-second CI discovery grace period, including a final poll.
 const CI_TIMEOUT: Duration = Duration::from_secs(95);
 
-/// Watches the run's pull request until its CI for the worktree HEAD has one outcome, and returns it as
-/// evidence when it passed or the project has no CI.
+/// Watches the pull request's CI on the worktree HEAD until it has one outcome.
+///
+/// Returns it as evidence when CI passed or the project has no CI.
 pub(super) fn ci_passed(run: &Run, git: &dyn Git, host: &dyn PrHost) -> Result<CiEvidence, String> {
     let url = run.pr.as_deref().ok_or("No pull request is recorded")?;
     let checked_at = updated_now().map_err(|error| format!("Could not read the time: {error}"))?;

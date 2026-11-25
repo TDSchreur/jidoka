@@ -1,5 +1,7 @@
-//! Local gate evaluation: recording a gate result and evaluating the exit gates that the run's record and
-//! worktree can decide, ticket verification included. CI is evaluated live elsewhere.
+//! Local gate evaluation: gates that the run record and the worktree decide.
+//!
+//! It records gate results and evaluates exit gates, ticket verification included. CI is evaluated live
+//! elsewhere.
 
 use super::{
     request::Record,

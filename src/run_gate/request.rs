@@ -1,5 +1,6 @@
-//! Requests and their options: what `jidoka run gate` and `jidoka run advance` send to the dashboard
-//! server, and the server-side handling of an advance request.
+//! The requests of `jidoka run gate` and `jidoka run advance`, and their options.
+//!
+//! They are what the CLI sends to the dashboard server; the server handles an advance request here too.
 
 use crate::{
     git::Git,
@@ -23,7 +24,7 @@ pub(crate) struct Record {
     pub(crate) check: Option<String>,
 }
 
-pub(crate) fn parse_options(options: &[&str]) -> Result<(Option<String>, Option<String>), String> {
+fn parse_options(options: &[&str]) -> Result<(Option<String>, Option<String>), String> {
     let mut evidence = None;
     let mut check = None;
     let mut remaining = options;
@@ -130,7 +131,7 @@ pub(crate) struct AdvanceOptions {
 /// # Errors
 ///
 /// Returns a message for an unknown or repeated option, a missing value, or `--force` without a reason.
-pub(crate) fn parse_advance_options(options: &[&str]) -> Result<AdvanceOptions, String> {
+fn parse_advance_options(options: &[&str]) -> Result<AdvanceOptions, String> {
     let mut parsed = AdvanceOptions::default();
     let mut seen: Vec<&str> = Vec::new();
     let mut rest = options.iter().copied();
