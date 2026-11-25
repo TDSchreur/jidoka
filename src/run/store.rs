@@ -594,7 +594,7 @@ impl RunStore {
                     {
                         // Log model names are untrusted and can exceed a run report's size limit.
                         let model: String = row.model.chars().take(50).collect();
-                        let model = crate::inspect::shown(&model);
+                        let model = crate::run::inspect::shown(&model);
                         let text = format!(
                             "{}{} subagent usage recorded model {} while {} was assigned",
                             crate::routing::WARNING_PREFIX,
@@ -671,7 +671,7 @@ impl RunStore {
                 return Ok(Edit::Skip);
             }
             let now = updated_now()?;
-            let changed = crate::pr_state::follow_up(run, &status, now).map_err(io_invalid)?;
+            let changed = crate::pr::state::follow_up(run, &status, now).map_err(io_invalid)?;
             result = PrResult::Accepted { changed };
             run.pr_status = Some(status);
             Ok(if changed {
@@ -705,7 +705,7 @@ impl RunStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pr_state::PrState;
+    use crate::pr::state::PrState;
     use crate::stages::Gate;
     use crate::test_support::TestDir;
 

@@ -8,27 +8,16 @@ mod git;
 mod gitignore;
 mod group_cli;
 mod groups;
-mod inspect;
 mod install;
 mod install_record;
 mod knowledge;
 mod plans;
-mod pr_host;
-mod pr_open;
-mod pr_state;
-mod pr_sync;
-mod pr_wait;
-mod pr_workspace;
+mod pr;
 mod program;
 mod repository;
 mod reviews;
 mod routing;
 mod run;
-mod run_begin;
-mod run_check;
-mod run_cleanup;
-mod run_gate;
-mod run_next;
 mod server;
 mod setup;
 mod stages;
@@ -72,31 +61,31 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
         ["doctor", options @ ..] => return execute::<doctor::DoctorCommand>(options),
         ["dashboard", options @ ..] => return execute::<server::DashboardCommand>(options),
         ["run", "start", rest @ ..] if !rest.is_empty() => {
-            return execute::<run_begin::StartCommand>(rest);
+            return execute::<run::begin::StartCommand>(rest);
         }
         ["run", "begin", rest @ ..] if matches!(rest, ["--run", _, ..]) || names(rest) => {
-            return execute::<run_begin::BeginCommand>(rest);
+            return execute::<run::begin::BeginCommand>(rest);
         }
         ["run", "cleanup", rest @ ..] if names(rest) => {
-            return execute::<run_cleanup::CleanupCommand>(rest);
+            return execute::<run::cleanup::CleanupCommand>(rest);
         }
         ["run", "check", rest @ ..] if names(rest) => {
-            return execute::<run_check::CheckCommand>(rest);
+            return execute::<run::check::CheckCommand>(rest);
         }
         ["run", "sync", rest @ ..] if names(rest) => {
-            return execute::<pr_state::RunSyncCommand>(rest);
+            return execute::<pr::state::RunSyncCommand>(rest);
         }
         ["run", "next", rest @ ..] if names(rest) => {
-            return execute::<run_next::NextCommand>(rest);
+            return execute::<run::next::NextCommand>(rest);
         }
         ["run", "gate", rest @ ..] if rest.len() >= 3 && names(rest) => {
-            return execute::<run_gate::GateCommand>(rest);
+            return execute::<run::gate::GateCommand>(rest);
         }
         ["run", "advance", rest @ ..] if names(rest) => {
-            return execute::<run_gate::AdvanceCommand>(rest);
+            return execute::<run::gate::AdvanceCommand>(rest);
         }
         ["run", "inspect", rest @ ..] if !rest.is_empty() => {
-            return execute::<inspect::InspectCommand>(rest);
+            return execute::<run::inspect::InspectCommand>(rest);
         }
         ["run", "stats", rest @ ..]
             if matches!(rest, ["--all"]) || (rest.len() == 1 && names(rest)) =>
@@ -115,9 +104,9 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
         ["run", rest @ ..] if matches!(rest, ["block" | "resume" | "rework", _, ..]) => {
             return execute::<cli::LifecycleCommand>(rest);
         }
-        ["pr", "wait", rest @ ..] if names(rest) => return execute::<pr_wait::WaitCommand>(rest),
-        ["pr", "open", rest @ ..] if names(rest) => return execute::<pr_open::OpenCommand>(rest),
-        ["pr", "sync", rest @ ..] if names(rest) => return execute::<pr_sync::SyncCommand>(rest),
+        ["pr", "wait", rest @ ..] if names(rest) => return execute::<pr::wait::WaitCommand>(rest),
+        ["pr", "open", rest @ ..] if names(rest) => return execute::<pr::open::OpenCommand>(rest),
+        ["pr", "sync", rest @ ..] if names(rest) => return execute::<pr::sync::SyncCommand>(rest),
         _ => return Err(cli::usage_error("Invalid arguments.").into()),
     }
     Ok(0)

@@ -1,5 +1,5 @@
 use super::*;
-use crate::pr_state::{PrState, PrStatus};
+use crate::pr::state::{PrState, PrStatus};
 
 fn member(pr: Option<&str>, status: Option<PrStatus>) -> Member {
     Member {

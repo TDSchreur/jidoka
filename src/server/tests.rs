@@ -591,7 +591,7 @@ async fn ticket_reports_are_recorded_and_rejected_atomically_via_api() {
 
 #[rocket::async_test]
 async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
-    use crate::pr_state::{PrState, PrStatus};
+    use crate::pr::state::{PrState, PrStatus};
     let dir = TestDir::new();
     let path = dir.0.path().join("runs.json");
     let store = RunStore::open(&path).unwrap();
@@ -661,15 +661,15 @@ async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
 }
 
 /// A pull request host whose pull requests are all merged.
-fn merged_host() -> std::sync::Arc<crate::pr_host::FakeHost> {
-    std::sync::Arc::new(crate::pr_host::FakeHost::states(&[
-        crate::pr_state::PrState::Merged,
+fn merged_host() -> std::sync::Arc<crate::pr::host::FakeHost> {
+    std::sync::Arc::new(crate::pr::host::FakeHost::states(&[
+        crate::pr::state::PrState::Merged,
     ]))
 }
 
 async fn client_with_pr_tool(
     dir: &TestDir,
-    tool: std::sync::Arc<dyn crate::pr_host::PrHost + Send + Sync>,
+    tool: std::sync::Arc<dyn crate::pr::host::PrHost + Send + Sync>,
 ) -> Client {
     Client::tracked(
         build_rocket_with_tool(&dir.0.path().join("runs.json"), DEFAULT_PORT, tool).unwrap(),
@@ -1679,7 +1679,7 @@ async fn cli_pr_result_updates_the_cache_and_the_run_together() {
     let saved = fetch(&api, &run.id).await.1.unwrap();
     assert_eq!(saved.status, crate::run::RunStatus::Blocked);
     let status = saved.pr_status.unwrap();
-    assert_eq!(status.state, crate::pr_state::PrState::Closed);
+    assert_eq!(status.state, crate::pr::state::PrState::Closed);
     assert_eq!(status.checked_at, 123);
 }
 
