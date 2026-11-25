@@ -9,6 +9,15 @@
             "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/require-jidoka-run.sh\""
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-protected-paths.sh\""
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -18,6 +27,17 @@
           {
             "type": "command",
             "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/rustfmt-on-edit.sh\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/verify-on-stop.sh\"",
+            "timeout": 600
           }
         ]
       }
