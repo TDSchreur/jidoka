@@ -263,6 +263,35 @@ fn a_codex_subagent_rollout_naming_the_run_is_not_subagent_usage_and_does_not_cl
 }
 
 #[test]
+fn a_forked_codex_subagent_with_a_run_command_in_copied_history_stays_subagent_usage() {
+    let (claims, subagent) = read_recorded(
+        &[(
+            "codex/sessions/2026/11/05/rollout-2026-11-05T10-00-00-sub-a.jsonl",
+            vec![
+                json!({"type": "session_meta", "timestamp": iso(0), "payload": {"id": "sub-a", "session_id": "cdx1",
+                    "thread_source": "subagent", "source": {"subagent": {"thread_spawn": {"parent_thread_id": "cdx1"}}}}})
+                .to_string(),
+                // The parent's history, copied before the subagent's own turn starts.
+                json!({"type": "response_item", "timestamp": iso(1), "payload": {"type": "custom_tool_call",
+                    "name": "exec", "call_id": "c0", "input": format!("tools.exec_command({{cmd: \"{}\"}})", command())}})
+                .to_string(),
+                json!({"type": "event_msg", "timestamp": iso(2), "payload": {"type": "task_started"}}).to_string(),
+                json!({"type": "turn_context", "timestamp": iso(2), "payload": {"model": "gpt-test", "turn_id": "turn-1"}}).to_string(),
+                json!({"type": "response_item", "timestamp": iso(9), "payload": {"type": "custom_tool_call",
+                    "name": "exec", "call_id": "c1", "input": "tools.exec_command({cmd: \"ls\"})"}})
+                .to_string(),
+                json!({"type": "token_usage_record", "timestamp": iso(10), "payload": {"response_id": "r-sub-a",
+                    "turn_id": "turn-1", "usage": {"input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 5}}})
+                .to_string(),
+            ],
+        )],
+        "cdx1",
+    );
+    assert_eq!(subagent, [true]);
+    assert!(claims.is_empty());
+}
+
+#[test]
 fn a_copilot_sub_agent_naming_the_run_is_not_subagent_usage_and_does_not_claim() {
     let message = |call: &str, command: &str| {
         json!({"type": "assistant.message", "timestamp": iso(1), "data": {"apiCallId": call, "content": "",
