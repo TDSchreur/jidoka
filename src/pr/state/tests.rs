@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::pr::host::{FakeHost, Head};
-use crate::run::{NewRun, RunStatus, RunStore, Stage, UpdateRun};
-use crate::test_support::{TestDir, advance_to};
+use crate::run::{RunStatus, RunStore, Stage, UpdateRun};
+use crate::test_support::{TestDir, advance_to, new_run};
 
 const PR: &str = "https://github.com/o/r/pull/7";
 
@@ -18,16 +18,7 @@ fn run_with_pr(store: &RunStore, pr: &str) -> String {
 }
 
 fn run_with_pr_in(store: &RunStore, pr: &str, stage: Stage) -> String {
-    let run = store
-        .create(NewRun {
-            title: "t".into(),
-            project: "/work".into(),
-            repository: None,
-            session: None,
-            agent_homes: Default::default(),
-            model_routing: None,
-        })
-        .unwrap();
+    let run = new_run(store, "t");
     let update: UpdateRun = serde_json::from_str(&format!(r#"{{"pr":"{pr}"}}"#)).unwrap();
     advance_to(store, &run.id, stage);
     store.update(&run.id, update).unwrap();
@@ -84,16 +75,7 @@ fn a_problem_is_stored_as_unknown_with_its_reason_and_tried_again() {
 fn a_new_pull_request_url_is_checked_at_once_and_runs_without_one_are_left_alone() {
     let (_dir, store) = store();
     let id = run_with_pr(&store, PR);
-    store
-        .create(NewRun {
-            title: "no pr".into(),
-            project: "/work".into(),
-            repository: None,
-            session: None,
-            agent_homes: Default::default(),
-            model_routing: None,
-        })
-        .unwrap();
+    new_run(&store, "no pr");
     let host = FakeHost::states(&[PrState::Merged, PrState::Draft]);
     assert_eq!(refresh(&store, &host, 0).unwrap(), 1);
     // The Run now records another pull request: its stored state is for the old URL, so it is read again.

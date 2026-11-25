@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     run::{Stage, load_runs},
-    test_support::{TestDir, advance_to},
+    test_support::{TestDir, advance_to, new_run},
 };
 use rocket::{http::Header, local::asynchronous::Client};
 use std::fs;
@@ -595,16 +595,7 @@ async fn the_run_list_carries_the_pull_request_state_the_server_stored() {
     let dir = TestDir::new();
     let path = dir.0.path().join("runs.json");
     let store = RunStore::open(&path).unwrap();
-    let run = store
-        .create(NewRun {
-            title: "t".into(),
-            project: "/work".into(),
-            repository: None,
-            session: None,
-            agent_homes: Default::default(),
-            model_routing: None,
-        })
-        .unwrap();
+    let run = new_run(&store, "t");
     let pr = "https://github.com/o/r/pull/7";
     advance_to(&store, &run.id, Stage::Finish);
     store
@@ -680,16 +671,7 @@ async fn client_with_pr_tool(
 
 fn waiting_run(api: &Client, pr: Option<&str>) -> String {
     let store = api.rocket().state::<RunStore>().unwrap();
-    let run = store
-        .create(NewRun {
-            title: "t".into(),
-            project: "/work".into(),
-            repository: None,
-            session: None,
-            agent_homes: Default::default(),
-            model_routing: None,
-        })
-        .unwrap();
+    let run = new_run(store, "t");
     let pr = pr.map_or(String::new(), |pr| format!(r#","pr":"{pr}""#));
     let update = format!(r#"{{"activity":"Waiting for CI"{pr}}}"#);
     advance_to(store, &run.id, Stage::Finish);
@@ -905,15 +887,7 @@ async fn delete_removes_only_the_record_and_survives_restart() {
     let dir = TestDir::new();
     let api = client(&dir).await;
     let store = api.rocket().state::<RunStore>().unwrap();
-    let new = |title: &str| NewRun {
-        title: title.into(),
-        project: "/work".into(),
-        repository: None,
-        session: None,
-        agent_homes: Default::default(),
-        model_routing: None,
-    };
-    let kept = store.create(new("kept")).unwrap();
+    let kept = new_run(store, "kept");
     let token = session_token(&api).await;
     // A request without an Origin (curl) and the dashboard's own same-origin requests are allowed.
     for origin in [
@@ -921,7 +895,7 @@ async fn delete_removes_only_the_record_and_survives_restart() {
         Some("http://127.0.0.1:4311"),
         Some("http://localhost:4311"),
     ] {
-        let run = store.create(new("gone")).unwrap();
+        let run = new_run(store, "gone");
         let mut headers = vec![
             ("Host", "127.0.0.1:4311".to_string()),
             (TOKEN_HEADER, token.clone()),
@@ -1573,19 +1547,7 @@ async fn post_json(api: &Client, route: &str, body: serde_json::Value) -> (HttpS
 async fn groups_are_managed_through_the_api_and_a_grouped_run_cannot_be_deleted() {
     let dir = TestDir::new();
     let api = client(&dir).await;
-    let run = api
-        .rocket()
-        .state::<RunStore>()
-        .unwrap()
-        .create(NewRun {
-            title: "t".into(),
-            project: "/work".into(),
-            repository: None,
-            session: None,
-            agent_homes: Default::default(),
-            model_routing: None,
-        })
-        .unwrap();
+    let run = new_run(api.rocket().state::<RunStore>().unwrap(), "t");
     let (status, body) = post_json(
         &api,
         "/api/groups",
