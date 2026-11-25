@@ -2,7 +2,10 @@
 //! responses they count and on their tokens, whichever agent wrote the log.
 
 use super::*;
-use crate::{requests, run::Run, usage};
+use crate::{
+    run::Run,
+    usage::{self, requests},
+};
 use serde_json::json;
 use std::time::Duration;
 
@@ -11,7 +14,7 @@ const T0: u64 = 1_793_872_800_000;
 const RUN: &str = "1793872800000000001";
 
 fn iso(offset_seconds: u64) -> String {
-    usage::iso_timestamp(T0 + offset_seconds * 1000)
+    crate::timestamps::iso(T0 + offset_seconds * 1000)
 }
 
 fn command() -> String {
@@ -105,7 +108,7 @@ fn usage_and_requests_count_the_same_responses_and_tokens_for_every_agent() {
         let runs = std::slice::from_ref(&target);
         let (now, deadline) = (T0 + 1_000_000, Instant::now() + Duration::from_secs(30));
 
-        let usage = usage::collect(&target, runs, &roots, now, deadline);
+        let usage = usage::collection::collect(&target, runs, &roots, now, deadline);
         let requests = requests::analyze(&target, runs, &roots, now, deadline);
 
         let mut used = Tokens::default();

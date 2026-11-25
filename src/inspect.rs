@@ -2,7 +2,10 @@
 
 use crate::routing::{ModelChoice, ModelRouting, model_matches};
 use crate::run::{Completion, Mode, Run, RunEventKind, RunStatus, Stage, TicketStatus};
-use crate::usage::{Usage, UsageStatus, format_timestamp};
+use crate::{
+    timestamps,
+    usage::token_usage::{Usage, UsageStatus},
+};
 use std::collections::BTreeSet;
 
 const UNKNOWN: &str = "unknown (not recorded)";
@@ -552,7 +555,7 @@ pub(crate) fn render(run: &Run) -> String {
                 .map_or_else(String::new, |reason| format!(": {}", shown(reason)));
             out.push_str(&format!(
                 "  {}  {kind}  {}{reason}\n",
-                format_timestamp(event.at),
+                timestamps::format(event.at),
                 event.stage.name()
             ));
         }
@@ -568,14 +571,14 @@ pub(crate) fn render(run: &Run) -> String {
             );
             out.push_str(&format!(
                 "  {}  {}, {resumed}\n",
-                format_timestamp(pause.at),
+                timestamps::format(pause.at),
                 pause.kind.reason().to_lowercase()
             ));
         }
         for gap in &usage.idle {
             out.push_str(&format!(
                 "  {}  idle {}\n",
-                format_timestamp(gap.from),
+                timestamps::format(gap.from),
                 duration(gap.to.saturating_sub(gap.from))
             ));
         }
@@ -1013,7 +1016,7 @@ mod tests {
     #[test]
     fn rework_usage_counts_toward_the_build_task() {
         let mut run = with_usage("tracked", &[]);
-        let row: crate::usage::UsageRow = serde_json::from_value(serde_json::json!(
+        let row: crate::usage::token_usage::UsageRow = serde_json::from_value(serde_json::json!(
             {"stage": "build", "model": "claude-sonnet-5-5", "rework": true, "input": 1, "output": 1}
         ))
         .unwrap();

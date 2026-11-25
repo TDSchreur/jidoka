@@ -688,7 +688,7 @@ pub(crate) fn read_codex(
     let mut pass = ReadPass::new(window, deadline, limits);
     // The reading flags and notes of the shared helpers; moved into `out` at the end.
     let mut state = ReadResult::default();
-    let earliest_day = civil_day(window.from.saturating_sub(DAY_MS));
+    let earliest_day = timestamps::day(window.from.saturating_sub(DAY_MS));
     let mut found: Vec<Found> = Vec::new();
     'days: for year in sub_dirs(root) {
         for month in sub_dirs(&year.path()) {
@@ -768,7 +768,7 @@ pub(crate) fn read_codex(
         };
         let parsed = parse_codex(&text, &rollout.root, rollout.subagent, &window.ids);
         let attention = (!rollout.subagent)
-            .then(|| crate::attention::signals(crate::agent::Agent::Codex, &text));
+            .then(|| crate::usage::attention::signals(crate::agent::Agent::Codex, &text));
         drop(text);
         let entry = by_root.entry(rollout.root.clone()).or_insert_with(|| Root {
             claims: HashSet::new(),

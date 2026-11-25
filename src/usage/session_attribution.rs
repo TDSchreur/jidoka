@@ -5,11 +5,42 @@
 //! belongs to neither. Totals and categories stay with the reports.
 
 use crate::{
-    agent_logs::{LogSession, ReadLimits, ReadResult, Response, Roots, RunWindow, read_sessions},
-    run::Run,
-    usage::{FUTURE_SLACK_MS, Mark, mark_at},
+    run::{Run, Stage},
+    usage::agent_logs::{
+        LogSession, ReadLimits, ReadResult, Response, Roots, RunWindow, read_sessions,
+    },
 };
+use serde::{Deserialize, Serialize};
 use std::time::Instant;
+
+/// One moment the run's stage, rework or active ticket changed. Usage entries are attributed to the last
+/// mark at or before their timestamp.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Mark {
+    /// Milliseconds since the Unix epoch.
+    pub(crate) at: u64,
+    pub(crate) stage: Stage,
+    /// The rework count while Build is working on a rework.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rework: Option<u32>,
+    /// The reference of the ticket in progress, in Build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ticket: Option<String>,
+    /// What the run was doing when it started this pass, from the update that created the mark.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) activity: Option<String>,
+}
+
+/// How far ahead of this machine's clock a log entry may be.
+pub(crate) const FUTURE_SLACK_MS: u64 = 60_000;
+
+/// The last mark at or before `ts`, when `ts` is inside the run's window.
+pub(crate) fn mark_at(run: &Run, ts: u64) -> Option<&Mark> {
+    if run.finished_at.is_some_and(|end| ts > end) {
+        return None;
+    }
+    run.timeline.iter().rev().find(|mark| mark.at <= ts)
+}
 
 /// The reason a Run that started before usage tracking existed cannot be scanned.
 pub(crate) const NO_TIMELINE: &str =

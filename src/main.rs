@@ -1,10 +1,7 @@
 mod agent;
-mod agent_logs;
-mod attention;
 mod checks;
 mod cli;
 mod client;
-mod cost;
 mod discovery;
 mod doctor;
 mod document;
@@ -24,9 +21,6 @@ mod pr_sync;
 mod pr_wait;
 mod pr_workspace;
 mod repository;
-mod request_logs;
-mod requests;
-mod requests_pool;
 mod routing;
 mod run;
 mod run_begin;
@@ -35,13 +29,11 @@ mod run_cleanup;
 mod run_gate;
 mod run_next;
 mod server;
-mod session_attribution;
 mod setup;
-mod shell_commands;
 mod stages;
-mod stats;
 #[cfg(test)]
 mod test_support;
+mod timestamps;
 mod token;
 mod usage;
 
@@ -108,13 +100,13 @@ fn run_cli() -> Result<u8, Box<dyn std::error::Error>> {
         ["run", "stats", rest @ ..]
             if matches!(rest, ["--all"]) || (rest.len() == 1 && names(rest)) =>
         {
-            return execute::<stats::StatsCommand>(rest);
+            return execute::<usage::stats::StatsCommand>(rest);
         }
         ["run", "requests", "--all", options @ ..] => {
-            return execute::<requests_pool::PoolCommand>(options);
+            return execute::<usage::requests_pool::PoolCommand>(options);
         }
         ["run", "requests", rest @ ..] if names(rest) => {
-            return execute::<requests::RequestsCommand>(rest);
+            return execute::<usage::requests::RequestsCommand>(rest);
         }
         ["run", "update", rest @ ..] if !rest.is_empty() => {
             return execute::<cli::UpdateCommand>(rest);

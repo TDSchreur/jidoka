@@ -1005,7 +1005,7 @@ mod tests {
         let path = directory.path().join("runs.json");
         std::fs::write(&path, serde_json::to_vec(&vec![run(Stage::Build)]).unwrap()).unwrap();
         let store = RunStore::open(&path).unwrap();
-        let usage: crate::usage::Usage =
+        let usage: crate::usage::token_usage::Usage =
             serde_json::from_value(serde_json::json!({"status":"tracked","collected_at":7}))
                 .unwrap();
         let forced = || Exit::Override {

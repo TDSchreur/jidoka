@@ -1,14 +1,13 @@
-//! Categories of model requests for `jidoka run requests`, and the shell-command parsing that finds which runs
-//! a session's commands name.
+//! Categories of model requests for `jidoka run requests`, read from the shell commands of their tool calls.
 //!
 //! Of each request it keeps the token counts and a category taken from the Bash commands of its
 //! tool calls. The command text is dropped as soon as it is classified: nothing but categories, flags and
 //! counts leaves this module.
 
-use crate::{
+use crate::usage::{
     agent_logs::Response,
-    shell_commands::{command_words, segments},
-    usage::Tokens,
+    shell_commands::{command_words, segments, skip_git_options},
+    token_usage::Tokens,
 };
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -121,15 +120,6 @@ fn is_read_only_helper(segment: &str) -> bool {
             ) | (Some("git"), "branch", "--show-current")
                 | (Some("gh"), "pr" | "issue" | "repo", "view")
         )
-}
-
-/// Removes the options that come before the subcommand of a git command: `git -C <path> <subcommand>`.
-fn skip_git_options(words: &mut Vec<&str>) {
-    let skipped = words[1..]
-        .chunks(2)
-        .take_while(|pair| pair[0] == "-C" || pair[0] == "-c")
-        .count();
-    words.drain(1..(1 + 2 * skipped).min(words.len()));
 }
 
 /// What one command of a shell line stands for.

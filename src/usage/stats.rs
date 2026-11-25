@@ -1,10 +1,13 @@
 //! `jidoka run stats`: token usage per stage, model and ticket, in plain text.
 
 use crate::{
-    cost::{self, PRICES},
     inspect::shown,
     run::{Run, Stage},
-    usage::{Tokens, Usage, UsageRow, UsageStatus, format_timestamp},
+    timestamps,
+    usage::{
+        cost::{self, PRICES},
+        token_usage::{Tokens, Usage, UsageRow, UsageStatus},
+    },
 };
 use std::collections::BTreeMap;
 
@@ -146,7 +149,7 @@ pub(crate) fn render_run(run: &Run) -> String {
     out.push_str(&format!("Tokens: {}\n", status_line(usage)));
     out.push_str(&format!(
         "Collected {} from {} session(s)\n",
-        format_timestamp(usage.collected_at),
+        timestamps::format(usage.collected_at),
         usage.sessions.len()
     ));
     if !usage.rows.is_empty() {

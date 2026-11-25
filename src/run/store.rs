@@ -629,7 +629,7 @@ impl RunStore {
     pub(crate) fn observe_skills(
         &self,
         id: &str,
-        skills: &[crate::usage::UsedSkill],
+        skills: &[crate::usage::token_usage::UsedSkill],
     ) -> io::Result<()> {
         if skills.is_empty() {
             return Ok(());
@@ -847,7 +847,7 @@ mod tests {
                     )
                     .unwrap();
                 store.set_usage(&id, usage.clone()).unwrap();
-                let skill = crate::usage::UsedSkill {
+                let skill = crate::usage::token_usage::UsedSkill {
                     stage: Stage::Define,
                     name: "grilling".into(),
                     at: 7,

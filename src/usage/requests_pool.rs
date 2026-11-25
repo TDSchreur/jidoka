@@ -1,13 +1,15 @@
 //! `jidoka run requests --all`: the model requests of many runs pooled, with how they spread over the runs.
 
 use crate::{
-    agent_logs::Roots,
     inspect::shown,
-    request_logs::Category,
-    requests::{Counts, RunRequests, analyze, cells},
     run::{Run, RunStatus},
-    stats::{number, table_with},
-    usage::UsageStatus,
+    usage::{
+        agent_logs::Roots,
+        request_logs::Category,
+        requests::{Counts, RunRequests, analyze, cells},
+        stats::{number, table_with},
+        token_usage::UsageStatus,
+    },
 };
 use serde::Serialize;
 use std::{collections::BTreeMap, time::Instant};
@@ -189,10 +191,9 @@ pub(crate) fn pool(
             }
         }
         if result.total.requests == 0 {
-            let missing = result
-                .notes
-                .iter()
-                .any(|note| note.starts_with(crate::session_attribution::RECORDED_NOT_FOUND));
+            let missing = result.notes.iter().any(|note| {
+                note.starts_with(crate::usage::session_attribution::RECORDED_NOT_FOUND)
+            });
             out.left_out.push(left_out(if missing {
                 "its recorded session logs were not found in the scanned folders (see CLAUDE_CONFIG_DIR)".into()
             } else {

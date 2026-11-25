@@ -243,7 +243,7 @@ struct Kept {
     id: String,
     claims: HashSet<String>,
     skills: Vec<(u64, String)>,
-    attention: Vec<(u64, crate::attention::Signal)>,
+    attention: Vec<(u64, crate::usage::attention::Signal)>,
 }
 
 /// Reads the Copilot sessions under `root`: every session that executed a Jidoka command naming a run in the
@@ -287,7 +287,7 @@ pub(crate) fn read_copilot(
             continue;
         }
         let skills = copilot_skills(&text);
-        let attention = crate::attention::signals(crate::agent::Agent::Copilot, &text);
+        let attention = crate::usage::attention::signals(crate::agent::Agent::Copilot, &text);
         drop(text);
         if !plain_id(&session) {
             continue;

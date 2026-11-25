@@ -313,7 +313,7 @@ async fn fetch(api: &Client, id: &str) -> (HttpStatus, Option<Run>) {
 
 /// A dashboard whose usage collection reads fixture logs under `home` instead of a user's own.
 async fn client_collecting(dir: &TestDir, home: &Path, enabled: bool) -> Client {
-    let roots = crate::agent_logs::Roots {
+    let roots = crate::usage::agent_logs::Roots {
         claude: home.join("claude/projects"),
         codex: home.join("codex/sessions"),
         copilot: home.join("copilot/session-state"),
@@ -338,9 +338,9 @@ async fn client_collecting(dir: &TestDir, home: &Path, enabled: bool) -> Client 
 
 /// A Claude transcript for a run: one line running a command that names the run, one response at `ts` with `input` tokens.
 fn claude_fixture(home: &Path, session: &str, run_id: &str, response: &str, ts: u64, input: u64) {
-    let line = serde_json::json!({"type": "assistant", "timestamp": crate::usage::iso_timestamp(ts), "requestId": response,
+    let line = serde_json::json!({"type": "assistant", "timestamp": crate::timestamps::iso(ts), "requestId": response,
         "message": {"id": response, "model": "claude-test", "usage": {"input_tokens": input, "output_tokens": 1}}});
-    let mention = serde_json::json!({"type": "assistant", "isVirtual": true, "timestamp": crate::usage::iso_timestamp(ts),
+    let mention = serde_json::json!({"type": "assistant", "isVirtual": true, "timestamp": crate::timestamps::iso(ts),
         "message": {"model": "<synthetic>", "content": [{"type": "tool_use", "name": "Bash", "input": {"command": format!("jidoka run update {run_id}")}}],
             "usage": {"input_tokens": 0, "output_tokens": 0}}});
     let path = home
@@ -390,7 +390,7 @@ async fn usage_is_collected_in_the_background_when_a_run_moves_on() {
     let holder = std::thread::spawn(move || {
         let settings = UsageSettings {
             enabled: false,
-            roots: crate::agent_logs::Roots {
+            roots: crate::usage::agent_logs::Roots {
                 claude: Default::default(),
                 codex: Default::default(),
                 copilot: Default::default(),

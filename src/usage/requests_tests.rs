@@ -3,7 +3,8 @@
 
 use super::*;
 use crate::{
-    agent_logs::Roots, request_logs::Category, run::Run, session_attribution::RECORDED_NOT_FOUND,
+    run::Run,
+    usage::{agent_logs::Roots, request_logs::Category, session_attribution::RECORDED_NOT_FOUND},
 };
 use serde_json::{Value, json};
 use std::{fs, time::Duration};
@@ -13,7 +14,7 @@ use tempfile::TempDir;
 const T0: u64 = 1_793_872_800_000;
 const RUN_A: &str = "1793872800000000001";
 fn iso(offset_seconds: u64) -> String {
-    crate::usage::iso_timestamp(T0 + offset_seconds * 1000)
+    crate::timestamps::iso(T0 + offset_seconds * 1000)
 }
 
 fn run(id: &str, start: u64, end: Option<u64>, sessions: &[&str]) -> Run {
@@ -558,7 +559,7 @@ fn copilot_usage(at: u64, call: &str, sub: bool) -> String {
 
 // --- the pooled view --------------------------------------------------------------------------------
 
-use crate::requests_pool::{PoolOptions, pool, render_pool};
+use crate::usage::requests_pool::{PoolOptions, pool, render_pool};
 
 fn run_id(n: u64) -> String {
     format!("17938728000000000{n:02}")
@@ -607,7 +608,7 @@ fn pooled(
     world: &World,
     runs: &[Run],
     options: &PoolOptions,
-) -> crate::requests_pool::PooledRequests {
+) -> crate::usage::requests_pool::PooledRequests {
     pool(
         runs,
         &world.roots(),

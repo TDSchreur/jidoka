@@ -5,7 +5,7 @@ use crate::{
     pr_host::{PrHost, real_hosts},
     pr_state,
     run::{NewRun, Run, RunStore, UpdateRun},
-    usage::{UsageSettings, collect_and_store},
+    usage::collection::{UsageSettings, collect_and_store},
 };
 use rocket::{
     Build, Rocket, State,
@@ -1368,8 +1368,9 @@ fn watch_pauses(
             rocket::tokio::time::sleep(pass).await;
             let (store, settings) = (store.clone(), settings.clone());
             let joined = rocket::tokio::task::spawn_blocking(move || {
-                let result = crate::run::updated_now()
-                    .and_then(|now| crate::usage::collect_active(&store, &settings, now));
+                let result = crate::run::updated_now().and_then(|now| {
+                    crate::usage::collection::collect_active(&store, &settings, now)
+                });
                 if let Err(error) = result {
                     eprintln!("Pauses were not checked: {error}");
                 }
@@ -1388,7 +1389,7 @@ fn collect_missed_once(store: RunStore, settings: UsageSettings) {
     rocket::tokio::spawn(async move {
         let joined = rocket::tokio::task::spawn_blocking(move || {
             let result = crate::run::updated_now()
-                .and_then(|now| crate::usage::collect_missed(&store, &settings, now));
+                .and_then(|now| crate::usage::collection::collect_missed(&store, &settings, now));
             if let Err(error) = result {
                 eprintln!("Usage of finished runs was not collected again: {error}");
             }
@@ -1549,7 +1550,7 @@ fn parse_dashboard_options(
             }
         }
     }
-    if crate::usage::switched_off_by(jidoka_usage) {
+    if crate::usage::collection::switched_off_by(jidoka_usage) {
         usage = false;
     }
     Ok((port, usage))
@@ -1629,7 +1630,7 @@ fn serve_dashboard(requested: Option<u16>, usage: bool) -> Result<(), Box<dyn st
     let home = crate::install::home_dir()?;
     let settings = UsageSettings {
         enabled: usage,
-        roots: crate::agent_logs::Roots::from_home(&home, &|name| std::env::var_os(name)),
+        roots: crate::usage::agent_logs::Roots::from_home(&home, &|name| std::env::var_os(name)),
         budget: DASHBOARD_USAGE_BUDGET,
         settle: UsageSettings::default_settle(),
     };
