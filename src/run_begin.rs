@@ -52,9 +52,7 @@ pub(crate) struct Options {
 
 /// The options of `jidoka run begin --run <id>`: the same, without a title.
 pub(crate) fn parse_resume(run: &str, options: &[&str]) -> Result<Options, String> {
-    if run.is_empty() || !run.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("Invalid run id".into());
-    }
+    crate::client::check_run_id(run)?;
     let mut parsed = parse_common("", options, false)?;
     parsed.run = Some(run.to_string());
     Ok(parsed)
@@ -766,6 +764,258 @@ pub(crate) fn render(begun: &Begun, plan: &str) -> String {
         text.push_str(&format!("Warning: {}\n", shown(warning)));
     }
     text
+}
+
+/// `jidoka run start <title> [--agent <agent>]`: creates a run without a workspace and prints its id.
+pub(crate) struct StartCommand;
+
+impl crate::cli::Command for StartCommand {
+    /// The title, and the agent the policy is read for.
+    type Options = (String, Option<Agent>);
+    /// The new run's id.
+    type Outcome = String;
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        let (title, options) = crate::cli::split_first(words);
+        let host = crate::routing::parse_start_options(options).map_err(crate::cli::usage_error)?;
+        Ok((title.to_owned(), host))
+    }
+
+    fn run((title, host): &Self::Options) -> Result<String, Box<dyn std::error::Error>> {
+        let dir = std::env::current_dir()?;
+        let repository = crate::repository::canonical_repository(&dir);
+        let resolution = resolve_routing(*host)?;
+        crate::client::start_run(
+            &crate::client::address()?,
+            &crate::client::token_file()?,
+            title,
+            &dir.display().to_string(),
+            repository,
+            current_agent_sessions().first(),
+            resolution.selection,
+        )
+    }
+
+    fn render(
+        _: &Self::Options,
+        id: String,
+    ) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        Ok(crate::cli::Output::text(format!("{id}\n")))
+    }
+}
+
+/// Reads the model-routing policy once, before a run exists: a mistake in it, or a policy for several
+/// agents without `--agent`, stops the start. Prints the notice, if any.
+fn resolve_routing(host: Option<Agent>) -> Result<crate::routing::Resolution, String> {
+    let resolution = crate::routing::policy_path_in(|name| std::env::var_os(name)).map_or_else(
+        || Ok(crate::routing::Resolution::default()),
+        |path| crate::routing::load(&path, host).map_err(|error| shown(&error)),
+    )?;
+    if let Some(notice) = &resolution.notice {
+        eprintln!("{notice}");
+    }
+    Ok(resolution)
+}
+
+/// `jidoka run begin <title>`, or `--run <id>` to resume: creates a run and its workspace.
+pub(crate) struct BeginCommand;
+
+/// What `run begin` did: the run it began, with its plan path and Define instructions, or the run it left blocked.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "made once per command and moved straight into render"
+)]
+pub(crate) enum BeginOutcome {
+    Begun {
+        begun: Begun,
+        plan: String,
+        next: Option<crate::run_next::Next>,
+    },
+    /// The run is blocked; the message says why and how to retry.
+    Blocked(String),
+}
+
+impl crate::cli::Command for BeginCommand {
+    type Options = Options;
+    type Outcome = BeginOutcome;
+
+    fn parse(words: &[&str]) -> Result<Options, Box<dyn std::error::Error>> {
+        let parsed = match words {
+            ["--run", id, options @ ..] => parse_resume(id, options),
+            [title, options @ ..] => parse_options(title, options),
+            [] => Err("Invalid arguments.".to_owned()),
+        };
+        Ok(parsed.map_err(crate::cli::usage_error)?)
+    }
+
+    fn run(parsed: &Options) -> Result<BeginOutcome, Box<dyn std::error::Error>> {
+        let dir = std::env::current_dir()?;
+        // A resumed run already has its model routing; the policy is read only when a run is created.
+        let resolution = if parsed.run.is_some() {
+            crate::routing::Resolution::default()
+        } else {
+            resolve_routing(parsed.agent)?
+        };
+        match begin(
+            &dir,
+            parsed,
+            &crate::client::ServerApi,
+            current_agent_sessions().into_iter().next(),
+            resolution.selection,
+        ) {
+            Ok(begun) => {
+                let plan = crate::client::plan_path(&begun.run)?
+                    .to_string_lossy()
+                    .into_owned();
+                // The Define instructions save the agent a `run next`; a session warning goes first.
+                let next = if begun.session_warning.is_some() {
+                    None
+                } else {
+                    match crate::run_next::next_for(&begun.run) {
+                        Ok(next) => Some(next),
+                        Err(error) => {
+                            eprintln!(
+                                "Warning: could not read the Define instructions ({}); run `jidoka run next {}`.",
+                                shown(&error.to_string()),
+                                begun.run
+                            );
+                            None
+                        }
+                    }
+                };
+                Ok(BeginOutcome::Begun { begun, plan, next })
+            }
+            Err(BeginError::NoRun(text)) => Err(shown(&text).into()),
+            Err(BeginError::Blocked {
+                run,
+                reason,
+                retry,
+                marked,
+            }) => {
+                let state = if marked {
+                    "is blocked"
+                } else {
+                    "could not be marked blocked (the server did not accept the update)"
+                };
+                Ok(BeginOutcome::Blocked(format!(
+                    "Run {run} {state}: {}\nTo retry: {}\n",
+                    shown(&reason),
+                    shown(&retry)
+                )))
+            }
+        }
+    }
+
+    fn render(
+        parsed: &Options,
+        outcome: BeginOutcome,
+    ) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        match outcome {
+            BeginOutcome::Begun { begun, plan, next } => {
+                if parsed.json {
+                    let shown = Output {
+                        begun: &begun,
+                        plan,
+                        next: next.as_ref(),
+                    };
+                    Ok(crate::cli::Output::json(&shown)?)
+                } else {
+                    let mut text = render(&begun, &plan);
+                    if let Some(next) = &next {
+                        text.push_str(&format!("\n{}", crate::run_next::render(next)));
+                    }
+                    Ok(crate::cli::Output::text(text))
+                }
+            }
+            BeginOutcome::Blocked(message) => Ok(crate::cli::Output {
+                stderr: message,
+                exit_code: 1,
+                ..crate::cli::Output::default()
+            }),
+        }
+    }
+}
+
+/// `options` followed by the `--session` and `--agent-home` options of each agent session this command runs in.
+///
+/// They are `--session <id>` and `--agent-home <agent>=<path>`, so the update records the session and its token usage can
+/// be read from the agent's own logs and attributed to the run.
+pub(crate) fn with_sessions(options: &[impl AsRef<str>]) -> Vec<String> {
+    let mut all: Vec<String> = options.iter().map(|o| o.as_ref().to_owned()).collect();
+    for session in current_agent_sessions() {
+        all.extend(session.update_options());
+    }
+    all
+}
+
+/// The agent sessions this command runs in, when the agent exposes them.
+///
+/// Each has the agent it belongs to and that agent's home folder: Claude Code sets `CLAUDE_CODE_SESSION_ID`; Codex sets `CODEX_SESSION_ID` (the
+/// root session) and `CODEX_THREAD_ID`; Copilot CLI sets `COPILOT_AGENT_SESSION_ID`. A warning is printed
+/// for a home that is not recorded because the dashboard would refuse it.
+pub(crate) fn current_agent_sessions() -> Vec<AgentSession> {
+    let (sessions, warnings) = agent_sessions_from(
+        &|name| std::env::var_os(name),
+        crate::install::home_dir().ok().as_deref(),
+    );
+    for warning in warnings {
+        eprintln!("{warning}");
+    }
+    sessions
+}
+
+/// The agent sessions `var` names, each with the home folder `jidoka install` would use for its agent
+/// (honoring `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `COPILOT_HOME`), and a warning for each agent home the
+/// dashboard would refuse. Such a home is left out, so it cannot fail the command; a relative one, because
+/// the dashboard cannot tell what it is relative to.
+pub(crate) fn agent_sessions_from(
+    var: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+    user_home: Option<&std::path::Path>,
+) -> (Vec<AgentSession>, Vec<String>) {
+    let mut sessions: Vec<AgentSession> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    for (name, agent) in [
+        ("CLAUDE_CODE_SESSION_ID", Agent::Claude),
+        ("CODEX_SESSION_ID", Agent::Codex),
+        ("CODEX_THREAD_ID", Agent::Codex),
+        ("COPILOT_AGENT_SESSION_ID", Agent::Copilot),
+    ] {
+        let Some(id) = var(name).and_then(|value| value.into_string().ok()) else {
+            continue;
+        };
+        if crate::run::check_session_id(&id).is_err() || sessions.iter().any(|known| known.id == id)
+        {
+            continue;
+        }
+        let mut home = None;
+        if let Some(agent_home) = agent.home_in(user_home, var) {
+            match agent_home.into_os_string().into_string() {
+                Ok(path) if crate::run::is_valid_agent_home(&path) => home = Some(path),
+                _ => {
+                    // Without the user's home, only a set variable can name the Agent home.
+                    let source = if agent.home_in(None, var).is_some() {
+                        agent.home_var()
+                    } else {
+                        "the home directory"
+                    };
+                    let agent = agent.name();
+                    let warning = format!(
+                        "Warning: the {agent} home from {source} is not an absolute path the dashboard accepts, \
+                         so this run's {agent} usage is read from the dashboard's own {agent} home."
+                    );
+                    if !warnings.contains(&warning) {
+                        warnings.push(warning);
+                    }
+                }
+            }
+        }
+        sessions.push(AgentSession {
+            id,
+            agent: Some(agent),
+            home,
+        });
+    }
+    (sessions, warnings)
 }
 
 #[cfg(test)]

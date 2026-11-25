@@ -418,6 +418,84 @@ pub(crate) fn render(run: &Recorded, cleaned: Cleaned) -> String {
     text
 }
 
+/// `jidoka run cleanup <run-id>`: removes the run's worktree and local branch, then clears them from the run.
+///
+/// The run's pull request must have merged, unless `--discard` is given. It refuses, removing nothing, when
+/// work could be lost.
+pub(crate) struct CleanupCommand;
+
+/// What `run cleanup` removed, and whether the run could be told; a failure there is reported after the removal.
+pub(crate) struct CleanupOutcome {
+    recorded: Recorded,
+    cleaned: Cleaned,
+    reported: Result<(), String>,
+}
+
+impl crate::cli::Command for CleanupCommand {
+    type Options = (String, Mode);
+    type Outcome = CleanupOutcome;
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        let (id, options) = crate::cli::split_first(words);
+        crate::client::check_run_id(id)?;
+        let mode = parse_options(options).map_err(crate::cli::usage_error)?;
+        Ok((id.to_owned(), mode))
+    }
+
+    fn run(&(ref id, mode): &Self::Options) -> Result<CleanupOutcome, Box<dyn std::error::Error>> {
+        let run = crate::client::get_run(id)?;
+        let recorded = Recorded {
+            id: id.clone(),
+            repository: run.repository,
+            worktree: run.worktree,
+            branch: run.branch,
+            pr: run.pr,
+        };
+        let cwd = std::env::current_dir()?;
+        let cleaned = cleanup(
+            &recorded,
+            &crate::pr_host::real_hosts(),
+            &git::RealGit,
+            &cwd,
+            mode,
+        )
+        .map_err(|problem| shown(&problem.0))?;
+        let reported = if cleaned.needs_update() {
+            crate::client::report(
+                id,
+                &[
+                    "--clear-worktree",
+                    "--clear-branch",
+                    "--activity",
+                    if mode == Mode::Merged {
+                        "Cleaned up worktree and branch"
+                    } else {
+                        "Discarded worktree and branch"
+                    },
+                ],
+            )
+        } else {
+            Ok(())
+        };
+        Ok(CleanupOutcome {
+            recorded,
+            cleaned,
+            reported,
+        })
+    }
+
+    fn render(
+        _: &Self::Options,
+        outcome: CleanupOutcome,
+    ) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        let output = crate::cli::Output::text(render(&outcome.recorded, outcome.cleaned));
+        Ok(match outcome.reported {
+            Ok(()) => output,
+            Err(error) => output.failed(error),
+        })
+    }
+}
+
 #[cfg(test)]
 #[path = "run_cleanup_tests.rs"]
 mod tests;

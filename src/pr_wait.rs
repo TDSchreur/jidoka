@@ -265,3 +265,110 @@ pub(crate) fn render(waited: &Waited) -> String {
     });
     out
 }
+
+/// Where `pr wait` records what it sees: the Jidoka server, or a fake in tests.
+///
+/// It records the run's activity, and the state of a pull request that is no longer open.
+pub(crate) trait WaitRecorder: crate::pr_state::PrStateRecorder {
+    fn activity(&self, id: &str, text: &str) -> Result<(), String>;
+}
+
+/// Watches the CI of the pull request of `run` on `host`.
+///
+/// While it waits, a running run's activity follows the
+/// wait; when the pull request turns out not to be open, the run follows what happened to it. A problem
+/// recording either is shown through `progress` and does not end the wait.
+pub(crate) fn wait(
+    run: &crate::run::Run,
+    options: &Options,
+    host: &dyn crate::pr_host::PrHost,
+    recorder: &dyn WaitRecorder,
+    clock: &dyn Clock,
+    progress: &mut dyn FnMut(&str),
+) -> Result<Waited, String> {
+    let url = run.pr.as_deref().ok_or(
+        "The run has no pull request recorded. Open it, record it with `jidoka run update <id> --pr <url>`, and try again.",
+    )?;
+    let id = run.id.as_str();
+    // The run's activity follows the wait, keeping its status. Only a running run is updated.
+    let running = matches!(run.status, crate::run::RunStatus::Running);
+    let progress = std::cell::RefCell::new(progress);
+    let mut reported_failure = false;
+    let mut activity = |text: &str| {
+        if running
+            && let Err(error) = recorder.activity(id, text)
+            && !reported_failure
+        {
+            reported_failure = true;
+            (progress.borrow_mut())(&format!("The run's activity could not be updated: {error}"));
+        }
+    };
+    let waited = host
+        .watch(url, options, clock, &mut activity, &mut |text| {
+            (progress.borrow_mut())(text);
+        })
+        .map_err(|problem| problem.0)?;
+    if waited.outcome == Outcome::NotOpen {
+        // The wait only reports that the pull request is gone; the run follows what happened to it.
+        let checked_at = crate::run::updated_now().map_err(|error| error.to_string())?;
+        let followed = match crate::pr_state::apply(recorder, id, url, waited.state, checked_at) {
+            Ok(changed) => crate::pr_state::describe(waited.state, changed)
+                .trim_end_matches('\n')
+                .to_owned(),
+            Err(error) => format!("The run could not be updated: {error}"),
+        };
+        (progress.borrow_mut())(&followed);
+    }
+    Ok(waited)
+}
+
+/// `jidoka pr wait <run-id>`: watches the CI of the run's pull request and prints the outcome.
+///
+/// The exit status is the outcome's; 1 is a problem with the tools or the run.
+pub(crate) struct WaitCommand;
+
+impl crate::cli::Command for WaitCommand {
+    /// The run id, the wait's options, and whether to print JSON.
+    type Options = (String, Options, bool);
+    type Outcome = Waited;
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        let (id, options) = crate::cli::split_first(words);
+        let (parsed, json) = parse_options(options).map_err(crate::cli::usage_error)?;
+        crate::client::check_run_id(id)?;
+        Ok((id.to_owned(), parsed, json))
+    }
+
+    fn run((id, options, _): &Self::Options) -> Result<Waited, Box<dyn std::error::Error>> {
+        let run = crate::client::get_run(id)?;
+        let mut options = options.clone();
+        if run.pr.is_some()
+            && let (Some(worktree), Some(branch)) = (&run.worktree, &run.branch)
+        {
+            options.pushed_head = pushed_head(std::path::Path::new(worktree), branch);
+        }
+        Ok(wait(
+            &run,
+            &options,
+            &crate::pr_host::real_hosts(),
+            &crate::client::ServerApi,
+            &RealClock(Instant::now()),
+            &mut |text| eprintln!("{text}"),
+        )?)
+    }
+
+    fn render(
+        &(_, _, json): &Self::Options,
+        waited: Waited,
+    ) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        let exit_code = waited.exit_code;
+        Ok(
+            crate::cli::Output::json_or_text(json, &waited, || render(&waited))?
+                .with_exit_code(exit_code),
+        )
+    }
+}
+
+#[cfg(test)]
+#[path = "pr_wait_tests.rs"]
+mod tests;

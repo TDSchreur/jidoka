@@ -321,6 +321,46 @@ pub(crate) fn render_run(result: &RunRequests) -> String {
     out
 }
 
+/// How long the request analysis of one run may read logs.
+const RUN_REQUESTS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `jidoka run requests <id> [--json]`: the model requests of one run.
+pub(crate) struct RequestsCommand;
+
+impl crate::cli::Command for RequestsCommand {
+    /// The run id, and whether to print JSON.
+    type Options = (String, bool);
+    type Outcome = RunRequests;
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        let (id, options) = crate::cli::split_first(words);
+        let json = crate::cli::parse_json_flag(options)?;
+        Ok((id.to_owned(), json))
+    }
+
+    fn run((id, _): &Self::Options) -> Result<RunRequests, Box<dyn std::error::Error>> {
+        let target = crate::client::get_run(id)?;
+        let runs = crate::client::fetch_runs(&crate::client::address()?)?;
+        let roots = Roots::from_home(&crate::install::home_dir()?, &|name| std::env::var_os(name));
+        Ok(analyze(
+            &target,
+            &runs,
+            &roots,
+            crate::run::updated_now()?,
+            Instant::now() + RUN_REQUESTS_DEADLINE,
+        ))
+    }
+
+    fn render(
+        &(_, json): &Self::Options,
+        result: RunRequests,
+    ) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        Ok(crate::cli::Output::json_or_text(json, &result, || {
+            render_run(&result)
+        })?)
+    }
+}
+
 #[cfg(test)]
 #[path = "requests_tests.rs"]
 mod tests;

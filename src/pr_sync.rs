@@ -436,6 +436,46 @@ pub(crate) fn render(synced: &Synced) -> String {
     out
 }
 
+/// `jidoka pr sync <run-id>`: brings the run's branch up to date with its base.
+///
+/// The exit status is the outcome's; 1 is a problem.
+pub(crate) struct SyncCommand;
+
+impl crate::cli::Command for SyncCommand {
+    type Options = (String, Options);
+    type Outcome = Synced;
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        let (id, options) = crate::cli::split_first(words);
+        let parsed = parse_options(options).map_err(crate::cli::usage_error)?;
+        crate::client::check_run_id(id)?;
+        Ok((id.to_owned(), parsed))
+    }
+
+    fn run((id, parsed): &Self::Options) -> Result<Synced, Box<dyn std::error::Error>> {
+        let run = crate::client::get_run(id)?;
+        let info = PrRun::from_run(id, &run);
+        Ok(sync(
+            &info,
+            parsed,
+            &crate::git::RealGit,
+            &crate::client::ServerApi,
+        )
+        .map_err(|problem| shown(&problem.0))?)
+    }
+
+    fn render(
+        (_, parsed): &Self::Options,
+        synced: Synced,
+    ) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        let exit_code = synced.exit_code;
+        Ok(
+            crate::cli::Output::json_or_text(parsed.json, &synced, || render(&synced))?
+                .with_exit_code(exit_code),
+        )
+    }
+}
+
 #[cfg(test)]
 #[path = "pr_sync_tests.rs"]
 mod tests;

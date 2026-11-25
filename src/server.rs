@@ -1,8 +1,8 @@
 use crate::{
-    current_build,
+    cli::current_build,
     document::{self, DocumentError},
     groups::{Group, GroupError, GroupStore, GroupView, NewGroup, Target, valid_group_id},
-    pr_host::{Hosts, PrHost, RealTools},
+    pr_host::{PrHost, real_hosts},
     pr_state,
     run::{NewRun, Run, RunStore, UpdateRun},
     usage::{UsageSettings, collect_and_store},
@@ -1154,7 +1154,7 @@ pub(crate) fn build_rocket(path: &Path, port: u16) -> io::Result<Rocket<Build>> 
         port,
         Collector::new(None),
         new_tokens()?,
-        std::sync::Arc::new(Hosts::new(RealTools)),
+        std::sync::Arc::new(real_hosts()),
     )
 }
 
@@ -1192,7 +1192,7 @@ pub(crate) fn build_rocket_with(
         port,
         collector,
         new_tokens()?,
-        std::sync::Arc::new(Hosts::new(RealTools)),
+        std::sync::Arc::new(real_hosts()),
     )
 }
 
@@ -1423,7 +1423,7 @@ pub(crate) fn serve(
             port,
             Collector::new(Some(usage)),
             tokens,
-            std::sync::Arc::new(Hosts::new(RealTools)),
+            std::sync::Arc::new(real_hosts()),
         )
         .map_err(|error| {
             io::Error::new(error.kind(), format!("could not open run storage: {error}"))
@@ -1475,6 +1475,171 @@ pub(crate) fn serve(
             _ => Ok(()),
         }
     })
+}
+
+/// How long one dashboard usage collection may read logs, so the dashboard stays responsive.
+const DASHBOARD_USAGE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The dashboard's `runs.json`; its folder also holds the CLI token, the plans and `dashboard.json`.
+pub(crate) fn runs_path() -> io::Result<PathBuf> {
+    runs_path_in(&|name| std::env::var_os(name))
+}
+
+fn runs_path_in(var: &impl Fn(&str) -> Option<std::ffi::OsString>) -> io::Result<PathBuf> {
+    #[cfg(windows)]
+    let base = var("LOCALAPPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let base = var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| var("HOME").map(|home| PathBuf::from(home).join(".local/share")));
+    let base = base.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "cannot determine the user data directory",
+        )
+    })?;
+    Ok(base.join("jidoka").join("runs.json"))
+}
+
+/// `jidoka dashboard [--port <port>] [--no-usage]`: serves the dashboard.
+///
+/// When a Jidoka dashboard is already running, it prints that one's URL instead.
+pub(crate) struct DashboardCommand;
+
+impl crate::cli::Command for DashboardCommand {
+    /// The requested port, and whether usage is collected.
+    type Options = (Option<u16>, bool);
+    type Outcome = ();
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        Ok(parse_dashboard_options(
+            words,
+            std::env::var("JIDOKA_USAGE").ok().as_deref(),
+        )?)
+    }
+
+    fn run(&(port, usage): &Self::Options) -> Result<(), Box<dyn std::error::Error>> {
+        serve_dashboard(port, usage)
+    }
+
+    fn render(_: &Self::Options, (): ()) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        Ok(crate::cli::Output::default())
+    }
+}
+
+/// `[--port <port>] [--no-usage]` in any order. Usage collection is on unless `--no-usage` or `JIDOKA_USAGE=off`.
+fn parse_dashboard_options(
+    options: &[&str],
+    jidoka_usage: Option<&str>,
+) -> Result<(Option<u16>, bool), String> {
+    let (mut port, mut usage) = (None, true);
+    let mut args = options.iter();
+    while let Some(arg) = args.next() {
+        match *arg {
+            "--port" if port.is_none() => {
+                port = Some(parse_port(
+                    args.next().ok_or("--port needs a port number.")?,
+                )?);
+            }
+            "--no-usage" => usage = false,
+            other => {
+                return Err(crate::cli::usage_error(format!(
+                    "Invalid dashboard option {other:?}."
+                )));
+            }
+        }
+    }
+    if crate::usage::switched_off_by(jidoka_usage) {
+        usage = false;
+    }
+    Ok((port, usage))
+}
+
+fn parse_port(port: &str) -> Result<u16, String> {
+    match port.parse::<u16>() {
+        Ok(port) if port != 0 => Ok(port),
+        _ => Err(format!(
+            "Invalid port '{port}': use a number from 1 to 65535."
+        )),
+    }
+}
+
+/// Escapes everything but unreserved characters, so a path can sit in a query string.
+fn percent_encode(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
+/// The dashboard URL that opens on `project`: a Project's id is its path.
+fn dashboard_url(port: u16, project: &str) -> String {
+    format!(
+        "http://127.0.0.1:{port}/?project={}",
+        percent_encode(project)
+    )
+}
+
+/// The port to bind. An explicit port must be free, else this fails. Without one, `default` if it is free, else 0,
+/// which lets the operating system pick a free port.
+fn choose_port(requested: Option<u16>, default: u16) -> Result<u16, String> {
+    let is_free = |port| std::net::TcpListener::bind((LOOPBACK_HOST, port)).is_ok();
+    match requested {
+        Some(port) if is_free(port) => Ok(port),
+        Some(port) => Err(format!(
+            "Port {port} is already in use. Pick another with 'jidoka dashboard --port <port>', or leave --port out to let Jidoka choose a free port."
+        )),
+        None if is_free(default) => Ok(default),
+        None => Ok(0),
+    }
+}
+
+/// Serves the dashboard, or, when a Jidoka dashboard is already running, prints its URL.
+fn serve_dashboard(requested: Option<u16>, usage: bool) -> Result<(), Box<dyn std::error::Error>> {
+    // A Project is identified by its repository, so a linked worktree opens its main checkout's row.
+    let dir = std::env::current_dir()?;
+    let project =
+        crate::repository::canonical_repository(&dir).unwrap_or_else(|| dir.display().to_string());
+    let runs = runs_path()?;
+    if let Some(running) = crate::discovery::running(data_dir(&runs)) {
+        println!(
+            "Dashboard already running (pid {}): {}",
+            running.pid,
+            dashboard_url(running.port, &project)
+        );
+        if !usage {
+            eprintln!(
+                "Note: --no-usage and JIDOKA_USAGE only apply to a dashboard this command starts."
+            );
+        }
+        let ours = current_build();
+        if running.version != ours {
+            eprintln!(
+                "Warning: the running dashboard is jidoka {}, this is jidoka {ours}. It was left running; stop it and run 'jidoka dashboard' again to use this version.",
+                running.version
+            );
+        }
+        return Ok(());
+    }
+    let port = choose_port(requested, DEFAULT_PORT)?;
+    let home = crate::install::home_dir()?;
+    let settings = UsageSettings {
+        enabled: usage,
+        roots: crate::agent_logs::Roots::from_home(&home, &|name| std::env::var_os(name)),
+        budget: DASHBOARD_USAGE_BUDGET,
+        settle: UsageSettings::default_settle(),
+    };
+    serve(
+        &runs,
+        port,
+        move |bound| dashboard_url(bound, &project),
+        settings,
+    )?;
+    Ok(())
 }
 
 mod run_detail;

@@ -286,6 +286,40 @@ pub(crate) fn render_all(runs: &[Run]) -> String {
     out
 }
 
+/// `jidoka run stats <id> | --all`: the token usage and cost of one run, or of every run.
+pub(crate) struct StatsCommand;
+
+impl crate::cli::Command for StatsCommand {
+    /// The run id, or `None` for every run.
+    type Options = Option<String>;
+    type Outcome = Vec<Run>;
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        match words {
+            ["--all"] => Ok(None),
+            [id] => Ok(Some((*id).to_owned())),
+            _ => Err(crate::cli::usage_error("Invalid arguments.").into()),
+        }
+    }
+
+    fn run(id: &Self::Options) -> Result<Vec<Run>, Box<dyn std::error::Error>> {
+        match id {
+            Some(id) => Ok(vec![crate::client::get_run(id)?]),
+            None => crate::client::fetch_runs(&crate::client::address()?),
+        }
+    }
+
+    fn render(
+        id: &Self::Options,
+        runs: Vec<Run>,
+    ) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        Ok(crate::cli::Output::text(match (id, runs.as_slice()) {
+            (Some(_), [run]) => render_run(run),
+            _ => render_all(&runs),
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

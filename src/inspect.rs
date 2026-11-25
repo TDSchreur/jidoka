@@ -602,6 +602,56 @@ fn duration(ms: u64) -> String {
     }
 }
 
+/// `jidoka run inspect <id> [--json]`: the run's recorded context, its change group and its plan path.
+pub(crate) struct InspectCommand;
+
+/// What `run inspect` shows: the run, its plan path and its change group.
+pub(crate) struct Inspected {
+    run: Run,
+    plan: String,
+    group: Option<String>,
+}
+
+impl crate::cli::Command for InspectCommand {
+    /// The run id, and whether to print JSON.
+    type Options = (String, bool);
+    type Outcome = Inspected;
+
+    fn parse(words: &[&str]) -> Result<Self::Options, Box<dyn std::error::Error>> {
+        let (id, options) = crate::cli::split_first(words);
+        let json = crate::cli::parse_json_flag(options)?;
+        Ok((id.to_owned(), json))
+    }
+
+    fn run((id, _): &Self::Options) -> Result<Inspected, Box<dyn std::error::Error>> {
+        let run = crate::client::get_run(id)?;
+        let plan = crate::client::plan_path(id)?.to_string_lossy().into_owned();
+        let group = crate::client::group_of_run(id)?;
+        Ok(Inspected { run, plan, group })
+    }
+
+    fn render(
+        &(_, json): &Self::Options,
+        inspected: Inspected,
+    ) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        let Inspected { run, plan, group } = inspected;
+        if json {
+            let mut shown = serde_json::to_value(&run)?;
+            shown["plan"] = plan.into();
+            if let Some(group) = &group {
+                shown["group"] = group.as_str().into();
+            }
+            return Ok(crate::cli::Output::json(&shown)?);
+        }
+        let mut text = render(&run);
+        if let Some(group) = &group {
+            text.push_str(&group_line(group));
+        }
+        text.push_str(&plan_line(&plan));
+        Ok(crate::cli::Output::text(text))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

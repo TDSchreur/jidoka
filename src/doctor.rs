@@ -714,7 +714,7 @@ pub(crate) fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
 }
 
 /// What `jidoka doctor` was asked to do.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Args {
     pub(crate) agent: Option<Agent>,
     pub(crate) json: bool,
@@ -790,6 +790,27 @@ pub(crate) fn parse_args(args: &[&str]) -> Result<Args, String> {
         json,
         create_model_routing,
     })
+}
+
+/// `jidoka doctor`: checks the installation and prints what it found. The exit status is 1 when something is wrong.
+pub(crate) struct DoctorCommand;
+
+impl crate::cli::Command for DoctorCommand {
+    type Options = Args;
+    /// Whether every check passed.
+    type Outcome = bool;
+
+    fn parse(words: &[&str]) -> Result<Args, Box<dyn std::error::Error>> {
+        Ok(parse_args(words).map_err(crate::cli::usage_error)?)
+    }
+
+    fn run(args: &Args) -> Result<bool, Box<dyn std::error::Error>> {
+        run(args.clone())
+    }
+
+    fn render(_: &Args, ok: bool) -> Result<crate::cli::Output, Box<dyn std::error::Error>> {
+        Ok(crate::cli::Output::default().with_exit_code(u8::from(!ok)))
+    }
 }
 
 #[cfg(test)]
