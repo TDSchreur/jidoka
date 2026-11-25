@@ -135,6 +135,7 @@ There is one data folder and one dashboard per user. The dashboard owns `runs.js
 | [Token usage](docs/usage-tracking.md) | Token counts, estimated cost, pauses, request analysis |
 | [Model routing](docs/model-routing.md) | Choosing the model and effort per Stage |
 | [Checking readiness](docs/doctor.md) | What `jidoka doctor` checks |
+| [MCP servers](docs/mcp-servers.md) | Setting up the GitHub and Azure DevOps MCP servers for your agent, without committing secrets |
 | [Glossary](GLOSSARY.md) | The terms Jidoka uses |
 
 ## Network and privacy
