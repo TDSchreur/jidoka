@@ -256,15 +256,10 @@ fn instructions(mode: Mode, stage: Stage, agent: Option<Agent>, routing: Option<
         .unwrap_or("No instructions for this stage in this mode.");
     let mut output = stage_text.to_owned();
     let shared: &[&str] = match stage {
-        Stage::Define => &["stage-reporting", "define-rules", "tracker-setup"],
-        Stage::Build => &["stage-reporting", "verification", "skill-change"],
-        Stage::Check => &[
-            "stage-reporting",
-            "verification",
-            "committing-for-check",
-            "check-review",
-        ],
-        Stage::Finish => &["stage-reporting", "finish", "pull-request-and-ci"],
+        Stage::Define => &["define-rules", "tracker-setup"],
+        Stage::Build => &["verification", "skill-change"],
+        Stage::Check => &["verification", "committing-for-check", "check-review"],
+        Stage::Finish => &["finish", "pull-request-and-ci"],
     };
     let routed = routing.map(|agent| match agent {
         Agent::Claude => "routing-claude",
@@ -277,13 +272,12 @@ fn instructions(mode: Mode, stage: Stage, agent: Option<Agent>, routing: Option<
         Stage::Check => "routing-check",
         Stage::Finish => "routing-finish",
     });
-    // Only Codex needs its approval rules; show them when the agent is unknown too.
+    // Every stage starts with stage-reporting. Only Codex needs its approval rules right after it;
+    // show them when the agent is unknown too.
     let codex_approvals = matches!(agent, None | Some(Agent::Codex)).then_some("codex-approvals");
-    let reporting = shared.iter().copied().take(1);
-    let rest = shared.iter().copied().skip(1);
-    for name in reporting
+    for name in std::iter::once("stage-reporting")
         .chain(codex_approvals)
-        .chain(rest)
+        .chain(shared.iter().copied())
         .chain(routing.map(|_| "stage-routing"))
         .chain(routed)
         .chain(stage_routing)
