@@ -23,13 +23,13 @@ Steps are ordered by recommendation. Steps 1 to 6 are independent unless a step 
 
 Prerequisite: none.
 
-- [ ] `knowledge.rs` and `doctor.rs` start `git` through the `Git` interface instead of their own `Command::new("git")`
-- [ ] Hermetic environment and error trimming come from one place (`git.rs`); `first_line` exists once
-- [ ] Tests share one git-repo fixture instead of the copies of `run_git` and `git()` in the `*_tests.rs` files
-- [ ] `scripts/verify.sh` passes
-- [ ] PR merged into `develop`
+- [x] `knowledge.rs` and `doctor.rs` start `git` through the `Git` interface instead of their own `Command::new("git")`
+- [x] Hermetic environment and error trimming come from one place (`git.rs`); `first_line` exists once
+- [x] Tests share one git-repo fixture instead of the copies of `run_git` and `git()` in the `*_tests.rs` files
+- [x] `scripts/verify.sh` passes
+- [x] PR merged into `develop`
 
-Run / PR / verification: —
+Run / PR / verification: run 1795632957778183281, [#607](https://github.com/TDSchreur/jidoka/pull/607) merged as ff6d8d0; `scripts/verify.sh` and CI passed. Deviation: doctor and knowledge now get the hermetic git environment, so "cannot run git" became "git could not be started".
 
 ```text
 Deepen the Git adapter so every git call in src/ goes through the Git interface in src/git.rs.
@@ -47,14 +47,14 @@ Done when: no Command::new("git") remains outside src/git.rs and its tests, doct
 
 Prerequisite: Step 1 merged.
 
-- [ ] Each command has one shape (parse options, run, render); `run_cli` only dispatches
-- [ ] Run id validation is one function used by every command, including `run gate` and `run advance`
-- [ ] `Hosts` and `RealTools` are built in one place for the CLI and the server
-- [ ] Logic that leaked into `main.rs` (`apply_pr_state`, the NotOpen follow-up in `pr_wait`, `agent_sessions_from`, dashboard port choice) lives in its own module with tests at that module's interface
-- [ ] `scripts/verify.sh` passes
-- [ ] PR merged into `develop`
+- [x] Each command has one shape (parse options, run, render); `run_cli` only dispatches
+- [x] Run id validation is one function used by every command, including `run gate` and `run advance`
+- [x] `Hosts` and `RealTools` are built in one place for the CLI and the server
+- [x] Logic that leaked into `main.rs` (`apply_pr_state`, the NotOpen follow-up in `pr_wait`, `agent_sessions_from`, dashboard port choice) lives in its own module with tests at that module's interface
+- [x] `scripts/verify.sh` passes
+- [x] PR merged into `develop`
 
-Run / PR / verification: —
+Run / PR / verification: run 1795633757742974094, [#608](https://github.com/TDSchreur/jidoka/pull/608) merged as 53ce241; `scripts/verify.sh` and CI passed, old and new binaries matched on 95 command lines. Deviation: `run advance` prints "Advanced run N" after reading the new stage, so a rare knowledge-repo warning on stderr can now appear before it; also touched inspect, stats, requests, requests_pool, run_next, doctor, pr_host and CODING_STANDARDS.md.
 
 ```text
 Make main.rs a thin dispatcher by giving each CLI command one shape.
