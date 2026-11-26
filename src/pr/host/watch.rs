@@ -19,6 +19,10 @@ const POLL: Duration = Duration::from_secs(15);
 const BASE_RETRY: Duration = Duration::from_secs(3);
 /// How many more times an unknown base state is asked for.
 const BASE_RETRIES: usize = 5;
+/// How long to wait before asking again when the host failed to answer, and how many more times it is asked.
+/// The retries stay within `--timeout`.
+const SNAPSHOT_RETRY: Duration = Duration::from_secs(10);
+const SNAPSHOT_RETRIES: usize = 3;
 
 /// One look at a pull request while its checks are watched. The adapter reads the state and the head
 /// before and after the checks, so the checks belong to the head it reports.
@@ -65,9 +69,10 @@ pub(super) fn watch(
     activity: &mut dyn FnMut(&str),
     progress: &mut dyn FnMut(&str),
 ) -> Result<Waited, ToolProblem> {
-    let mut first = pr.snapshot()?;
     // The whole wait, including the grace for a just-pushed head, stays within `--timeout`.
     let started = clock.elapsed();
+    let deadline = started + options.timeout;
+    let mut first = look(pr, clock, deadline, progress)?;
     let waited_for = || clock.elapsed().saturating_sub(started);
     if let Some(pushed) = &options.pushed_head {
         while is_open(first.state)
@@ -76,7 +81,7 @@ pub(super) fn watch(
         {
             progress("Waiting for the pull request to show the pushed commit");
             clock.sleep(HEAD_POLL);
-            first = pr.snapshot()?;
+            first = look(pr, clock, deadline, progress)?;
         }
     }
     let head = first.head.clone();
@@ -98,23 +103,23 @@ pub(super) fn watch(
     }
     activity("Waiting for CI");
     let waited = loop {
-        let mut look = pr.snapshot()?;
-        if !is_open(look.state) {
-            look.checks.clear();
-            break ended(Outcome::NotOpen, look, BaseState::Unknown);
+        let mut seen = look(pr, clock, deadline, progress)?;
+        if !is_open(seen.state) {
+            seen.checks.clear();
+            break ended(Outcome::NotOpen, seen, BaseState::Unknown);
         }
-        if look.head != head {
+        if seen.head != head {
             // The checks belong to another commit; they say nothing about this one.
-            look.checks.clear();
-            break ended(Outcome::HeadChanged, look, BaseState::Unknown);
+            seen.checks.clear();
+            break ended(Outcome::HeadChanged, seen, BaseState::Unknown);
         }
-        let pending = look
+        let pending = seen
             .checks
             .iter()
             .filter(|check| check.bucket == "pending")
             .count();
-        let failed = look.checks.iter().any(|check| check.bucket == "fail");
-        let outcome = if !look.applies {
+        let failed = seen.checks.iter().any(|check| check.bucket == "fail");
+        let outcome = if !seen.applies {
             if waited_for() >= GRACE.min(options.timeout) {
                 Some(Outcome::NoCi)
             } else {
@@ -127,13 +132,13 @@ pub(super) fn watch(
             } else {
                 progress(&format!(
                     "{pending} of {} checks still running",
-                    look.checks.len()
+                    seen.checks.len()
                 ));
                 None
             }
         } else if failed {
             Some(Outcome::Failed)
-        } else if look.checks.iter().any(|check| check.bucket == "cancel") {
+        } else if seen.checks.iter().any(|check| check.bucket == "cancel") {
             Some(Outcome::Cancelled)
         } else {
             Some(Outcome::Passed)
@@ -142,8 +147,8 @@ pub(super) fn watch(
             clock.sleep(POLL.min(options.timeout.saturating_sub(waited_for())));
             continue;
         };
-        let base = base_state(pr, clock, look.base)?;
-        let mut waited = ended(outcome, look, base);
+        let base = base_state(pr, clock, deadline, progress, seen.base)?;
+        let mut waited = ended(outcome, seen, base);
         if outcome == Outcome::Failed {
             waited.failures = pr.adapter.failures(pr.tools, &waited.checks);
         }
@@ -158,6 +163,8 @@ pub(super) fn watch(
 fn base_state(
     pr: &PullRequest,
     clock: &dyn Clock,
+    deadline: Duration,
+    progress: &mut dyn FnMut(&str),
     mut base: Option<BaseState>,
 ) -> Result<BaseState, ToolProblem> {
     for _ in 0..BASE_RETRIES {
@@ -165,9 +172,37 @@ fn base_state(
             return Ok(base);
         }
         clock.sleep(BASE_RETRY);
-        base = pr.snapshot()?.base;
+        base = look(pr, clock, deadline, progress)?.base;
     }
     Ok(base.unwrap_or(BaseState::Unknown))
+}
+
+/// One snapshot of `pr`. When the host fails to answer, it is asked again a few times, ten seconds apart.
+/// It never sleeps past `deadline` (a time on the clock); without time left, or after the last try, the
+/// last problem is returned.
+fn look(
+    pr: &PullRequest,
+    clock: &dyn Clock,
+    deadline: Duration,
+    progress: &mut dyn FnMut(&str),
+) -> Result<Snapshot, ToolProblem> {
+    let mut retries = 0;
+    loop {
+        match pr.snapshot() {
+            Err(problem)
+                if retries < SNAPSHOT_RETRIES && clock.elapsed() + SNAPSHOT_RETRY <= deadline =>
+            {
+                retries += 1;
+                progress(&format!(
+                    "The host did not answer ({}); asking again in {}s",
+                    problem.0,
+                    SNAPSHOT_RETRY.as_secs()
+                ));
+                clock.sleep(SNAPSHOT_RETRY);
+            }
+            result => return result,
+        }
+    }
 }
 
 #[cfg(test)]

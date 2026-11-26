@@ -119,6 +119,7 @@ fn main() {
         "jidoka-setup-knowledge-repo",
         "jidoka-cross-repo-change",
         "jidoka-work-through-plan",
+        "jidoka-pr-watch",
     ] {
         files(
             Path::new("skills"),

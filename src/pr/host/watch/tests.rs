@@ -11,10 +11,15 @@ use std::{cell::RefCell, collections::VecDeque};
 const PR: &str = "https://github.com/o/r/pull/7";
 
 /// Answers each snapshot with the next one of a list; the last one repeats.
-struct Snapshots(RefCell<VecDeque<Snapshot>>);
+struct Snapshots(RefCell<VecDeque<Result<Snapshot, String>>>);
 
 impl Snapshots {
     fn new(list: Vec<Snapshot>) -> Self {
+        Self::with_answers(list.into_iter().map(Ok).collect())
+    }
+
+    /// Like `new`, where an `Err` is a failed host call.
+    fn with_answers(list: Vec<Result<Snapshot, String>>) -> Self {
         Self(RefCell::new(list.into()))
     }
 }
@@ -50,11 +55,12 @@ impl Adapter for Snapshots {
 
     fn snapshot(&self, _: &dyn Tools, _: &str) -> Result<Snapshot, ToolProblem> {
         let mut list = self.0.borrow_mut();
-        Ok(if list.len() > 1 {
+        let answer = if list.len() > 1 {
             list.pop_front().unwrap()
         } else {
             list.front().expect("the script has a snapshot").clone()
-        })
+        };
+        answer.map_err(ToolProblem)
     }
 }
 
@@ -121,10 +127,24 @@ struct Watched {
 }
 
 fn run(snapshots: Vec<Snapshot>, options: &Options) -> Watched {
+    let (waited, activity, clock) =
+        run_answers(Snapshots::new(snapshots), options, &mut Vec::new());
+    Watched {
+        waited: waited.unwrap(),
+        activity,
+        clock,
+    }
+}
+
+fn run_answers(
+    snapshots: Snapshots,
+    options: &Options,
+    progress: &mut Vec<String>,
+) -> (Result<Waited, ToolProblem>, Vec<String>, FakeClock) {
     let clock = FakeClock::default();
     let mut activity = Vec::new();
     let pr = PullRequest {
-        adapter: &Snapshots::new(snapshots),
+        adapter: &snapshots,
         tools: &NoTools,
         url: PR,
     };
@@ -133,14 +153,9 @@ fn run(snapshots: Vec<Snapshot>, options: &Options) -> Watched {
         options,
         &clock,
         &mut |text| activity.push(text.to_string()),
-        &mut |_| {},
-    )
-    .unwrap();
-    Watched {
-        waited,
-        activity,
-        clock,
-    }
+        &mut |text| progress.push(text.to_string()),
+    );
+    (waited, activity, clock)
 }
 
 fn sleeps(watched: &Watched) -> Vec<Duration> {
@@ -373,4 +388,48 @@ fn a_base_state_the_host_has_not_worked_out_is_asked_for_again() {
     let watched = run(vec![unknown], &Options::default());
     assert_eq!(watched.waited.base, BaseState::Unknown);
     assert_eq!(sleeps(&watched), [Duration::from_secs(3); 5]);
+}
+
+#[test]
+fn a_host_call_that_fails_is_asked_again_and_the_wait_goes_on() {
+    let answers = vec![
+        Err("504 Gateway Timeout".to_string()),
+        Err("504 Gateway Timeout".to_string()),
+        Ok(open("aaa", &[("build", "pass")])),
+    ];
+    let mut progress = Vec::new();
+    let (waited, _, clock) = run_answers(
+        Snapshots::with_answers(answers),
+        &Options::default(),
+        &mut progress,
+    );
+    assert_eq!(waited.unwrap().outcome, Outcome::Passed);
+    assert_eq!(*clock.sleeps.borrow(), [Duration::from_secs(10); 2]);
+    assert_eq!(progress.len(), 2);
+    assert!(progress[0].contains("504 Gateway Timeout"));
+}
+
+#[test]
+fn a_host_that_never_answers_ends_the_wait_with_the_last_problem_after_four_tries() {
+    let answers = (1..=4).map(|n| Err(format!("failure {n}"))).collect();
+    let (waited, _, clock) = run_answers(
+        Snapshots::with_answers(answers),
+        &Options::default(),
+        &mut Vec::new(),
+    );
+    assert_eq!(waited.unwrap_err(), ToolProblem("failure 4".into()));
+    assert_eq!(*clock.sleeps.borrow(), [Duration::from_secs(10); 3]);
+}
+
+#[test]
+fn retries_never_wait_past_the_timeout() {
+    let answers = (1..=4).map(|n| Err(format!("failure {n}"))).collect();
+    let options = Options {
+        timeout: Duration::from_secs(25),
+        ..Options::default()
+    };
+    let (waited, _, clock) =
+        run_answers(Snapshots::with_answers(answers), &options, &mut Vec::new());
+    assert_eq!(waited.unwrap_err(), ToolProblem("failure 3".into()));
+    assert_eq!(*clock.sleeps.borrow(), [Duration::from_secs(10); 2]);
 }
