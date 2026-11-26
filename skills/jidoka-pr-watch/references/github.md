@@ -31,7 +31,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
           isOutdated
           path
           line
-          comments(first: 50) {
+          comments(last: 50) {
             nodes { author { login __typename } body createdAt url }
           }
         }
@@ -45,7 +45,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
 gh api graphql -F query=@threads.graphql -f owner=<owner> -f name=<name> -F number=<number>
 ```
 
-Page with `-f after=<endCursor>` while `hasNextPage` is true. Keep threads with `isResolved: false`. The last comment node is the latest comment; an `author.__typename` of `Bot` marks a bot.
+Page with `-f after=<endCursor>` while `hasNextPage` is true. Keep threads with `isResolved: false`. `comments(last: 50)` returns the newest comments, so the last node is always the latest comment, even on a longer thread; an `author.__typename` of `Bot` marks a bot.
 
 Reply to a thread (body in `reply.md`), saving the mutation as `reply.graphql`:
 
