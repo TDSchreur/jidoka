@@ -420,3 +420,16 @@ fn a_host_that_never_answers_ends_the_wait_with_the_last_problem_after_four_trie
     assert_eq!(waited.unwrap_err(), ToolProblem("failure 4".into()));
     assert_eq!(*clock.sleeps.borrow(), [Duration::from_secs(10); 3]);
 }
+
+#[test]
+fn retries_never_wait_past_the_timeout() {
+    let answers = (1..=4).map(|n| Err(format!("failure {n}"))).collect();
+    let options = Options {
+        timeout: Duration::from_secs(25),
+        ..Options::default()
+    };
+    let (waited, _, clock) =
+        run_answers(Snapshots::with_answers(answers), &options, &mut Vec::new());
+    assert_eq!(waited.unwrap_err(), ToolProblem("failure 3".into()));
+    assert_eq!(*clock.sleeps.borrow(), [Duration::from_secs(10); 2]);
+}
