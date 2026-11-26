@@ -9,7 +9,7 @@ use std::{
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
 /// Skills maintained in this project, installed without a third-party license.
-const LOCAL_SKILLS: [&str; 12] = [
+const LOCAL_SKILLS: [&str; 13] = [
     "jidoka",
     "jidoka-full",
     "jidoka-procedures",
@@ -22,6 +22,7 @@ const LOCAL_SKILLS: [&str; 12] = [
     "jidoka-setup-knowledge-repo",
     "jidoka-cross-repo-change",
     "jidoka-work-through-plan",
+    "jidoka-pr-watch",
 ];
 
 /// The error for an agent name that is not one of `Agent::ALL`.
@@ -868,6 +869,12 @@ mod tests {
         assert!(!root.join("jidoka-cross-repo-change/LICENSE").exists());
         assert!(root.join("jidoka-work-through-plan/SKILL.md").is_file());
         assert!(!root.join("jidoka-work-through-plan/LICENSE").exists());
+        assert!(root.join("jidoka-pr-watch/SKILL.md").is_file());
+        assert!(
+            root.join("jidoka-pr-watch/references/azure-devops.md")
+                .is_file()
+        );
+        assert!(!root.join("jidoka-pr-watch/LICENSE").exists());
         install_to(root).unwrap();
         let leftovers: Vec<_> = fs::read_dir(root)
             .unwrap()
