@@ -191,9 +191,21 @@ pub(crate) struct Run {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub(crate) enum Completion {
-    Ci { head: String, outcome: CiOutcome },
-    Merged { url: String },
-    Override { reason: String },
+    Ci {
+        head: String,
+        outcome: CiOutcome,
+    },
+    Merged {
+        url: String,
+    },
+    Override {
+        reason: String,
+    },
+    /// Every gate but the live CI check passed, and the user skipped that one with a reason.
+    CiSkipped {
+        head: String,
+        reason: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

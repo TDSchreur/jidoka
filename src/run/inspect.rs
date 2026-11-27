@@ -481,6 +481,9 @@ pub(crate) fn render(run: &Run) -> String {
         Some(Completion::Ci { head, outcome }) => Some(format!("{} on {head}", outcome.label())),
         Some(Completion::Merged { url }) => Some(format!("PR merge observed ({url})")),
         Some(Completion::Override { reason }) => Some(format!("Override ({reason})")),
+        Some(Completion::CiSkipped { head, reason }) => {
+            Some(format!("CI skipped on {head} ({reason})"))
+        }
         None if run.status == RunStatus::Done => Some(UNKNOWN.into()),
         None => None,
     };

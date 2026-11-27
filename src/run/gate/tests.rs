@@ -146,14 +146,29 @@ fn forced_advance_skips_gates_records_the_reason_and_needs_one() {
         reason: reason.map(String::from),
         ..AdvanceRequest::default()
     };
-    assert!(request(true, None).forced_reason().is_err());
-    assert!(request(true, Some(" ")).forced_reason().is_err());
-    assert!(request(false, Some("why")).forced_reason().is_err());
+    assert!(request(true, None).override_reason().is_err());
+    assert!(request(true, Some(" ")).override_reason().is_err());
+    assert!(request(false, Some("why")).override_reason().is_err());
+    let skip_ci = |reason: Option<&str>| AdvanceRequest {
+        skip_ci: true,
+        reason: reason.map(String::from),
+        ..AdvanceRequest::default()
+    };
+    assert!(skip_ci(None).override_reason().is_err());
+    assert_eq!(skip_ci(Some("why")).override_reason().unwrap(), Some("why"));
+    assert!(
+        AdvanceRequest {
+            force: true,
+            ..skip_ci(Some("why"))
+        }
+        .override_reason()
+        .is_err()
+    );
     assert_eq!(
-        request(true, Some("why")).forced_reason().unwrap(),
+        request(true, Some("why")).override_reason().unwrap(),
         Some("why")
     );
-    assert_eq!(request(false, None).forced_reason().unwrap(), None);
+    assert_eq!(request(false, None).override_reason().unwrap(), None);
 }
 
 #[test]
@@ -193,6 +208,8 @@ fn advance_options_are_read_in_any_order_and_refused_when_wrong() {
         &["--activity"],
         &["--json", "--json"],
         &["--force"],
+        &["--skip-ci"],
+        &["--force", "--skip-ci", "--reason", "why"],
         &["--reason", "why"],
         &["--summary", "a=b", "--summary", "c=d"],
     ] {
@@ -675,6 +692,45 @@ impl Git for BrokenGit {
         Err("repository unavailable".into())
     }
 }
+
+#[test]
+fn skipping_ci_keeps_the_other_gates_and_records_the_reason() {
+    let git = FakeGit(RefCell::new("abc1234".into()));
+    let skip = |run: &Run| exit_with(run, &git, CiCheck::Skip("CI service down"));
+
+    let mut run = run(Stage::Finish);
+    run.summaries.insert(Stage::Finish, "  ".into());
+    assert!(skip(&run).unwrap_err().contains("finish-summary"));
+
+    run.summaries
+        .insert(Stage::Finish, "Implemented the task".into());
+    run.leave(skip(&run).unwrap(), 1).unwrap();
+    assert_eq!(run.status, RunStatus::Done);
+    assert_eq!(
+        run.completion,
+        Some(Completion::CiSkipped {
+            head: "abc1234".into(),
+            reason: "CI service down".into()
+        })
+    );
+    assert_eq!(
+        run.run_reports.last().unwrap().text,
+        "Skipped CI check on abc1234: CI service down"
+    );
+    assert_eq!(
+        run.stage_exits[0]
+            .gates
+            .iter()
+            .find(|gate| gate.name == Gate::CiPassed)
+            .unwrap()
+            .status,
+        GateStatus::Bypassed
+    );
+
+    // Only Finish has a CI check to skip.
+    assert!(skip(&self::run(Stage::Build)).is_err());
+}
+
 #[test]
 fn failed_external_checks_report_the_cause_and_remedy() {
     let git = FakeGit(RefCell::new("abc1234".into()));
