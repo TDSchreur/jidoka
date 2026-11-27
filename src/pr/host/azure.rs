@@ -558,11 +558,8 @@ fn checks_for(
     for (context, status) in &statuses {
         let (genre, name) = context;
         let scoped = status["iterationId"].as_u64() == Some(iteration);
-        let state = if scoped {
-            Some(required(&status["state"], "status state")?)
-        } else {
-            status["state"].as_str()
-        };
+        // A status that is still queued may carry no state yet; status_bucket reads that as pending.
+        let state = status["state"].as_str();
         let evidence = candidates
             .get(context)
             .and_then(|id| builds.get(id))

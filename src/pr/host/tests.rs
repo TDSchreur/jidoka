@@ -1237,6 +1237,7 @@ fn azure_keeps_nonterminal_and_malformed_iteration_statuses_pending_without_buil
     for (field, value) in [
         ("state", json!("pending")),
         ("state", json!("futureState")),
+        ("state", Value::Null),
         ("iterationId", Value::Null),
         ("iterationId", json!(0)),
         ("iterationId", json!("1")),
