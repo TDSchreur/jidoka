@@ -45,3 +45,27 @@ az devops invoke --org <org-url> --detect false --area git --resource pullReques
 ```
 
 Leave a declined thread's status `active`.
+
+## Update a behind branch
+
+Azure DevOps has no update-branch call, so use the local merge in "Update behind branches". Push with `git push origin HEAD:<branch>` (to `forkSource.repository.remoteUrl` for a fork).
+
+## Merge
+
+Merge-ready needs `mergeStatus` `succeeded` (from the list above) and every blocking policy passed:
+
+```sh
+az repos pr policy list --org <org-url> --detect false --id <id> --output json
+```
+
+Each entry's `status` must be `approved` or `notApplicable` wherever `configuration.isBlocking` is true; `queued`, `running`, `rejected` and `broken` are not ready. A non-blocking policy that is `rejected` or `broken` still holds the merge, as a failing check does on GitHub; `queued` and `running` non-blocking ones do not. Complete the pull request with `complete.json`, pinned to the checked head, holding:
+
+```json
+{"status": "completed", "lastMergeSourceCommit": {"commitId": "<head-sha>"}, "completionOptions": {"mergeStrategy": "squash", "deleteSourceBranch": false, "bypassPolicy": false}}
+```
+
+```sh
+az devops invoke --org <org-url> --detect false --area git --resource pullRequests --route-parameters project=<project> repositoryId=<repository-id> pullRequestId=<id> --http-method PATCH --in-file complete.json --api-version 7.1 --output json
+```
+
+Never set `bypassPolicy`. Completion can finish asynchronously: read the pull request again and report `status` `completed` as merged; a `mergeFailureMessage` is the reason to report if it did not.
