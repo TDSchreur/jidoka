@@ -58,7 +58,7 @@ Merge-ready needs `mergeStatus` `succeeded` (from the list above) and every bloc
 az repos pr policy list --org <org-url> --detect false --id <id> --output json
 ```
 
-Each entry's `status` must be `approved` or `notApplicable` wherever `configuration.isBlocking` is true; `queued`, `running`, `rejected` and `broken` are not ready. Non-blocking policies do not hold the merge. Complete the pull request with `complete.json`, pinned to the checked head, holding:
+Each entry's `status` must be `approved` or `notApplicable` wherever `configuration.isBlocking` is true; `queued`, `running`, `rejected` and `broken` are not ready. A non-blocking policy that is `rejected` or `broken` still holds the merge, as a failing check does on GitHub; `queued` and `running` non-blocking ones do not. Complete the pull request with `complete.json`, pinned to the checked head, holding:
 
 ```json
 {"status": "completed", "lastMergeSourceCommit": {"commitId": "<head-sha>"}, "completionOptions": {"mergeStrategy": "squash", "deleteSourceBranch": false, "bypassPolicy": false}}

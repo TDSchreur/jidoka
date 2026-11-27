@@ -99,7 +99,7 @@ Merge-ready needs `mergeStateStatus` `CLEAN` from the list above (`BLOCKED`, `UN
 gh pr checks <number> --json name,bucket
 ```
 
-Every `bucket` must be `pass` (or `skipping`). Exit code 8 means checks are pending. Merge, pinned to the checked head:
+Every `bucket` must be `pass` (or `skipping`). Exit code 8 means checks are pending. A failing check blocks the merge even when it is not required. A repository without checks makes the command fail with "no checks reported": that is not a failure, so let `mergeStateStatus` decide. `BEHIND` means the base requires an up-to-date branch: report it, or update the branch first with the update opt-in. Merge, pinned to the checked head:
 
 ```sh
 gh pr merge <number> --squash --match-head-commit <head-sha>

@@ -49,7 +49,7 @@ Act only when the host reports a conflict; a branch that is merely behind its ba
 
 ## Opt-ins
 
-Two chores are off by default and run only when the user asked for them when starting the watch, in their own words ("also merge them", "keep my branches up to date"). They are independent: either, both or neither. State which are on in the first report, and never switch one on yourself. Merging is one-way, which is why it is opt-in.
+Two chores are off by default and run only when the user asked for them when starting the watch, in their own words ("also merge them", "keep my branches up to date"). They are independent: either, both or neither. They stay as chosen for every later pass. State which are on in the first report, and never switch one on yourself. Merging is one-way, which is why it is opt-in.
 
 - **Update branches**: merge the base into a pull request that is behind it (see "Update behind branches").
 - **Merge**: squash-merge a pull request that is ready (see "Merge").
@@ -84,11 +84,11 @@ One to three sentences: dry, friendly, a little sarcastic, and always with the r
 
 ## Update behind branches
 
-Update opt-in only. A branch is behind when `git merge-base --is-ancestor origin/<base> <head>` fails; the hosts' own "behind" flags depend on branch rules, so do not rely on them. Skip a pull request with a conflict (that is "Merge conflicts") and one you pushed to during this pass (do it next pass, once the push has settled).
+Update opt-in only. A branch is behind when, after `git fetch`, `git merge-base --is-ancestor origin/<base> <head>` fails; the hosts' own "behind" flags depend on branch rules, so do not rely on them. Skip a pull request with a conflict (that is "Merge conflicts") and one you pushed to during this pass (do it next pass, once the push has settled).
 
 1. In the worktree at the current head, run `git merge --no-edit origin/<base>`. If it stops on a conflict, `git merge --abort` and leave it to "Merge conflicts".
 2. Run the project's verification, as for a rebase. If it fails because of the merge, `git reset --hard` to the old head, push nothing and report it; do not retry until the head or base changes.
-3. Push normally: `git push origin HEAD:<branch>`, with no force. A rejected push means the branch moved: drop it and look again next pass.
+3. Push normally: `git push origin HEAD:<branch>`, with no force. A rejected push means the branch moved, or, for a fork, that you may not push to it: drop it, report a fork rejection, and look again next pass only when the head changed.
 
 A merge commit is fine here: the pull request is squash-merged later, and no history is rewritten, so reviewers' diffs and links stay intact.
 
@@ -97,12 +97,12 @@ A merge commit is fine here: the pull request is squash-merged later, and no his
 Merge opt-in only. Merge a pull request only when **all** of these hold, checked in this pass after any fixes, rebase or update, against the head commit you will merge:
 
 - it is open, not draft, and authored by the user;
-- the host reports no conflict, and the branch is not behind the base when the update opt-in is off and the base requires it (the host refuses otherwise; report that);
-- every check and every blocking policy has finished and passed, including required approvals; pending, queued, skipped-by-failure or missing results are not green;
+- the host reports no conflict and nothing blocking the merge. A behind branch is fine when the host accepts it; when the host refuses it, report that (the update opt-in would fix it), and with the update opt-in on, update it first and merge on a later pass;
+- every check and every blocking policy has finished and passed, including required approvals; a pending, queued, failed or missing result is not green. A repository with no checks at all has none to wait for, so then the host's own merge state decides;
 - it has no unresolved review threads, counting the ones this pass declined (a declined thread stays open, so the reviewer decides);
 - you pushed nothing to it during this pass, because CI starts over after a push: merge on a later pass.
 
-Then squash-merge it, pinned to the head commit you checked so a late push is not merged unreviewed. Never bypass a policy, never use an admin override, and do not delete the branch, since the user's worktree or follow-up work may still use it. Use the host's default squash message. If the host refuses, report the reason and do not retry until the head or base changes. After a successful merge, report it with the pull request link; the pull request leaves the watch list by itself.
+Then squash-merge it, pinned to the head commit you checked so a late push is not merged unreviewed. Never bypass a policy, never use an admin override, and do not delete the branch, since the user's worktree or follow-up work may still use it (a repository setting that deletes merged branches automatically still applies; that is the host's rule). Use the host's default squash message. If the host refuses, report the reason and do not retry until the head or base changes. After a successful merge, report it with the pull request link; the pull request leaves the watch list by itself.
 
 ## The loop
 
