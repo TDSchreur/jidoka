@@ -50,6 +50,9 @@ fn parse_options(options: &[&str]) -> Result<(Option<String>, Option<String>), S
 pub(crate) struct AdvanceRequest {
     #[serde(default)]
     pub(crate) force: bool,
+    /// Skips only the live CI gate when leaving Finish; the other gates still apply.
+    #[serde(default)]
+    pub(crate) skip_ci: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -64,7 +67,7 @@ pub(crate) struct AdvanceRequest {
 
 impl AdvanceRequest {
     fn validate(&self) -> Result<(), String> {
-        self.forced_reason()?;
+        self.override_reason()?;
         if let Some(activity) = &self.activity {
             check_text("Activity", activity, MAX_NOTE_BYTES)?;
         }
@@ -89,31 +92,43 @@ impl AdvanceRequest {
         host: &dyn PrHost,
     ) -> Result<(), String> {
         self.validate()?;
-        let forced = self.forced_reason()?.map(str::to_owned);
+        let overridden = self.override_reason()?.map(str::to_owned);
+        let (force, skip_ci) = (self.force, self.skip_ci);
         let metadata = AdvanceMetadata {
             activity: self.activity,
             summaries: self.summaries,
             sessions: self.sessions,
             agent_homes: self.agent_homes,
         };
-        store.advance(id, metadata, |run| match forced {
-            Some(reason) => Ok(Exit::Override { reason }),
-            None => super::accepted_exit(run, git, host),
+        store.advance(id, metadata, |run| match overridden {
+            Some(reason) if force => Ok(Exit::Override { reason }),
+            Some(reason) if skip_ci => super::exit_with(run, git, super::CiCheck::Skip(&reason)),
+            _ => super::accepted_exit(run, git, host),
         })
     }
 
-    /// The reason for a forced advance, or `None` for a normal one.
+    /// The reason for a forced advance or a skipped CI check, or `None` for a normal advance.
     ///
     /// # Errors
     ///
-    /// Returns a message when `force` and a nonempty `reason` do not come together.
-    pub(crate) fn forced_reason(&self) -> Result<Option<&str>, String> {
+    /// Returns a message when `force` or `skip_ci` and a nonempty `reason` do not come together, or when
+    /// both are set.
+    pub(crate) fn override_reason(&self) -> Result<Option<&str>, String> {
         let reason = self.reason.as_deref().map(str::trim);
-        match (self.force, reason) {
-            (true, Some(reason)) if !reason.is_empty() => Ok(Some(reason)),
-            (true, _) => Err("--force needs a nonempty --reason \"<text>\"".into()),
-            (false, None) => Ok(None),
-            (false, Some(_)) => Err("--reason is only for --force".into()),
+        let option = match (self.force, self.skip_ci) {
+            (true, true) => return Err("--force and --skip-ci cannot be combined".into()),
+            (true, false) => "--force",
+            (false, true) => "--skip-ci",
+            (false, false) => {
+                return match reason {
+                    None => Ok(None),
+                    Some(_) => Err("--reason is only for --force or --skip-ci".into()),
+                };
+            }
+        };
+        match reason {
+            Some(reason) if !reason.is_empty() => Ok(Some(reason)),
+            _ => Err(format!("{option} needs a nonempty --reason \"<text>\"")),
         }
     }
 }
@@ -126,11 +141,11 @@ pub(crate) struct AdvanceOptions {
 }
 
 /// Reads the options of `run advance`: `--summary <stage>=<text>`, `--activity <text>`,
-/// `--json` and `--force --reason <text>`, in any order and each at most once.
+/// `--json`, `--force --reason <text>` and `--skip-ci --reason <text>`, in any order and each at most once.
 ///
 /// # Errors
 ///
-/// Returns a message for an unknown or repeated option, a missing value, or `--force` without a reason.
+/// Returns a message for an unknown or repeated option, a missing value, or `--force` or `--skip-ci` without a reason.
 fn parse_advance_options(options: &[&str]) -> Result<AdvanceOptions, String> {
     let mut parsed = AdvanceOptions::default();
     let mut seen: Vec<&str> = Vec::new();
@@ -155,6 +170,7 @@ fn parse_advance_options(options: &[&str]) -> Result<AdvanceOptions, String> {
             "--activity" => parsed.request.activity = Some(value()?.to_owned()),
             "--reason" => parsed.request.reason = Some(value()?.to_owned()),
             "--force" => parsed.request.force = true,
+            "--skip-ci" => parsed.request.skip_ci = true,
             "--json" => parsed.json = true,
             _ => return Err(format!("Unknown option {option}")),
         }

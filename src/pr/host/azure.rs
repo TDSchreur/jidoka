@@ -30,7 +30,10 @@ impl Adapter for Azure {
 
     fn head(&self, tools: &dyn Tools, url: &str) -> Result<Head, ToolProblem> {
         let data = AzurePr::parse(url)?.fetch(tools)?;
-        let commit = required(&data["lastMergeSourceCommit"]["commitId"], "source commit")?;
+        let commit = required(
+            &data["lastMergeSourceCommit"]["commitId"],
+            "source commit (lastMergeSourceCommit.commitId of the pull request)",
+        )?;
         let branch = branch_name(required(&data["sourceRefName"], "source branch")?)?;
         Ok(Head {
             state: state_of(&data)?,
@@ -293,7 +296,10 @@ fn ended(data: &Value) -> Result<Snapshot, ToolProblem> {
 /// Azure's `active`, `completed` and `abandoned`, with `isDraft` for an active draft.
 fn state_of(data: &Value) -> Result<PrState, ToolProblem> {
     let draft = data["isDraft"].as_bool().unwrap_or(false);
-    match required(&data["status"], "pull request status")? {
+    match required(
+        &data["status"],
+        "pull request status (status of the pull request)",
+    )? {
         "active" if draft => Ok(PrState::Draft),
         "active" => Ok(PrState::Open),
         "completed" => Ok(PrState::Merged),
@@ -662,7 +668,10 @@ fn policy_checks(
             .ok_or_else(|| {
                 ToolProblem("Azure policy does not say whether it is required.".into())
             })?;
-        let state = required(&policy["status"], "policy state")?;
+        let state = required(
+            &policy["status"],
+            "policy state (status of a policy evaluation of the pull request)",
+        )?;
         let build_id = policy["context"]["buildId"].as_u64();
         let build_policy = build_id.is_some()
             || policy["configuration"]["type"]["id"].as_str() == Some(BUILD_POLICY_TYPE)
@@ -761,7 +770,11 @@ fn latest_statuses(
         {
             continue;
         }
-        let name = required(&status["context"]["name"], "status name")?.to_string();
+        let name = required(
+            &status["context"]["name"],
+            "status name (context.name of a pull request status)",
+        )?
+        .to_string();
         let genre = status["context"]["genre"]
             .as_str()
             .unwrap_or("")
