@@ -298,7 +298,7 @@ fn state_of(data: &Value) -> Result<PrState, ToolProblem> {
     let draft = data["isDraft"].as_bool().unwrap_or(false);
     match required(
         &data["status"],
-        "pull request status (status of the pull request)",
+        "pull request status (`status` of the pull request)",
     )? {
         "active" if draft => Ok(PrState::Draft),
         "active" => Ok(PrState::Open),

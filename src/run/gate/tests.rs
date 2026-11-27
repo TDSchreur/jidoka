@@ -692,6 +692,7 @@ impl Git for BrokenGit {
         Err("repository unavailable".into())
     }
 }
+
 #[test]
 fn skipping_ci_keeps_the_other_gates_and_records_the_reason() {
     let git = FakeGit(RefCell::new("abc1234".into()));

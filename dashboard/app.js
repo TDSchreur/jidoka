@@ -718,6 +718,7 @@ function CompletionLabel({ run }) {
     ? `${completion.outcome === 'no-ci' ? 'No CI' : 'CI passed'} on ${completion.head}`
     : completion?.kind === 'merged' ? 'PR merge observed'
     : completion?.kind === 'override' ? `Override (${completion.reason})`
+    : completion?.kind === 'ci-skipped' ? `CI skipped on ${completion.head} (${completion.reason})`
     : 'Reason unavailable';
   return html`<span class="status-item">Completion ${text}</span>`;
 }
