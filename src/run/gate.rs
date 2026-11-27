@@ -42,6 +42,20 @@ const RECORD_OR_RESOLVE_FINDINGS: &str = "record `jidoka run gate <id> no-action
 ///
 /// Returns a message naming each failing gate and its remedy, or why CI has not passed.
 fn accepted_exit(run: &Run, git: &dyn Git, host: &dyn PrHost) -> Result<Exit, String> {
+    exit_with(run, git, CiCheck::Live(host))
+}
+
+/// How an exit from Finish settles the CI gate.
+#[derive(Clone, Copy)]
+enum CiCheck<'a> {
+    /// Check the pull request's CI live.
+    Live(&'a dyn PrHost),
+    /// Skip only the CI gate, for the given reason; every other gate still applies.
+    Skip(&'a str),
+}
+
+/// [`accepted_exit`] with the CI gate either checked live or skipped.
+fn exit_with(run: &Run, git: &dyn Git, ci_check: CiCheck) -> Result<Exit, String> {
     let LocalAssessment {
         transition,
         evaluations: gates,
@@ -66,7 +80,19 @@ fn accepted_exit(run: &Run, git: &dyn Git, host: &dyn PrHost) -> Result<Exit, St
         return Err("The worktree HEAD changed while checking gates; try again".into());
     }
 
-    let ci = if transition.gates.contains(&Gate::CiPassed) {
+    let has_ci_gate = transition.gates.contains(&Gate::CiPassed);
+    if let CiCheck::Skip(reason) = ci_check {
+        if !has_ci_gate {
+            return Err("--skip-ci only applies when leaving Finish".into());
+        }
+        return Ok(Exit::CiSkipped {
+            gates,
+            skipped_checks: skipped_snapshot_of(reviews),
+            head: run.worktree_head(git)?,
+            reason: reason.to_owned(),
+        });
+    }
+    let ci = if let (true, CiCheck::Live(host)) = (has_ci_gate, ci_check) {
         let ci = ci::ci_passed(run, git, host).map_err(|reason| {
             format!(
                 "Cannot advance:\n{}",
@@ -79,14 +105,18 @@ fn accepted_exit(run: &Run, git: &dyn Git, host: &dyn PrHost) -> Result<Exit, St
     };
     Ok(Exit::Accepted {
         gates,
-        skipped_checks: match reviews {
-            ReviewSelection::Selected { selection, .. } => {
-                review_selection::skipped_snapshot(&selection)
-            }
-            ReviewSelection::NotApplicable | ReviewSelection::Unavailable(_) => Vec::new(),
-        },
+        skipped_checks: skipped_snapshot_of(reviews),
         ci,
     })
+}
+
+fn skipped_snapshot_of(reviews: ReviewSelection) -> Vec<crate::run::SkippedReview> {
+    match reviews {
+        ReviewSelection::Selected { selection, .. } => {
+            review_selection::skipped_snapshot(&selection)
+        }
+        ReviewSelection::NotApplicable | ReviewSelection::Unavailable(_) => Vec::new(),
+    }
 }
 
 fn gate_failure(run: &Run, gate: Gate, reason: &str) -> String {

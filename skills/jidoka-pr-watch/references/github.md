@@ -86,3 +86,23 @@ gh pr view <number> --json comments,reviews
 ```sh
 gh pr comment <number> --body-file reply.md
 ```
+
+## Update a behind branch
+
+GitHub's `update-branch` call is not used: Azure DevOps has none, so both hosts use the local merge in "Update behind branches". Push with `git push origin HEAD:<branch>` (to the fork's URL for a cross-repository pull request).
+
+## Merge
+
+Merge-ready needs `mergeStateStatus` `CLEAN` from the list above (`BLOCKED`, `UNSTABLE`, `DIRTY`, `BEHIND` and `UNKNOWN` are not ready), and no failing or pending check, because a repository without branch protection reports `CLEAN` while checks still run:
+
+```sh
+gh pr checks <number> --json name,bucket
+```
+
+Every `bucket` must be `pass` (or `skipping`). Exit code 8 means checks are pending. A failing check blocks the merge even when it is not required. A repository without checks makes the command fail with "no checks reported": that is not a failure, so let `mergeStateStatus` decide. `BEHIND` means the base requires an up-to-date branch: report it, or update the branch first with the update opt-in. Merge, pinned to the checked head:
+
+```sh
+gh pr merge <number> --squash --match-head-commit <head-sha>
+```
+
+Never add `--admin`. Do not pass `--delete-branch`. If the base uses a merge queue, the command queues the pull request instead of merging it; report that as queued. A pull request from a fork merges the same way.

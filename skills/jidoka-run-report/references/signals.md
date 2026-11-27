@@ -9,6 +9,7 @@ Signals point at where to dig; none is a finding on its own. For each, the quest
 - `inspect` shows a stage, status or gate that contradicts what happened (a finished run still `running`, a run in Check with no Build, gates passed for a commit that is not the reviewed one). Compare with the events and timeline in `inspect --json`.
 - `check` reports `unknown` or `not-checked` for the worktree, branch or base commit although the run used a worktree. Was it recorded at the start (`jidoka run begin`) or skipped by the agent? Only the first is a Jidoka bug. `jidoka run cleanup` clears the worktree and branch on purpose, so a finished and cleaned-up run shows `never recorded`; that is not a finding.
 - A finished run that still carries a blocking reason, or an `inspect` that disagrees with its own events.
+- `advance --skip-ci` was needed: the CI check could not be read. Read the recorded reason; a host error that should not have blocked CI is a bug.
 - `advance --force` was needed. Read the recorded reason: a gate that could not be met, or a gate that wrongly refused, is a bug; a skipped step is not.
 - A command printed an error, a panic or a message that is wrong or unhelpful, or refused a valid update. Search the session for `jidoka` commands that returned a non-zero status.
 

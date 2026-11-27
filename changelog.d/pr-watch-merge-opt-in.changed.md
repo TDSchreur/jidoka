@@ -1,0 +1,3 @@
+## Changed
+
+- `jidoka-pr-watch` can now squash-merge your pull requests and update branches that are behind their base, on GitHub and Azure DevOps. Both are off unless you ask for them when you start the watch. A pull request is merged only when its checks and blocking policies have passed, it has no unresolved threads and its head is unchanged; policies are never bypassed and the branch is kept. A behind branch gets the base merged in and a normal push, with no force push. Without the opt-ins the skill behaves as before and never merges. See [ADR-0027](../docs/adr/0027-pr-watch-merges-and-updates-branches-only-on-opt-in.md).

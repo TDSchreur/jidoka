@@ -181,6 +181,14 @@ pub(crate) enum Exit {
     },
     /// The user moved the run on without checking the gates.
     Override { reason: String },
+    /// Every exit gate but the live CI check passed, and the user skipped that check with a reason.
+    CiSkipped {
+        gates: Vec<Evaluation>,
+        skipped_checks: Vec<SkippedReview>,
+        /// The worktree HEAD whose CI was not checked.
+        head: String,
+        reason: String,
+    },
     /// The pull request merged, which finishes a run in Finish even while it is blocked.
     Merged { url: String },
     /// Check found something to fix: back to Build.
@@ -235,6 +243,21 @@ impl Run {
                     }
                     (Destination::Stage(_), None) => {}
                 }
+                Leaving {
+                    to,
+                    outcome: ExitOutcome::Accepted,
+                    gates,
+                    skipped_checks,
+                }
+            }
+            Exit::CiSkipped {
+                gates,
+                skipped_checks,
+                head,
+                reason,
+            } => {
+                let to = stages::next(mode?, stage, self.status)?.to;
+                let gates = self.skip_ci(to, gates, head, reason.trim(), at)?;
                 Leaving {
                     to,
                     outcome: ExitOutcome::Accepted,
@@ -335,6 +358,52 @@ impl Run {
             self.pr_status = Some(ci.pr_status);
         }
         Ok(())
+    }
+
+    /// Completes the run out of Finish without CI evidence, marking the CI gate bypassed and recording
+    /// `reason` as a run report.
+    fn skip_ci(
+        &mut self,
+        to: Destination,
+        mut gates: Vec<Evaluation>,
+        head: String,
+        reason: &str,
+        at: u64,
+    ) -> Result<Vec<Evaluation>, String> {
+        if to != Destination::Done {
+            return Err("Only an exit from Finish has a CI check to skip".into());
+        }
+        if reason.is_empty() {
+            return Err("Provide a reason for skipping CI".into());
+        }
+        let short: String = head.chars().take(7).collect();
+        let text = format!("Skipped CI check on {short}: {reason}");
+        if text.len() > MAX_TEXT_BYTES || text.chars().any(char::is_control) {
+            return Err(format!(
+                "The reason must be short ({MAX_TEXT_BYTES} bytes with the prefix) and contain no control characters"
+            ));
+        }
+        if self.run_reports.len() >= MAX_REPORTS_PER_RUN {
+            return Err(format!(
+                "A run can hold at most {MAX_REPORTS_PER_RUN} run reports"
+            ));
+        }
+        let gate = gates
+            .iter_mut()
+            .find(|gate| gate.name == Gate::CiPassed)
+            .ok_or("Finish has no CI gate")?;
+        self.complete(Completion::CiSkipped {
+            head,
+            reason: reason.into(),
+        })?;
+        gate.status = GateStatus::Bypassed;
+        self.run_reports.push(RunReport {
+            kind: ReportKind::Activity,
+            text,
+            stage: self.stage,
+            at,
+        });
+        Ok(gates)
     }
 
     /// Checks a forced `transition`, records `reason` as a run report and returns its bypassed gates.
